@@ -8,5 +8,12 @@
   "proactivity": {
     "surface": "advisor"
   },
-  "status": "active"
+  "status": "active",
+  "history_scanned_at": "2026-10-23",
+  "boundary_publish": [
+    ".planning/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "STATE.md"
+  ]
 }
