@@ -146,6 +146,9 @@ func TestRankTiersAndExclusions(t *testing.T) {
 			setGate("language", "fail", "")(c)
 		}),
 		with(cand(17), func(c *Candidate) { setGate("language", "fail", "")(c); setCrit("title", Fail)(c) }),
+		with(cand(18), func(c *Candidate) { c.ListingStatus = "unreachable" }),
+		// The posting said closed: closed, whatever the recheck could reach.
+		with(cand(19), func(c *Candidate) { c.ListingStatus = "unreachable"; c.Closed = true }),
 	}
 	r := Rank(cs, time.UTC, noCaps)
 	if got := ids(r.Apply); !slices.Equal(got, []int64{1, 13}) {
@@ -161,7 +164,7 @@ func TestRankTiersAndExclusions(t *testing.T) {
 		t.Errorf("unclear %q", got)
 	}
 	want := map[string]int{"language": 2, "location": 1, "workplace": 1, "work_rights": 1, "rule": 2,
-		"criterion": 1, "closed": 2, "status": 2, "unscored": 1}
+		"criterion": 1, "closed": 3, "unreachable": 1, "status": 2, "unscored": 1}
 	if len(r.Skipped) != len(want) {
 		t.Errorf("skipped %v, want %v", r.Skipped, want)
 	}
@@ -252,7 +255,7 @@ func TestTierOf(t *testing.T) {
 }
 
 func TestCandidatesFromMatchesNewSkipRules(t *testing.T) {
-	in := []store.RankInput{{JobID: 1, Company: "Contoso Staffing", Title: "Rust Engineer", Status: "new", ListingStatus: "open",
+	in := []store.RankInput{{JobID: 1, Company: "Contoso Staffing", Title: "Rust Engineer", Status: "new", ListingStatus: "open", SeenAt: day1,
 		Gates:     []store.GateResult{{Gate: "language", Verdict: "pass", Snippet: "x"}},
 		Decisions: []store.Decision{{Criterion: "title", Verdict: Pass}}}}
 	disabled := time.Now()
@@ -266,7 +269,7 @@ func TestCandidatesFromMatchesNewSkipRules(t *testing.T) {
 	if got[0].SkipRuleID == nil || *got[0].SkipRuleID != 4 {
 		t.Fatalf("skip rule %v", got[0].SkipRuleID)
 	}
-	if len(got[0].Gates) != 1 || got[0].Gates[0].Snippet != "x" || len(got[0].Criteria) != 1 {
+	if len(got[0].Gates) != 1 || got[0].Gates[0].Snippet != "x" || len(got[0].Criteria) != 1 || !got[0].SeenAt.Equal(day1) {
 		t.Errorf("converted %+v", got[0])
 	}
 	if r := Rank(got, time.UTC, noCaps); r.Skipped[SkipRule] != 1 {
@@ -294,5 +297,37 @@ func TestIncompleteCriteriaAreUnscored(t *testing.T) {
 	}
 	if r.RunnerUp != nil {
 		t.Errorf("runner-up %d: a job with undecided criteria is not one fail away", r.RunnerUp.JobID)
+	}
+}
+
+// TestSkippedOn: only the jobs seen on the brief's day count, by their day in loc, and a
+// job seen again that day counts again.
+func TestSkippedOn(t *testing.T) {
+	loc := time.FixedZone("UTC+3", 3*3600)
+	seen := func(at time.Time) func(*Candidate) { return func(c *Candidate) { c.SeenAt = at } }
+	cs := []Candidate{
+		with(cand(1), seen(day2)), // listed: not counted
+		with(with(cand(2), setGate("language", "fail", "")), seen(day2)),
+		with(with(cand(3), setGate("language", "fail", "")), seen(day1)),                                          // yesterday
+		with(with(cand(4), func(c *Candidate) { c.ListingStatus = "unreachable" }), seen(day1.Add(16*time.Hour))), // 04:00 on day 2 in loc
+		with(with(cand(5), func(c *Candidate) { c.Criteria = nil }), seen(day2)),
+		with(with(cand(6), func(c *Candidate) { c.Status = "applied" }), seen(day2.Add(15*time.Hour))), // day 3 in loc
+	}
+	got := SkippedOn(cs, loc, day2)
+	want := map[string]int{"language": 1, "unreachable": 1, "unscored": 1}
+	if len(got) != len(want) {
+		t.Fatalf("skipped on day 2 %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("skipped[%s] = %d, want %d (all %v)", k, got[k], v, got)
+		}
+	}
+	if got := SkippedOn(cs, loc, day1); got["language"] != 1 || len(got) != 1 {
+		t.Errorf("skipped on day 1 %v", got)
+	}
+	// Rank still counts every day.
+	if r := Rank(cs, loc, noCaps); r.Skipped["language"] != 2 || r.Skipped["status"] != 1 {
+		t.Errorf("rank skipped %v", r.Skipped)
 	}
 }

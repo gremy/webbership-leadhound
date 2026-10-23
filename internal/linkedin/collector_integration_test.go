@@ -49,11 +49,11 @@ func fixtureDir(t *testing.T, manifest map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, file := range manifest {
-		b, err := os.ReadFile(filepath.Join(testdata, file))
+		b, err := os.ReadFile(filepath.Join(testdata, file)) // #nosec G304 -- the test's own testdata
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, file), b, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, file), b, 0o600); err != nil { // #nosec G703 -- a test temp dir
 			t.Fatal(err)
 		}
 	}

@@ -43,11 +43,11 @@ func fixtureDir(t *testing.T, overrides map[string]string) string {
 	}
 	dir := t.TempDir()
 	for _, file := range m {
-		b, err := os.ReadFile(filepath.Join(linkedinTestdata, file))
+		b, err := os.ReadFile(filepath.Join(linkedinTestdata, file)) // #nosec G304 -- the test's own testdata
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, file), b, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, file), b, 0o600); err != nil { // #nosec G703 -- a test temp dir
 			t.Fatal(err)
 		}
 	}
@@ -191,7 +191,7 @@ func TestProbeCompanyDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(path) // #nosec G304 -- a path the command printed under the test's temp dir
 	if err != nil {
 		t.Fatal(err)
 	}

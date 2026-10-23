@@ -21,10 +21,10 @@ fmt-check:
 vet:
 	go vet ./...
 
-## lint-if-present: golangci-lint when installed; without it, say so and carry on
+## lint-if-present: golangci-lint, integration-tagged files included, when installed; without it, say so and carry on
 lint-if-present:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./...; \
+		golangci-lint run --build-tags integration ./...; \
 	else \
 		echo "lint: golangci-lint not installed (brew install golangci-lint); skipped"; \
 	fi

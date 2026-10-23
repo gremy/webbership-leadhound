@@ -216,6 +216,8 @@ type RankInput struct {
 	// CP6b adds the join to the latest apply_route, which makes it "ats" when that route's
 	// kind is employer_job.
 	ApplyType string
+	// SeenAt is when the job was last observed: first seen, or observed again since.
+	SeenAt    time.Time
 	Gates     []GateResult
 	Decisions []Decision // the latest per criterion, regardless of observation
 }
@@ -233,7 +235,8 @@ type RankOptions struct {
 func (q Queries) RankInputs(ctx context.Context, opt RankOptions) ([]RankInput, error) {
 	rows, err := q.db.Query(ctx,
 		`SELECT j.id, j.listing_status, coalesce(s.status, 'new'), c.name, o.title, o.location_text,
-		        o.description_clean, o.closed, o.posted_at_est, o.applicant_count, o.apply_type, o.id
+		        o.description_clean, o.closed, o.posted_at_est, o.applicant_count, o.apply_type,
+		        greatest(j.first_seen_at, o.observed_at), o.id
 		 FROM job j
 		 JOIN company c ON c.id = j.company_id
 		 JOIN LATERAL (SELECT * FROM job_observation WHERE job_id = j.id
@@ -249,7 +252,7 @@ func (q Queries) RankInputs(ctx context.Context, opt RankOptions) ([]RankInput, 
 		var in RankInput
 		var obsID int64
 		err := r.Scan(&in.JobID, &in.ListingStatus, &in.Status, &in.Company, &in.Title, &in.Location,
-			&in.Description, &in.Closed, &in.PostedAtEst, &in.ApplicantCount, &in.ApplyType, &obsID)
+			&in.Description, &in.Closed, &in.PostedAtEst, &in.ApplicantCount, &in.ApplyType, &in.SeenAt, &obsID)
 		obsIDs = append(obsIDs, obsID)
 		return in, err
 	})

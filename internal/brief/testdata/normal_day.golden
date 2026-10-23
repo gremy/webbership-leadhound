@@ -1,0 +1,50 @@
+== subject
+Leadhound · Fri 23 Oct · 2 to apply, 1 needs your call
+== text
+Leadhound · Fri 23 Oct · 2 to apply, 1 needs your call
+
+Apply
+1. Senior Go Engineer · Northwind Labs · remote EU · 12 applicants · posted today · apply on their site
+   Why: stack pass (Go, Postgres) · seniority pass (senior) · location pass
+        "Build Go services on Postgres" · "Fully remote within the EU"
+   Link: https://www.linkedin.com/jobs/view/1000000001
+   Find a referral: https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20recruiter · https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20engineering%20manager
+2. Backend Engineer (Go) · Contoso Systems · Bucharest, Romania · 1 applicant · posted yesterday · Easy Apply on LinkedIn
+   Why: stack pass (Go) · seniority pass
+   Link: https://www.linkedin.com/jobs/view/1000000002
+   Find a referral: https://www.linkedin.com/search/results/people/?keywords=Contoso%20Systems%20recruiter · https://www.linkedin.com/search/results/people/?keywords=Contoso%20Systems%20engineering%20manager
+
+Needs your call
+3. Platform Engineer · Fabrikam Cloud · Berlin, Germany · posted 3 days ago · apply on LinkedIn · unclear: location ("hybrid, 2 days in Berlin")
+   Why: stack pass (Go, Kubernetes) · location unclear
+        "Our platform runs on Go and Kubernetes"
+   Link: https://www.linkedin.com/jobs/view/1000000003
+   Find a referral: https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20recruiter · https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20engineering%20manager
+
+Runner-up: Go Developer · Tailspin Toys · failed only on seniority (associate)
+   Link: https://www.linkedin.com/jobs/view/1000000004
+Skipped today: 14 (9 language, 3 location, 2 your rules)
+Health: LinkedIn ok · 23 new · canary ok
+Health: Scoring ok
+Health: recheck ok
+Reply to Glitch with "applied N", "skip N <reason>" or "maybe N", N being the job's number.
+== html
+<!doctype html>
+<html><body>
+<p><strong>Leadhound · Fri 23 Oct · 2 to apply, 1 needs your call</strong></p>
+<h2>Apply</h2>
+<ol start="1">
+<li>Senior Go Engineer · Northwind Labs · remote EU · 12 applicants · posted today · apply on their site<br>Why: stack pass (Go, Postgres) · seniority pass (senior) · location pass<br>&#34;Build Go services on Postgres&#34; · &#34;Fully remote within the EU&#34;<br>Link: <a href="https://www.linkedin.com/jobs/view/1000000001">https://www.linkedin.com/jobs/view/1000000001</a><br>Find a referral: <a href="https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20recruiter">recruiters</a> · <a href="https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20engineering%20manager">engineering managers</a></li>
+<li>Backend Engineer (Go) · Contoso Systems · Bucharest, Romania · 1 applicant · posted yesterday · Easy Apply on LinkedIn<br>Why: stack pass (Go) · seniority pass<br>Link: <a href="https://www.linkedin.com/jobs/view/1000000002">https://www.linkedin.com/jobs/view/1000000002</a><br>Find a referral: <a href="https://www.linkedin.com/search/results/people/?keywords=Contoso%20Systems%20recruiter">recruiters</a> · <a href="https://www.linkedin.com/search/results/people/?keywords=Contoso%20Systems%20engineering%20manager">engineering managers</a></li>
+</ol>
+<h2>Needs your call</h2>
+<ol start="3">
+<li>Platform Engineer · Fabrikam Cloud · Berlin, Germany · posted 3 days ago · apply on LinkedIn · unclear: location (&#34;hybrid, 2 days in Berlin&#34;)<br>Why: stack pass (Go, Kubernetes) · location unclear<br>&#34;Our platform runs on Go and Kubernetes&#34;<br>Link: <a href="https://www.linkedin.com/jobs/view/1000000003">https://www.linkedin.com/jobs/view/1000000003</a><br>Find a referral: <a href="https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20recruiter">recruiters</a> · <a href="https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20engineering%20manager">engineering managers</a></li>
+</ol>
+<p>Runner-up: Go Developer · Tailspin Toys · failed only on seniority (associate) · <a href="https://www.linkedin.com/jobs/view/1000000004">link</a></p>
+<p>Skipped today: 14 (9 language, 3 location, 2 your rules)</p>
+<p>Health: LinkedIn ok · 23 new · canary ok</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck ok</p>
+<p>Reply to Glitch with &#34;applied N&#34;, &#34;skip N &lt;reason&gt;&#34; or &#34;maybe N&#34;, N being the job&#39;s number.</p>
+</body></html>

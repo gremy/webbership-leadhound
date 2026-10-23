@@ -16,3 +16,5 @@ client_secret*.json
 *.dump
 testdata/raw/
 /tmp/
+# A build of the binary at the repository root.
+/leadhound

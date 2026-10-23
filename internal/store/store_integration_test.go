@@ -6,7 +6,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -25,8 +28,24 @@ func sqlState(err error) string {
 	return ""
 }
 
-// latestMigration is the number of the newest file in internal/store/migrations.
-const latestMigration = 2
+// migrationFiles returns the number of the newest file in migrations/ (the same files
+// the binary embeds) and how many there are.
+func migrationFiles(t *testing.T) (latest int64, count int64) {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join("migrations", "*.sql"))
+	if err != nil || len(names) == 0 {
+		t.Fatalf("migrations: %v (%d files)", err, len(names))
+	}
+	for _, n := range names {
+		num, _, _ := strings.Cut(filepath.Base(n), "_")
+		v, err := strconv.ParseInt(num, 10, 64)
+		if err != nil {
+			t.Fatalf("migration %s: no leading number: %v", n, err)
+		}
+		latest = max(latest, v)
+	}
+	return latest, int64(len(names))
+}
 
 func TestMigrateFromEmpty(t *testing.T) {
 	ctx := context.Background()
@@ -49,6 +68,7 @@ func TestMigrateFromEmpty(t *testing.T) {
 	if err := owner.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version").Scan(&version); err != nil {
 		t.Fatalf("read goose version: %v", err)
 	}
+	latestMigration, migrationCount := migrationFiles(t)
 	if version != latestMigration {
 		t.Fatalf("goose version after migrate = %d, want %d", version, latestMigration)
 	}
@@ -57,12 +77,12 @@ func TestMigrateFromEmpty(t *testing.T) {
 	if err := store.Migrate(ctx, storetest.MigrateDSN()); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
-	var applied int
+	var applied int64
 	if err := owner.QueryRow(ctx, "SELECT count(*) FROM goose_db_version WHERE version_id > 0").Scan(&applied); err != nil {
 		t.Fatalf("count goose rows: %v", err)
 	}
-	if applied != latestMigration {
-		t.Fatalf("goose rows after second migrate = %d, want %d (a no-op)", applied, latestMigration)
+	if applied != migrationCount {
+		t.Fatalf("goose rows after second migrate = %d, want %d (a no-op)", applied, migrationCount)
 	}
 
 	// The default privileges outlived the schema: the app role can write to the new tables.

@@ -22,19 +22,20 @@ const (
 // Skip reasons, the top reason a job is left out of the brief. A job counts once, under
 // the first of these that applies.
 const (
-	SkipStatus     = "status"      // applied, skipped or past them
-	SkipClosed     = "closed"      // the listing is no longer open
-	SkipRule       = "rule"        // a skip rule matched
-	SkipLanguage   = "language"    // the language gate failed
-	SkipLocation   = "location"    // the location gate failed
-	SkipWorkplace  = "workplace"   // the workplace gate failed
-	SkipWorkRights = "work_rights" // the work-rights gate failed
-	SkipCriterion  = "criterion"   // a criterion failed
-	SkipUnscored   = "unscored"    // the gates passed but not every criterion is decided yet
+	SkipStatus      = "status"      // applied, skipped or past them
+	SkipClosed      = "closed"      // the listing is no longer open
+	SkipUnreachable = "unreachable" // the recheck could not reach the listing; tried again next brief
+	SkipRule        = "rule"        // a skip rule matched
+	SkipLanguage    = "language"    // the language gate failed
+	SkipLocation    = "location"    // the location gate failed
+	SkipWorkplace   = "workplace"   // the workplace gate failed
+	SkipWorkRights  = "work_rights" // the work-rights gate failed
+	SkipCriterion   = "criterion"   // a criterion failed
+	SkipUnscored    = "unscored"    // the gates passed but not every criterion is decided yet
 )
 
 // SkipReasons lists the skip reasons in precedence order.
-var SkipReasons = []string{SkipStatus, SkipClosed, SkipRule, SkipLanguage, SkipLocation, SkipWorkplace, SkipWorkRights, SkipCriterion, SkipUnscored}
+var SkipReasons = []string{SkipStatus, SkipClosed, SkipUnreachable, SkipRule, SkipLanguage, SkipLocation, SkipWorkplace, SkipWorkRights, SkipCriterion, SkipUnscored}
 
 // Verdict pairs, as the ranking reads them.
 type (
@@ -60,6 +61,8 @@ type Candidate struct {
 	Gates          []GateVerdict
 	Criteria       []CriterionVerdict
 	SkipRuleID     *int64 // an active skip rule matches the current text
+	// SeenAt is when the job was last observed (first seen, or observed again).
+	SeenAt time.Time
 }
 
 // Ranked is a listed job and what is unclear about it.
@@ -95,7 +98,7 @@ func CandidatesFrom(ins []store.RankInput, rules []store.Rule) []Candidate {
 			JobID: in.JobID, Title: in.Title, Company: in.Company, Location: in.Location,
 			Description: in.Description, ListingStatus: in.ListingStatus, Status: in.Status,
 			Closed: in.Closed, PostedAtEst: in.PostedAtEst, ApplicantCount: in.ApplicantCount,
-			ApplyType: in.ApplyType,
+			ApplyType: in.ApplyType, SeenAt: in.SeenAt,
 		}
 		for _, g := range in.Gates {
 			c.Gates = append(c.Gates, GateVerdict{Gate: g.Gate, Verdict: g.Verdict, Reason: g.Reason, Snippet: g.Snippet})
@@ -193,7 +196,9 @@ func skipReason(c Candidate) (reason string, failedCriteria int) {
 	switch {
 	case c.Status != "new" && c.Status != "shortlisted":
 		return SkipStatus, failedCriteria
-	case c.ListingStatus != "open" || c.Closed:
+	case c.ListingStatus == store.ListingUnreachable && !c.Closed:
+		return SkipUnreachable, failedCriteria
+	case c.ListingStatus != store.ListingOpen || c.Closed:
 		return SkipClosed, failedCriteria
 	case c.SkipRuleID != nil:
 		return SkipRule, failedCriteria
@@ -248,6 +253,22 @@ func Rank(cands []Candidate, loc *time.Location, caps Caps) Ranking {
 		r.RunnerUp = &ru
 	}
 	return r
+}
+
+// SkippedOn counts the candidates left out by their top reason, as Rank does, but only
+// those seen on the calendar day of day in loc: first seen or observed again that day.
+func SkippedOn(cands []Candidate, loc *time.Location, day time.Time) map[string]int {
+	y, m, d := day.In(loc).Date()
+	out := map[string]int{}
+	for _, c := range cands {
+		if sy, sm, sd := c.SeenAt.In(loc).Date(); sy != y || sm != m || sd != d {
+			continue
+		}
+		if reason, _ := skipReason(c); reason != "" {
+			out[reason]++
+		}
+	}
+	return out
 }
 
 func failedCriterion(c Candidate) string {

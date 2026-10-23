@@ -1,0 +1,21 @@
+== subject
+Leadhound · Fri 23 Oct · nothing listed, see health
+== text
+Leadhound · Fri 23 Oct · nothing listed, see health
+
+Nothing listed today, and not everything was checked: see Health below.
+
+Skipped today: 7 (7 not scored yet)
+Health: LinkedIn ok · 7 new · canary failed
+Health: Scoring paused: daily Jev cap reached · 9 not scored yet
+Health: recheck not run
+== html
+<!doctype html>
+<html><body>
+<p><strong>Leadhound · Fri 23 Oct · nothing listed, see health</strong></p>
+<p>Nothing listed today, and not everything was checked: see Health below.</p>
+<p>Skipped today: 7 (7 not scored yet)</p>
+<p>Health: LinkedIn ok · 7 new · canary failed</p>
+<p>Health: Scoring paused: daily Jev cap reached · 9 not scored yet</p>
+<p>Health: recheck not run</p>
+</body></html>

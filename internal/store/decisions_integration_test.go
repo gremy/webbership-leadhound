@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -240,5 +241,36 @@ func TestRankInputsIgnoresFakeDecisions(t *testing.T) {
 	}
 	if got := read(true); len(got) != 5 || got[0].Decider != "fake" {
 		t.Fatalf("with AllowFake: %+v", got)
+	}
+}
+
+// TestRankInputsSeenAt: SeenAt is when the job was last seen, first seen or observed
+// again, so a job seen yesterday and observed again today reads as today's.
+func TestRankInputsSeenAt(t *testing.T) {
+	ctx := context.Background()
+	s := appStore(t)
+	q := s.Q()
+	yesterday := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	a, f1 := seedJob(t, q, "1000000001")
+	observeFor(t, q, a, f1, "Go Engineer", false, "language", "fail")
+	b, f2 := seedJob(t, q, "1000000002")
+	obsB := observeFor(t, q, b, f2, "Go Engineer", false, "language", "fail")
+	ownerExec(t, "UPDATE job SET first_seen_at = $2 WHERE id = ANY($1)", []int64{a, b}, yesterday)
+	ownerExec(t, "UPDATE job_observation SET observed_at = $2 WHERE job_id = ANY($1)", []int64{a, b}, yesterday)
+	// b is observed again today.
+	obsB2 := observeFor(t, q, b, f2, "Go Engineer", false, "language", "fail")
+	if obsB2 == obsB {
+		t.Fatal("no second observation")
+	}
+
+	got, err := q.RankInputs(ctx, store.RankOptions{})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("RankInputs: %d, %v", len(got), err)
+	}
+	if !got[0].SeenAt.Equal(yesterday) {
+		t.Errorf("job a seen at %v, want %v", got[0].SeenAt, yesterday)
+	}
+	if d := time.Since(got[1].SeenAt); d < 0 || d > time.Hour {
+		t.Errorf("job b seen at %v, want now", got[1].SeenAt)
 	}
 }

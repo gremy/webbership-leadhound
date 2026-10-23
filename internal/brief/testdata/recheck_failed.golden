@@ -1,0 +1,21 @@
+== subject
+Leadhound · Fri 23 Oct · nothing listed, see health
+== text
+Leadhound · Fri 23 Oct · nothing listed, see health
+
+Nothing listed today, and not everything was checked: see Health below.
+
+Skipped today: 3 (2 unreachable (retried next brief), 1 closed)
+Health: LinkedIn ok · 3 new · canary ok
+Health: Scoring ok
+Health: recheck failed · 2 unreachable, retried next brief
+== html
+<!doctype html>
+<html><body>
+<p><strong>Leadhound · Fri 23 Oct · nothing listed, see health</strong></p>
+<p>Nothing listed today, and not everything was checked: see Health below.</p>
+<p>Skipped today: 3 (2 unreachable (retried next brief), 1 closed)</p>
+<p>Health: LinkedIn ok · 3 new · canary ok</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck failed · 2 unreachable, retried next brief</p>
+</body></html>

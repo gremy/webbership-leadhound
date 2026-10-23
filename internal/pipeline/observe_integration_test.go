@@ -22,7 +22,7 @@ import (
 const (
 	englishHTML = `<p>We are looking for a senior backend engineer to design and maintain services written in Go.</p>` +
 		`<p>You will work closely with product managers and other engineers to ship features every week.</p>` +
-		`<p>Fully remote within the EU. We expect strong experience with distributed sys` + "​" + `tems and PostgreSQL.</p>` +
+		`<p>Fully remote within the EU. We expect strong experience with distributed sys` + "\u200b" + `tems and PostgreSQL.</p>` +
 		`<span style="display:none">hidden note for a reader</span>`
 	hybridHTML = `<p>We are looking for a senior backend engineer to design and maintain services written in Go.</p>` +
 		`<p>You will work closely with product managers and other engineers to ship features every week.</p>` +
@@ -127,7 +127,7 @@ func TestObserveWritesGateRows(t *testing.T) {
 	if o.ID != res.ObservationID || o.Lang != "en" || o.LangConfidence <= 0 || o.DerivedBy != "test-parser@1" {
 		t.Errorf("observation = %+v", o)
 	}
-	if o.DescriptionClean == "" || containsAny(o.DescriptionClean, "<", "hidden note", "​") {
+	if o.DescriptionClean == "" || containsAny(o.DescriptionClean, "<", "hidden note", "\u200b") {
 		t.Errorf("description_clean = %q, want visible plain text only", o.DescriptionClean)
 	}
 	assertCountsOnly(t, o.GuardFindings)

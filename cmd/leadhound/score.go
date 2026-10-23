@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/candidate"
@@ -121,31 +122,11 @@ func runScore(ctx context.Context, args []string) error {
 	defer s.Close()
 
 	q := s.Q()
-	runID, err := q.StartRun(ctx, "score", "")
+	runID, res, err := scoreRun(ctx, s, cfg, prof, decider, loc)
 	if err != nil {
 		return err
 	}
-	sc := &scoring.Scorer{
-		Store:            scoring.StoreAdapter{S: s},
-		Decider:          &ai.Capped{Decider: decider, Store: q, DailyCalls: cfg.JevDailyCallCap, Loc: loc},
-		Criteria:         prof.Candidate.Criteria.List(),
-		EvidenceKeywords: prof.Candidate.EvidenceKeywords,
-		Threshold:        prof.ConfidenceThreshold,
-	}
-	res, runErr := sc.Run(ctx)
 	note := res.Note()
-	if runErr != nil {
-		note += " · error"
-	}
-	// Record the run even when Run failed; a cancelled context still gets its row closed.
-	finishErr := q.FinishRun(context.WithoutCancel(ctx), runID, store.RunResult{
-		Requests: res.Calls, Failures: res.Failures, StopReason: res.StopReason, Note: note})
-	if runErr != nil {
-		return runErr
-	}
-	if finishErr != nil {
-		return finishErr
-	}
 	stop := res.StopReason
 	if stop == "" {
 		stop = "none"
@@ -167,6 +148,35 @@ func runScore(ctx context.Context, args []string) error {
 		_, _ = fmt.Fprintf(stdout, "  runner-up: job %d (failed %s)\n", r.RunnerUp.JobID, r.RunnerUp.FailedCriterion)
 	}
 	return nil
+}
+
+// scoreRun scores every job worth scoring as one recorded score run, behind the daily cap.
+// A run stopped by the cap or an unavailable provider is a result, not an error.
+func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location) (int64, scoring.Result, error) {
+	q := s.Q()
+	runID, err := q.StartRun(ctx, "score", "")
+	if err != nil {
+		return 0, scoring.Result{}, err
+	}
+	sc := &scoring.Scorer{
+		Store:            scoring.StoreAdapter{S: s},
+		Decider:          &ai.Capped{Decider: decider, Store: q, DailyCalls: cfg.JevDailyCallCap, Loc: loc},
+		Criteria:         prof.Candidate.Criteria.List(),
+		EvidenceKeywords: prof.Candidate.EvidenceKeywords,
+		Threshold:        prof.ConfidenceThreshold,
+	}
+	res, runErr := sc.Run(ctx)
+	note := res.Note()
+	if runErr != nil {
+		note += " · error"
+	}
+	// Record the run even when Run failed; a cancelled context still gets its row closed.
+	finishErr := q.FinishRun(context.WithoutCancel(ctx), runID, store.RunResult{
+		Requests: res.Calls, Failures: res.Failures, StopReason: res.StopReason, Note: note})
+	if runErr != nil {
+		return runID, res, runErr
+	}
+	return runID, res, finishErr
 }
 
 // skippedSummary lists the skip counts in precedence order, e.g. "language 6, criterion 1",

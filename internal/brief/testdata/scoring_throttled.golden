@@ -1,0 +1,21 @@
+== subject
+Leadhound · Fri 23 Oct · nothing listed, see health
+== text
+Leadhound · Fri 23 Oct · nothing listed, see health
+
+Nothing listed today, and not everything was checked: see Health below.
+
+Skipped today: 5 (5 not scored yet)
+Health: LinkedIn ok · 5 new · canary ok
+Health: Scoring paused: the AI provider was busy (throttled) · 5 not scored yet
+Health: recheck not run
+== html
+<!doctype html>
+<html><body>
+<p><strong>Leadhound · Fri 23 Oct · nothing listed, see health</strong></p>
+<p>Nothing listed today, and not everything was checked: see Health below.</p>
+<p>Skipped today: 5 (5 not scored yet)</p>
+<p>Health: LinkedIn ok · 5 new · canary ok</p>
+<p>Health: Scoring paused: the AI provider was busy (throttled) · 5 not scored yet</p>
+<p>Health: recheck not run</p>
+</body></html>

@@ -1,0 +1,31 @@
+== subject
+Leadhound · Fri 23 Oct · 1 needs your call
+== text
+Leadhound · Fri 23 Oct · 1 needs your call
+
+Needs your call
+1. Platform Engineer · Fabrikam Cloud · Berlin, Germany · posted 3 days ago · apply on LinkedIn · unclear: location ("hybrid, 2 days in Berlin")
+   Why: stack pass (Go, Kubernetes) · location unclear
+        "Our platform runs on Go and Kubernetes"
+   Link: https://www.linkedin.com/jobs/view/1000000003
+   Find a referral: https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20recruiter · https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20engineering%20manager
+
+Skipped today: 3 (2 criteria, 1 closed)
+Health: LinkedIn ok · 4 new · canary not run
+Health: Scoring ok
+Health: recheck ok
+Reply to Glitch with "applied N", "skip N <reason>" or "maybe N", N being the job's number.
+== html
+<!doctype html>
+<html><body>
+<p><strong>Leadhound · Fri 23 Oct · 1 needs your call</strong></p>
+<h2>Needs your call</h2>
+<ol start="1">
+<li>Platform Engineer · Fabrikam Cloud · Berlin, Germany · posted 3 days ago · apply on LinkedIn · unclear: location (&#34;hybrid, 2 days in Berlin&#34;)<br>Why: stack pass (Go, Kubernetes) · location unclear<br>&#34;Our platform runs on Go and Kubernetes&#34;<br>Link: <a href="https://www.linkedin.com/jobs/view/1000000003">https://www.linkedin.com/jobs/view/1000000003</a><br>Find a referral: <a href="https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20recruiter">recruiters</a> · <a href="https://www.linkedin.com/search/results/people/?keywords=Fabrikam%20Cloud%20engineering%20manager">engineering managers</a></li>
+</ol>
+<p>Skipped today: 3 (2 criteria, 1 closed)</p>
+<p>Health: LinkedIn ok · 4 new · canary not run</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck ok</p>
+<p>Reply to Glitch with &#34;applied N&#34;, &#34;skip N &lt;reason&gt;&#34; or &#34;maybe N&#34;, N being the job&#39;s number.</p>
+</body></html>
