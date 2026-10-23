@@ -1,0 +1,245 @@
+package config
+
+import (
+	"bytes"
+	"fmt"
+	"log/slog"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+// env builds a getenv func from a map, as main passes os.Getenv.
+func env(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
+func TestLoadDefaults(t *testing.T) {
+	cfg, problems := Load(env(nil))
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+	want := Config{
+		JevModel:             "jev-1.13.0",
+		JevDailyCallCap:      300,
+		TZ:                   "Europe/Bucharest",
+		LinkedInInterval:     4 * time.Second,
+		LinkedInSearchBudget: 60,
+		LinkedInDetailBudget: 40,
+		Live:                 LiveOff,
+		DatabaseURL:          "",
+		MigrateDatabaseURL:   "",
+		DataDir:              "",
+		TypesafeAPIKey:       "",
+		ResendAPIKey:         "",
+		MailFrom:             "",
+		MailTo:               "",
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("Load(empty) = %#v\nwant %#v", cfg, want)
+	}
+}
+
+func TestLoadValues(t *testing.T) {
+	cfg, problems := Load(env(map[string]string{
+		"LEADHOUND_DATABASE_URL":           "postgres://app@db.example/leadhound",
+		"LEADHOUND_MIGRATE_DATABASE_URL":   "postgres://owner@db.example/leadhound",
+		"LEADHOUND_DATA_DIR":               "/srv/leadhound",
+		"TYPESAFE_API_KEY":                 "tk-test",
+		"LEADHOUND_JEV_MODEL":              "jev-2.0.0",
+		"LEADHOUND_JEV_DAILY_CALL_CAP":     "12",
+		"RESEND_API_KEY":                   "re-test",
+		"LEADHOUND_MAIL_FROM":              "brief@mail.example",
+		"LEADHOUND_MAIL_TO":                "inbox@mail.example",
+		"LEADHOUND_TZ":                     "UTC",
+		"LEADHOUND_LINKEDIN_INTERVAL":      "1500ms",
+		"LEADHOUND_LINKEDIN_SEARCH_BUDGET": "5",
+		"LEADHOUND_LINKEDIN_DETAIL_BUDGET": "0",
+		"LEADHOUND_LIVE":                   "ats",
+	}))
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+	checks := []struct {
+		name      string
+		got, want any
+	}{
+		{"DatabaseURL", string(cfg.DatabaseURL), "postgres://app@db.example/leadhound"},
+		{"MigrateDatabaseURL", string(cfg.MigrateDatabaseURL), "postgres://owner@db.example/leadhound"},
+		{"DataDir", cfg.DataDir, "/srv/leadhound"},
+		{"TypesafeAPIKey", string(cfg.TypesafeAPIKey), "tk-test"},
+		{"JevModel", cfg.JevModel, "jev-2.0.0"},
+		{"JevDailyCallCap", cfg.JevDailyCallCap, 12},
+		{"ResendAPIKey", string(cfg.ResendAPIKey), "re-test"},
+		{"MailFrom", string(cfg.MailFrom), "brief@mail.example"},
+		{"MailTo", string(cfg.MailTo), "inbox@mail.example"},
+		{"TZ", cfg.TZ, "UTC"},
+		{"LinkedInInterval", cfg.LinkedInInterval, 1500 * time.Millisecond},
+		{"LinkedInSearchBudget", cfg.LinkedInSearchBudget, 5},
+		{"LinkedInDetailBudget", cfg.LinkedInDetailBudget, 0},
+		{"Live", cfg.Live, LiveATS},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
+		}
+	}
+}
+
+func TestLoadParseErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantVar string // the variable the single problem must name
+	}{
+		{"cap not a number", map[string]string{"LEADHOUND_JEV_DAILY_CALL_CAP": "lots"}, "LEADHOUND_JEV_DAILY_CALL_CAP"},
+		{"cap negative", map[string]string{"LEADHOUND_JEV_DAILY_CALL_CAP": "-1"}, "LEADHOUND_JEV_DAILY_CALL_CAP"},
+		{"interval no unit", map[string]string{"LEADHOUND_LINKEDIN_INTERVAL": "4"}, "LEADHOUND_LINKEDIN_INTERVAL"},
+		{"interval negative", map[string]string{"LEADHOUND_LINKEDIN_INTERVAL": "-2s"}, "LEADHOUND_LINKEDIN_INTERVAL"},
+		{"search budget", map[string]string{"LEADHOUND_LINKEDIN_SEARCH_BUDGET": "1.5"}, "LEADHOUND_LINKEDIN_SEARCH_BUDGET"},
+		{"detail budget", map[string]string{"LEADHOUND_LINKEDIN_DETAIL_BUDGET": "x"}, "LEADHOUND_LINKEDIN_DETAIL_BUDGET"},
+		{"timezone", map[string]string{"LEADHOUND_TZ": "Mars/Olympus"}, "LEADHOUND_TZ"},
+		{"live", map[string]string{"LEADHOUND_LIVE": "yes"}, "LEADHOUND_LIVE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, problems := Load(env(tt.env))
+			if len(problems) != 1 || !strings.Contains(problems[0], tt.wantVar) {
+				t.Fatalf("problems = %q, want one naming %s", problems, tt.wantVar)
+			}
+			// A bad value never silently turns live fetching on.
+			if tt.wantVar == "LEADHOUND_LIVE" && cfg.Live != LiveOff {
+				t.Errorf("Live = %v after a bad value, want off", cfg.Live)
+			}
+		})
+	}
+}
+
+func TestLoadReportsEveryProblem(t *testing.T) {
+	_, problems := Load(env(map[string]string{
+		"LEADHOUND_JEV_DAILY_CALL_CAP": "x",
+		"LEADHOUND_LINKEDIN_INTERVAL":  "y",
+		"LEADHOUND_LIVE":               "z",
+	}))
+	if len(problems) != 3 {
+		t.Fatalf("problems = %q, want 3", problems)
+	}
+}
+
+func TestLive(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    Live
+		wantErr bool
+	}{
+		{"", LiveOff, false},
+		{"1", LiveAll, false},
+		{"ats", LiveATS, false},
+		{"0", LiveOff, true},
+		{"true", LiveOff, true},
+		{"ATS", LiveOff, true},
+		{" 1", LiveOff, true},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q", tt.value), func(t *testing.T) {
+			got, err := ParseLive(tt.value)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("ParseLive(%q) = %v, %v; want %v, err=%v", tt.value, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLiveAllows(t *testing.T) {
+	tests := []struct {
+		live Live
+		host string
+		want bool
+	}{
+		{LiveOff, "boards-api.greenhouse.io", false},
+		{LiveOff, "www.linkedin.com", false},
+		{LiveATS, "boards-api.greenhouse.io", true},
+		{LiveATS, "api.lever.co", true},
+		{LiveATS, "api.eu.lever.co", true},
+		{LiveATS, "api.ashbyhq.com", true},
+		{LiveATS, "www.linkedin.com", false},
+		{LiveATS, "careers.company.example", false},
+		{LiveATS, "evil.api.lever.co", false},
+		{LiveAll, "www.linkedin.com", true},
+		{LiveAll, "careers.company.example", true},
+	}
+	for _, tt := range tests {
+		if got := tt.live.Allows(tt.host); got != tt.want {
+			t.Errorf("%v.Allows(%q) = %v, want %v", tt.live, tt.host, got, tt.want)
+		}
+	}
+}
+
+func TestRequire(t *testing.T) {
+	cfg, _ := Load(env(map[string]string{
+		"LEADHOUND_DATABASE_URL": "postgres://app@db.example/x",
+		"LEADHOUND_MAIL_TO":      "inbox@mail.example",
+	}))
+	got := Require(cfg, "LEADHOUND_DATABASE_URL", "RESEND_API_KEY", "LEADHOUND_MAIL_TO", "LEADHOUND_DATA_DIR")
+	want := []string{"RESEND_API_KEY is not set", "LEADHOUND_DATA_DIR is not set"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Require = %q, want %q", got, want)
+	}
+	if got := Require(cfg, "LEADHOUND_DATABASE_URL"); len(got) != 0 {
+		t.Fatalf("Require(set) = %q, want none", got)
+	}
+	// A name Require does not know is a programming error, reported rather than ignored.
+	if got := Require(cfg, "NOT_A_LEADHOUND_VAR"); len(got) != 1 || !strings.Contains(got[0], "unknown") {
+		t.Fatalf("Require(unknown) = %q, want one unknown-variable problem", got)
+	}
+}
+
+func TestSecretRedaction(t *testing.T) {
+	const canary = "redaction-canary-value"
+	cfg, _ := Load(env(map[string]string{
+		"TYPESAFE_API_KEY":               canary,
+		"RESEND_API_KEY":                 canary,
+		"LEADHOUND_DATABASE_URL":         "postgres://app:" + canary + "@db.example/x",
+		"LEADHOUND_MIGRATE_DATABASE_URL": "postgres://owner:" + canary + "@db.example/x",
+		"LEADHOUND_MAIL_FROM":            canary + "@mail.example",
+		"LEADHOUND_MAIL_TO":              canary + "@inbox.example",
+	}))
+	s := Secret(canary)
+
+	var logged bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logged, nil))
+	log.Info("cfg", "config", cfg, "key", s, "ptr", &cfg)
+	logText := slog.New(slog.NewTextHandler(&logged, nil))
+	logText.Info("cfg", "config", cfg, "key", s)
+
+	outputs := map[string]string{
+		"%v secret":   fmt.Sprintf("%v", s),
+		"%q secret":   fmt.Sprintf("%q", s),
+		"%+v secret":  fmt.Sprintf("%+v", s),
+		"%#v secret":  fmt.Sprintf("%#v", s),
+		"%v config":   fmt.Sprintf("%v", cfg),
+		"%+v config":  fmt.Sprintf("%+v", cfg),
+		"%#v config":  fmt.Sprintf("%#v", cfg),
+		"%v pointer":  fmt.Sprintf("%v", &cfg),
+		"%+v pointer": fmt.Sprintf("%+v", &cfg),
+		"Println":     fmt.Sprintln(s, cfg),
+		"slog":        logged.String(),
+	}
+	for name, out := range outputs {
+		if strings.Contains(out, canary) {
+			t.Errorf("%s leaks the secret: %s", name, out)
+		}
+	}
+	if !strings.Contains(outputs["%v secret"], "[redacted]") || !strings.Contains(outputs["slog"], "[redacted]") {
+		t.Errorf("redacted marker missing: %q / %q", outputs["%v secret"], outputs["slog"])
+	}
+	// The value stays reachable for the code that needs it.
+	if s.Reveal() != canary || string(cfg.TypesafeAPIKey) != canary || cfg.MailTo.Reveal() != canary+"@inbox.example" {
+		t.Error("Reveal or conversion lost the value")
+	}
+	if b, err := s.MarshalJSON(); err != nil || strings.Contains(string(b), canary) {
+		t.Errorf("MarshalJSON = %s, %v", b, err)
+	}
+}

@@ -1,0 +1,40 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - errcheck        # unchecked errors
+    - govet           # standard static analysis (shadow analyzer left off, as in the siblings)
+    - staticcheck     # advanced analysis (SA*, S*, QF*)
+    - ineffassign     # assignments never read
+    - bodyclose       # HTTP response bodies left open
+    - noctx           # HTTP requests without a context
+
+    # Code quality
+    - misspell        # spelling mistakes in comments and strings
+    - unconvert       # needless type conversions
+    - unparam         # function parameters that never vary
+
+    # Security
+    - gosec           # security patterns (SQL injection, weak random, and so on)
+
+  settings:
+    gosec:
+      excludes:
+        - G115          # integer overflow: frequent false positive on idiomatic conversions
+
+  exclusions:
+    rules:
+      # httptest.NewRequest (no ctx) is the standard way to build requests in tests;
+      # noctx's push for NewRequestWithContext adds nothing there.
+      - path: _test\.go
+        linters: [noctx]
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

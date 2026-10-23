@@ -10,3 +10,9 @@ client_secret*.json
 .mcp.json
 *.mcp.json
 .mcp.local.json
+!.env.example
+/bin/
+/data/
+*.dump
+testdata/raw/
+/tmp/
