@@ -8,7 +8,7 @@
 CREATE TABLE board (
   id bigserial PRIMARY KEY,
   ats text NOT NULL,
-  slug text NOT NULL,               -- lower-case, as in the ATS's URL
+  slug text NOT NULL,               -- as the ATS spells it: Lever's API is case-sensitive
   region text NOT NULL DEFAULT '',  -- '' or 'eu' (Lever's EU API)
   name text NOT NULL DEFAULT '',    -- company name when known
   origin text NOT NULL,             -- how the board entered: manual > found > seed-list, commoncrawl
@@ -20,13 +20,16 @@ CREATE TABLE board (
   last_miss_day date,               -- local day of the last miss counted
   postings_last int,                -- postings the last ok answer listed
   CONSTRAINT board_ats_check CHECK (ats IN ('greenhouse', 'lever', 'ashby')),
-  CONSTRAINT board_slug_check CHECK (slug <> '' AND slug = lower(slug)),
+  CONSTRAINT board_slug_check CHECK (slug <> ''),
   CONSTRAINT board_region_check CHECK (region IN ('', 'eu')),
   CONSTRAINT board_origin_check CHECK (origin IN ('manual', 'seed-list', 'commoncrawl', 'found')),
   CONSTRAINT board_state_check CHECK (state IN ('unverified', 'ok', 'not_found', 'error', 'retired')),
-  CONSTRAINT board_misses_check CHECK (misses >= 0),
-  UNIQUE (ats, slug, region)
+  CONSTRAINT board_misses_check CHECK (misses >= 0)
 );
+
+-- One board per ats, slug and region, ignoring case: the slug keeps its spelling (an API
+-- may need it), but two spellings are one board. Import's ON CONFLICT names this index.
+CREATE UNIQUE INDEX board_key_idx ON board (ats, lower(slug), region);
 
 -- collect and check select boards by state and ats.
 CREATE INDEX board_state_ats_idx ON board (state, ats);

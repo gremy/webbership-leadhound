@@ -88,6 +88,9 @@ func evalLocation(obs Observation, c CandidateGates) Result {
 		}
 		fs = append(fs, f)
 	}
+	if f, ok := fieldLocation(readField(obs.Location, c), c, limited); ok {
+		fs = append(fs, f)
+	}
 	if f, ok := worst(fs); ok {
 		return result(GateLocation, f)
 	}

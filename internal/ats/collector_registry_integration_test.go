@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,14 +24,15 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
-// liveCollector is collector with Fixture off: rows go under the ATS's own name and every
-// fetch updates the board registry. Its transport is the stub router, so nothing dials.
-func liveCollector(t *testing.T, s *store.Store, dir string, override map[string]func() (int, string), logs *bytes.Buffer) *ats.Collector {
+// liveCollector is collector over the day-one fixtures with Fixture off: rows go under
+// the ATS's own name and every fetch updates the board registry. Its transport is the stub
+// router, so nothing dials.
+func liveCollector(t *testing.T, s *store.Store, override map[string]func() (int, string), logs *bytes.Buffer) *ats.Collector {
 	t.Helper()
 	if override == nil {
 		override = map[string]func() (int, string){}
 	}
-	c := collector(t, s, dir, override, logs)
+	c := collector(t, s, dayOne, override, logs)
 	c.Fixture = false
 	return c
 }
@@ -60,7 +62,7 @@ func fixtureBody(b ats.Board) ([]byte, error) {
 func boardState(t *testing.T, b ats.Board) (state string, misses int, postings *int) {
 	t.Helper()
 	k := b.RegistryKey()
-	if err := ownerRow(t, `SELECT state, misses, postings_last FROM board WHERE ats = $1 AND slug = $2 AND region = $3`,
+	if err := ownerRow(t, `SELECT state, misses, postings_last FROM board WHERE ats = $1 AND lower(slug) = lower($2) AND region = $3`,
 		[]any{k.ATS, k.Slug, k.Region}, &state, &misses, &postings); err != nil {
 		t.Fatalf("board %s: %v", b, err)
 	}
@@ -84,7 +86,7 @@ func TestCollectUpdatesBoardRegistry(t *testing.T) {
 		t.Errorf("boards touched by a fixture run = %d, want 0", got)
 	}
 
-	res := run(t, liveCollector(t, s, dayOne, map[string]func() (int, string){
+	res := run(t, liveCollector(t, s, map[string]func() (int, string){
 		"api.ashbyhq.com": func() (int, string) { return http.StatusNotFound, "" },
 	}, &logs))
 	if st, _, n := boardState(t, gh); st != store.BoardOK || n == nil || *n != len(listed(t, dayOne, gh)) {
@@ -260,9 +262,9 @@ func TestNoVerdictLeavesBoardState(t *testing.T) {
 	gh := ats.DemoBoards()[0]
 	importDemoBoards := func() { importDemo(t, s, store.OriginSeedList, gh) }
 	importDemoBoards()
-	run(t, liveCollector(t, s, dayOne, nil, &logs)) // ok: jobs stored, board ok
-	huge := strings.Repeat(" ", 6<<20)              // past fetch's default 5 MB limit
-	res := run(t, liveCollector(t, s, dayOne, map[string]func() (int, string){
+	run(t, liveCollector(t, s, nil, &logs)) // ok: jobs stored, board ok
+	huge := strings.Repeat(" ", 6<<20)      // past fetch's default 5 MB limit
+	res := run(t, liveCollector(t, s, map[string]func() (int, string){
 		"boards-api.greenhouse.io": func() (int, string) { return http.StatusOK, `{"jobs": [` + huge + `]}` },
 	}, &logs))
 	if a := byATS(t, res, ats.Greenhouse); a.BoardsFailed != 1 || a.Expired != 0 || len(a.StateChanges) != 0 {
@@ -344,4 +346,55 @@ func TestParserBrokeBodyKept(t *testing.T) {
 	if got := count(t, `SELECT count(*) FROM http_fetch WHERE kind = 'board' AND url NOT LIKE 'https://boards-api.greenhouse.io/%' AND length(body) > 0`); got != 0 {
 		t.Errorf("parsed board fetch rows with a body = %d, want 0", got)
 	}
+}
+
+// TestMixedCaseSlugFetchedAsSpelled: a registry board stored as MixedCase is requested at
+// that spelling (a lower-cased URL answers 404 here, as Lever's does) and its row updated.
+func TestMixedCaseSlugFetchedAsSpelled(t *testing.T) {
+	s := openStore(t)
+	var logs bytes.Buffer
+	b := ats.Board{ATS: ats.Lever, Board: "SampleSoft", Name: "SampleSoft"}
+	importDemo(t, s, store.OriginManual, b)
+	body, err := fixtureBody(ats.Board{ATS: ats.Lever, Board: "samplesoft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	c := liveCollector(t, s, nil, &logs)
+	c.NewClient = func(_ string, rec fetch.Recorder) *fetch.Client {
+		return fetch.New(
+			fetch.WithRecorder(rec),
+			fetch.WithTransport(stubCase{body: body, asked: &asked}),
+			fetch.WithLiveGate(config.LiveATS),
+			fetch.WithLimiter(rate.NewLimiter(rate.Inf, 1)),
+			fetch.WithJitter(0),
+			fetch.WithClock(nopClock{}),
+		)
+	}
+	res, err := c.Run(context.Background(), []ats.Board{b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := byATS(t, res, ats.Lever); a.BoardsOK != 1 {
+		t.Errorf("lever: %+v (asked %v)", a, asked)
+	}
+	if st, _, _ := boardState(t, b); st != store.BoardOK {
+		t.Errorf("board state %s, want ok", st)
+	}
+}
+
+// stubCase answers 200 only at the exact spelling /v0/postings/SampleSoft, 404 otherwise.
+type stubCase struct {
+	body  []byte
+	asked *[]string
+}
+
+func (s stubCase) RoundTrip(r *http.Request) (*http.Response, error) {
+	*s.asked = append(*s.asked, r.URL.Path)
+	status, body := http.StatusNotFound, ""
+	if r.URL.Path == "/v0/postings/SampleSoft" {
+		status, body = http.StatusOK, string(s.body)
+	}
+	return &http.Response{StatusCode: status, Header: http.Header{}, Request: r,
+		Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}, nil
 }

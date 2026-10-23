@@ -152,7 +152,7 @@ func (c *Collector) Run(ctx context.Context, boards []Board) (Result, error) {
 		if err := b.Validate(); err != nil {
 			return Result{}, fmt.Errorf("ats: collect: %w", err)
 		}
-		k := b.RegistryKey()
+		k := b.SameBoardKey()
 		if seen[k] {
 			continue // each board is fetched once per run
 		}
@@ -269,9 +269,15 @@ func (a *ATSResult) note() string {
 	return s
 }
 
-// RegistryKey is the board's key in the board registry: its ATS, lower-case slug and
-// region. Two boards with the same key are the same board.
+// RegistryKey is the board's key in the board registry: its ATS, slug and region, the slug
+// spelled as given (an ATS API may be case-sensitive); the registry matches it ignoring case.
 func (b Board) RegistryKey() store.BoardKey {
+	return store.BoardKey{ATS: b.ATS, Slug: b.Board, Region: b.Region}
+}
+
+// SameBoardKey is RegistryKey with the slug lower-cased: two boards with the same key are
+// the same board, whatever their spelling.
+func (b Board) SameBoardKey() store.BoardKey {
 	return store.BoardKey{ATS: b.ATS, Slug: strings.ToLower(b.Board), Region: b.Region}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ func boardImport(atsName, slug, region, name, origin string) store.BoardImport {
 	return store.BoardImport{BoardKey: store.BoardKey{ATS: atsName, Slug: slug, Region: region}, Name: name, Origin: origin}
 }
 
-// boardRow reads one registry row as the owner.
+// boardRow reads one registry row, matching the slug ignoring case as the registry does.
 func boardRow(t *testing.T, s *store.Store, atsName, slug, region string) store.Board {
 	t.Helper()
 	bs, err := s.Q().ListBoards(context.Background(), store.BoardFilter{ATS: atsName})
@@ -25,7 +26,7 @@ func boardRow(t *testing.T, s *store.Store, atsName, slug, region string) store.
 		t.Fatal(err)
 	}
 	for _, b := range bs {
-		if b.Slug == slug && b.Region == region {
+		if strings.EqualFold(b.Slug, slug) && b.Region == region {
 			return b
 		}
 	}
@@ -35,8 +36,9 @@ func boardRow(t *testing.T, s *store.Store, atsName, slug, region string) store.
 
 // TestImportBoardsIdempotentAndOriginPrecedence: a second import adds nothing; an origin
 // only moves up (manual > found > seed-list = commoncrawl); a re-import never resets the
-// state or the checks; slugs are stored lower-case, and the same slug in another region is
-// another board.
+// state or the checks; a slug keeps the spelling it came in, a board is the same board in
+// any case, and the same slug in another region is another board. A re-import in another
+// case keeps the stored spelling unless it raises the origin.
 func TestImportBoardsIdempotentAndOriginPrecedence(t *testing.T) {
 	ctx := context.Background()
 	s := appStore(t)
@@ -56,8 +58,11 @@ func TestImportBoardsIdempotentAndOriginPrecedence(t *testing.T) {
 	if added != 4 || known != 1 {
 		t.Fatalf("first import: added %d, known %d; want 4, 1", added, known)
 	}
-	if b := boardRow(t, s, "greenhouse", "examplecorp", ""); b.State != store.BoardUnverified || b.Origin != store.OriginSeedList || b.Name != "Example Corp" {
-		t.Errorf("greenhouse row = %+v", b)
+	if b := boardRow(t, s, "greenhouse", "examplecorp", ""); b.Slug != "ExampleCorp" || b.State != store.BoardUnverified || b.Origin != store.OriginSeedList || b.Name != "Example Corp" {
+		t.Errorf("greenhouse row = %+v, want the slug spelled ExampleCorp", b)
+	}
+	if b := boardRow(t, s, "ashby", "demolabs", ""); b.Slug != "demolabs" {
+		t.Errorf("ashby slug = %q, want the input's first spelling", b.Slug)
 	}
 
 	// The same file again: nothing added, nothing changed.
@@ -77,7 +82,7 @@ func TestImportBoardsIdempotentAndOriginPrecedence(t *testing.T) {
 	added, known, err = q.ImportBoards(ctx, []store.BoardImport{
 		boardImport("greenhouse", "examplecorp", "", "Other Name", store.OriginManual),
 		boardImport("ashby", "demolabs", "", "", store.OriginSeedList),
-		boardImport("lever", "samplesoft", "", "SampleSoft", store.OriginSeedList),
+		boardImport("lever", "SampleSoft", "", "SampleSoft", store.OriginSeedList), // same rank: spelling kept
 		boardImport("lever", "samplesoft", "eu", "", store.OriginFound),
 	})
 	if err != nil || added != 0 || known != 4 {
@@ -86,14 +91,14 @@ func TestImportBoardsIdempotentAndOriginPrecedence(t *testing.T) {
 	for _, tt := range []struct {
 		ats, slug, region, origin, name string
 	}{
-		{"greenhouse", "examplecorp", "", store.OriginManual, "Example Corp"},
+		{"greenhouse", "examplecorp", "", store.OriginManual, "Example Corp"}, // raised: the manual spelling wins
 		{"ashby", "demolabs", "", store.OriginManual, "Demo Labs"},
-		{"lever", "samplesoft", "", store.OriginCommonCrawl, "SampleSoft"},
+		{"lever", "samplesoft", "", store.OriginCommonCrawl, "SampleSoft"}, // not raised: spelling kept
 		{"lever", "samplesoft", "eu", store.OriginFound, ""},
 	} {
 		b := boardRow(t, s, tt.ats, tt.slug, tt.region)
-		if b.Origin != tt.origin || b.Name != tt.name {
-			t.Errorf("%s/%s %q: origin %q name %q; want %q, %q", tt.ats, tt.slug, tt.region, b.Origin, b.Name, tt.origin, tt.name)
+		if b.Slug != tt.slug || b.Origin != tt.origin || b.Name != tt.name {
+			t.Errorf("%s/%s %q: slug %q origin %q name %q; want %q, %q, %q", tt.ats, tt.slug, tt.region, b.Slug, b.Origin, b.Name, tt.slug, tt.origin, tt.name)
 		}
 	}
 	gh := boardRow(t, s, "greenhouse", "examplecorp", "")
@@ -268,8 +273,9 @@ func TestBoardSelection(t *testing.T) {
 	}
 }
 
-// TestBoardTableChecksAndNoDelete: the board table refuses unknown values and upper-case
-// slugs, and the app role cannot delete a board (a dead board is retired).
+// TestBoardTableChecksAndNoDelete: the board table refuses unknown values and a second
+// spelling of a board it holds, keeps a slug's case, and the app role cannot delete a board
+// (a dead board is retired).
 func TestBoardTableChecksAndNoDelete(t *testing.T) {
 	ctx := context.Background()
 	storetest.ResetDB(t)
@@ -279,7 +285,6 @@ func TestBoardTableChecksAndNoDelete(t *testing.T) {
 	}
 	for name, q := range map[string]string{
 		"ats":    `INSERT INTO board (ats, slug, origin) VALUES ('workday', 'x', 'manual')`,
-		"slug":   `INSERT INTO board (ats, slug, origin) VALUES ('lever', 'Upper', 'manual')`,
 		"empty":  `INSERT INTO board (ats, slug, origin) VALUES ('lever', '', 'manual')`,
 		"region": `INSERT INTO board (ats, slug, region, origin) VALUES ('lever', 'x', 'us', 'manual')`,
 		"origin": `INSERT INTO board (ats, slug, origin) VALUES ('lever', 'x', 'guess')`,
@@ -290,8 +295,16 @@ func TestBoardTableChecksAndNoDelete(t *testing.T) {
 			t.Errorf("%s: err = %v, want 23514 check_violation", name, err)
 		}
 	}
-	if _, err := app.Exec(ctx, `INSERT INTO board (ats, slug, origin) VALUES ('lever', 'fine', 'found')`); sqlState(err) != "23505" {
-		t.Errorf("duplicate: err = %v, want 23505 unique_violation", err)
+	for _, slug := range []string{"fine", "FINE", "Fine"} {
+		if _, err := app.Exec(ctx, `INSERT INTO board (ats, slug, origin) VALUES ('lever', $1, 'found')`, slug); sqlState(err) != "23505" {
+			t.Errorf("duplicate %q: err = %v, want 23505 unique_violation", slug, err)
+		}
+	}
+	if _, err := app.Exec(ctx, `INSERT INTO board (ats, slug, origin) VALUES ('lever', 'MixedCase', 'manual')`); err != nil {
+		t.Errorf("mixed-case slug: %v", err)
+	}
+	if _, err := app.Exec(ctx, `INSERT INTO board (ats, slug, region, origin) VALUES ('lever', 'FINE', 'eu', 'manual')`); err != nil {
+		t.Errorf("same slug in another region: %v", err)
 	}
 	if _, err := app.Exec(ctx, `DELETE FROM board`); sqlState(err) != "42501" {
 		t.Errorf("DELETE FROM board as app: err = %v, want 42501", err)

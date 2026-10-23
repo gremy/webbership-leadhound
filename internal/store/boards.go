@@ -41,15 +41,21 @@ var (
 // A re-import only ever moves a board's origin up this order.
 const originRankSQL = `CASE %s WHEN 'manual' THEN 3 WHEN 'found' THEN 2 ELSE 1 END`
 
-// BoardKey identifies one board: its ATS, its lower-case slug and its region (” or 'eu').
+// BoardKey identifies one board: its ATS, its slug and its region (” or 'eu'). The slug
+// keeps its case (Lever's API is case-sensitive); the registry matches it ignoring case.
 type BoardKey struct {
 	ATS    string
 	Slug   string
 	Region string
 }
 
-// normalised is the key as the table stores it.
+// normalised is the key as the table stores it: the slug trimmed, its case kept.
 func (k BoardKey) normalised() BoardKey {
+	return BoardKey{ATS: k.ATS, Slug: strings.TrimSpace(k.Slug), Region: k.Region}
+}
+
+// fold is the key the registry is unique on: the slug lower-cased.
+func (k BoardKey) fold() BoardKey {
 	return BoardKey{ATS: k.ATS, Slug: strings.ToLower(strings.TrimSpace(k.Slug)), Region: k.Region}
 }
 
@@ -102,17 +108,22 @@ func (q Queries) ImportBoards(ctx context.Context, boards []BoardImport) (added,
 // empty name is filled in. One exception to keeping the state: an import that raises a
 // retired board's origin to manual revives it (state unverified, misses 0), since the
 // operator has just named it. Boards repeated in the input count once, as already known.
+//
+// Slugs keep their case, and a board is the same board in any case. The first spelling
+// stored stays, unless an import raises the board's origin: then that import's spelling
+// wins with it (a manual entry is the operator's own spelling). Within one input the first
+// spelling of a board is the one used.
 func (q Queries) ImportBoardsTally(ctx context.Context, boards []BoardImport) (ImportTally, error) {
 	var t ImportTally
 	seen := map[BoardKey]bool{}
 	var ats, slugs, regions, names, origins []string
 	for _, b := range boards {
 		k := b.normalised()
-		if seen[k] {
+		if seen[k.fold()] {
 			t.Known++
 			continue
 		}
-		seen[k] = true
+		seen[k.fold()] = true
 		ats, slugs, regions = append(ats, k.ATS), append(slugs, k.Slug), append(regions, k.Region)
 		names, origins = append(names, strings.TrimSpace(b.Name)), append(origins, b.Origin)
 	}
@@ -139,12 +150,13 @@ func (q Queries) importChunk(ctx context.Context, ats, slugs, regions, names, or
 	sql := `WITH input AS (
 		  SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) AS t(ats, slug, region, name, origin)
 		), old AS (
-		  SELECT b.id, b.state FROM board b JOIN input i ON (b.ats, b.slug, b.region) = (i.ats, i.slug, i.region)
+		  SELECT b.id, b.state FROM board b JOIN input i ON (b.ats, lower(b.slug), b.region) = (i.ats, lower(i.slug), i.region)
 		), ins AS (
 		  INSERT INTO board (ats, slug, region, name, origin)
 		  SELECT ats, slug, region, name, origin FROM input
-		  ON CONFLICT (ats, slug, region) DO UPDATE SET
+		  ON CONFLICT (ats, lower(slug), region) DO UPDATE SET
 		    origin = CASE WHEN ` + raises + ` THEN EXCLUDED.origin ELSE board.origin END,
+		    slug = CASE WHEN ` + raises + ` THEN EXCLUDED.slug ELSE board.slug END,
 		    name = CASE WHEN board.name = '' THEN EXCLUDED.name ELSE board.name END,
 		    state = CASE WHEN ` + revive + ` THEN 'unverified' ELSE board.state END,
 		    misses = CASE WHEN ` + revive + ` THEN 0 ELSE board.misses END,
@@ -320,7 +332,7 @@ func (q Queries) RecordBoardCheck(ctx context.Context, k BoardKey, outcome strin
 	var origin string
 	err := q.db.QueryRow(ctx,
 		`WITH old AS (
-		   SELECT id, state FROM board WHERE ats = $1 AND slug = $2 AND region = $3 FOR UPDATE
+		   SELECT id, state FROM board WHERE ats = $1 AND lower(slug) = lower($2) AND region = $3 FOR UPDATE
 		 ), miss AS (
 		   SELECT b.id,
 		          CASE WHEN $4 = 'ok' THEN 0
@@ -357,7 +369,7 @@ func (q Queries) recordNoVerdict(ctx context.Context, k BoardKey, now time.Time)
 	var c BoardChange
 	var origin string
 	err := q.db.QueryRow(ctx,
-		`UPDATE board SET checked_at = $4 WHERE ats = $1 AND slug = $2 AND region = $3
+		`UPDATE board SET checked_at = $4 WHERE ats = $1 AND lower(slug) = lower($2) AND region = $3
 		 RETURNING state, misses, origin`, k.ATS, k.Slug, k.Region, now).Scan(&c.New, &c.Misses, &origin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BoardChange{}, nil

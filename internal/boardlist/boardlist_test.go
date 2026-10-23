@@ -19,7 +19,10 @@ func TestFromURL(t *testing.T) {
 	}{
 		{"https://boards.greenhouse.io/examplecorp", gh("examplecorp")},
 		{"https://job-boards.greenhouse.io/examplecorp/jobs/123?gh_src=x", gh("examplecorp")},
-		{"http://BOARDS.Greenhouse.IO/ExampleCorp", gh("examplecorp")},
+		{"http://BOARDS.Greenhouse.IO/ExampleCorp", gh("ExampleCorp")},   // the host's case goes, the slug's stays
+		{"https://jobs.lever.co/SampleSoft/0000-aaaa", lv("SampleSoft")}, // Lever's API is case-sensitive
+		{"https://jobs.eu.lever.co/BeispielWerk", ats.Board{ATS: ats.Lever, Board: "BeispielWerk", Region: ats.RegionEU}},
+		{"https://jobs.ashbyhq.com/DemoLabs", ats.Board{ATS: ats.Ashby, Board: "DemoLabs"}},
 		{"boards.greenhouse.io/examplecorp/", gh("examplecorp")},
 		{"https://boards.greenhouse.io./examplecorp", gh("examplecorp")},
 		{"https://jobs.lever.co/samplesoft", lv("samplesoft")},
@@ -72,7 +75,8 @@ func TestFromURL(t *testing.T) {
 func TestParseCSV(t *testing.T) {
 	in := "Name,Slug,URL,extra\n" +
 		"Example Corp,examplecorp,https://job-boards.greenhouse.io/examplecorp,x\n" +
-		"SampleSoft,SampleSoft,https://jobs.lever.co/samplesoft,\n" +
+		"SampleSoft,SampleSoft,https://jobs.lever.co/samplesoft,\n" + // the slug column may differ in case only
+		"Mixed,MixedCase,https://jobs.lever.co/MixedCase\n" +
 		"No Slug Col,,https://jobs.eu.lever.co/beispielwerk\n" +
 		"Mismatch,othercorp,https://jobs.ashbyhq.com/demolabs\n" +
 		"Elsewhere,elsewhere,https://apply.workable.com/elsewhere\n" +
@@ -86,6 +90,7 @@ func TestParseCSV(t *testing.T) {
 	want := []Entry{
 		{Board: ats.Board{ATS: ats.Greenhouse, Board: "examplecorp", Name: "Example Corp"}, Name: "Example Corp"},
 		{Board: ats.Board{ATS: ats.Lever, Board: "samplesoft", Name: "SampleSoft"}, Name: "SampleSoft"},
+		{Board: ats.Board{ATS: ats.Lever, Board: "MixedCase", Name: "Mixed"}, Name: "Mixed"},
 		{Board: ats.Board{ATS: ats.Lever, Board: "beispielwerk", Region: ats.RegionEU, Name: "No Slug Col"}, Name: "No Slug Col"},
 		{Board: ats.Board{ATS: ats.Ashby, Board: "demolabs", Name: "Quoted, Inc"}, Name: "Quoted, Inc"},
 	}
@@ -93,10 +98,10 @@ func TestParseCSV(t *testing.T) {
 		t.Errorf("entries\n got %+v\nwant %+v", entries, want)
 	}
 	wantRefused := []Refused{
-		{Line: 5, Text: "https://jobs.ashbyhq.com/demolabs", Reason: ErrSlugMismatch.Error()},
-		{Line: 6, Text: "https://apply.workable.com/elsewhere", Reason: ErrUnsupportedHost.Error()},
-		{Line: 8, Text: "https://boards.greenhouse.io/embed/job_board", Reason: ErrNotBoardPath.Error()},
-		{Line: 9, Text: "", Reason: ErrBadURL.Error()},
+		{Line: 6, Text: "https://jobs.ashbyhq.com/demolabs", Reason: ErrSlugMismatch.Error()},
+		{Line: 7, Text: "https://apply.workable.com/elsewhere", Reason: ErrUnsupportedHost.Error()},
+		{Line: 9, Text: "https://boards.greenhouse.io/embed/job_board", Reason: ErrNotBoardPath.Error()},
+		{Line: 10, Text: "", Reason: ErrBadURL.Error()},
 	}
 	if !reflect.DeepEqual(refused, wantRefused) {
 		t.Errorf("refused\n got %+v\nwant %+v", refused, wantRefused)

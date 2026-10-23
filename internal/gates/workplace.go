@@ -92,6 +92,9 @@ func evalWorkplace(obs Observation, c CandidateGates) Result {
 	for _, m := range inOfficeRE.FindAllStringIndex(text, -1) {
 		fs = append(fs, finding{verdict: Flag, reason: "Posting says the job is in-office.", snippet: snippet(text, m[0], m[1]), pos: m[0]})
 	}
+	if f, ok := fieldWorkplace(readField(obs.Location, c), c, remote >= 0); ok {
+		fs = append(fs, f)
+	}
 	f, found := worst(fs)
 	switch {
 	case found && remote >= 0:

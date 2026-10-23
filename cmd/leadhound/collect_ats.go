@@ -124,14 +124,15 @@ func registryBoards(command string, rows []store.Board) (boards []ats.Board, ski
 }
 
 // mergeBoards is the registry's boards, then each file board the registry does not hold,
-// one per ats, slug (ignoring case) and region. A registry board with no name takes the
+// one per ats, slug (ignoring case) and region. The registry's spelling of a slug wins over
+// the file's (it is what the last check used); a registry board with no name takes the
 // file's.
 func mergeBoards(registry, file []ats.Board) []ats.Board {
 	at := map[store.BoardKey]int{}
 	out := make([]ats.Board, 0, len(registry)+len(file))
 	for _, list := range [][]ats.Board{registry, file} {
 		for _, b := range list {
-			k := b.RegistryKey()
+			k := b.SameBoardKey()
 			if i, dup := at[k]; dup {
 				if strings.TrimSpace(out[i].Name) == "" {
 					out[i].Name = b.Name

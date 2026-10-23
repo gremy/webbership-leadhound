@@ -446,3 +446,14 @@ func TestRegistryBoardsSkipsBadRows(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeBoardsIgnoresCase: a file board that the registry holds in another spelling is
+// the same board; the registry's spelling is the one collected.
+func TestMergeBoardsIgnoresCase(t *testing.T) {
+	reg := []ats.Board{{ATS: ats.Lever, Board: "MixedCase"}}
+	file := []ats.Board{{ATS: ats.Lever, Board: "mixedcase", Name: "Mixed"}, {ATS: ats.Lever, Board: "mixedcase", Region: ats.RegionEU}}
+	got := mergeBoards(reg, file)
+	if len(got) != 2 || got[0].Board != "MixedCase" || got[0].Name != "Mixed" || got[1].Region != ats.RegionEU {
+		t.Errorf("merged %+v", got)
+	}
+}

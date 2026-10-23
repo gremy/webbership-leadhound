@@ -97,8 +97,9 @@ var assetExt = set(".ico", ".txt", ".xml", ".js", ".css", ".png", ".jpg", ".jpeg
 // job-boards.greenhouse.io/<slug> are Greenhouse, jobs.lever.co/<slug> is Lever,
 // jobs.eu.lever.co/<slug> is Lever in region eu, jobs.ashbyhq.com/<slug> is Ashby. The
 // host matches exactly (any case), the scheme is http or https (none is read as https),
-// and anything after the first path segment is ignored. The slug is that segment,
-// lower-cased; it must pass ats.Board.Validate. Embed, API and asset paths are refused.
+// and anything after the first path segment is ignored. The slug is that segment, in the
+// case the URL spells it (Lever's API is case-sensitive: AIFund answers, aifund is a 404);
+// it must pass ats.Board.Validate. Embed, API and asset paths are refused.
 // Every error wraps one of the Err* reasons above.
 func FromURL(raw string) (ats.Board, error) {
 	s := strings.TrimSpace(raw)
@@ -117,11 +118,10 @@ func FromURL(raw string) (ats.Board, error) {
 		return ats.Board{}, fmt.Errorf("%w: %q", ErrUnsupportedHost, u.Hostname())
 	}
 	seg, _, _ := strings.Cut(strings.TrimPrefix(u.Path, "/"), "/")
-	seg = strings.ToLower(seg)
 	if seg == "" {
 		return ats.Board{}, fmt.Errorf("%w: %q", ErrNoSlug, raw)
 	}
-	if h.reserved[seg] || assetExt[path.Ext(seg)] {
+	if low := strings.ToLower(seg); h.reserved[low] || assetExt[path.Ext(low)] {
 		return ats.Board{}, fmt.Errorf("%w: %q", ErrNotBoardPath, raw)
 	}
 	b := ats.Board{ATS: h.ats, Board: seg, Region: h.region}
@@ -205,7 +205,7 @@ func ParseCSV(r io.Reader) ([]Entry, []Refused, error) {
 			refused = append(refused, Refused{Line: line, Text: raw, Reason: reasonOf(err)})
 			continue
 		}
-		if slug := strings.ToLower(field(rec, "slug")); slug != "" && slug != b.Board {
+		if slug := field(rec, "slug"); slug != "" && !strings.EqualFold(slug, b.Board) {
 			refused = append(refused, Refused{Line: line, Text: raw, Reason: ErrSlugMismatch.Error()})
 			continue
 		}

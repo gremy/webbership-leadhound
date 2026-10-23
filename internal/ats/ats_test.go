@@ -380,3 +380,31 @@ func TestIDText(t *testing.T) {
 		}
 	}
 }
+
+// TestSlugCaseKept: a slug reaches every URL spelled as given (Lever's API is
+// case-sensitive); ids and the duplicate check ignore case.
+func TestSlugCaseKept(t *testing.T) {
+	for _, b := range []Board{
+		{ATS: Lever, Board: "MixedCase"},
+		{ATS: Lever, Board: "MixedCase", Region: RegionEU},
+		{ATS: Greenhouse, Board: "MixedCase"},
+		{ATS: Ashby, Board: "MixedCase"},
+	} {
+		if !strings.Contains(b.APIURL(), "/MixedCase") || !strings.Contains(b.CheckURL(), "/MixedCase") {
+			t.Errorf("%s: %s, %s lost the case", b, b.APIURL(), b.CheckURL())
+		}
+		if id := SourceJobID(b, Posting{ID: "1"}); strings.Contains(id, "MixedCase") {
+			t.Errorf("%s: id %q, want it lower-case", b, id)
+		}
+		if b.RegistryKey().Slug != "MixedCase" || b.SameBoardKey().Slug != "mixedcase" {
+			t.Errorf("%s: keys %+v %+v", b, b.RegistryKey(), b.SameBoardKey())
+		}
+	}
+	if _, err := LoadBoards(writeBoards(t, "- {ats: lever, board: MixedCase}\n- {ats: lever, board: mixedcase}\n")); err == nil {
+		t.Error("two spellings of one board loaded")
+	}
+	bs, err := LoadBoards(writeBoards(t, "- {ats: lever, board: MixedCase}\n"))
+	if err != nil || bs[0].Board != "MixedCase" {
+		t.Errorf("loaded %v, %v; want the spelling kept", bs, err)
+	}
+}

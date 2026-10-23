@@ -57,7 +57,7 @@ func ownerExecCmd(t *testing.T, q string, args ...any) {
 func boardField(t *testing.T, field, atsName, slug string) string {
 	t.Helper()
 	var v string
-	q := fmt.Sprintf(`SELECT coalesce(%s::text, '') FROM board WHERE ats = $1 AND slug = $2`, field) // field is a test constant
+	q := fmt.Sprintf(`SELECT coalesce(%s::text, '') FROM board WHERE ats = $1 AND lower(slug) = lower($2)`, field) // field is a test constant
 	if err := storetest.OwnerConn(t).QueryRow(context.Background(), q, atsName, slug).Scan(&v); err != nil {
 		t.Fatalf("board %s/%s %s: %v", atsName, slug, field, err)
 	}
@@ -118,6 +118,10 @@ func TestBoardsImportCommand(t *testing.T) {
 	}
 	if got := boardField(t, "origin", "greenhouse", "examplecorp"); got != "manual" {
 		t.Errorf("origin after manual import = %s", got)
+	}
+	// The manual import raised the origin, so its spelling replaced the CSV's.
+	if got := boardField(t, "slug", "greenhouse", "examplecorp"); got != "ExampleCorp" {
+		t.Errorf("slug after manual import = %s, want ExampleCorp", got)
 	}
 	if got := dbCount(t, `SELECT count(*) FROM board`); got != 2 {
 		t.Errorf("boards = %d, want 2", got)
