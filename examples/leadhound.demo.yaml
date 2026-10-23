@@ -39,3 +39,16 @@ linkedin:
   keywords: [rust developer, rust backend]
   locations: [European Union]
 brief: {max_apply: 5, max_your_call: 5}
+# Optional: a cheap screen on the posting title, run before anything is stored or scored.
+# Plain words or phrases only (no regular expressions), matched case-insensitively on whole
+# words: "go" would not match "Google", and "full stack" also matches "Full-Stack".
+# Three verdicts: an exclude match drops the posting (exclude wins); an include match keeps
+# it; a title matching neither is unsure, stored, and the scorer asks about the title first.
+# A one-word include of 6+ letters also matches a title word one typo away ("enginer",
+# "developers"); phrases, short words and excludes match exactly.
+# Accents are kept, so list both spellings when titles use both ("développeur", "developpeur").
+# Keep it broad: drop only roles that are clearly not yours, and let the scorer judge the rest.
+title_screen:
+  include: [engineer, developer, programmer, architect, rust, backend, systems, platform, infrastructure, software, sre, devops, tech lead,
+            entwickler, ingenieur, développeur, developpeur, ingénieur, desarrollador, ingeniero]
+  exclude: [sales, account executive, recruiter, recruiting, marketing, customer success, support agent, legal, accountant, nurse, driver, warehouse]

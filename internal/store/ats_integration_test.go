@@ -137,3 +137,37 @@ func TestMarkChecked(t *testing.T) {
 		t.Fatalf("MarkChecked nil = %d, %v", n, err)
 	}
 }
+
+// TestExpireMissingBoardPart: the board is the part of source_job_id before the first '/',
+// compared whole: Lever EU's "eu:<slug>" is its own board, distinct from "<slug>"; an id
+// with no '/' belongs to no board; a prefix holding '/' reaches nothing.
+func TestExpireMissingBoardPart(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	companyID, err := q.UpsertCompany(ctx, "Northwind Labs", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const src = "lever"
+	for _, id := range []string{"acme/1", "acme/2/x", "eu:acme/1", "eu:acme/2", "acme"} {
+		if _, err := q.UpsertJob(ctx, store.JobUpsert{Source: src, SourceJobID: id, CompanyID: companyID, Title: "Go Engineer", URL: "https://boards.example/" + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := q.ExpireMissing(ctx, src, "eu:acme", []string{"eu:acme/1"}); err != nil || n != 1 {
+		t.Fatalf("ExpireMissing eu:acme = %d, %v; want 1", n, err)
+	}
+	if n, err := q.ExpireMissing(ctx, src, "acme/2", nil); err != nil || n != 0 {
+		t.Fatalf("ExpireMissing acme/2 = %d, %v; want 0", n, err)
+	}
+	if n, err := q.ExpireMissing(ctx, src, "acme", nil); err != nil || n != 2 {
+		t.Fatalf("ExpireMissing acme = %d, %v; want 2", n, err)
+	}
+	for id, want := range map[string]string{
+		"acme/1": "expired", "acme/2/x": "expired", "eu:acme/1": "open", "eu:acme/2": "expired", "acme": "open",
+	} {
+		if got, _ := listingOf(t, q, src, id); got != want {
+			t.Errorf("%s = %s, want %s", id, got, want)
+		}
+	}
+}

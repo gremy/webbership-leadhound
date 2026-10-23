@@ -28,6 +28,7 @@ func TestLoadDefaults(t *testing.T) {
 		LinkedInInterval:     4 * time.Second,
 		LinkedInSearchBudget: 60,
 		LinkedInDetailBudget: 40,
+		ATSInterval:          time.Second,
 		Live:                 LiveOff,
 		DatabaseURL:          "",
 		MigrateDatabaseURL:   "",
@@ -88,6 +89,26 @@ func TestLoadValues(t *testing.T) {
 	}
 }
 
+func TestLoadATSInterval(t *testing.T) {
+	for v, want := range map[string]time.Duration{"": time.Second, "200ms": 200 * time.Millisecond, "250ms": 250 * time.Millisecond, "2s": 2 * time.Second} {
+		cfg, problems := Load(env(map[string]string{"LEADHOUND_ATS_INTERVAL": v}))
+		if len(problems) != 0 || cfg.ATSInterval != want {
+			t.Errorf("LEADHOUND_ATS_INTERVAL=%q: %v, problems %q; want %v", v, cfg.ATSInterval, problems, want)
+		}
+	}
+	// Below the floor: reported, and the floor used.
+	for _, v := range []string{"0s", "199ms"} {
+		cfg, problems := Load(env(map[string]string{"LEADHOUND_ATS_INTERVAL": v}))
+		if len(problems) != 1 || !strings.Contains(problems[0], "at least 200ms") || cfg.ATSInterval != MinATSInterval {
+			t.Errorf("LEADHOUND_ATS_INTERVAL=%q: %v, problems %q; want the floor and one problem", v, cfg.ATSInterval, problems)
+		}
+	}
+	// A bad value keeps the default.
+	if cfg, _ := Load(env(map[string]string{"LEADHOUND_ATS_INTERVAL": "soon"})); cfg.ATSInterval != DefaultATSInterval {
+		t.Errorf("bad value: ATSInterval = %v, want the default", cfg.ATSInterval)
+	}
+}
+
 func TestLoadParseErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -98,6 +119,8 @@ func TestLoadParseErrors(t *testing.T) {
 		{"cap negative", map[string]string{"LEADHOUND_JEV_DAILY_CALL_CAP": "-1"}, "LEADHOUND_JEV_DAILY_CALL_CAP"},
 		{"interval no unit", map[string]string{"LEADHOUND_LINKEDIN_INTERVAL": "4"}, "LEADHOUND_LINKEDIN_INTERVAL"},
 		{"interval negative", map[string]string{"LEADHOUND_LINKEDIN_INTERVAL": "-2s"}, "LEADHOUND_LINKEDIN_INTERVAL"},
+		{"ats interval no unit", map[string]string{"LEADHOUND_ATS_INTERVAL": "1"}, "LEADHOUND_ATS_INTERVAL"},
+		{"ats interval negative", map[string]string{"LEADHOUND_ATS_INTERVAL": "-1s"}, "LEADHOUND_ATS_INTERVAL"},
 		{"search budget", map[string]string{"LEADHOUND_LINKEDIN_SEARCH_BUDGET": "1.5"}, "LEADHOUND_LINKEDIN_SEARCH_BUDGET"},
 		{"detail budget", map[string]string{"LEADHOUND_LINKEDIN_DETAIL_BUDGET": "x"}, "LEADHOUND_LINKEDIN_DETAIL_BUDGET"},
 		{"timezone", map[string]string{"LEADHOUND_TZ": "Mars/Olympus"}, "LEADHOUND_TZ"},
@@ -164,6 +187,10 @@ func TestLiveAllows(t *testing.T) {
 		{LiveATS, "api.lever.co", true},
 		{LiveATS, "api.eu.lever.co", true},
 		{LiveATS, "api.ashbyhq.com", true},
+		{LiveATS, "index.commoncrawl.org", true},
+		{LiveATS, "data.commoncrawl.org", false},
+		{LiveATS, "commoncrawl.org", false},
+		{LiveOff, "index.commoncrawl.org", false},
 		{LiveATS, "www.linkedin.com", false},
 		{LiveATS, "careers.company.example", false},
 		{LiveATS, "evil.api.lever.co", false},

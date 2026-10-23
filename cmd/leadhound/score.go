@@ -39,15 +39,19 @@ func loadProfileDir(dir string) (candidate.Config, error) {
 	return prof, nil
 }
 
-// fakeDecider is the keyless stand-in: every criterion passes at 0.9, so a dry run
-// reaches the Apply tier.
+// fakeDecider is the keyless stand-in: every criterion passes at 0.9, so a dry run takes
+// a kept title to the Apply tier, and the title-only question (asked only about a title
+// the screen is unsure of) always fails at 0.9, so a dry run shows the title check
+// removing those jobs before full scoring.
 func fakeDecider() *ai.Fake {
 	ans := ai.Answer{Choice: scoring.Pass, Confidence: 0.9,
 		Probabilities: map[string]float64{scoring.Pass: 0.9, scoring.Fail: 0.05, scoring.Unclear: 0.05}}
-	m := make(map[string]ai.Answer, len(candidate.CriterionNames))
+	m := make(map[string]ai.Answer, len(candidate.CriterionNames)+1)
 	for _, n := range candidate.CriterionNames {
 		m[n] = ans
 	}
+	m[scoring.TitleCheckName] = ai.Answer{Choice: scoring.Fail, Confidence: 0.9,
+		Probabilities: map[string]float64{scoring.Fail: 0.9, scoring.Pass: 0.05, scoring.Unclear: 0.05}}
 	return &ai.Fake{Answers: m}
 }
 
@@ -154,6 +158,10 @@ func runScore(ctx context.Context, args []string) error {
 // A run stopped by the cap or an unavailable provider is a result, not an error.
 func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location) (int64, scoring.Result, error) {
 	q := s.Q()
+	remaining, err := remainingCalls(ctx, q, decider, cfg.JevDailyCallCap, loc)
+	if err != nil {
+		return 0, scoring.Result{}, err
+	}
 	runID, err := q.StartRun(ctx, "score", "")
 	if err != nil {
 		return 0, scoring.Result{}, err
@@ -164,6 +172,8 @@ func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candi
 		Criteria:         prof.Candidate.Criteria.List(),
 		EvidenceKeywords: prof.Candidate.EvidenceKeywords,
 		Threshold:        prof.ConfidenceThreshold,
+		TitleCheck:       prof.TitleCheck(),
+		Batch:            scoring.BatchFor(remaining),
 	}
 	res, runErr := sc.Run(ctx)
 	note := res.Note()
@@ -177,6 +187,22 @@ func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candi
 		return runID, res, runErr
 	}
 	return runID, res, finishErr
+}
+
+// remainingCalls is how many calls the daily cap still allows today, counted as ai.Capped
+// counts them: per provider, on the calendar day in loc. It only sizes the batches; the
+// cap itself still refuses every call past it.
+func remainingCalls(ctx context.Context, q store.Queries, d ai.Decider, daily int, loc *time.Location) (int, error) {
+	provider := d.Name()
+	if p, ok := d.(interface{ Provider() string }); ok {
+		provider = p.Provider()
+	}
+	now := time.Now().In(loc)
+	used, err := q.AICallsOn(ctx, provider, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc))
+	if err != nil {
+		return 0, err
+	}
+	return max(daily-used, 0), nil
 }
 
 // skippedSummary lists the skip counts in precedence order, e.g. "language 6, criterion 1",

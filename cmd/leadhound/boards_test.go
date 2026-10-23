@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,10 +13,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/gremy/webbership-leadhound/internal/ats"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
 const atsTestdata = "../../internal/ats/testdata"
@@ -231,8 +236,9 @@ func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // TestLiveWithoutBoardListIsUsage: live, with neither --boards nor a list in the data
-// directory, both ATS commands are usage errors naming both ways to give a list, and no
-// request goes out.
+// directory, boards verify is a usage error naming both ways to give a list, and no request
+// goes out. collect ats also reads the board registry, so its twin needs the database
+// (TestCollectATSLiveNoBoardsIsUsage).
 func TestLiveWithoutBoardListIsUsage(t *testing.T) {
 	noDB(t)
 	t.Setenv("LEADHOUND_LIVE", "ats")
@@ -242,7 +248,7 @@ func TestLiveWithoutBoardListIsUsage(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = saved })
 	for _, dataDir := range []string{"", t.TempDir()} {
 		t.Setenv("LEADHOUND_DATA_DIR", dataDir)
-		for _, args := range [][]string{{"collect", "ats"}, {"boards", "verify"}} {
+		for _, args := range [][]string{{"boards", "verify"}} {
 			code, out, stderr := runOut(t, args...)
 			if code != 2 || !strings.Contains(stderr, "--boards FILE") || !strings.Contains(stderr, ats.BoardsFile+" in LEADHOUND_DATA_DIR") {
 				t.Errorf("data dir %q %v: exit %d, stdout %q, stderr %q", dataDir, args, code, out, stderr)
@@ -352,5 +358,91 @@ func TestLiveAllowsBoards(t *testing.T) {
 	}
 	if n := boardsPerATS(append(boards, boards[0])); n[ats.Lever] != 2 || n[ats.Greenhouse] != 1 || n[ats.Ashby] != 1 {
 		t.Errorf("boardsPerATS = %v", n)
+	}
+}
+
+// stubAnswer answers every request with fn's status and body; fn may block on the
+// request's context to stand for a slow board.
+type stubAnswer func(r *http.Request) (*http.Response, error)
+
+func (f stubAnswer) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func answer(r *http.Request, status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{}, Request: r,
+		Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
+}
+
+// TestCheckBoardOutcomes: a real client against stub answers. A 5xx is a miss; a body over
+// the limit and a timeout say nothing (no verdict); a 404 is not found; Greenhouse is
+// asked at its light URL.
+func TestCheckBoardOutcomes(t *testing.T) {
+	gh := ats.Board{ATS: ats.Greenhouse, Board: "examplecorp"}
+	var asked []string
+	var mu sync.Mutex
+	for _, tc := range []struct {
+		name    string
+		fn      func(r *http.Request) (*http.Response, error)
+		outcome string
+	}{
+		{"ok", func(r *http.Request) (*http.Response, error) {
+			return answer(r, 200, `{"jobs": [{"id": 1, "title": "Go Engineer", "absolute_url": "https://jobs.example/1"}]}`), nil
+		}, store.CheckOK},
+		{"404", func(r *http.Request) (*http.Response, error) { return answer(r, 404, ""), nil }, store.CheckNotFound},
+		{"5xx", func(r *http.Request) (*http.Response, error) { return answer(r, 502, "bad gateway"), nil }, store.CheckError},
+		{"unreadable", func(r *http.Request) (*http.Response, error) { return answer(r, 200, "<html>"), nil }, store.CheckError},
+		{"too large", func(r *http.Request) (*http.Response, error) {
+			return answer(r, 200, `{"jobs": [`+strings.Repeat(" ", 2048)+`]}`), nil
+		}, store.CheckNoVerdict},
+		{"timeout", func(r *http.Request) (*http.Response, error) {
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}, store.CheckNoVerdict},
+		{"network error", func(*http.Request) (*http.Response, error) { return nil, errors.New("connection reset") }, store.CheckNoVerdict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fetch.New(
+				fetch.WithTransport(stubAnswer(func(r *http.Request) (*http.Response, error) {
+					mu.Lock()
+					asked = append(asked, r.URL.String())
+					mu.Unlock()
+					return tc.fn(r)
+				})),
+				fetch.WithLiveGate(config.LiveATS),
+				fetch.WithRecorder(verifyRecorder{}),
+				fetch.WithMaxBody(1024),
+				fetch.WithLimiter(rate.NewLimiter(rate.Inf, 1)),
+				fetch.WithJitter(0),
+			)
+			c.HTTP.Timeout = 50 * time.Millisecond
+			outcome, _, stop, err := checkBoard(context.Background(), c, gh)
+			if err != nil || stop != "" || outcome != tc.outcome {
+				t.Errorf("= %q, stop %q, err %v; want %q", outcome, stop, err, tc.outcome)
+			}
+		})
+	}
+	for _, u := range asked {
+		if u != gh.CheckURL() {
+			t.Errorf("asked %s, want the light URL %s", u, gh.CheckURL())
+		}
+	}
+}
+
+// TestRegistryBoardsSkipsBadRows: a registry row that is not a valid board is skipped with
+// a note naming it, and the rest are kept.
+func TestRegistryBoardsSkipsBadRows(t *testing.T) {
+	n := captureNotes(t)
+	got, skipped := registryBoards("collect ats", []store.Board{
+		{ID: 1, ATS: ats.Greenhouse, Slug: "examplecorp"},
+		{ID: 2, ATS: ats.Greenhouse, Slug: "-bad"},
+		{ID: 3, ATS: ats.Greenhouse, Slug: "regional", Region: ats.RegionEU},
+		{ID: 4, ATS: ats.Lever, Slug: "samplesoft", Region: ats.RegionEU, Name: "SampleSoft"},
+	})
+	if skipped != 2 || len(got) != 2 || got[1].Region != ats.RegionEU || got[1].Name != "SampleSoft" {
+		t.Errorf("boards %v, skipped %d", got, skipped)
+	}
+	for _, id := range []string{"registry board 2 skipped", "registry board 3 skipped"} {
+		if !strings.Contains(n.String(), id) {
+			t.Errorf("notes %q lack %q", n.String(), id)
+		}
 	}
 }

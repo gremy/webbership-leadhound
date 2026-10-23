@@ -166,8 +166,8 @@ func TestAppRolePrivileges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tables: %v", err)
 	}
-	if !slices.Contains(tables, "goose_db_version") || !slices.Contains(tables, "job") {
-		t.Fatalf("tables = %v, want goose_db_version and job among them", tables)
+	if !slices.Contains(tables, "goose_db_version") || !slices.Contains(tables, "job") || !slices.Contains(tables, "board") {
+		t.Fatalf("tables = %v, want goose_db_version, job and board among them", tables)
 	}
 
 	has := func(table, priv string) bool {
@@ -208,8 +208,12 @@ func TestAppRolePrivileges(t *testing.T) {
 		t.Error("leadhound_app may CREATE in schema public, want not")
 	}
 
-	// And the real statement fails, not only the catalogue answer.
+	// And the real statements fail, not only the catalogue answer: a dead board is retired,
+	// never deleted.
 	app := storetest.AppConn(t)
+	if _, err := app.Exec(ctx, "DELETE FROM board"); sqlState(err) != "42501" {
+		t.Fatalf("DELETE FROM board as app: err = %v, want 42501", err)
+	}
 	_, err = app.Exec(ctx, "INSERT INTO goose_db_version (version_id, is_applied) VALUES (999, true)")
 	if got := sqlState(err); got != "42501" {
 		t.Fatalf("forged goose row as app: err = %v (SQLSTATE %q), want 42501", err, got)

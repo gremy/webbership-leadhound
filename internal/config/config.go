@@ -38,12 +38,14 @@ const (
 	LiveAll             // LEADHOUND_LIVE=1: every source
 )
 
-// atsHosts are the public ATS APIs LiveATS allows, matched exactly (never as a suffix).
+// atsHosts are the hosts LiveATS allows, matched exactly (never as a suffix): the public ATS
+// APIs, and the Common Crawl index that boards harvest reads to find more boards.
 var atsHosts = []string{
 	"boards-api.greenhouse.io",
 	"api.lever.co",
 	"api.eu.lever.co",
 	"api.ashbyhq.com",
+	"index.commoncrawl.org",
 }
 
 func (l Live) String() string {
@@ -102,6 +104,7 @@ type Config struct {
 	LinkedInInterval     time.Duration // LEADHOUND_LINKEDIN_INTERVAL: the pause between requests
 	LinkedInSearchBudget int           // LEADHOUND_LINKEDIN_SEARCH_BUDGET: search requests per run
 	LinkedInDetailBudget int           // LEADHOUND_LINKEDIN_DETAIL_BUDGET: detail requests per run, recheck included
+	ATSInterval          time.Duration // LEADHOUND_ATS_INTERVAL: the pause between two requests to one ATS's API
 	Live                 Live          // LEADHOUND_LIVE
 }
 
@@ -113,6 +116,10 @@ const (
 	DefaultLinkedInInterval     = 4 * time.Second
 	DefaultLinkedInSearchBudget = 60
 	DefaultLinkedInDetailBudget = 40
+	DefaultATSInterval          = time.Second
+	// MinATSInterval is the shortest pause LEADHOUND_ATS_INTERVAL may set: below it, one
+	// ATS's API would see a burst from a large board list.
+	MinATSInterval = 200 * time.Millisecond
 )
 
 // Load reads the environment through getenv (os.Getenv in main, a map in tests). It returns
@@ -137,13 +144,11 @@ func Load(getenv func(string) string) (Config, []string) {
 	c.LinkedInSearchBudget = count(getenv, "LEADHOUND_LINKEDIN_SEARCH_BUDGET", DefaultLinkedInSearchBudget, report)
 	c.LinkedInDetailBudget = count(getenv, "LEADHOUND_LINKEDIN_DETAIL_BUDGET", DefaultLinkedInDetailBudget, report)
 
-	c.LinkedInInterval = DefaultLinkedInInterval
-	if v := getenv("LEADHOUND_LINKEDIN_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			c.LinkedInInterval = d
-		} else {
-			report(fmt.Sprintf("LEADHOUND_LINKEDIN_INTERVAL must be a duration such as 4s, not %q", v))
-		}
+	c.LinkedInInterval = duration(getenv, "LEADHOUND_LINKEDIN_INTERVAL", DefaultLinkedInInterval, "4s", report)
+	c.ATSInterval = duration(getenv, "LEADHOUND_ATS_INTERVAL", DefaultATSInterval, "1s", report)
+	if c.ATSInterval < MinATSInterval {
+		report(fmt.Sprintf("LEADHOUND_ATS_INTERVAL must be at least %s, not %s; using %s", MinATSInterval, c.ATSInterval, MinATSInterval))
+		c.ATSInterval = MinATSInterval
 	}
 	if _, err := time.LoadLocation(c.TZ); err != nil {
 		report(fmt.Sprintf("LEADHOUND_TZ must be an IANA time zone such as %s, not %q", DefaultTZ, c.TZ))
@@ -155,6 +160,20 @@ func Load(getenv func(string) string) (Config, []string) {
 	}
 	c.Live = live
 	return c, problems
+}
+
+// duration reads a non-negative duration variable, keeping def when it is unset or unusable.
+func duration(getenv func(string) string, name string, def time.Duration, example string, report func(string)) time.Duration {
+	v := getenv(name)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		report(fmt.Sprintf("%s must be a duration such as %s, not %q", name, example, v))
+		return def
+	}
+	return d
 }
 
 // count reads a non-negative integer variable, keeping def when it is unset or unusable.

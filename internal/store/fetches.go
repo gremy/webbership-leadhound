@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -11,8 +12,10 @@ import (
 )
 
 // InsertFetch writes one http_fetch row for runID and returns its id. The body is kept
-// exactly as it arrived; final_url is empty when it equals the URL; a response without a hash
-// gets one computed, and a transport error (status 0) keeps body_sha256 NULL.
+// exactly as it arrived, except for a board answer (fetch.KindBoard): thousands are read a
+// day, so only its size and hash are kept and AttachFetchBody adds the body when the parser
+// broke. final_url is empty when it equals the URL; a response without a hash gets one
+// computed; a transport error (status 0) keeps body_sha256 and body_size NULL.
 func (q Queries) InsertFetch(ctx context.Context, runID int64, source string, r fetch.Record) (int64, error) {
 	finalURL := r.FinalURL
 	if finalURL == r.URL {
@@ -23,9 +26,17 @@ func (q Queries) InsertFetch(ctx context.Context, runID int64, source string, r 
 		body = []byte{} // NOT NULL: a nil slice would be sent as NULL
 	}
 	sum := r.SHA256
-	if sum == nil && r.Status != 0 {
-		s := sha256.Sum256(body)
-		sum = s[:]
+	var size *int
+	if r.Status != 0 {
+		if sum == nil {
+			s := sha256.Sum256(body)
+			sum = s[:]
+		}
+		n := len(body)
+		size = &n
+	}
+	if r.Kind == fetch.KindBoard {
+		body = []byte{}
 	}
 	at := r.FetchedAt
 	if at.IsZero() {
@@ -33,13 +44,36 @@ func (q Queries) InsertFetch(ctx context.Context, runID int64, source string, r 
 	}
 	var id int64
 	err := q.db.QueryRow(ctx,
-		`INSERT INTO http_fetch (run_id, source, kind, url, final_url, status, fetched_at, body, content_type, body_sha256, error)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-		runID, source, string(r.Kind), r.URL, finalURL, r.Status, at, body, r.ContentType, sum, r.Err).Scan(&id)
+		`INSERT INTO http_fetch (run_id, source, kind, url, final_url, status, fetched_at, body, content_type, body_sha256, body_size, error)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+		runID, source, string(r.Kind), r.URL, finalURL, r.Status, at, body, r.ContentType, sum, size, r.Err).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("store: insert fetch %s: %w", r.Kind, err)
 	}
 	return id, nil
+}
+
+// ErrFetchBodyMismatch is returned by AttachFetchBody when no fetch row has that id and
+// that body's hash.
+var ErrFetchBodyMismatch = errors.New("store: no fetch with that id and body hash")
+
+// AttachFetchBody keeps body on the http_fetch row fetchID, for a board answer whose parser
+// broke (InsertFetch keeps no board bodies). The row's body_sha256 must be the body's hash,
+// so only the bytes that arrived can be attached; otherwise ErrFetchBodyMismatch.
+func (q Queries) AttachFetchBody(ctx context.Context, fetchID int64, body []byte) error {
+	if body == nil {
+		body = []byte{}
+	}
+	sum := sha256.Sum256(body)
+	tag, err := q.db.Exec(ctx,
+		`UPDATE http_fetch SET body = $2 WHERE id = $1 AND body_sha256 = $3`, fetchID, body, sum[:])
+	if err != nil {
+		return fmt.Errorf("store: attach fetch body %d: %w", fetchID, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("store: attach fetch body %d: %w", fetchID, ErrFetchBodyMismatch)
+	}
+	return nil
 }
 
 // FetchRecorder is the fetch.Recorder over the http_fetch table for one run and source. It

@@ -1,9 +1,11 @@
 package scoring
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,14 +28,47 @@ var testCriteria = candidate.Criteria{
 
 var testKeywords = map[string][]string{"stack": {"rust", "postgres"}}
 
-// memStore is an in-memory DecisionStore.
+// memStore is an in-memory DecisionStore. Its queue is inputs as the database gives it:
+// gate fails counted and left out, newest first by seen (zero when unset), then job id.
 type memStore struct {
 	inputs  []store.ScoreInput
+	seen    map[int64]time.Time // first seen, by job
 	written map[int64][]store.DecisionInsert
-	failOn  int64 // InsertDecisions fails for this job
+	failOn  int64     // InsertDecisions fails for this job
+	loads   [][]int64 // every ScoreInputsFor batch
 }
 
-func (m *memStore) ScoreInputs(context.Context) ([]store.ScoreInput, error) { return m.inputs, nil }
+func (m *memStore) ScoreQueue(context.Context) (store.ScoreQueue, error) {
+	var q store.ScoreQueue
+	for _, in := range m.inputs {
+		if GateFailed(in.Gates) {
+			q.GateFailed++
+			continue
+		}
+		q.Entries = append(q.Entries, store.QueueEntry{JobID: in.JobID, Title: in.Title,
+			FirstSeenAt: m.seen[in.JobID], Decided: in.LastInputSHA256 != nil})
+	}
+	slices.SortStableFunc(q.Entries, func(a, b store.QueueEntry) int {
+		if c := b.FirstSeenAt.Compare(a.FirstSeenAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.JobID, b.JobID)
+	})
+	return q, nil
+}
+
+func (m *memStore) ScoreInputsFor(_ context.Context, ids []int64) ([]store.ScoreInput, error) {
+	m.loads = append(m.loads, slices.Clone(ids))
+	var out []store.ScoreInput
+	for _, id := range ids {
+		for _, in := range m.inputs {
+			if in.JobID == id {
+				out = append(out, in)
+			}
+		}
+	}
+	return out, nil
+}
 
 func (m *memStore) InsertDecisions(_ context.Context, ds []store.DecisionInsert) error {
 	if m.written == nil {

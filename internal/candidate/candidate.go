@@ -34,6 +34,8 @@ type Config struct {
 	ConfidenceThreshold float64  `yaml:"confidence_threshold"`
 	LinkedIn            LinkedIn `yaml:"linkedin"`
 	Brief               Brief    `yaml:"brief"`
+	// TitleScreenRules is the optional title pre-filter; TitleScreen() compiles it.
+	TitleScreenRules TitleRules `yaml:"title_screen"`
 }
 
 // Candidate is who the postings are screened for.
@@ -196,6 +198,7 @@ func (cfg Config) check() []string {
 	if cfg.Brief.MaxYourCall < 1 {
 		p = append(p, "brief.max_your_call must be at least 1")
 	}
+	p = append(p, checkTitleRules(cfg.TitleScreenRules)...)
 	return p
 }
 

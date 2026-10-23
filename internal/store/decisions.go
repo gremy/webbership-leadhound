@@ -134,29 +134,91 @@ type ScoreInput struct {
 	LastInputSHA256 []byte // nil when the job was never decided
 }
 
-// ScoreInputs returns the jobs worth scoring: open listings whose current observation is
-// not closed and whose current status is new or shortlisted (a job already applied for or
-// skipped costs nothing). Gate results come with them; the scorer skips a gate fail
-// itself, so the rule has one home. Ordered by job id.
-func (q Queries) ScoreInputs(ctx context.Context) ([]ScoreInput, error) {
+// scoreable is the condition a job must meet to be worth scoring: an open listing whose
+// current observation (o) is not closed and whose current status (s) is new or shortlisted
+// (a job already applied for or skipped costs nothing).
+const scoreable = `j.listing_status = 'open' AND NOT o.closed AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`
+
+// latestObsAndStatus joins a job's current observation as o and current status as s.
+const latestObsAndStatus = `
+		 JOIN LATERAL (SELECT * FROM job_observation WHERE job_id = j.id
+		               ORDER BY observed_at DESC, id DESC LIMIT 1) o ON true
+		 LEFT JOIN LATERAL (SELECT status FROM status_event WHERE job_id = j.id
+		                    ORDER BY at DESC, id DESC LIMIT 1) s ON true`
+
+// QueueEntry is one job waiting to be scored, as the light first pass reads it: no
+// description, no gates.
+type QueueEntry struct {
+	JobID       int64
+	Title       string // the current observation's title, for the title screen
+	FirstSeenAt time.Time
+	// Decided is true when the job has a decision on its current observation.
+	Decided bool
+}
+
+// ScoreQueue is the light first pass over every job worth scoring.
+type ScoreQueue struct {
+	// Entries are the scoreable jobs with no failing gate on their current observation,
+	// newest first (first_seen_at descending, then job id).
+	Entries []QueueEntry
+	// GateFailed counts the scoreable jobs left out because a gate failed: they are never
+	// sent, and their descriptions are never read.
+	GateFailed int
+}
+
+// ScoreQueue reads id, title, first-seen time and whether the current observation is
+// decided for every job worth scoring, about a hundred bytes a job. A job whose current
+// observation has a failing gate is counted, not returned.
+func (q Queries) ScoreQueue(ctx context.Context) (ScoreQueue, error) {
+	rows, err := q.db.Query(ctx,
+		`SELECT j.id, o.title, j.first_seen_at,
+		        EXISTS (SELECT 1 FROM gate_result g WHERE g.observation_id = o.id AND g.verdict = 'fail'),
+		        EXISTS (SELECT 1 FROM decision d WHERE d.job_id = j.id AND d.observation_id = o.id)
+		 FROM job j`+latestObsAndStatus+`
+		 WHERE `+scoreable+`
+		 ORDER BY j.first_seen_at DESC, j.id`)
+	if err != nil {
+		return ScoreQueue{}, fmt.Errorf("store: score queue: %w", err)
+	}
+	defer rows.Close()
+	var out ScoreQueue
+	for rows.Next() {
+		var e QueueEntry
+		var gateFailed bool
+		if err := rows.Scan(&e.JobID, &e.Title, &e.FirstSeenAt, &gateFailed, &e.Decided); err != nil {
+			return ScoreQueue{}, fmt.Errorf("store: score queue: %w", err)
+		}
+		if gateFailed {
+			out.GateFailed++
+			continue
+		}
+		out.Entries = append(out.Entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return ScoreQueue{}, fmt.Errorf("store: score queue: %w", err)
+	}
+	return out, nil
+}
+
+// ScoreInputsFor returns the full score input (description and gates included) of each
+// job in ids that is still worth scoring, in the order of ids. A job that stopped being
+// worth scoring since the queue was read is left out.
+func (q Queries) ScoreInputsFor(ctx context.Context, ids []int64) ([]ScoreInput, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
 	rows, err := q.db.Query(ctx,
 		`SELECT j.id, o.id, c.name, o.title, o.location_text, o.seniority, o.employment_type,
 		        o.description_clean, d.input_sha256
 		 FROM job j
-		 JOIN company c ON c.id = j.company_id
-		 JOIN LATERAL (SELECT * FROM job_observation WHERE job_id = j.id
-		               ORDER BY observed_at DESC, id DESC LIMIT 1) o ON true
-		 LEFT JOIN LATERAL (SELECT status FROM status_event WHERE job_id = j.id
-		                    ORDER BY at DESC, id DESC LIMIT 1) s ON true
+		 JOIN company c ON c.id = j.company_id`+latestObsAndStatus+`
 		 LEFT JOIN LATERAL (SELECT input_sha256 FROM decision WHERE job_id = j.id
 		                    ORDER BY created_at DESC, id DESC LIMIT 1) d ON true
-		 WHERE j.listing_status = 'open' AND NOT o.closed
-		   AND coalesce(s.status, 'new') IN ('new', 'shortlisted')
-		 ORDER BY j.id`)
+		 WHERE j.id = ANY($1) AND `+scoreable, ids)
 	if err != nil {
 		return nil, fmt.Errorf("store: score inputs: %w", err)
 	}
-	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (ScoreInput, error) {
+	got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (ScoreInput, error) {
 		var in ScoreInput
 		err := r.Scan(&in.JobID, &in.ObservationID, &in.Company, &in.Title, &in.Location, &in.Seniority,
 			&in.EmploymentType, &in.Description, &in.LastInputSHA256)
@@ -165,16 +227,22 @@ func (q Queries) ScoreInputs(ctx context.Context) ([]ScoreInput, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: score inputs: %w", err)
 	}
-	obsIDs := make([]int64, len(out))
-	for i, in := range out {
+	obsIDs := make([]int64, len(got))
+	byJob := make(map[int64]ScoreInput, len(got))
+	for i, in := range got {
 		obsIDs[i] = in.ObservationID
+		byJob[in.JobID] = in
 	}
 	gates, err := q.gateResultsFor(ctx, obsIDs)
 	if err != nil {
 		return nil, fmt.Errorf("store: score inputs: %w", err)
 	}
-	for i := range out {
-		out[i].Gates = gates[out[i].ObservationID]
+	out := make([]ScoreInput, 0, len(got))
+	for _, id := range ids {
+		if in, ok := byJob[id]; ok {
+			in.Gates = gates[in.ObservationID]
+			out = append(out, in)
+		}
 	}
 	return out, nil
 }

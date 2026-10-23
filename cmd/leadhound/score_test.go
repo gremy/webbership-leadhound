@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gremy/webbership-leadhound/internal/scoring"
 )
 
 // examplesDir holds the fictional demo profile.
@@ -65,5 +67,13 @@ func TestFakeDeciderPassesEveryCriterion(t *testing.T) {
 		if a := f.Answers[c.Name]; a.Choice != "pass" || a.Confidence != 0.9 {
 			t.Errorf("%s: %+v", c.Name, a)
 		}
+	}
+}
+
+// TestFakeDeciderFailsTheTitleCheck: the fake answers the title-only question too, always
+// fail at 0.9, so a dry run shows the title check at work.
+func TestFakeDeciderFailsTheTitleCheck(t *testing.T) {
+	if a := fakeDecider().Answers[scoring.TitleCheckName]; a.Choice != scoring.Fail || a.Confidence != 0.9 {
+		t.Errorf("title check answer %+v", a)
 	}
 }

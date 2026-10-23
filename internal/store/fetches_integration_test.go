@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -165,5 +166,81 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// fetchSize reads body_size of one http_fetch row (nil: NULL).
+func fetchSize(t *testing.T, id int64) *int {
+	t.Helper()
+	var n *int
+	if err := storetest.OwnerConn(t).QueryRow(context.Background(), `SELECT body_size FROM http_fetch WHERE id = $1`, id).Scan(&n); err != nil {
+		t.Fatalf("read body_size %d: %v", id, err)
+	}
+	return n
+}
+
+// TestBoardFetchKeepsNoBody: a board answer is stored with its hash and size but no body;
+// AttachFetchBody adds the body back only when it is the bytes that arrived. Other kinds keep
+// their body and size as before; a transport error has no size.
+func TestBoardFetchKeepsNoBody(t *testing.T) {
+	ctx := context.Background()
+	s := appStore(t)
+	q := s.Q()
+	runID, err := q.StartRun(ctx, "collect", "greenhouse")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	rec := store.NewFetchRecorder(q, runID, "greenhouse")
+	body := []byte(`{"jobs":[{"id":1,"title":"Go Engineer"}]}`)
+	sum := sha256.Sum256(body)
+
+	if err := rec.Record(ctx, fetch.Record{Kind: fetch.KindBoard, URL: "https://boards.example/v1/acme", Status: 200, Body: body, ContentType: "application/json"}); err != nil {
+		t.Fatalf("Record board: %v", err)
+	}
+	boardID := rec.LastID()
+	got := readFetch(t, boardID)
+	if len(got.Body) != 0 || !bytes.Equal(got.SHA, sum[:]) || got.Kind != "board" || got.Status != 200 {
+		t.Fatalf("board row = %+v, want no body and the body's hash", got)
+	}
+	if n := fetchSize(t, boardID); n == nil || *n != len(body) {
+		t.Fatalf("board body_size = %v, want %d", n, len(body))
+	}
+
+	// Other bytes are refused; an unknown id is refused; the right bytes are kept exactly.
+	if err := q.AttachFetchBody(ctx, boardID, []byte("tampered")); !errors.Is(err, store.ErrFetchBodyMismatch) {
+		t.Fatalf("attach other bytes: err = %v, want ErrFetchBodyMismatch", err)
+	}
+	if err := q.AttachFetchBody(ctx, boardID+1000, body); !errors.Is(err, store.ErrFetchBodyMismatch) {
+		t.Fatalf("attach unknown id: err = %v, want ErrFetchBodyMismatch", err)
+	}
+	if err := q.AttachFetchBody(ctx, boardID, body); err != nil {
+		t.Fatalf("AttachFetchBody: %v", err)
+	}
+	if got := readFetch(t, boardID); !bytes.Equal(got.Body, body) || !bytes.Equal(got.SHA, sum[:]) {
+		t.Fatalf("after attach = %+v", got)
+	}
+
+	// A board transport error: no body, no hash, no size; nothing can be attached to it.
+	if err := rec.Record(ctx, fetch.Record{Kind: fetch.KindBoard, URL: "https://boards.example/v1/gone", Err: "timeout"}); err != nil {
+		t.Fatalf("Record board error: %v", err)
+	}
+	errID := rec.LastID()
+	if got := readFetch(t, errID); got.SHA != nil || len(got.Body) != 0 || fetchSize(t, errID) != nil {
+		t.Fatalf("board transport error row = %+v size %v", got, fetchSize(t, errID))
+	}
+	if err := q.AttachFetchBody(ctx, errID, nil); !errors.Is(err, store.ErrFetchBodyMismatch) {
+		t.Fatalf("attach to a transport error: err = %v, want ErrFetchBodyMismatch", err)
+	}
+
+	// Any other kind keeps its body, and now its size.
+	if err := rec.Record(ctx, fetch.Record{Kind: fetch.KindDetail, URL: "https://jobs.example/job/1", Status: 200, Body: body}); err != nil {
+		t.Fatalf("Record detail: %v", err)
+	}
+	detailID := rec.LastID()
+	if got := readFetch(t, detailID); !bytes.Equal(got.Body, body) {
+		t.Fatalf("detail body = %q, want kept", got.Body)
+	}
+	if n := fetchSize(t, detailID); n == nil || *n != len(body) {
+		t.Fatalf("detail body_size = %v, want %d", n, len(body))
 	}
 }

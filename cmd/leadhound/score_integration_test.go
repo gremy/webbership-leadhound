@@ -3,8 +3,14 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
 // collectFixtures fills the test database from the LinkedIn fixtures with the neutral
@@ -77,5 +83,72 @@ func TestScoreSpendCapExitsZero(t *testing.T) {
 	}
 	if got := dbCount(t, `SELECT count(*) FROM decision`); got != 0 {
 		t.Errorf("decisions = %d, want 0", got)
+	}
+}
+
+// TestScoreTitleCheck: with the demo profile's title screen, a title the screen is unsure
+// of gets one title-only call (the fake fails it) and no full scoring, a stored title the
+// screen drops fails without a call, both rank as a failed criterion, and a second run
+// asks nothing.
+func TestScoreTitleCheck(t *testing.T) {
+	collectFixtures(t)
+	ctx := context.Background()
+	conn := storetest.OwnerConn(t)
+	// The fixtures leave most jobs language-failed; pass two more, so three can be scored.
+	if _, err := conn.Exec(ctx, `UPDATE gate_result SET verdict = 'pass' WHERE job_id IN (
+		SELECT job_id FROM job_observation WHERE NOT closed ORDER BY job_id LIMIT 3)`); err != nil {
+		t.Fatal(err)
+	}
+	sendableSQL := `SELECT j.id FROM job j WHERE NOT EXISTS (
+		SELECT 1 FROM gate_result g WHERE g.observation_id = (
+		  SELECT id FROM job_observation o WHERE o.job_id = j.id ORDER BY observed_at DESC, id DESC LIMIT 1)
+		AND g.verdict = 'fail') AND EXISTS (SELECT 1 FROM job_observation o WHERE o.job_id = j.id AND NOT o.closed)
+		ORDER BY j.id`
+	rows, err := conn.Query(ctx, sendableSQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) < 3 {
+		t.Fatalf("want 3 sendable jobs, have %d", len(ids))
+	}
+	unsure, drop := ids[0], ids[1]
+	for id, title := range map[int64]string{unsure: "Head of Coffee", drop: "Sales Recruiter"} {
+		if _, err := conn.Exec(ctx, `UPDATE job_observation SET title = $2 WHERE job_id = $1`, id, title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sendable := len(ids)
+
+	code, out := runCmd(t, "score", "--decider", "fake")
+	if code != 0 || !strings.Contains(out, "title check: 1 asked · 2 failed · 0 passed") || !strings.Contains(out, "stop none") {
+		t.Fatalf("exit %d, stdout %q", code, out)
+	}
+	// Full scoring for the kept titles, one title decision each for the other two.
+	if got, want := dbCount(t, `SELECT count(*) FROM decision`), 5*(sendable-2)+2; got != want {
+		t.Errorf("decisions = %d, want %d", got, want)
+	}
+	for _, id := range []int64{unsure, drop} {
+		if got := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM decision WHERE job_id = %d AND criterion = 'title' AND verdict = 'fail'`, id)); got != 1 {
+			t.Errorf("job %d: title fails = %d, want 1", id, got)
+		}
+	}
+	if got := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM decision WHERE job_id = %d AND reason LIKE '%%title-only check%%'`, unsure)); got != 1 {
+		t.Errorf("the unsure job's reason does not name the title-only check")
+	}
+	// One call per kept title, one title-only call, none for the dropped title.
+	if got := dbCount(t, `SELECT coalesce(sum(calls), 0) FROM ai_usage WHERE provider = 'fake'`); got != sendable-1 {
+		t.Errorf("usage calls = %d, want %d", got, sendable-1)
+	}
+	if !strings.Contains(out, "criterion 2") || strings.Contains(out, "unscored") {
+		t.Errorf("ranking does not count the title fails as failed criteria: %q", out)
+	}
+
+	code, out = runCmd(t, "score", "--decider", "fake")
+	if code != 0 || !strings.Contains(out, "calls 0") || !strings.Contains(out, "title check: 0 asked · 0 failed · 0 passed") {
+		t.Fatalf("second run: exit %d, stdout %q", code, out)
 	}
 }

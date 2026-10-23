@@ -109,7 +109,7 @@ func TestBoardAPIURLAndString(t *testing.T) {
 	}{
 		{Board{ATS: Greenhouse, Board: "examplecorp"}, "https://boards-api.greenhouse.io/v1/boards/examplecorp/jobs?content=true", "greenhouse/examplecorp"},
 		{Board{ATS: Lever, Board: "samplesoft"}, "https://api.lever.co/v0/postings/samplesoft?mode=json", "lever/samplesoft"},
-		{Board{ATS: Lever, Board: "beispielwerk", Region: RegionEU}, "https://api.eu.lever.co/v0/postings/beispielwerk?mode=json", "lever/beispielwerk"},
+		{Board{ATS: Lever, Board: "beispielwerk", Region: RegionEU}, "https://api.eu.lever.co/v0/postings/beispielwerk?mode=json", "lever/eu:beispielwerk"},
 		{Board{ATS: Ashby, Board: "demolabs"}, "https://api.ashbyhq.com/posting-api/job-board/demolabs", "ashby/demolabs"},
 		{Board{ATS: "workday", Board: "x"}, "", "workday/x"},
 	} {
@@ -160,6 +160,26 @@ func TestLoadBoards(t *testing.T) {
 	}
 }
 
+// TestBoardRegions: the same slug in both Lever regions is two boards, with ids, a check
+// URL and a name of their own.
+func TestBoardRegions(t *testing.T) {
+	bs, err := LoadBoards(writeBoards(t, "- {ats: lever, board: samplesoft}\n- {ats: lever, board: samplesoft, region: eu}\n"))
+	if err != nil || len(bs) != 2 {
+		t.Fatalf("boards %v, err %v; want both", bs, err)
+	}
+	p := Posting{ID: "abc"}
+	if a, b := SourceJobID(bs[0], p), SourceJobID(bs[1], p); a != "samplesoft/abc" || b != "eu:samplesoft/abc" {
+		t.Errorf("ids = %q, %q", a, b)
+	}
+	if bs[0].String() == bs[1].String() || bs[1].CheckURL() != bs[1].APIURL() {
+		t.Errorf("names %q %q, check url %q", bs[0], bs[1], bs[1].CheckURL())
+	}
+	gh := Board{ATS: Greenhouse, Board: "examplecorp"}
+	if got := gh.CheckURL(); got != "https://boards-api.greenhouse.io/v1/boards/examplecorp/jobs" {
+		t.Errorf("greenhouse check url = %q", got)
+	}
+}
+
 func TestLoadBoardsRefuses(t *testing.T) {
 	for _, tc := range []struct{ name, content, want string }{
 		{"unknown key", "- {ats: ashby, board: demolabs, url: x}\n", "url"},
@@ -167,7 +187,8 @@ func TestLoadBoardsRefuses(t *testing.T) {
 		{"bad slug", "- {ats: ashby, board: \"../x\"}\n", "line 1"},
 		{"region on non-lever", "- {ats: greenhouse, board: x, region: eu}\n", "lever boards only"},
 		{"ats is lower-case", "- {ats: ashby, board: demolabs}\n- {ats: Ashby, board: x}\n", "line 2: ats: board \"x\": unknown ats"},
-		{"duplicate", "- {ats: lever, board: samplesoft}\n- {ats: lever, board: samplesoft, region: eu}\n", "line 2: lever/samplesoft is listed twice (first on line 1)"},
+		{"duplicate", "- {ats: lever, board: samplesoft}\n- {ats: lever, board: samplesoft}\n", "line 2: lever/samplesoft is listed twice (first on line 1)"},
+		{"duplicate in the eu", "- {ats: lever, board: x, region: eu}\n- {ats: lever, board: X, region: eu}\n", "line 2: lever/eu:X is listed twice (first on line 1)"},
 		{"duplicate ignoring case", "- {ats: ashby, board: demolabs}\n- {ats: lever, board: demolabs}\n- {ats: ashby, board: DemoLabs}\n", "line 3: ashby/DemoLabs is listed twice (first on line 1)"},
 		{"not a list", "ats: ashby\nboard: demolabs\n", "cannot unmarshal"},
 		{"empty", "# nothing yet\n", "empty"},

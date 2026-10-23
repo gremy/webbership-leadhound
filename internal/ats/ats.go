@@ -91,11 +91,29 @@ func (b Board) APIURL() string {
 	return ""
 }
 
-// String is "<ats>/<board>".
-func (b Board) String() string { return b.ATS + "/" + b.Board }
+// CheckURL is the lightest endpoint that still says whether the board exists and how many
+// postings it lists: Greenhouse's list without the descriptions, APIURL for the others.
+func (b Board) CheckURL() string {
+	if b.ATS == Greenhouse {
+		return "https://boards-api.greenhouse.io/v1/boards/" + url.PathEscape(b.Board) + "/jobs"
+	}
+	return b.APIURL()
+}
 
-// key identifies a board for the duplicate check.
-func (b Board) key() string { return strings.ToLower(b.ATS + "/" + b.Board) }
+// regionPrefix is "eu:" for an EU board and "" otherwise. A slug never holds a colon, so
+// the prefix keeps an EU board apart from the same slug in the default region.
+func (b Board) regionPrefix() string {
+	if b.Region != "" {
+		return b.Region + ":"
+	}
+	return ""
+}
+
+// String is "<ats>/<board>", or "<ats>/eu:<board>" for an EU board.
+func (b Board) String() string { return b.ATS + "/" + b.regionPrefix() + b.Board }
+
+// key identifies a board for the duplicate check: ats, region and slug, ignoring case.
+func (b Board) key() string { return strings.ToLower(b.String()) }
 
 // company is the name a posting carries when the API gives none.
 func (b Board) company() string {
@@ -218,8 +236,11 @@ func Parse(b Board, body []byte) ([]Posting, error) {
 }
 
 // SourceJobID is the lower-cased board, a slash and the posting's id, so ids from two
-// boards never collide.
-func SourceJobID(b Board, p Posting) string { return strings.ToLower(b.Board) + "/" + p.ID }
+// boards never collide; an EU board's id starts "eu:", so the same slug in two regions
+// stays two boards ("eu:<board>/<id>").
+func SourceJobID(b Board, p Posting) string {
+	return b.regionPrefix() + strings.ToLower(b.Board) + "/" + p.ID
+}
 
 // DerivedBy is the provenance tag of rows derived from an ATS response: "<ats>-parser@1".
 func DerivedBy(atsName string) string { return atsName + "-parser@1" }

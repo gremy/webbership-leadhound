@@ -108,7 +108,11 @@ func TestInsertDecisionsAllOrNothing(t *testing.T) {
 	}
 }
 
-func TestScoreInputs(t *testing.T) {
+// TestScoreQueue: the light pass returns only scoreable jobs without a failing gate,
+// newest first, says which are decided on their current observation, and counts the gate
+// fails; ScoreInputsFor loads one batch in the order asked, dropping what is no longer
+// scoreable.
+func TestScoreQueue(t *testing.T) {
 	ctx := context.Background()
 	s := appStore(t)
 	q := s.Q()
@@ -136,31 +140,57 @@ func TestScoreInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	shortlisted, f6 := mk("1000000006")
-	observeFor(t, q, shortlisted, f6, "Go Engineer", false, "language", "pass")
+	observeFor(t, q, shortlisted, f6, "Rust Developer", false, "language", "pass")
 	if _, err := q.InsertStatusEvent(ctx, shortlisted, "shortlisted", "", "system", nil); err != nil {
 		t.Fatal(err)
 	}
 	mk("1000000007") // no observation yet
+	// The open job was first seen earlier than the shortlisted one.
+	ownerExec(t, `UPDATE job SET first_seen_at = now() - interval '3 hours' WHERE id = $1`, open)
+	ownerExec(t, `UPDATE job SET first_seen_at = now() - interval '1 hour' WHERE id = $1`, shortlisted)
 
-	got, err := q.ScoreInputs(ctx)
+	queue, err := q.ScoreQueue(ctx)
 	if err != nil {
-		t.Fatalf("ScoreInputs: %v", err)
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	if queue.GateFailed != 1 {
+		t.Errorf("gate failed = %d, want 1", queue.GateFailed)
 	}
 	var gotIDs []int64
+	for _, e := range queue.Entries {
+		gotIDs = append(gotIDs, e.JobID)
+	}
+	if want := []int64{shortlisted, open}; !slices.Equal(gotIDs, want) {
+		t.Fatalf("queue %v, want %v (newest first, gate fail left out)", gotIDs, want)
+	}
+	if e := queue.Entries[0]; e.Title != "Rust Developer" || e.Decided {
+		t.Errorf("shortlisted entry %+v", e)
+	}
+	if e := queue.Entries[1]; e.Title != "Go Engineer" || !e.Decided || !e.FirstSeenAt.Before(queue.Entries[0].FirstSeenAt) {
+		t.Errorf("open entry %+v", e)
+	}
+
+	got, err := q.ScoreInputsFor(ctx, []int64{shortlisted, open, expired})
+	if err != nil {
+		t.Fatalf("ScoreInputsFor: %v", err)
+	}
+	gotIDs = nil
 	for _, in := range got {
 		gotIDs = append(gotIDs, in.JobID)
 	}
-	// The gate-failed job is returned: the scorer skips it, so the rule lives in one place.
-	if want := []int64{open, gateFail, shortlisted}; !slices.Equal(gotIDs, want) {
-		t.Fatalf("jobs %v, want %v", gotIDs, want)
+	if want := []int64{shortlisted, open}; !slices.Equal(gotIDs, want) {
+		t.Fatalf("inputs %v, want %v", gotIDs, want)
 	}
-	first := got[0]
-	if first.ObservationID != obsOpen || first.Title != "Go Engineer" || first.Company != "Initech" ||
-		string(first.LastInputSHA256) != "hash-open" || len(first.Gates) != 2 || first.Gates[1].Snippet != "workplace words" {
-		t.Errorf("open job input %+v", first)
+	o := got[1]
+	if o.ObservationID != obsOpen || o.Title != "Go Engineer" || o.Company != "Initech" || o.Description != "We write Go." ||
+		string(o.LastInputSHA256) != "hash-open" || len(o.Gates) != 2 || o.Gates[1].Snippet != "workplace words" {
+		t.Errorf("open job input %+v", o)
 	}
-	if got[2].LastInputSHA256 != nil {
-		t.Errorf("never decided job has a hash %q", got[2].LastInputSHA256)
+	if got[0].LastInputSHA256 != nil {
+		t.Errorf("never decided job has a hash %q", got[0].LastInputSHA256)
+	}
+	if none, err := q.ScoreInputsFor(ctx, nil); err != nil || len(none) != 0 {
+		t.Errorf("empty batch: %v, %v", none, err)
 	}
 }
 

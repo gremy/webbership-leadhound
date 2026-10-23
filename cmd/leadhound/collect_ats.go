@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,17 +17,20 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/ats"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
 // atsSource is the positional argument that selects the ATS collect: `collect ats`.
 const atsSource = "ats"
 
-// atsInterval is the pause between two requests to one ATS's API.
-const atsInterval = 2 * time.Second
-
 // atsMaxBody is the largest board answer read: one request returns every posting with its
 // full description, which can run past fetch's default.
 const atsMaxBody = 20 << 20
+
+// atsTimeout is how long one board request may take: a large board's full answer can run
+// well past fetch's default. fetch has no option for it, so callers set Client.HTTP.Timeout,
+// as boards harvest does.
+const atsTimeout = 60 * time.Second
 
 // atsProfile asks the ATS APIs for JSON and treats no response as blocked: they are public
 // APIs, so a 403 is an error for one board, not a reason to stop.
@@ -76,9 +80,80 @@ func boardList(cfg config.Config, file, command string, dryRun bool) ([]ats.Boar
 	return ats.DemoBoards(), nil
 }
 
+// fileBoards is the board file collect ats merges with the registry: --boards FILE, else
+// ats-boards.yaml in LEADHOUND_DATA_DIR, else none. A file that exists but cannot be read,
+// or is not a valid board list, is a usage error naming it.
+func fileBoards(cfg config.Config, file string) ([]ats.Board, error) {
+	if file != "" {
+		b, err := ats.LoadBoardsFile(file)
+		if err != nil {
+			return nil, usageError("%v", err)
+		}
+		return b, nil
+	}
+	if cfg.DataDir == "" {
+		return nil, nil
+	}
+	b, err := ats.LoadBoards(cfg.DataDir)
+	switch {
+	case err == nil:
+		return b, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, nil
+	default:
+		return nil, usageError("%v", err)
+	}
+}
+
+// registryBoards turns registry rows into boards. A row that is not a valid board (the
+// table's checks are looser than ats.Board.Validate) is skipped with a log line and a note,
+// so one bad row never stops the collect; skipped is how many.
+func registryBoards(command string, rows []store.Board) (boards []ats.Board, skipped int) {
+	out := make([]ats.Board, 0, len(rows))
+	for _, r := range rows {
+		b := ats.Board{ATS: r.ATS, Board: r.Slug, Region: r.Region, Name: r.Name}
+		if err := b.Validate(); err != nil {
+			slog.Warn("registry board skipped", "id", r.ID, "err", err)
+			_, _ = fmt.Fprintf(notes, "%s: registry board %d skipped: %v\n", command, r.ID, err)
+			skipped++
+			continue
+		}
+		out = append(out, b)
+	}
+	return out, skipped
+}
+
+// mergeBoards is the registry's boards, then each file board the registry does not hold,
+// one per ats, slug (ignoring case) and region. A registry board with no name takes the
+// file's.
+func mergeBoards(registry, file []ats.Board) []ats.Board {
+	at := map[store.BoardKey]int{}
+	out := make([]ats.Board, 0, len(registry)+len(file))
+	for _, list := range [][]ats.Board{registry, file} {
+		for _, b := range list {
+			k := b.RegistryKey()
+			if i, dup := at[k]; dup {
+				if strings.TrimSpace(out[i].Name) == "" {
+					out[i].Name = b.Name
+				}
+				continue
+			}
+			at[k] = len(out)
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 // errNoBoardList is the usage error for a live command with no board list.
 func errNoBoardList() error {
 	return usageError("no board list: pass --boards FILE, or put %s in LEADHOUND_DATA_DIR (the demo boards are for --dry-run only)", ats.BoardsFile)
+}
+
+// errNoCollectBoards is collect ats's usage error when neither the registry nor a file
+// names a board.
+func errNoCollectBoards() error {
+	return usageError("no boards: the board registry has none to collect (add them with leadhound boards import FILE --origin O), and there is no board list: pass --boards FILE, or put %s in LEADHOUND_DATA_DIR (the demo boards are for --dry-run only)", ats.BoardsFile)
 }
 
 // boardHost is the host a board's API is requested from.
@@ -114,7 +189,8 @@ func boardsPerATS(boards []ats.Board) map[string]int {
 }
 
 // atsClients returns the constructor for each ATS's client. With --dry-run the client reads
-// fixtures and is never paced or gated; otherwise it is live-gated, paced at atsInterval and
+// fixtures and is never paced or gated; otherwise it is live-gated, paced at
+// LEADHOUND_ATS_INTERVAL and
 // asks for JSON. Either way each ATS gets its own breaker, whose board budget is twice that
 // ATS's boards (room for each one's 429 retry). errLiveOff means LEADHOUND_LIVE does not allow
 // every board's API host, so the command must not run. Bodies up to atsMaxBody are read.
@@ -142,19 +218,28 @@ func atsClients(cfg config.Config, f fetchFlags, boards []ats.Board) (func(strin
 		return nil, errLiveOff
 	}
 	return func(atsName string, rec fetch.Recorder) *fetch.Client {
-		return fetch.New(
+		c := fetch.New(
 			fetch.WithLiveGate(cfg.Live),
 			fetch.WithRecorder(rec),
 			fetch.WithProfile(atsProfile),
 			fetch.WithMaxBody(atsMaxBody),
-			fetch.WithLimiter(rate.NewLimiter(rate.Every(atsInterval), 1)),
+			fetch.WithLimiter(rate.NewLimiter(rate.Every(cfg.ATSInterval), 1)),
 			fetch.WithBreaker(fetch.NewBreaker(budgets(atsName))),
 		)
+		c.HTTP.Timeout = atsTimeout
+		return c
 	}, nil
 }
 
 // runCollectATS is `leadhound collect ats [--dry-run --fixtures DIR] [--boards FILE]`: every
-// board once, one run row per ATS. Any recorded outcome, a stop included, exits 0.
+// board once, one run row per ATS, the ATSs side by side. Live, the boards are the
+// registry's (state ok, and manual boards in any state but retired; a row that is not a
+// valid board is skipped with a note) merged with --boards FILE or the data directory's
+// ats-boards.yaml, whose boards are collected even when the registry does not hold them;
+// with neither it is a usage error. A dry run never reads the registry: --boards, the
+// data-directory list, else the demo boards. Each live fetch updates its registry row as boards check does. With a profile its
+// title screen drops postings before they are stored. Any recorded outcome, a stop
+// included, exits 0.
 func runCollectATS(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("collect ats", flag.ContinueOnError)
 	var af atsFlags
@@ -173,17 +258,48 @@ func runCollectATS(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	boards, err := boardList(cfg, af.boards, "collect ats", af.dryRun)
-	if err != nil {
-		return err
-	}
 	prof, haveProf, err := candidateProfileOr(cfg, "collect ats", "neutral gates")
 	if err != nil {
 		return err
 	}
 	cg := defaultCandidateGates
+	var screen func(string) bool
 	if haveProf {
-		cg = prof.Gates()
+		cg, screen = prof.Gates(), prof.TitleScreen()
+	}
+	var boards, fromFile []ats.Board
+	if af.dryRun {
+		// A dry run never reads the registry: fixtures answer only the boards a file or the
+		// demo names.
+		if boards, err = boardList(cfg, af.boards, "collect ats", true); err != nil {
+			return err
+		}
+	} else {
+		if fromFile, err = fileBoards(cfg, af.boards); err != nil {
+			return err
+		}
+		// Any registry board may be on any ATS host, so live needs them all; checked before
+		// the database is opened, so a live-off machine never touches it.
+		if !liveAllowsBoards(cfg.Live, append(allATSHosts(), fromFile...)) {
+			_, _ = fmt.Fprintf(stdout, "collect ats: %s (LEADHOUND_LIVE is %s); nothing requested\n", liveOffMessage, cfg.Live)
+			return nil
+		}
+	}
+	s, loc, err := openStoreAndZone(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if !af.dryRun {
+		rows, err := s.Q().CollectBoards(ctx)
+		if err != nil {
+			return err
+		}
+		fromRegistry, _ := registryBoards("collect ats", rows)
+		boards = mergeBoards(fromRegistry, fromFile)
+		if len(boards) == 0 {
+			return errNoCollectBoards()
+		}
 	}
 	newClient, err := atsClients(cfg, af.fetchFlags, boards)
 	if errors.Is(err, errLiveOff) {
@@ -193,13 +309,8 @@ func runCollectATS(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	s, loc, err := openStoreAndZone(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
 
-	c := &ats.Collector{Store: s, NewClient: newClient, Loc: loc, Fixture: af.dryRun, Gates: cg}
+	c := &ats.Collector{Store: s, NewClient: newClient, Loc: loc, Fixture: af.dryRun, Gates: cg, TitleScreen: screen}
 	res, runErr := c.Run(ctx, boards)
 	for _, a := range res.ATS {
 		if a.Paused {

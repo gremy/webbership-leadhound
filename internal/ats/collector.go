@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/fetch"
@@ -28,7 +31,8 @@ const applyTypeATS = "ats"
 // atsOrder is the order the ATSs run in, whatever order the board list names them.
 var atsOrder = []string{Greenhouse, Lever, Ashby}
 
-// Collector runs one ATS collect: every board once, one run row per ATS.
+// Collector runs one ATS collect: every board once, one run row per ATS, the ATSs side by
+// side.
 type Collector struct {
 	Store *store.Store
 	// NewClient builds one ATS's client around that run's recorder. It is called once per ATS
@@ -37,8 +41,12 @@ type Collector struct {
 	NewClient func(atsName string, rec fetch.Recorder) *fetch.Client
 	Loc       *time.Location // LEADHOUND_TZ: what "today" means for a pause; nil: UTC
 	// Fixture writes every row under SourceFixture(ats) instead of the ATS's name, so a dry
-	// run never reads as the ATS's data, never pauses it and never expires its jobs.
+	// run never reads as the ATS's data, never pauses it and never expires its jobs. A fixture
+	// run also leaves the board registry alone: a fixture answer says nothing about a board.
 	Fixture bool
+	// TitleScreen keeps a posting when it returns true for its title; one it drops is never
+	// stored, so the next fetch screens it again. nil keeps every posting.
+	TitleScreen func(title string) bool
 	// Gates is the candidate profile the gates read for every observation.
 	Gates gates.CandidateGates
 	Now   func() time.Time // nil: time.Now
@@ -80,6 +88,7 @@ type ATSResult struct {
 	BoardsBroke  int  // answered, but the parser could not read it
 	NotFound     int  // answered 404: the board does not exist
 	Postings     int  // postings saved from the boards that parsed
+	ScreenedOut  int  // postings the title screen dropped, never stored
 	NewJobs      int  // postings with no observation yet
 	Observations int  // observations written
 	Expired      int64
@@ -88,6 +97,13 @@ type ATSResult struct {
 	Failures     int
 	StopReason   string
 	Note         string
+	// ScreenedByBoard is ScreenedOut per board ("<ats>/<board>"), for boards that dropped any.
+	ScreenedByBoard map[string]int
+	// StateChanges counts the registry boards whose state moved, by "old→new".
+	StateChanges map[string]int
+	// Flagged are manual boards that missed on enough days to be retired, which manual
+	// boards never are.
+	Flagged []string
 
 	broke    []string // boards the parser broke on, for the note
 	notFound []string // boards that answered 404, for the note
@@ -123,37 +139,49 @@ func (c *Collector) source(atsName string) string {
 	return atsName
 }
 
-// Run collects every board, grouped by ATS: each ATS present gets its own run row, client
-// and breaker, and runs even when another ATS stopped or failed. A recorded stop is an
-// ATSResult with StopReason set; an error means at least one ATS's run itself failed, and
-// it is returned after every ATS has run, joined with the others.
+// Run collects every board, grouped by ATS: each ATS present gets its own goroutine, run
+// row, client and breaker, so the ATSs run side by side and one runs even when another
+// stopped or failed; within one ATS the boards go one after another at its client's pace.
+// A recorded stop is an ATSResult with StopReason set; an error means at least one ATS's run
+// itself failed, and it is returned after every ATS has run, joined with the others. Results
+// and errors come back in the fixed ATS order, whatever order the runs finished in.
 func (c *Collector) Run(ctx context.Context, boards []Board) (Result, error) {
 	groups := map[string][]Board{}
-	seen := map[string]bool{}
+	seen := map[store.BoardKey]bool{}
 	for _, b := range boards {
 		if err := b.Validate(); err != nil {
 			return Result{}, fmt.Errorf("ats: collect: %w", err)
 		}
-		if seen[b.String()] {
+		k := b.RegistryKey()
+		if seen[k] {
 			continue // each board is fetched once per run
 		}
-		seen[b.String()] = true
+		seen[k] = true
 		groups[b.ATS] = append(groups[b.ATS], b)
 	}
-	var res Result
-	var errs []error
-	for _, name := range atsOrder {
+	results := make([]*ATSResult, len(atsOrder))
+	errs := make([]error, len(atsOrder))
+	var wg sync.WaitGroup
+	for i, name := range atsOrder {
 		if len(groups[name]) == 0 {
 			continue
 		}
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, fmt.Errorf("ats: collect %s: %w", name, err))
-			break
-		}
-		r, err := c.runATS(ctx, name, groups[name])
-		res.ATS = append(res.ATS, r)
-		if err != nil {
-			errs = append(errs, err)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := ctx.Err(); err != nil {
+				errs[i] = fmt.Errorf("ats: collect %s: %w", name, err)
+				return
+			}
+			r, err := c.runATS(ctx, name, groups[name])
+			results[i], errs[i] = &r, err
+		}()
+	}
+	wg.Wait()
+	var res Result
+	for _, r := range results {
+		if r != nil {
+			res.ATS = append(res.ATS, *r)
 		}
 	}
 	return res, errors.Join(errs...)
@@ -217,23 +245,64 @@ func (c *Collector) runATS(ctx context.Context, name string, boards []Board) (AT
 
 // note is the run row's note: one line saying what the run did.
 func (a *ATSResult) note() string {
-	s := fmt.Sprintf("%s: %d boards (%d ok, %d failed, %d parser broke, %d not found), %d postings, %d new, %d observed, %d expired, %d reopened",
+	s := fmt.Sprintf("%s: %d boards (%d ok, %d failed, %d parser broke, %d not found), %d postings, %d screened out, %d new, %d observed, %d expired, %d reopened",
 		a.ATS, a.Boards, a.BoardsOK, a.BoardsFailed, a.BoardsBroke, a.NotFound,
-		a.Postings, a.NewJobs, a.Observations, a.Expired, a.Reopened)
+		a.Postings, a.ScreenedOut, a.NewJobs, a.Observations, a.Expired, a.Reopened)
 	if a.StopReason != "" && a.StopReason != stopReasonParserBroke {
 		s += "; stopped: " + a.StopReason
 	}
 	if len(a.notFound) > 0 {
-		s += "; board not found: " + strings.Join(a.notFound, ", ")
+		s += "; board not found: " + capList(a.notFound)
 	}
 	if len(a.broke) > 0 {
-		s += "; parser broke on " + strings.Join(a.broke, ", ")
+		s += "; parser broke on " + capList(a.broke)
+	}
+	if len(a.StateChanges) > 0 {
+		s += "; board states: " + StateChangeSummary(a.StateChanges)
+	}
+	if len(a.Flagged) > 0 {
+		s += "; manual boards missing " + fmt.Sprint(store.RetireAfterMisses) + "+ days (kept): " + capList(a.Flagged)
 	}
 	for _, line := range a.emptied {
 		s += "\n" + line
 	}
 	return s
 }
+
+// RegistryKey is the board's key in the board registry: its ATS, lower-case slug and
+// region. Two boards with the same key are the same board.
+func (b Board) RegistryKey() store.BoardKey {
+	return store.BoardKey{ATS: b.ATS, Slug: strings.ToLower(b.Board), Region: b.Region}
+}
+
+// noteListCap is how many board names a note lists before it says how many more.
+const noteListCap = 10
+
+// capList joins names, listing at most noteListCap and then how many more.
+func capList(names []string) string {
+	if len(names) <= noteListCap {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:noteListCap], ", ") + fmt.Sprintf(" and %d more", len(names)-noteListCap)
+}
+
+// StateChangeSummary is "2 ok→not_found, 1 error→retired": each change with its count,
+// in a stable order.
+func StateChangeSummary(changes map[string]int) string {
+	keys := make([]string, 0, len(changes))
+	for k := range changes {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%d %s", changes[k], k))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// StateChangeKey is the key a board's state change is counted under: "old→new".
+func StateChangeKey(from, to string) string { return from + "→" + to }
 
 // atsRun is the state of one ATS's run.
 type atsRun struct {
@@ -268,13 +337,24 @@ func (r *atsRun) board(ctx context.Context, b Board) (stop string, _ error) {
 	resp, err := r.client.Get(ctx, fetch.KindBoard, u)
 	if err != nil {
 		r.res.BoardsFailed++
-		return r.triage(b, resp, err)
+		outcome, stop, terr := FailedFetch(ctx, resp, err)
+		switch {
+		case stop != "":
+			r.c.log().Warn("fetching stopped", "ats", b.ATS, "reason", stop, "board", b.String())
+			return stop, nil
+		case terr != nil:
+			return "", terr
+		}
+		// Skipped after a real attempt, already recorded and counted by the breaker; tried
+		// again next run. Only a bad answer counts against the board.
+		r.c.log().Warn("board skipped", "board", b.String(), "status", resp.Status, "outcome", outcome, "err", err)
+		return "", r.record(ctx, b, outcome, 0)
 	}
 	if resp.Status == http.StatusNotFound {
 		r.res.NotFound++
 		r.res.notFound = append(r.res.notFound, b.String())
 		r.c.log().Warn("board not found", "board", b.String())
-		return "", nil
+		return "", r.record(ctx, b, store.CheckNotFound, 0)
 	}
 	postings, err := Parse(b, resp.Body)
 	if err != nil {
@@ -282,7 +362,11 @@ func (r *atsRun) board(ctx context.Context, b Board) (stop string, _ error) {
 		r.res.BoardsBroke++
 		r.res.broke = append(r.res.broke, b.String())
 		r.c.log().Error("parser broke", "board", b.String(), "err", err, "parser_broke", errors.Is(err, ErrParserBroke))
-		return "", nil
+		// Board fetch rows keep no body; one the parser broke on is kept, to read why.
+		if err := r.keepBody(ctx, u, resp.Body); err != nil {
+			return "", fmt.Errorf("board %s: %w", b, err)
+		}
+		return "", r.record(ctx, b, store.CheckError, 0)
 	}
 	fetchID, found := r.rec.LastIDFor(u)
 	if !found {
@@ -292,39 +376,105 @@ func (r *atsRun) board(ctx context.Context, b Board) (stop string, _ error) {
 		return "", fmt.Errorf("board %s: %w", b, err)
 	}
 	r.res.BoardsOK++
-	return "", nil
+	return "", r.record(ctx, b, store.CheckOK, len(postings))
 }
 
-// triage sorts a failed Get: the breaker's reason when it opened, an error when the run
-// must fail, and neither when only this board is skipped (an unexpected status or a
-// transport error, already recorded and counted by the breaker; tried again next run).
-func (r *atsRun) triage(b Board, resp fetch.Response, err error) (stop string, _ error) {
+// keepBody attaches body to the fetch row recorded for u. A row whose stored hash does not
+// match the body is left as it is, with a warning.
+func (r *atsRun) keepBody(ctx context.Context, u string, body []byte) error {
+	fetchID, found := r.rec.LastIDFor(u)
+	if !found {
+		return fmt.Errorf("no fetch row recorded for %s", u)
+	}
+	err := r.q.AttachFetchBody(ctx, fetchID, body)
+	if errors.Is(err, store.ErrFetchBodyMismatch) {
+		r.c.log().Warn("parser-broke body not kept: hash mismatch", "fetch_id", fetchID)
+		return nil
+	}
+	return err
+}
+
+// record writes one fetch's outcome to the board registry, as boards check does, and
+// counts the state change. A fixture run and a board missing from the registry write
+// nothing: collect never adds a board.
+func (r *atsRun) record(ctx context.Context, b Board, outcome string, postings int) error {
+	if r.c.Fixture {
+		return nil
+	}
+	ch, err := r.q.RecordBoardCheck(ctx, b.RegistryKey(), outcome, postings, r.c.loc(), r.c.now())
+	if err != nil {
+		return fmt.Errorf("board %s: %w", b, err)
+	}
+	r.res.noteChange(b, ch)
+	return nil
+}
+
+// noteChange counts one registry write in the result.
+func (a *ATSResult) noteChange(b Board, ch store.BoardChange) {
+	if ch.Changed() {
+		if a.StateChanges == nil {
+			a.StateChanges = map[string]int{}
+		}
+		a.StateChanges[StateChangeKey(ch.Old, ch.New)]++
+	}
+	if ch.Flagged {
+		a.Flagged = append(a.Flagged, b.String())
+	}
+}
+
+// FailedFetch sorts a failed board Get, for collect and boards check alike:
+//   - stop is the breaker's reason when it opened (the board was not requested, or this
+//     request opened it): the ATS's run ends;
+//   - fatal is set when the command itself must stop: the caller's context is done, or the
+//     live gate refused the host;
+//   - otherwise outcome is the board's registry outcome: store.CheckError for an answer
+//     with an unexpected status (a 5xx, a 403), which counts as a miss, and
+//     store.CheckNoVerdict when no answer said anything about the board (a body over the
+//     size limit, a timeout, a network error), which only stamps checked_at, so a large or
+//     slow board is never retired for it.
+func FailedFetch(ctx context.Context, resp fetch.Response, err error) (outcome, stop string, fatal error) {
 	var open *fetch.OpenError
+	var nerr net.Error
 	switch {
 	case errors.As(err, &open):
-		r.c.log().Warn("fetching stopped", "ats", b.ATS, "reason", open.Reason, "board", b.String())
-		return string(open.Reason), nil
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "", err
-	case errors.Is(err, fetch.ErrStatus), errors.Is(err, fetch.ErrBodyTooLarge),
-		resp.Status == 0 && !errors.Is(err, fetch.ErrLiveOff):
-		r.c.log().Warn("board skipped", "board", b.String(), "status", resp.Status, "err", err)
-		return "", nil
+		return "", string(open.Reason), nil
+	case ctx.Err() != nil:
+		return "", "", err
+	case errors.Is(err, fetch.ErrLiveOff):
+		return "", "", err
+	case errors.Is(err, fetch.ErrStatus):
+		return store.CheckError, "", nil
+	case errors.Is(err, fetch.ErrBodyTooLarge), errors.Is(err, context.DeadlineExceeded),
+		errors.As(err, &nerr) && nerr.Timeout(), resp.Status == 0:
+		return store.CheckNoVerdict, "", nil
 	default:
-		return "", err
+		return "", "", err
 	}
 }
 
 // save stores one parsed board: each posting's company and job, an observation for every
 // job that has none, reopens the listed jobs that had expired, and expires this board's
-// open jobs the board no longer lists.
+// open jobs the board no longer lists. A posting the title screen drops is not stored, but
+// it still counts as listed, so it never expires or leaves unchecked a job stored earlier.
 func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Posting) error {
-	ids := make([]string, 0, len(postings))
+	ids := make([]string, 0, len(postings))    // stored this time
+	listed := make([]string, 0, len(postings)) // every id the board lists
+	seen := map[string]bool{}
 	jobIDs := map[string]int64{}
 	byID := map[string]Posting{}
 	for _, p := range postings {
 		sid := SourceJobID(b, p)
-		if _, dup := jobIDs[sid]; dup {
+		if seen[sid] {
+			continue
+		}
+		seen[sid] = true
+		listed = append(listed, sid)
+		if r.c.TitleScreen != nil && !r.c.TitleScreen(p.Title) {
+			r.res.ScreenedOut++
+			if r.res.ScreenedByBoard == nil {
+				r.res.ScreenedByBoard = map[string]int{}
+			}
+			r.res.ScreenedByBoard[b.String()]++
 			continue
 		}
 		company := firstNonEmpty(p.Company, b.Name, b.Board)
@@ -360,16 +510,16 @@ func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Po
 		r.res.Observations++
 	}
 
-	reopened, err := r.q.Reopen(ctx, r.src, ids)
+	reopened, err := r.q.Reopen(ctx, r.src, listed)
 	if err != nil {
 		return err
 	}
 	r.res.Reopened += reopened
 	// Every job the board still lists was checked just now.
-	if _, err := r.q.MarkChecked(ctx, r.src, ids); err != nil {
+	if _, err := r.q.MarkChecked(ctx, r.src, listed); err != nil {
 		return err
 	}
-	expired, err := r.q.ExpireMissing(ctx, r.src, boardPrefix(b), ids)
+	expired, err := r.q.ExpireMissing(ctx, r.src, boardPrefix(b), listed)
 	if err != nil {
 		return err
 	}

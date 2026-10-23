@@ -1,0 +1,9 @@
+{
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=boards.greenhouse.io%2F%2A&output=json&fl=url&showNumPages=true": "greenhouse_pages.json",
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=boards.greenhouse.io%2F%2A&output=json&fl=url&page=0": "greenhouse_page0.jsonl",
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=boards.greenhouse.io%2F%2A&output=json&fl=url&page=1": "greenhouse_page1.jsonl",
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=jobs.lever.co%2F%2A&output=json&fl=url&showNumPages=true": "one_page.json",
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=jobs.lever.co%2F%2A&output=json&fl=url&page=0": "lever_page0.jsonl",
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=jobs.ashbyhq.com%2F%2A&output=json&fl=url&showNumPages=true": "one_page.json",
+  "https://index.commoncrawl.org/CC-MAIN-2099-01-index?url=jobs.ashbyhq.com%2F%2A&output=json&fl=url&page=0": "ashby_page0.jsonl"
+}
