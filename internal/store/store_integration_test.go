@@ -25,6 +25,9 @@ func sqlState(err error) string {
 	return ""
 }
 
+// latestMigration is the number of the newest file in internal/store/migrations.
+const latestMigration = 2
+
 func TestMigrateFromEmpty(t *testing.T) {
 	ctx := context.Background()
 	owner := storetest.OwnerConn(t)
@@ -46,8 +49,8 @@ func TestMigrateFromEmpty(t *testing.T) {
 	if err := owner.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version").Scan(&version); err != nil {
 		t.Fatalf("read goose version: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("goose version after migrate = %d, want 1", version)
+	if version != latestMigration {
+		t.Fatalf("goose version after migrate = %d, want %d", version, latestMigration)
 	}
 
 	// A second run finds nothing to do.
@@ -58,8 +61,8 @@ func TestMigrateFromEmpty(t *testing.T) {
 	if err := owner.QueryRow(ctx, "SELECT count(*) FROM goose_db_version WHERE version_id > 0").Scan(&applied); err != nil {
 		t.Fatalf("count goose rows: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("goose rows after second migrate = %d, want 1 (a no-op)", applied)
+	if applied != latestMigration {
+		t.Fatalf("goose rows after second migrate = %d, want %d (a no-op)", applied, latestMigration)
 	}
 
 	// The default privileges outlived the schema: the app role can write to the new tables.

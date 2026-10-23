@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
-	"golang.org/x/net/html"
-	"golang.org/x/net/html/atom"
-
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/gates"
+	"github.com/gremy/webbership-leadhound/internal/pipeline"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -43,6 +41,8 @@ type Collector struct {
 	// itself, SourceFixture for a dry run, so fixture data never reads as LinkedIn's and
 	// never counts toward LinkedIn's cold start, daily canary or pause.
 	Source string
+	// Gates is the candidate profile the gates read for every observation.
+	Gates gates.CandidateGates
 }
 
 // Result is what one Run did. It mirrors the run row it wrote.
@@ -124,6 +124,7 @@ func (c *Collector) Run(ctx context.Context, m Matrix) (Result, error) {
 		client:  c.NewClient(rec),
 		res:     Result{RunID: runID, ColdStart: !warm},
 		jobIDs:  map[string]int64{},
+		company: map[string]string{},
 		pending: map[string]bool{},
 	}
 
@@ -170,10 +171,11 @@ type collectRun struct {
 	rec     *store.FetchRecorder
 	client  *fetch.Client
 	res     Result
-	jobIDs  map[string]int64 // LinkedIn job ID → job.id, for every card saved this run
-	pending map[string]bool  // new IDs already queued for a detail fetch
-	order   []string         // the queue, in the order first seen
-	broke   string           // the page the parser broke on, for the note
+	jobIDs  map[string]int64  // LinkedIn job ID → job.id, for every card saved this run
+	company map[string]string // LinkedIn job ID → the card's company name, for company rules
+	pending map[string]bool   // new IDs already queued for a detail fetch
+	order   []string          // the queue, in the order first seen
+	broke   string            // the page the parser broke on, for the note
 }
 
 // collect runs the search phase, then the detail phase. It sets res.StopReason for a
@@ -304,6 +306,7 @@ func (r *collectRun) saveCards(ctx context.Context, cards []Card) (unseen int, e
 			return 0, err
 		}
 		r.jobIDs[card.ID] = jobID
+		r.company[card.ID] = card.Company
 		ids = append(ids, card.ID)
 		r.res.Cards++
 	}
@@ -356,7 +359,7 @@ func (r *collectRun) details(ctx context.Context) error {
 		if !found {
 			return fmt.Errorf("detail %s: no fetch row recorded", id)
 		}
-		if err := r.c.writeObservation(ctx, r.jobIDs[id], fetchID, d); err != nil {
+		if err := r.c.writeObservation(ctx, r.jobIDs[id], fetchID, r.company[id], d); err != nil {
 			return err
 		}
 		r.res.Observations++
@@ -374,88 +377,35 @@ func (r *collectRun) note() string {
 	return s
 }
 
-// writeObservation stores what one detail fetch showed about a new job, with its `new`
-// status event, in one transaction. It is the one place an observation is written from a
-// detail page: CP3 replaces its body with a call to pipeline.Observe.
-func (c *Collector) writeObservation(ctx context.Context, jobID, fetchID int64, d Detail) error {
-	return c.Store.InTx(ctx, func(q store.Queries) error {
-		if _, err := q.InsertObservation(ctx, store.ObservationInsert{
-			JobID:            jobID,
-			FetchID:          fetchID,
-			DerivedBy:        DerivedBy,
-			Title:            d.Title,
-			LocationText:     d.Location,
-			DescriptionClean: descriptionText(d.Description),
-			Seniority:        d.Seniority,
-			EmploymentType:   d.EmploymentType,
-			Industries:       d.Industries,
-			ApplicantCount:   d.ApplicantCount,
-			ApplicantText:    d.ApplicantText,
-			PostedText:       d.PostedText,
-			PostedAtEst:      d.PostedAtEst,
-			ApplyType:        d.ApplyType,
-			Closed:           d.Closed,
-		}); err != nil {
-			return err
-		}
+// writeObservation stores what one detail fetch showed about a new job through
+// pipeline.Observe (the sanitised observation and its gate results), with its `new` status
+// event written in Observe's own transaction. company is the card's company name, used
+// when the detail page shows none.
+func (c *Collector) writeObservation(ctx context.Context, jobID, fetchID int64, company string, d Detail) error {
+	if d.Company != "" {
+		company = d.Company
+	}
+	_, err := pipeline.Observe(ctx, c.Store, pipeline.Input{
+		JobID:           jobID,
+		FetchID:         fetchID,
+		DerivedBy:       DerivedBy,
+		Title:           d.Title,
+		Company:         company,
+		Location:        d.Location,
+		DescriptionHTML: d.Description,
+		Seniority:       d.Seniority,
+		EmploymentType:  d.EmploymentType,
+		Industries:      d.Industries,
+		ApplicantCount:  d.ApplicantCount,
+		ApplicantText:   d.ApplicantText,
+		PostedText:      d.PostedText,
+		PostedAtEst:     d.PostedAtEst,
+		ApplyType:       d.ApplyType,
+		Closed:          d.Closed,
+		Gates:           c.Gates,
+	}, func(q store.Queries, _ pipeline.ObserveResult) error {
 		_, err := q.InsertStatusEvent(ctx, jobID, "new", "", "system", nil)
 		return err
 	})
-}
-
-// blockAtoms are the elements that start a new line in the plain-text description.
-var blockAtoms = map[atom.Atom]bool{
-	atom.P: true, atom.Div: true, atom.Br: true, atom.Li: true, atom.Ul: true, atom.Ol: true,
-	atom.H1: true, atom.H2: true, atom.H3: true, atom.H4: true, atom.H5: true, atom.H6: true,
-	atom.Tr: true, atom.Table: true, atom.Section: true, atom.Blockquote: true, atom.Pre: true,
-	atom.Hr: true,
-}
-
-// descriptionText turns the description's HTML into plain text: entities decoded, block
-// elements on their own lines, list items prefixed "- ", whitespace collapsed within a
-// line and empty lines dropped. CP3's sanitiser replaces it.
-func descriptionText(fragment string) string {
-	parent := &html.Node{Type: html.ElementNode, Data: "div", DataAtom: atom.Div}
-	nodes, err := html.ParseFragment(strings.NewReader(fragment), parent)
-	if err != nil {
-		return ""
-	}
-	var b strings.Builder
-	var walk func(n *html.Node)
-	walk = func(n *html.Node) {
-		switch n.Type {
-		case html.TextNode:
-			// Source line breaks are only whitespace; lines come from block elements.
-			b.WriteString(strings.Join(strings.Fields(n.Data), " ") + " ")
-			return
-		case html.ElementNode:
-			switch n.DataAtom {
-			case atom.Script, atom.Style, atom.Template:
-				return
-			}
-		}
-		block := n.Type == html.ElementNode && blockAtoms[n.DataAtom]
-		if block {
-			b.WriteByte('\n')
-		}
-		if n.DataAtom == atom.Li {
-			b.WriteString("- ")
-		}
-		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-			walk(ch)
-		}
-		if block {
-			b.WriteByte('\n')
-		}
-	}
-	for _, n := range nodes {
-		walk(n)
-	}
-	var lines []string
-	for _, line := range strings.Split(b.String(), "\n") {
-		if line = squash(line); line != "" && line != "-" {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n")
+	return err
 }

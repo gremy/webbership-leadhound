@@ -14,6 +14,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/gates"
 	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -112,6 +113,11 @@ func linkedinClients(cfg config.Config, f fetchFlags, budgets fetch.Budgets) (fu
 
 var errLiveOff = errors.New(liveOffMessage)
 
+// defaultCandidateGates is the neutral profile the gates read until Task 4.2 loads the
+// candidate's own from leadhound.yaml in LEADHOUND_DATA_DIR and replaces it: English only,
+// no country limit, any workplace.
+var defaultCandidateGates = gates.CandidateGates{Languages: []string{"en"}}
+
 // openStoreAndZone opens the app database and the LEADHOUND_TZ zone.
 func openStoreAndZone(ctx context.Context, cfg config.Config) (*store.Store, *time.Location, error) {
 	loc, err := time.LoadLocation(cfg.TZ)
@@ -177,7 +183,7 @@ func runCollect(ctx context.Context, args []string) error {
 	}
 	defer s.Close()
 
-	c := &linkedin.Collector{Store: s, NewClient: newClient, Loc: loc, Source: source}
+	c := &linkedin.Collector{Store: s, NewClient: newClient, Loc: loc, Source: source, Gates: defaultCandidateGates}
 	res, err := c.Run(ctx, m)
 	if err != nil {
 		return err

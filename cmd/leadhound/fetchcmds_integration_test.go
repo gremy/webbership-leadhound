@@ -89,6 +89,10 @@ func TestCollectCommandDryRun(t *testing.T) {
 	if got := dbCount(t, `SELECT count(*) FROM job_observation`); got != 7 {
 		t.Errorf("observations = %d, want 7", got)
 	}
+	// Every observation arrives with its gate results.
+	if got := dbCount(t, `SELECT count(*) FROM job_observation o WHERE NOT EXISTS (SELECT 1 FROM gate_result g WHERE g.observation_id = o.id)`); got != 0 {
+		t.Errorf("observations without gate rows = %d, want 0", got)
+	}
 	// A dry run never reads as LinkedIn's data.
 	for _, table := range []string{"run", "http_fetch", "job"} {
 		if got := dbCount(t, `SELECT count(*) FROM `+table+` WHERE source <> 'linkedin-fixture'`); got != 0 {

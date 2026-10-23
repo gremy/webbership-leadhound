@@ -22,6 +22,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/gates"
 	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
@@ -190,6 +191,7 @@ func collector(t *testing.T, s *store.Store, rt http.RoundTripper, now func() ti
 		Now:       now,
 		Loc:       bucharest,
 		Log:       slog.New(slog.NewTextHandler(logs, nil)),
+		Gates:     gates.CandidateGates{Languages: []string{"en"}},
 	}
 }
 
@@ -270,6 +272,24 @@ func TestCollectorColdStart(t *testing.T) {
 		JOIN job j ON j.id = o.job_id WHERE f.kind = 'detail' AND f.url LIKE '%/' || j.source_job_id`); got != 7 {
 		t.Errorf("observations linked to their own detail fetch = %d, want 7", got)
 	}
+	// Every observation has its gate results, at least the language gate.
+	if got := count(t, `SELECT count(*) FROM job_observation o WHERE NOT EXISTS (
+		SELECT 1 FROM gate_result g WHERE g.observation_id = o.id AND g.job_id = o.job_id AND g.gate = 'language')`); got != 0 {
+		t.Errorf("observations without a language gate row = %d, want 0", got)
+	}
+	// An English posting runs all four gates; one in another language stops at language.
+	if got := count(t, `SELECT count(*) FROM job_observation o WHERE o.lang = 'en' AND
+		(SELECT count(DISTINCT gate) FROM gate_result g WHERE g.observation_id = o.id AND g.gate <> 'rule') <> 4`); got != 0 {
+		t.Errorf("English observations without all four gates = %d, want 0", got)
+	}
+	if got := count(t, `SELECT count(*) FROM job_observation WHERE lang = 'en'`); got < 1 {
+		t.Errorf("English observations = %d, want some", got)
+	}
+	if got := count(t, `SELECT count(*) FROM job_observation o WHERE o.lang NOT IN ('en', '') AND
+		EXISTS (SELECT 1 FROM gate_result g WHERE g.observation_id = o.id AND g.gate IN ('location', 'workplace', 'work_rights'))`); got != 0 {
+		t.Errorf("non-English observations with English-pattern gates = %d, want 0", got)
+	}
+	assertGuardCountsOnly(t)
 	// The plain-text description has no markup.
 	if got := count(t, `SELECT count(*) FROM job_observation WHERE description_clean = '' OR description_clean LIKE '%<%'`); got != 0 {
 		t.Errorf("observations with an empty or tagged description = %d, want 0", got)
@@ -825,5 +845,110 @@ func TestDryRunSourceIsSeparate(t *testing.T) {
 	}
 	if !res2.ColdStart {
 		t.Errorf("live collect after a dry run = %+v, want a cold start", res2)
+	}
+}
+
+// assertGuardCountsOnly checks every stored guard_findings holds numbers only, at any
+// depth: no excerpt of a posting is ever stored.
+func assertGuardCountsOnly(t *testing.T) {
+	t.Helper()
+	rows, err := storetest.OwnerConn(t).Query(context.Background(), `SELECT guard_findings FROM job_observation`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil || len(m) == 0 {
+			t.Fatalf("guard_findings %s: %v (want a non-empty object)", raw, err)
+		}
+		var walk func(path string, v any)
+		walk = func(path string, v any) {
+			switch v := v.(type) {
+			case float64:
+			case map[string]any:
+				for k, x := range v {
+					walk(path+"."+k, x)
+				}
+			default:
+				t.Errorf("guard_findings%s = %v (%T), want a number", path, v, v)
+			}
+		}
+		walk("", m)
+		n++
+	}
+	if n == 0 {
+		t.Fatal("no observations to check")
+	}
+}
+
+// TestCollectSeesKnownJobsAgain is the grid column "collect sees it again": last_seen is
+// bumped and nothing else changes, whatever the job's status or listing status.
+func TestCollectSeesKnownJobsAgain(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	ft := fixtures(t, fixtureDir(t, fullManifest(t)))
+	var logs bytes.Buffer
+	if _, err := collector(t, s, ft, time.Now, &logs).Run(ctx, demo); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	owner := storetest.OwnerConn(t)
+	q := s.Q()
+	jobID := func(sourceJobID string) int64 {
+		t.Helper()
+		j, err := q.JobBySourceID(ctx, linkedin.Source, sourceJobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.ID
+	}
+	// 1 stays new; 2 is applied; 4 is skipped; 5 is a listing found expired.
+	applied, skipped, expired, fresh := jobID("1000000002"), jobID("1000000004"), jobID("1000000005"), jobID("1000000001")
+	for _, st := range []struct {
+		id     int64
+		status string
+	}{{applied, "shortlisted"}, {applied, "applied"}, {skipped, "skipped"}} {
+		if _, err := q.InsertStatusEvent(ctx, st.id, st.status, "", "gremy", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := owner.Exec(ctx, `UPDATE job SET listing_status = 'expired', status_checked_at = now() WHERE id = $1`, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(ctx, `UPDATE job SET last_seen_at = last_seen_at - interval '1 day'`); err != nil {
+		t.Fatal(err)
+	}
+	events := count(t, `SELECT count(*) FROM status_event`)
+	observations := count(t, `SELECT count(*) FROM job_observation`)
+	gateRows := count(t, `SELECT count(*) FROM gate_result`)
+
+	if _, err := collector(t, s, ft, time.Now, &logs).Run(ctx, demo); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if got := count(t, `SELECT count(*) FROM job WHERE last_seen_at < now() - interval '1 hour'`); got != 0 {
+		t.Errorf("jobs not bumped = %d, want 0", got)
+	}
+	if got := count(t, `SELECT count(*) FROM status_event`); got != events {
+		t.Errorf("status events = %d, want %d (none written)", got, events)
+	}
+	if got := count(t, `SELECT count(*) FROM job_observation`); got != observations {
+		t.Errorf("observations = %d, want %d", got, observations)
+	}
+	if got := count(t, `SELECT count(*) FROM gate_result`); got != gateRows {
+		t.Errorf("gate rows = %d, want %d", got, gateRows)
+	}
+	for id, want := range map[int64]string{fresh: "new", applied: "applied", skipped: "skipped", expired: "new"} {
+		st, err := q.LatestStatus(ctx, id)
+		if err != nil || st.Status != want {
+			t.Errorf("job %d status = %+v, %v; want %s", id, st, err, want)
+		}
+	}
+	if got := count(t, `SELECT count(*) FROM job WHERE id = $1 AND listing_status = 'expired'`, expired); got != 1 {
+		t.Error("the expired listing did not stay expired")
 	}
 }

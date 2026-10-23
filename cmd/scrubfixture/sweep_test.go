@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -28,11 +29,7 @@ func TestInvariantSweep(t *testing.T) {
 		t.Skip(probeEnv + " is not set; the sweep needs the private probe pages")
 	}
 	deny := loadDenylist(t)
-	pages, err := filepath.Glob(filepath.Join(dir, "*.html"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sort.Strings(pages)
+	pages := jobPages(t, dir)
 	s := NewScrubber(detectPhraseLang)
 	// The search page goes first, as in generate, so cards claim the first IDs.
 	sort.SliceStable(pages, func(i, j int) bool {
@@ -41,9 +38,6 @@ func TestInvariantSweep(t *testing.T) {
 	var detailCount, searchCount int
 	for _, p := range pages {
 		name := filepath.Base(p)
-		if name == "view.html" {
-			continue // the full logged-in-style page; not a guest endpoint response
-		}
 		raw, err := os.ReadFile(p) // #nosec G304 G703 -- test reads the operator's probe directory
 		if err != nil {
 			t.Fatal(err)
@@ -59,7 +53,7 @@ func TestInvariantSweep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: scrub failed: %v", name, err)
 		}
-		orig := CollectOriginals(raw)
+		orig := meaningful(CollectOriginals(raw))
 		if kind == KindDetail && (len(orig.JobIDs) == 0 || len(orig.Slugs) == 0 || len(orig.Companies) == 0) {
 			t.Errorf("%s: collector found %d job IDs, %d slugs, %d names; the sweep would prove nothing", name, len(orig.JobIDs), len(orig.Slugs), len(orig.Companies))
 		}
@@ -101,10 +95,7 @@ func TestRepoSweep(t *testing.T) {
 		t.Skip(probeEnv + " is not set; the sweep needs the private probe pages")
 	}
 	deny := loadDenylist(t)
-	pages, err := filepath.Glob(filepath.Join(dir, "*.html"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	pages := jobPages(t, dir)
 	nums := map[string]bool{}
 	var orig Originals
 	for _, p := range pages {
@@ -115,7 +106,7 @@ func TestRepoSweep(t *testing.T) {
 		for _, m := range rawNumberRe.FindAll(raw, -1) {
 			nums[string(m)] = true
 		}
-		o := CollectOriginals(raw)
+		o := meaningful(CollectOriginals(raw))
 		orig.Slugs = append(orig.Slugs, o.Slugs...)
 		orig.Companies = append(orig.Companies, o.Companies...)
 	}
@@ -172,6 +163,67 @@ func TestRepoSweep(t *testing.T) {
 	if files < 20 {
 		t.Errorf("swept only %d files; the walk missed the repository", files)
 	}
+}
+
+// jobPageRe names the probe files that are guest job pages: the search page, the single
+// detail page and the detail pages saved under their posting ID. Anything else in the probe
+// directory (a company page kept for a later checkpoint, the logged-in view.html) is not a
+// job page, so it is neither scrubbed as one nor mined for originals.
+var jobPageRe = regexp.MustCompile(`^(search|detail|d\d+)\.html$`)
+
+// jobPages returns the job pages the sweeps cover: every page sources.json feeds into the
+// fixture set, plus every other file matching jobPageRe, sorted with the search page first
+// (as in generate, so its cards claim the first IDs).
+func jobPages(t *testing.T, dir string) []string {
+	t.Helper()
+	sources, err := loadSources(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := map[string]bool{}
+	for _, src := range sources {
+		set[src] = true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() && jobPageRe.MatchString(e.Name()) {
+			set[e.Name()] = true
+		}
+	}
+	names := sorted(set)
+	sort.SliceStable(names, func(i, j int) bool {
+		return names[i] == "search.html" && names[j] != "search.html"
+	})
+	pages := make([]string, len(names))
+	for i, n := range names {
+		pages[i] = filepath.Join(dir, n)
+	}
+	return pages
+}
+
+// minOriginalLen is the shortest company slug or name the substring rules look for. A
+// value of one to three characters (a short slug such as an acronym) also occurs as an
+// ordinary word or identifier in source, module paths and checksums, so it would raise
+// false hits without saying anything about a leak. Job IDs and long numbers are not
+// affected: they keep their own 7-or-more-digit rule.
+const minOriginalLen = 4
+
+// meaningful drops the slugs and company names shorter than minOriginalLen.
+func meaningful(o Originals) Originals {
+	keep := func(vals []string) []string {
+		var out []string
+		for _, v := range vals {
+			if utf8.RuneCountInString(strings.TrimSpace(v)) >= minOriginalLen {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	o.Slugs, o.Companies = keep(o.Slugs), keep(o.Companies)
+	return o
 }
 
 // numberHit reports whether data holds any of nums as a whole digit run, whatever letters
