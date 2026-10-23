@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/gremy/webbership-leadhound/internal/candidate"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/gates"
@@ -23,6 +24,10 @@ func init() { commands["collect"] = runCollect }
 
 // stdout is where commands print their outcome; tests replace it.
 var stdout io.Writer = os.Stdout
+
+// notes is where commands print a one-line notice that is not their outcome; tests
+// replace it.
+var notes io.Writer = os.Stderr
 
 // liveOffMessage is printed, with exit 0 and no run row, when a command would need the
 // network and LEADHOUND_LIVE does not allow LinkedIn.
@@ -113,10 +118,43 @@ func linkedinClients(cfg config.Config, f fetchFlags, budgets fetch.Budgets) (fu
 
 var errLiveOff = errors.New(liveOffMessage)
 
-// defaultCandidateGates is the neutral profile the gates read until Task 4.2 loads the
-// candidate's own from leadhound.yaml in LEADHOUND_DATA_DIR and replaces it: English only,
-// no country limit, any workplace.
+// defaultCandidateGates is the neutral profile the gates read when LEADHOUND_DATA_DIR is
+// not set: English only, no country limit, any workplace.
 var defaultCandidateGates = gates.CandidateGates{Languages: []string{"en"}}
+
+// candidateProfile loads leadhound.yaml from LEADHOUND_DATA_DIR; a broken file is a usage
+// error naming the problem. With no data directory it prints one note and reports ok
+// false, and the command runs on the built-in demo.
+func candidateProfile(cfg config.Config, command string) (prof candidate.Config, ok bool, err error) {
+	if cfg.DataDir == "" {
+		_, _ = fmt.Fprintf(notes, "%s: LEADHOUND_DATA_DIR is not set; using the demo search and neutral gates\n", command)
+		return candidate.Config{}, false, nil
+	}
+	prof, err = candidate.Load(cfg.DataDir)
+	if err != nil {
+		return candidate.Config{}, false, usageError("%v", err)
+	}
+	return prof, true, nil
+}
+
+// collectMatrix is the profile's matrix, or the demo's without one; each flag given
+// replaces its part.
+func collectMatrix(prof *candidate.Config, keywords, locations []string, maxPages int) linkedin.Matrix {
+	m := linkedin.DemoMatrix()
+	if prof != nil {
+		m = prof.Matrix()
+	}
+	if len(keywords) > 0 {
+		m.Keywords = keywords
+	}
+	if len(locations) > 0 {
+		m.Locations = locations
+	}
+	if maxPages > 0 {
+		m.MaxPages = maxPages
+	}
+	return m
+}
 
 // openStoreAndZone opens the app database and the LEADHOUND_TZ zone.
 func openStoreAndZone(ctx context.Context, cfg config.Config) (*store.Store, *time.Location, error) {
@@ -151,21 +189,20 @@ func runCollect(ctx context.Context, args []string) error {
 	if err := ff.check(); err != nil {
 		return err
 	}
-	m := linkedin.DemoMatrix()
-	if len(keywords) > 0 {
-		m.Keywords = keywords
-	}
-	if len(locations) > 0 {
-		m.Locations = locations
-	}
-	if *maxPages > 0 {
-		m.MaxPages = *maxPages
-	}
-
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
 	if err != nil {
 		return err
 	}
+	prof, haveProf, err := candidateProfile(cfg, "collect linkedin")
+	if err != nil {
+		return err
+	}
+	cg := defaultCandidateGates
+	var profp *candidate.Config
+	if haveProf {
+		cg, profp = prof.Gates(), &prof
+	}
+	m := collectMatrix(profp, keywords, locations, *maxPages)
 	newClient, source, err := linkedinClients(cfg, ff, fetch.Budgets{
 		fetch.KindSearch: cfg.LinkedInSearchBudget,
 		fetch.KindDetail: cfg.LinkedInDetailBudget,
@@ -183,7 +220,7 @@ func runCollect(ctx context.Context, args []string) error {
 	}
 	defer s.Close()
 
-	c := &linkedin.Collector{Store: s, NewClient: newClient, Loc: loc, Source: source, Gates: defaultCandidateGates}
+	c := &linkedin.Collector{Store: s, NewClient: newClient, Loc: loc, Source: source, Gates: cg}
 	res, err := c.Run(ctx, m)
 	if err != nil {
 		return err

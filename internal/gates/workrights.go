@@ -2,6 +2,7 @@ package gates
 
 import (
 	"regexp"
+	"strings"
 )
 
 var (
@@ -19,9 +20,7 @@ var (
 
 func evalWorkRights(obs Observation, c CandidateGates) Result {
 	text := obs.Description
-	// With no country limit the candidate is taken to hold EU work rights, until the
-	// profile carries them as a field of their own.
-	euCandidate := !hasCountryLimit(c) || anyAllowed([]place{{region: eu}}, c.AllowedCountries)
+	euCandidate, stated := holdsEURights(c)
 	us := place{name: "the United States", country: "United States"}
 	usAllowed := allowed(us, c.AllowedCountries)
 	// holds reports whether the candidate can work in p.
@@ -66,7 +65,11 @@ func evalWorkRights(obs Observation, c CandidateGates) Result {
 		if euCandidate {
 			return Result{Gate: GateWorkRights, Verdict: Pass, Reason: "Asks for EU work rights, which you hold.", Snippet: snippet(text, m[0], m[1])}
 		}
-		return Result{Gate: GateWorkRights, Verdict: Flag, Reason: "Asks for EU work rights; none of your allowed countries is in the EU.", Snippet: snippet(text, m[0], m[1])}
+		reason := "Asks for EU work rights; none of your allowed countries is in the EU."
+		if stated {
+			reason = "Asks for EU work rights; your stated work rights do not name them."
+		}
+		return Result{Gate: GateWorkRights, Verdict: Flag, Reason: reason, Snippet: snippet(text, m[0], m[1])}
 	}
 	if m := noSponsorRE.FindStringIndex(text); m != nil {
 		if euCandidate {
@@ -75,4 +78,18 @@ func evalWorkRights(obs Observation, c CandidateGates) Result {
 		return Result{Gate: GateWorkRights, Verdict: Flag, Reason: "No visa sponsorship; check whether you need one.", Snippet: snippet(text, m[0], m[1])}
 	}
 	return Result{Gate: GateWorkRights, Verdict: Pass, Reason: "No work-rights requirement found.", Snippet: opening(text)}
+}
+
+// euRightsStatedRE reads EU work rights in the candidate's own statement: "EU citizen",
+// "European Union passport", "EU/EEA work permit".
+var euRightsStatedRE = regexp.MustCompile(`\bEU\b|(?i:\bEuropean\s+Union\b)`)
+
+// holdsEURights reports whether the candidate holds EU work rights and whether that comes
+// from their stated WorkRights. Without a statement it is inferred: no country limit, or
+// an allowed EU country.
+func holdsEURights(c CandidateGates) (holds, stated bool) {
+	if strings.TrimSpace(c.WorkRights) != "" {
+		return euRightsStatedRE.MatchString(c.WorkRights), true
+	}
+	return !hasCountryLimit(c) || anyAllowed([]place{{region: eu}}, c.AllowedCountries), false
 }

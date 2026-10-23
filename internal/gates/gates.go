@@ -58,7 +58,14 @@ type Observation struct {
 type CandidateGates struct {
 	Languages        []string // ISO 639-1 codes, e.g. "en", "ro"
 	AllowedCountries []string // country names, e.g. "Romania"
-	RemoteOnly       bool
+	// AllowedCities are cities the candidate can be based in or travel to, e.g. a home
+	// city: a residence requirement naming one passes, and office days there never fail.
+	AllowedCities []string
+	RemoteOnly    bool
+	// WorkRights is the candidate's own statement, e.g. "EU citizen". When it is set it
+	// alone decides whether they hold EU work rights; when it is blank that is inferred
+	// from an allowed EU country.
+	WorkRights string
 }
 
 // Rule is one active stored rule.

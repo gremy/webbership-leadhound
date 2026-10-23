@@ -1,0 +1,47 @@
+{
+  "model": "jev-1.13.0",
+  "state": "Example Corp builds payment tools in Go at example.invalid.",
+  "questions": {
+    "ai_work": {
+      "type": "choice",
+      "criteria": {
+        "no": "It does not.",
+        "yes": "The posting clearly says so."
+      },
+      "instructions": "Does the role build with AI models?"
+    },
+    "contract": {
+      "type": "choice",
+      "criteria": {
+        "contract": "Fixed-term or freelance.",
+        "permanent": "An employee contract with no end date."
+      },
+      "instructions": "Is this a contract or a permanent role?"
+    },
+    "drupal": {
+      "type": "choice",
+      "criteria": {
+        "no": "It does not.",
+        "yes": "The posting clearly says so."
+      },
+      "instructions": "Is Drupal part of the stack?"
+    },
+    "go_role": {
+      "type": "choice",
+      "criteria": {
+        "no": "It does not.",
+        "yes": "The posting clearly says so."
+      },
+      "instructions": "Is Go the main language of this role?"
+    },
+    "seniority": {
+      "type": "choice",
+      "criteria": {
+        "junior": "Up to two years.",
+        "mid": "Two to five years.",
+        "senior": "Five years or more."
+      },
+      "instructions": "What seniority does the posting ask for?"
+    }
+  }
+}

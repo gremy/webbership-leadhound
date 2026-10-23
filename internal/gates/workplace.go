@@ -27,14 +27,26 @@ var hybridTech = map[string]bool{
 
 // officeDaysRE matches office days: "2 days a week in the office", "two days per week at
 // the office", "2 days/week at the office", "3 days in the office", "3 zile pe săptămână
-// la birou", and "in the office 2 days a week".
-var officeDaysRE = regexp.MustCompile(`(?i)\b(?:[1-5]|one|two|three|four|five)\s*(?:days?|zile)\b(?:\s*(?:(?:a|per|pe|each|every)\s+|/\s*)(?:week|săptămân\pL*))?\s*(?:in|at|la|în|from)\s+(?:the\s+|our\s+)?(?:office|birou)\b|\b(?:in|at)\s+(?:the|our)\s+office\s+(?:[1-5]|one|two|three|four|five)\s+days?\b`)
+// la birou", "in the office 2 days a week", "two days a week in our Lisbon office",
+// "from our Lisbon office three days a week", and "our Lisbon office, three days a week".
+// Each form captures the office's city when the phrase names one.
+var officeDaysRE = regexp.MustCompile(`(?i)` +
+	`\b` + officeNum + `\s*(?:days?|zile)\b(?:\s*(?:(?:a|per|pe|each|every)\s+|/\s*)(?:week|săptămân\pL*))?\s*(?:in|at|la|în|from)\s+(?:the\s+|our\s+)?` + officeCityOpt + `(?:office|birou)\b` +
+	`|\b(?:in|at|from)\s+(?:the|our)\s+` + officeCityOpt + `office\s+` + officeNum + `\s+days?\b` +
+	`|\b(?:the|our)\s+` + officeCityOpt + `office\b[^.\n]{0,40}?\b` + officeNum + `\s+days?\s+(?:a|per|each|every)\s+week\b`)
+
+const (
+	officeNum = `(?:[1-5]|one|two|three|four|five)`
+	// officeCityOpt is an optional capitalised word before "office": the office's city.
+	officeCityOpt = `(?:(?-i:(\p{Lu}[\pL-]+))\s+)?`
+)
 
 var (
 	onsiteRE   = regexp.MustCompile(`(?i)\bon[- ]?site\b`)
 	inOfficeRE = regexp.MustCompile(`(?i)\bin[- ]office\b`)
-	// officeCityRE names an office's city: "office in Berlin", "our Paris office".
-	officeCityRE = regexp.MustCompile(`\b(?i:office\s+in)\s+(\p{Lu}[\pL-]+)|\b(?i:our)\s+(\p{Lu}[\pL-]+)\s+(?i:office)\b`)
+	// officeCityRE names an office's city: "office in Berlin", "our Paris office",
+	// "in Exampleville office", "at the Paris office".
+	officeCityRE = regexp.MustCompile(`\b(?i:office\s+in)\s+(\p{Lu}[\pL-]+)|\b(?i:in|at|our)\s+(?:(?i:our|the)\s+)?(\p{Lu}[\pL-]+)\s+(?i:office)\b`)
 )
 
 func evalWorkplace(obs Observation, c CandidateGates) Result {
@@ -50,10 +62,16 @@ func evalWorkplace(obs Observation, c CandidateGates) Result {
 	}
 
 	var fs []finding
-	for _, m := range officeDaysRE.FindAllStringIndex(text, -1) {
+	for _, m := range officeDaysRE.FindAllStringSubmatchIndex(text, -1) {
 		f := finding{verdict: Flag, reason: "Asks for days in the office.", snippet: snippet(text, m[0], m[1]), pos: m[0]}
 		if c.RemoteOnly {
-			if city := officeCity(text, obs.Location); city != "" {
+			// Office days in a city the candidate allows stay their call. The city the
+			// phrase itself names comes first, then one named elsewhere, then the location line.
+			city := submatchCity(text, m)
+			if city == "" {
+				city = officeCity(text, obs.Location)
+			}
+			if city != "" && allowedCity(city, c.AllowedCities) == "" {
 				f.verdict = Fail
 				f.reason = fmt.Sprintf("Asks for days in the office in %s; you want remote only.", city)
 			}
@@ -90,14 +108,37 @@ func evalWorkplace(obs Observation, c CandidateGates) Result {
 
 // officeCity names the office's city from the text, else the posting's location line.
 func officeCity(text, location string) string {
-	if m := officeCityRE.FindStringSubmatch(text); m != nil {
-		if m[1] != "" {
-			return m[1]
+	for _, m := range officeCityRE.FindAllStringSubmatchIndex(text, -1) {
+		if city := submatchCity(text, m); city != "" {
+			return city
 		}
-		return m[2]
 	}
 	city, _, _ := strings.Cut(strings.TrimSpace(location), ",")
 	return strings.TrimSpace(city)
+}
+
+// notOfficeCity are capitalised words that can stand before "office" without naming a
+// city ("the Main office", "Our Head office").
+var notOfficeCity = map[string]bool{
+	"the": true, "our": true, "main": true, "head": true, "central": true, "local": true,
+	"regional": true, "nearest": true, "home": true, "company": true, "global": true,
+	"european": true, "headquarters": true, "corporate": true,
+}
+
+// submatchCity returns the first city group a match captured, skipping a capitalised
+// word that is not a city ("the Main office").
+func submatchCity(text string, m []int) string {
+	for i := 2; i+1 < len(m); i += 2 {
+		if m[i] < 0 {
+			continue
+		}
+		city := text[m[i]:m[i+1]]
+		if notOfficeCity[strings.ToLower(city)] {
+			continue
+		}
+		return city
+	}
+	return ""
 }
 
 func nonEmpty(ss ...string) []string {

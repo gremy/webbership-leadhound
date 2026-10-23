@@ -124,11 +124,25 @@ func TestWorkplaceGate(t *testing.T) {
 		{"fully remote beats hybrid", "Backend Engineer", "", english + "Fully remote, or hybrid if you prefer.", true, Pass, "remote", "Fully remote"},
 		{"100% remote with on-site visits", "Backend Engineer", "", english + "The job is 100% remote but on-site visits happen.", true, Flag, "also says fully remote", "on-site"},
 		{"not fully remote", "Backend Engineer", "", english + "This is not a fully remote role; it is hybrid.", false, Flag, "hybrid", "hybrid"},
+		// The office's city comes from the office-days phrase first, then the text, then the location line.
+		{"office days in named city", "Backend Engineer", "", english + "Hybrid role: two days a week in our Lisbon office.", true, Fail, "Lisbon", "two days a week in our Lisbon office"},
+		{"office days in named city not remote only", "Backend Engineer", "", english + "Hybrid role: two days a week in our Lisbon office.", false, Flag, "hybrid", "Hybrid"},
+		{"office days in allowed named city", "Backend Engineer", "Lisbon, Portugal", english + "Hybrid role: two days a week in our Exampleville office.", true, Flag, "hybrid", "Hybrid"},
+		{"from named office days a week", "Backend Engineer", "", english + "Work from our Lisbon office three days a week.", true, Fail, "Lisbon", "Lisbon office three days"},
+		{"from allowed named office days a week", "Backend Engineer", "Lisbon, Portugal", english + "Work from our Exampleville office three days a week.", true, Flag, "office", "Exampleville office three days"},
+		{"named office then days a week", "Backend Engineer", "", english + "Our Lisbon office, 3 days per week.", true, Fail, "Lisbon", "Lisbon office, 3 days per week"},
+		{"allowed office named elsewhere beats location", "Backend Engineer", "Lisbon, Portugal", english + "Hybrid role in Exampleville office, two days a week in the office.", true, Flag, "hybrid", "Hybrid"},
+		{"named office elsewhere not allowed", "Backend Engineer", "Exampleville, Exampleland", english + "Hybrid role in Lisbon office, two days a week in the office.", true, Fail, "Lisbon", "two days a week in the office"},
+		{"main office is not a city", "Backend Engineer", "Lisbon, Portugal", english + "We work two days a week in the Main office.", true, Fail, "Lisbon", "two days a week in the Main office"},
+		{"main office in allowed city", "Backend Engineer", "Exampleville, Exampleland", english + "We work two days a week in the Main office.", true, Flag, "office", "two days a week in the Main office"},
+		{"bare hybrid in another city stays flag", "Backend Engineer", "Lisbon, Portugal", english + "This is a hybrid role.", true, Flag, "hybrid", "hybrid role"},
+		{"office open days is not office days", "Backend Engineer", "", english + "Our Lisbon office is open five days.", true, Pass, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := candidate
 			c.RemoteOnly = tc.remoteOnly
+			c.AllowedCities = []string{"Exampleville"}
 			obs := Observation{Title: tc.title, Location: tc.location, Description: tc.text}
 			r := one(t, Evaluate(obs, c, nil), GateWorkplace)
 			checkResult(t, r, tc.verdict, tc.reasonHas, tc.snippetHas)

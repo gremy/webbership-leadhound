@@ -1,0 +1,19 @@
+eval: 5 golden jobs from golden.demo.jsonl · decider swinging · 2 run(s)
+label            run 1       run 2       null (skipped)
+title            3/3 100%    3/3 100%    2
+stack            0/2   0%    2/2 100%    3
+seniority        2/2 100%    2/2 100%    3
+location         1/2  50%    1/2  50%    3
+work_rights      1/1 100%    1/1 100%    4
+gate language    5/5 100%    5/5 100%    0
+gate workplace   2/2 100%    2/2 100%    3
+overall          4/5  80%    5/5 100%    0
+all criteria     7/10  70%   9/10  90%   15
+disagreements between runs: 6
+  remote-en stack: pass / fail
+  remote-en overall: apply / skip
+  hybrid-en stack: pass / fail
+  office-fr stack: pass / fail
+  onsite-es stack: pass / fail
+  simple-nl stack: pass / fail
+input tokens: 10000 · estimated cost: $0.000420 (at $0.042 per million input tokens)

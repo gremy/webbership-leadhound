@@ -105,6 +105,14 @@ func locationFinding(text string, m []int, p locationPattern, c CandidateGates, 
 		if phrase != "" {
 			end = m[1] + strings.Index(text[m[1]:], phrase) + len(phrase)
 		}
+		if city := allowedCity(phrase, c.AllowedCities); city != "" {
+			return finding{
+				verdict: Pass,
+				reason:  fmt.Sprintf("Asks candidates to %s %s, one of your allowed cities.", sayIn(p.says), city),
+				snippet: snippet(text, m[0], end),
+				pos:     m[0],
+			}, true
+		}
 		places = findPlaces(phrase)
 		if len(places) == 0 && !p.needPlace {
 			if name := properNoun(phrase); name != "" {

@@ -1,0 +1,41 @@
+# A fictional candidate profile: a Rust developer in Exampleland.
+# Copy it to leadhound.yaml in your LEADHOUND_DATA_DIR and make it your own.
+# Every criterion is one question the scorer asks of a posting; the descriptions are what
+# it reads, so say plainly what a pass, a fail and an unclear posting look like.
+candidate:
+  languages: [en, de]              # ISO 639-1; postings in other languages fail the language gate
+  allowed_countries: [Exampleland] # where the candidate can be employed or contract from
+  allowed_cities: [Exampleville]   # residence or office requirements naming these pass
+  remote_only: true
+  work_rights: "Exampleland citizen"
+  criteria:
+    title:
+      pass: "A backend or systems engineering role: Rust developer, backend engineer, systems engineer."
+      fail: "A role that is not engineering (sales, support, marketing) or is front-end only."
+      unclear: "A generic title such as 'developer' with no hint of the area."
+    stack:
+      pass: "Rust is the main language, or one of two, with Linux and PostgreSQL around it."
+      fail: "No Rust at all, or Rust only as a nice-to-have beside a different main language."
+      unclear: "The posting names no languages."
+    seniority:
+      pass: "Mid-level or senior: three to eight years of experience."
+      fail: "Intern, junior or graduate roles, or principal and director roles."
+      unclear: "No level or years of experience given."
+    location:
+      pass: "Fully remote from Exampleland, or based in Exampleville."
+      fail: "Office or hybrid work in another city, or residence outside Exampleland."
+      unclear: "Remote, but the posting does not say from where."
+    work_rights:
+      pass: "Open to Exampleland citizens, or no work-rights requirement."
+      fail: "Requires citizenship or a clearance from another country."
+      unclear: "Asks for the right to work somewhere without naming it."
+  evidence_keywords:
+    stack: [rust, tokio, linux, postgres, postgresql, grpc]
+    seniority: [senior, mid-level, junior, intern, principal, staff, lead]
+confidence_threshold: 0.7
+linkedin:
+  canary: {keywords: "software engineer", location: "European Union"}
+  max_pages: 2
+  keywords: [rust developer, rust backend]
+  locations: [European Union]
+brief: {max_apply: 5, max_your_call: 5}
