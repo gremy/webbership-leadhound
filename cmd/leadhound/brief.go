@@ -27,7 +27,7 @@ var defaultOutbox = filepath.Join("data", "outbox")
 const outboxRecipient = "brief@example.invalid"
 
 // briefFromName is the sender's display name.
-const briefFromName = "Leadhound"
+const briefFromName = "LeadHound"
 
 // newMailer is the mailer --send uses; tests replace it.
 var newMailer = func(cfg config.Config) mail.Mailer {

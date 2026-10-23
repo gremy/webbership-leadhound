@@ -1,7 +1,7 @@
 == subject
-Leadhound · Fri 23 Oct · nothing listed, see health
+LeadHound · Fri 23 Oct · nothing listed, see health
 == text
-Leadhound · Fri 23 Oct · nothing listed, see health
+LeadHound · Fri 23 Oct · nothing listed, see health
 
 Nothing listed today, and not everything was checked: see Health below.
 
@@ -11,7 +11,7 @@ Health: recheck not run
 == html
 <!doctype html>
 <html><body>
-<p><strong>Leadhound · Fri 23 Oct · nothing listed, see health</strong></p>
+<p><strong>LeadHound · Fri 23 Oct · nothing listed, see health</strong></p>
 <p>Nothing listed today, and not everything was checked: see Health below.</p>
 <p>Health: LinkedIn parser broke: no LinkedIn jobs today until it is fixed</p>
 <p>Health: Scoring ok</p>

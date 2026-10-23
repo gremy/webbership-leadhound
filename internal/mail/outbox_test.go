@@ -23,7 +23,7 @@ func TestOutboxWritesNumberedFiles(t *testing.T) {
 	if m.Provider() != "outbox" {
 		t.Errorf("provider = %q", m.Provider())
 	}
-	msg := Message{To: "user@mail.example", Subject: "Leadhound · Fri 23 Oct", Text: "1. A job\n", HTML: "<ol><li>A job</li></ol>", IdempotencyKey: "brief-2026-10-23"}
+	msg := Message{To: "user@mail.example", Subject: "LeadHound · Fri 23 Oct", Text: "1. A job\n", HTML: "<ol><li>A job</li></ol>", IdempotencyKey: "brief-2026-10-23"}
 	var ids []string
 	for range 3 {
 		id, err := m.Send(context.Background(), msg)
@@ -39,7 +39,7 @@ func TestOutboxWritesNumberedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Subject: Leadhound · Fri 23 Oct\nIdempotency-Key: brief-2026-10-23\n\n1. A job\n\n" + htmlMarker + "\n<ol><li>A job</li></ol>\n"
+	want := "Subject: LeadHound · Fri 23 Oct\nIdempotency-Key: brief-2026-10-23\n\n1. A job\n\n" + htmlMarker + "\n<ol><li>A job</li></ol>\n"
 	if string(b) != want {
 		t.Errorf("file =\n%s\nwant\n%s", b, want)
 	}

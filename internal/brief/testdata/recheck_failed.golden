@@ -1,7 +1,7 @@
 == subject
-Leadhound · Fri 23 Oct · nothing listed, see health
+LeadHound · Fri 23 Oct · nothing listed, see health
 == text
-Leadhound · Fri 23 Oct · nothing listed, see health
+LeadHound · Fri 23 Oct · nothing listed, see health
 
 Nothing listed today, and not everything was checked: see Health below.
 
@@ -12,7 +12,7 @@ Health: recheck failed · 2 unreachable, retried next brief
 == html
 <!doctype html>
 <html><body>
-<p><strong>Leadhound · Fri 23 Oct · nothing listed, see health</strong></p>
+<p><strong>LeadHound · Fri 23 Oct · nothing listed, see health</strong></p>
 <p>Nothing listed today, and not everything was checked: see Health below.</p>
 <p>Skipped today: 3 (2 unreachable (retried next brief), 1 closed)</p>
 <p>Health: LinkedIn ok · 3 new · canary ok</p>

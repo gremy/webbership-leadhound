@@ -298,10 +298,10 @@ func TestSubject(t *testing.T) {
 		in   Input
 		want string
 	}{
-		{"normal", cases()["normal_day"], "Leadhound · Fri 23 Oct · 2 to apply, 1 needs your call"},
-		{"empty", cases()["empty_day"], "Leadhound · Fri 23 Oct · nothing new"},
-		{"broken", cases()["parser_broke"], "Leadhound · Fri 23 Oct · nothing listed, see health"},
-		{"plural", Input{Day: day, YourCall: append(yourCallJobs(), yourCallJobs()...), Sources: healthyLinkedIn(2)}, "Leadhound · Fri 23 Oct · 2 need your call"},
+		{"normal", cases()["normal_day"], "LeadHound · Fri 23 Oct · 2 to apply, 1 needs your call"},
+		{"empty", cases()["empty_day"], "LeadHound · Fri 23 Oct · nothing new"},
+		{"broken", cases()["parser_broke"], "LeadHound · Fri 23 Oct · nothing listed, see health"},
+		{"plural", Input{Day: day, YourCall: append(yourCallJobs(), yourCallJobs()...), Sources: healthyLinkedIn(2)}, "LeadHound · Fri 23 Oct · 2 need your call"},
 	}
 	for _, tt := range tests {
 		if got, _, _ := Compose(tt.in); got != tt.want {

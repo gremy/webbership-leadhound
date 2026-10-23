@@ -35,7 +35,7 @@ func TestResendSends(t *testing.T) {
 	if m.Provider() != "resend" {
 		t.Errorf("provider = %q", m.Provider())
 	}
-	id, err := m.Send(context.Background(), Message{To: "user@mail.example", FromName: "Leadhound", Subject: "Leadhound · Fri 23 Oct",
+	id, err := m.Send(context.Background(), Message{To: "user@mail.example", FromName: "LeadHound", Subject: "LeadHound · Fri 23 Oct",
 		Text: "1. A job", HTML: "<ol><li>A job</li></ol>", IdempotencyKey: "brief-2026-10-23"})
 	if err != nil || id != "49a3999c-0ce1-4ea6-ab68-afcd6dc2e794" {
 		t.Fatalf("id %q err %v", id, err)
@@ -44,9 +44,9 @@ func TestResendSends(t *testing.T) {
 		t.Errorf("auth %q content-type %q path %q idempotency %q", auth, ctype, path, idem)
 	}
 	want := map[string]any{
-		"from":    `"Leadhound" <brief@mail.example>`,
+		"from":    `"LeadHound" <brief@mail.example>`,
 		"to":      []any{"user@mail.example"},
-		"subject": "Leadhound · Fri 23 Oct",
+		"subject": "LeadHound · Fri 23 Oct",
 		"text":    "1. A job",
 		"html":    "<ol><li>A job</li></ol>",
 	}
@@ -117,7 +117,7 @@ func TestResendErrorNeverShowsTheKey(t *testing.T) {
 
 func TestResendSenderName(t *testing.T) {
 	for name, want := range map[string]string{
-		"Leadhound":                        `"Leadhound" <f@mail.example>`,
+		"LeadHound":                        `"LeadHound" <f@mail.example>`,
 		"Lead\"<x@mail.example>\r\nBcc: z": `"Leadx@mail.example Bcc: z" <f@mail.example>`,
 		"  ":                               "f@mail.example",
 		"":                                 "f@mail.example",

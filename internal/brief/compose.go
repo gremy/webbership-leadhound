@@ -207,7 +207,7 @@ func Compose(in Input) (subject, text, htmlBody string) {
 }
 
 func composeSubject(in Input) string {
-	head := "Leadhound · " + in.Day.Format("Mon 2 Jan") + " · "
+	head := "LeadHound · " + in.Day.Format("Mon 2 Jan") + " · "
 	var parts []string
 	if a := len(in.Apply); a > 0 {
 		parts = append(parts, fmt.Sprintf("%d to apply", a))
