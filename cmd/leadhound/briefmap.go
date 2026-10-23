@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/ats"
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/candidate"
 	"github.com/gremy/webbership-leadhound/internal/gates"
@@ -20,29 +21,87 @@ import (
 const maxNoteKeywords = 3
 
 // briefSource is one source the brief reports health for. A source that is not always
-// shown appears only on a day it ran.
+// shown appears only on a day it ran, or when it has jobs left out as not seen on their
+// board. ats names the ATS of an ATS source: it has no canary, its jobs follow the
+// not-seen rule, and its failed run's note starts "<ats>: failed: ".
 type briefSource struct {
 	source, name string
 	always       bool
+	ats          string
 }
 
 var briefSources = []briefSource{
-	{linkedin.Source, "LinkedIn", true},
-	{linkedin.SourceFixture, "LinkedIn fixtures", false}, // a development dry run
+	{linkedin.Source, "LinkedIn", true, ""},
+	{linkedin.SourceFixture, "LinkedIn fixtures", false, ""}, // a development dry run
+	{ats.Greenhouse, "Greenhouse", false, ats.Greenhouse},
+	{ats.Lever, "Lever", false, ats.Lever},
+	{ats.Ashby, "Ashby", false, ats.Ashby},
+	{ats.SourceFixture(ats.Greenhouse), "Greenhouse fixtures", false, ats.Greenhouse},
+	{ats.SourceFixture(ats.Lever), "Lever fixtures", false, ats.Lever},
+	{ats.SourceFixture(ats.Ashby), "Ashby fixtures", false, ats.Ashby},
+}
+
+// atsSources are the sources of briefSources that are ATS boards.
+func atsSources() []string {
+	var out []string
+	for _, bs := range briefSources {
+		if bs.ats != "" {
+			out = append(out, bs.source)
+		}
+	}
+	return out
+}
+
+// briefCandidates reads the store into what the brief ranks for day (a time on that
+// calendar day in loc). An open ATS job whose board has not listed it since
+// brief.BoardStaleDays before the day's start is set apart in notSeen, with its source in
+// notSeenSrc: the board may be failing or gone, so the job is not listed, but its listing
+// stays open, since the board may come back (A14, the ATS twin of leaveOutStale).
+func briefCandidates(ctx context.Context, q store.Queries, loc *time.Location, day time.Time, allowFake bool) (cands, notSeen []scoring.Candidate, notSeenSrc map[int64]string, err error) {
+	ins, err := q.RankInputs(ctx, store.RankOptions{AllowFake: allowFake})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rules, err := q.ActiveRules(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	y, m, d := day.In(loc).Date()
+	cutoff := time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -brief.BoardStaleDays)
+	notSeenSrc, err = q.OpenJobsNotSeenSince(ctx, atsSources(), cutoff)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, c := range scoring.CandidatesFrom(ins, rules) {
+		if _, ok := notSeenSrc[c.JobID]; ok {
+			notSeen = append(notSeen, c)
+		} else {
+			cands = append(cands, c)
+		}
+	}
+	return cands, notSeen, notSeenSrc, nil
+}
+
+// notSeenBySource counts, per source, the jobs set apart as not seen on their board that
+// would otherwise be listed: those the ranking would put in either tier.
+func notSeenBySource(notSeen []scoring.Candidate, src map[int64]string, loc *time.Location) map[string]int {
+	all := len(notSeen)
+	r := scoring.Rank(notSeen, loc, scoring.Caps{Apply: all, YourCall: all})
+	out := map[string]int{}
+	for _, rk := range append(r.Apply, r.YourCall...) {
+		out[src[rk.JobID]]++
+	}
+	return out
 }
 
 // buildInput reads the store into the brief for day (a time on that calendar day in loc):
 // the ranking, today's skip counts, the source health, and the scoring and recheck state.
 func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake, recheckOff bool) (brief.Input, error) {
-	ins, err := q.RankInputs(ctx, store.RankOptions{AllowFake: allowFake})
+	cands, notSeen, notSeenSrc, err := briefCandidates(ctx, q, loc, day, allowFake)
 	if err != nil {
 		return brief.Input{}, err
 	}
-	rules, err := q.ActiveRules(ctx)
-	if err != nil {
-		return brief.Input{}, err
-	}
-	cands := scoring.CandidatesFrom(ins, rules)
+	notSeenN := notSeenBySource(notSeen, notSeenSrc, loc)
 	r := scoring.Rank(cands, loc, briefCaps(prof))
 	var ids []int64
 	for _, rk := range append(append([]scoring.Ranked{}, r.Apply...), r.YourCall...) {
@@ -82,7 +141,8 @@ func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc
 		if err != nil {
 			return brief.Input{}, err
 		}
-		if ran || bs.always {
+		src.NotSeen = notSeenN[bs.source]
+		if ran || bs.always || src.NotSeen > 0 {
 			in.Sources = append(in.Sources, src)
 		}
 	}
@@ -241,8 +301,9 @@ func matchedKeywords(text string, keywords []string) []string {
 }
 
 // sourceHealth is one source's state on day: paused when it was throttled or blocked that
-// day, else read from its latest collect run, with the jobs first seen that day and the
-// canary's outcome. ran reports whether the source collected that day at all.
+// day, else read from its latest collect run, with the jobs first seen that day and, for a
+// source that has one, the canary's outcome. ran reports whether the source collected that
+// day at all.
 func sourceHealth(ctx context.Context, q store.Queries, bs briefSource, loc *time.Location, day time.Time) (src brief.Source, ran bool, err error) {
 	src = brief.Source{Name: bs.name, State: brief.StateNotRun}
 	run, err := q.LatestRunToday(ctx, linkedin.CommandCollect, bs.source, loc, day)
@@ -252,7 +313,7 @@ func sourceHealth(ctx context.Context, q store.Queries, bs briefSource, loc *tim
 		return src, false, err
 	default:
 		ran = true
-		src.State = collectState(run)
+		src.State = collectState(run, bs.ats)
 	}
 	reason, paused, err := q.PausedToday(ctx, bs.source, loc, day)
 	if err != nil {
@@ -263,6 +324,10 @@ func sourceHealth(ctx context.Context, q store.Queries, bs briefSource, loc *tim
 	}
 	if src.New, err = q.CountJobsFirstSeen(ctx, bs.source, loc, day); err != nil {
 		return src, ran, err
+	}
+	if bs.ats != "" { // an ATS has no canary
+		src.NoCanary = true
+		return src, ran, nil
 	}
 	canary, err := q.LatestRunToday(ctx, linkedin.CommandCanary, bs.source, loc, day)
 	switch {
@@ -277,15 +342,19 @@ func sourceHealth(ctx context.Context, q store.Queries, bs briefSource, loc *tim
 	return src, ran, nil
 }
 
-// collectState reads a collect run: a clean finish or a spent budget is ok; a run that
-// failed or has not finished did not finish; any other stop names itself.
-func collectState(r store.Run) string {
+// collectState reads a collect run: a clean finish is ok; a run that failed or has not
+// finished did not finish; any other stop names itself. A spent budget is ok for LinkedIn,
+// whose search ends on its page budget, but not for an ATS (atsName set), whose budget
+// covers every board, so spending it means boards were left unfetched. An ATS's failed run
+// notes "<ats>: failed: ".
+func collectState(r store.Run, atsName string) string {
 	switch {
 	case r.FinishedAt == nil:
 		return "still_running"
-	case strings.HasPrefix(r.Note, "failed: "):
+	case strings.HasPrefix(r.Note, "failed: "),
+		atsName != "" && strings.HasPrefix(r.Note, atsName+": failed: "):
 		return "failed"
-	case r.StopReason == "" || r.StopReason == "budget":
+	case r.StopReason == "", r.StopReason == "budget" && atsName == "":
 		return brief.StateOK
 	}
 	return r.StopReason

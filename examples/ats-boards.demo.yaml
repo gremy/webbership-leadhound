@@ -1,0 +1,5 @@
+# Fictional ATS boards (answered by internal/ats/testdata); copy to ats-boards.yaml in your LEADHOUND_DATA_DIR.
+- {ats: greenhouse, board: examplecorp, name: Example Corp}
+- {ats: lever, board: samplesoft, name: SampleSoft}
+- {ats: lever, board: beispielwerk, name: Beispielwerk, region: eu}
+- {ats: ashby, board: demolabs, name: Demo Labs}

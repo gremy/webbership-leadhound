@@ -1,0 +1,5 @@
+{
+  "https://boards-api.greenhouse.io/v1/boards/examplecorp/jobs?content=true": "greenhouse_examplecorp.json",
+  "https://api.lever.co/v0/postings/samplesoft?mode=json": "lever_samplesoft.json",
+  "https://api.eu.lever.co/v0/postings/beispielwerk?mode=json": "lever_beispielwerk.json"
+}

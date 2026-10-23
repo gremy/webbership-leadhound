@@ -66,17 +66,13 @@ func (o recheckOutcome) summary() string {
 	return s
 }
 
-// rankNow reads the store and ranks it as the brief would.
-func rankNow(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, allowFake bool) (scoring.Ranking, error) {
-	ins, err := q.RankInputs(ctx, store.RankOptions{AllowFake: allowFake})
+// rankNow reads the store and ranks it as the brief for day would.
+func rankNow(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake bool) (scoring.Ranking, error) {
+	cands, _, _, err := briefCandidates(ctx, q, loc, day, allowFake)
 	if err != nil {
 		return scoring.Ranking{}, err
 	}
-	rules, err := q.ActiveRules(ctx)
-	if err != nil {
-		return scoring.Ranking{}, err
-	}
-	return scoring.Rank(scoring.CandidatesFrom(ins, rules), loc, briefCaps(prof)), nil
+	return scoring.Rank(cands, loc, briefCaps(prof)), nil
 }
 
 func briefCaps(prof candidate.Config) scoring.Caps {
@@ -85,17 +81,13 @@ func briefCaps(prof candidate.Config) scoring.Caps {
 
 // recheckIDs are the jobs the brief is about to list, in rank order, Apply first: up to
 // each tier's cap plus recheckSlack times it. An unreachable listing is ranked as if it
-// were open, so the job left out last time is tried again.
-func recheckIDs(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, allowFake bool) ([]int64, error) {
-	ins, err := q.RankInputs(ctx, store.RankOptions{AllowFake: allowFake})
+// were open, so the job left out last time is tried again. An ATS job the brief for day
+// leaves out as not seen on its board takes no place.
+func recheckIDs(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake bool) ([]int64, error) {
+	cands, _, _, err := briefCandidates(ctx, q, loc, day, allowFake)
 	if err != nil {
 		return nil, err
 	}
-	rules, err := q.ActiveRules(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cands := scoring.CandidatesFrom(ins, rules)
 	for i := range cands {
 		if cands[i].ListingStatus == store.ListingUnreachable {
 			cands[i].ListingStatus = store.ListingOpen
@@ -115,10 +107,10 @@ func recheckIDs(ctx context.Context, q store.Queries, prof candidate.Config, loc
 // unchanged. Scoring uses Jev when TYPESAFE_API_KEY is set, the fake when allowFake, and
 // is otherwise left for the next score run. A failure is returned in the outcome's Err;
 // one that came before the recheck wrote its run row still gets a recheck row, finished
-// with the note "failed: …".
-func recheckListed(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, loc *time.Location,
+// with the note "failed: …". day is the brief's day.
+func recheckListed(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, loc *time.Location, day time.Time,
 	allowFake bool, newClient func(fetch.Recorder) *fetch.Client, source string) recheckOutcome {
-	out, err := recheckAndScore(ctx, s, cfg, prof, loc, allowFake, newClient, source)
+	out, err := recheckAndScore(ctx, s, cfg, prof, loc, day, allowFake, newClient, source)
 	if err == nil {
 		return out
 	}
@@ -139,9 +131,9 @@ func recheckListed(ctx context.Context, s *store.Store, cfg config.Config, prof 
 	return out
 }
 
-func recheckAndScore(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, loc *time.Location,
+func recheckAndScore(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, loc *time.Location, day time.Time,
 	allowFake bool, newClient func(fetch.Recorder) *fetch.Client, source string) (recheckOutcome, error) {
-	ids, err := recheckIDs(ctx, s.Q(), prof, loc, allowFake)
+	ids, err := recheckIDs(ctx, s.Q(), prof, loc, day, allowFake)
 	if err != nil {
 		return recheckOutcome{}, err
 	}
@@ -177,11 +169,13 @@ func recheckAndScore(ctx context.Context, s *store.Store, cfg config.Config, pro
 // ranks again until none is left: a job past the rechecked window, or one a failed recheck
 // never reached, is left out today and rechecked next time, never sent unverified. It
 // requests nothing and returns how many it marked. Live only: with live off nothing is
-// rechecked and the brief says so instead.
-func leaveOutStale(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, allowFake bool, source string) (int, error) {
+// rechecked and the brief says so instead. An ATS job is never marked: the brief for day
+// leaves one out while its board has not listed it for brief.BoardStaleDays (see
+// briefCandidates), and ranks without it here too.
+func leaveOutStale(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake bool, source string) (int, error) {
 	marked := 0
 	for {
-		r, err := rankNow(ctx, q, prof, loc, allowFake)
+		r, err := rankNow(ctx, q, prof, loc, day, allowFake)
 		if err != nil {
 			return marked, err
 		}
@@ -257,7 +251,7 @@ func runRecheck(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	out := recheckListed(ctx, s, cfg, prof, loc, *allowFake, newClient, source)
+	out := recheckListed(ctx, s, cfg, prof, loc, time.Now(), *allowFake, newClient, source)
 	_, _ = fmt.Fprintln(stdout, out.summary())
 	return out.Err
 }

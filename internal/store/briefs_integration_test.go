@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -222,5 +223,44 @@ func TestStatusHelpers(t *testing.T) {
 	}
 	if n, err := q.CountJobsFirstSeen(ctx, "linkedin", time.UTC, now.AddDate(0, 0, -2)); err != nil || n != 0 {
 		t.Fatalf("CountJobsFirstSeen two days ago = %d, %v", n, err)
+	}
+}
+
+// TestOpenJobsNotSeenSince: only open jobs from the named sources last seen before the
+// cutoff, and their listing is left as it is.
+func TestOpenJobsNotSeenSince(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	co, err := q.UpsertCompany(ctx, "Northwind Labs", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := func(source, sid string, daysAgo int, listing string) int64 {
+		t.Helper()
+		id, err := q.UpsertJob(ctx, store.JobUpsert{Source: source, SourceJobID: sid, CompanyID: co, Title: "Go Engineer", URL: "https://jobs.example/" + sid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ownerExec(t, "UPDATE job SET last_seen_at = now() - make_interval(days => $2), listing_status = $3 WHERE id = $1", id, daysAgo, listing)
+		return id
+	}
+	old := job("greenhouse", "acme/1", 3, "open")
+	job("greenhouse", "acme/2", 0, "open")
+	job("greenhouse", "acme/3", 3, "expired")
+	oldFixture := job("lever-fixture", "acme/4", 5, "open")
+	job("linkedin", "1000000001", 9, "open")
+
+	got, err := q.OpenJobsNotSeenSince(ctx, []string{"greenhouse", "lever-fixture"}, time.Now().AddDate(0, 0, -2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[int64]string{old: "greenhouse", oldFixture: "lever-fixture"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("OpenJobsNotSeenSince = %v, want %v", got, want)
+	}
+	if got, err := q.OpenJobsNotSeenSince(ctx, nil, time.Now()); err != nil || len(got) != 0 {
+		t.Fatalf("no sources = %v, %v", got, err)
+	}
+	if s, err := q.JobSummaryByID(ctx, old); err != nil || s.ListingStatus != "open" {
+		t.Fatalf("listing after the query = %+v, %v", s, err)
 	}
 }

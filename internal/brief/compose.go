@@ -46,6 +46,11 @@ const (
 	CanaryFailed = "failed"
 )
 
+// BoardStaleDays is how many days before the brief's day an ATS job may have gone unseen
+// on its board and still be listed: past that it is left out (its board may be failing or
+// gone) and counted on its source's health line.
+const BoardStaleDays = 2
+
 // maxEvidence is how many evidence snippets a job line quotes, and maxSnippetRunes the
 // longest one, ellipsis included.
 const (
@@ -110,6 +115,11 @@ type Source struct {
 	State  string
 	New    int    // new jobs collected today
 	Canary string // CanaryOK, CanaryFailed or empty when it did not run
+	// NoCanary marks a source that has no canary, such as an ATS: its line names none.
+	NoCanary bool
+	// NotSeen counts the source's jobs that would be listed but were left out because
+	// their board has not listed them for BoardStaleDays.
+	NotSeen int
 }
 
 // JobIDs maps the brief's numbers to job ids: number n is JobIDs()[n-1]. Numbering runs
@@ -136,7 +146,7 @@ func (in Input) healthy() bool {
 		return false
 	}
 	for _, s := range in.Sources {
-		if s.State != StateOK {
+		if s.State != StateOK || s.NotSeen > 0 {
 			return false
 		}
 	}
@@ -403,7 +413,8 @@ func skippedLine(m map[string]int) string {
 	return fmt.Sprintf("Skipped today: %d (%s)", total, strings.Join(parts, ", "))
 }
 
-// healthLines is one "Health:" line per source, then scoring and recheck.
+// healthLines is one "Health:" line per source, with the jobs left out as not seen on
+// their board, then scoring and recheck.
 func healthLines(in Input) []string {
 	var out []string
 	if len(in.Sources) == 0 {
@@ -413,11 +424,14 @@ func healthLines(in Input) []string {
 		var l string
 		switch s.State {
 		case StateOK:
-			canary := "not run"
-			if s.Canary != "" {
-				canary = s.Canary
+			l = fmt.Sprintf("%s ok · %d new", s.Name, s.New)
+			if !s.NoCanary {
+				canary := "not run"
+				if s.Canary != "" {
+					canary = s.Canary
+				}
+				l += " · canary " + canary
 			}
-			l = fmt.Sprintf("%s ok · %d new · canary %s", s.Name, s.New, canary)
 		case StateParserBroke:
 			l = fmt.Sprintf("%s parser broke: no %s jobs today until it is fixed", s.Name, s.Name)
 		case StateThrottled, StateBlocked:
@@ -426,6 +440,12 @@ func healthLines(in Input) []string {
 			l = s.Name + " did not run"
 		default:
 			l = fmt.Sprintf("%s did not finish (%s)", s.Name, words(s.State))
+		}
+		switch {
+		case s.NotSeen == 1:
+			l += fmt.Sprintf(" · 1 job left out, not seen on its board for %d days", BoardStaleDays)
+		case s.NotSeen > 1:
+			l += fmt.Sprintf(" · %d jobs left out, not seen on their board for %d days", s.NotSeen, BoardStaleDays)
 		}
 		out = append(out, "Health: "+l)
 	}

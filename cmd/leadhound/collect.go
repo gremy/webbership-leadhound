@@ -124,10 +124,16 @@ var defaultCandidateGates = gates.CandidateGates{Languages: []string{"en"}}
 
 // candidateProfile loads leadhound.yaml from LEADHOUND_DATA_DIR; a broken file is a usage
 // error naming the problem. With no data directory it prints one note and reports ok
-// false, and the command runs on the built-in demo.
+// false, and the command runs on the built-in demo search and neutral gates.
 func candidateProfile(cfg config.Config, command string) (prof candidate.Config, ok bool, err error) {
+	return candidateProfileOr(cfg, command, "the demo search and neutral gates")
+}
+
+// candidateProfileOr is candidateProfile whose note says the command uses fallback, for a
+// command with no search to fall back on.
+func candidateProfileOr(cfg config.Config, command, fallback string) (prof candidate.Config, ok bool, err error) {
 	if cfg.DataDir == "" {
-		_, _ = fmt.Fprintf(notes, "%s: LEADHOUND_DATA_DIR is not set; using the demo search and neutral gates\n", command)
+		_, _ = fmt.Fprintf(notes, "%s: LEADHOUND_DATA_DIR is not set; using %s\n", command, fallback)
 		return candidate.Config{}, false, nil
 	}
 	prof, err = candidate.Load(cfg.DataDir)
@@ -170,8 +176,12 @@ func openStoreAndZone(ctx context.Context, cfg config.Config) (*store.Store, *ti
 }
 
 // runCollect is `leadhound collect linkedin [--dry-run --fixtures DIR] [--keyword K]...
-// [--location L]... [--max-pages N]`. Any recorded outcome, a stop included, exits 0.
+// [--location L]... [--max-pages N]`, or `leadhound collect ats ...` (runCollectATS, when
+// ats is the first argument). Any recorded outcome, a stop included, exits 0.
 func runCollect(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == atsSource {
+		return runCollectATS(ctx, args[1:])
+	}
 	fs := flag.NewFlagSet("collect", flag.ContinueOnError)
 	var ff fetchFlags
 	ff.register(fs)
@@ -184,7 +194,7 @@ func runCollect(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(pos) != 1 || pos[0] != linkedin.Source {
-		return usageError("usage: leadhound collect linkedin [--dry-run --fixtures DIR] [--keyword K]... [--location L]... [--max-pages N]")
+		return usageError("usage: leadhound collect linkedin [--dry-run --fixtures DIR] [--keyword K]... [--location L]... [--max-pages N] | leadhound collect ats [--dry-run --fixtures DIR] [--boards FILE]")
 	}
 	if err := ff.check(); err != nil {
 		return err

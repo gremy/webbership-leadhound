@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
+	"github.com/gremy/webbership-leadhound/internal/candidate"
 	"github.com/gremy/webbership-leadhound/internal/gates"
 	"github.com/gremy/webbership-leadhound/internal/scoring"
 	"github.com/gremy/webbership-leadhound/internal/store"
@@ -40,17 +42,25 @@ func TestCollectStateAndCanary(t *testing.T) {
 	done := time.Now()
 	for _, c := range []struct {
 		run  store.Run
+		ats  string
 		want string
 	}{
-		{store.Run{FinishedAt: &done}, brief.StateOK},
-		{store.Run{FinishedAt: &done, StopReason: "budget"}, brief.StateOK},
-		{store.Run{FinishedAt: &done, StopReason: "parser_broke"}, brief.StateParserBroke},
-		{store.Run{FinishedAt: &done, StopReason: "failure_rate"}, "failure_rate"},
-		{store.Run{FinishedAt: &done, Note: "failed: boom"}, "failed"},
-		{store.Run{}, "still_running"},
+		{store.Run{FinishedAt: &done}, "", brief.StateOK},
+		{store.Run{FinishedAt: &done, StopReason: "budget"}, "", brief.StateOK},
+		{store.Run{FinishedAt: &done, StopReason: "parser_broke"}, "", brief.StateParserBroke},
+		{store.Run{FinishedAt: &done, StopReason: "failure_rate"}, "", "failure_rate"},
+		{store.Run{FinishedAt: &done, Note: "failed: boom"}, "", "failed"},
+		{store.Run{}, "", "still_running"},
+		// An ATS: its budget covers every board, and its failed run names the ATS first.
+		{store.Run{FinishedAt: &done, Note: "lever: 2 boards (2 ok, 0 failed, 0 parser broke, 0 not found)"}, "lever", brief.StateOK},
+		{store.Run{FinishedAt: &done, StopReason: "budget"}, "lever", "budget"},
+		{store.Run{FinishedAt: &done, StopReason: "parser_broke"}, "lever", brief.StateParserBroke},
+		{store.Run{FinishedAt: &done, StopReason: "throttled"}, "lever", brief.StateThrottled},
+		{store.Run{FinishedAt: &done, Note: "lever: failed: boom"}, "lever", "failed"},
+		{store.Run{FinishedAt: &done, Note: "lever: failed: boom"}, "", brief.StateOK},
 	} {
-		if got := collectState(c.run); got != c.want {
-			t.Errorf("collectState(%+v) = %s, want %s", c.run, got, c.want)
+		if got := collectState(c.run, c.ats); got != c.want {
+			t.Errorf("collectState(%+v, %q) = %s, want %s", c.run, c.ats, got, c.want)
 		}
 	}
 	if !canaryPassed(store.Run{FinishedAt: &done, Note: "10 cards"}) {
@@ -181,5 +191,33 @@ func TestBriefAndTrackUsage(t *testing.T) {
 		if code := run(context.Background(), c.args, &stderr); code != 2 || !strings.Contains(stderr.String(), c.want) {
 			t.Errorf("%v: exit %d, stderr %q, want %q", c.args, code, stderr.String(), c.want)
 		}
+	}
+}
+
+// TestNotSeenBySource counts only the jobs set apart that the ranking would list.
+func TestNotSeenBySource(t *testing.T) {
+	passAll := func() []scoring.CriterionVerdict {
+		var out []scoring.CriterionVerdict
+		for _, n := range candidate.CriterionNames {
+			out = append(out, scoring.CriterionVerdict{Criterion: n, Verdict: scoring.Pass})
+		}
+		return out
+	}
+	listed := func(id int64) scoring.Candidate {
+		return scoring.Candidate{JobID: id, Status: "new", ListingStatus: store.ListingOpen, Criteria: passAll()}
+	}
+	failed := listed(4)
+	failed.Gates = []scoring.GateVerdict{{Gate: gates.GateLanguage, Verdict: gates.Fail}}
+	got := notSeenBySource([]scoring.Candidate{listed(1), listed(2), listed(3), failed},
+		map[int64]string{1: "greenhouse", 2: "greenhouse", 3: "ashby-fixture", 4: "lever"}, time.UTC)
+	if want := map[string]int{"greenhouse": 2, "ashby-fixture": 1}; !reflect.DeepEqual(got, want) {
+		t.Errorf("notSeenBySource = %v, want %v", got, want)
+	}
+}
+
+func TestATSSources(t *testing.T) {
+	want := []string{"greenhouse", "lever", "ashby", "greenhouse-fixture", "lever-fixture", "ashby-fixture"}
+	if got := atsSources(); !slices.Equal(got, want) {
+		t.Errorf("atsSources = %v, want %v", got, want)
 	}
 }

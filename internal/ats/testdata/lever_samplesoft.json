@@ -1,0 +1,57 @@
+[
+  {
+    "id": "a1b2c3d4-0000-4000-8000-000000000001",
+    "text": "Backend Engineer, Go",
+    "categories": {
+      "location": "Berlin, Germany",
+      "commitment": "Full-time",
+      "team": "Engineering",
+      "department": "Product",
+      "allLocations": ["Berlin, Germany"]
+    },
+    "country": "DE",
+    "workplaceType": "remote",
+    "createdAt": 1790000000000,
+    "hostedUrl": "https://jobs.example.com/samplesoft/a1b2c3d4-0000-4000-8000-000000000001",
+    "applyUrl": "https://jobs.example.com/samplesoft/a1b2c3d4-0000-4000-8000-000000000001/apply",
+    "description": "<div>We write services in Go.</div>",
+    "descriptionPlain": "We write services in Go.",
+    "lists": [
+      {"text": "What you'll do", "content": "<li>Build APIs</li><li>Own services</li>"},
+      {"text": "Tools & stack", "content": "<li>Go</li><li>PostgreSQL</li>"}
+    ],
+    "additional": "<div>Benefits: a learning budget.</div>",
+    "additionalPlain": "Benefits: a learning budget."
+  },
+  {
+    "id": "a1b2c3d4-0000-4000-8000-000000000002",
+    "text": "Ingeniero de Plataforma",
+    "categories": {
+      "commitment": "Full-time",
+      "team": "Platform",
+      "allLocations": ["Madrid (Hybrid)", "Valencia"]
+    },
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.example.com/samplesoft/a1b2c3d4-0000-4000-8000-000000000002",
+    "applyUrl": "https://jobs.example.com/samplesoft/a1b2c3d4-0000-4000-8000-000000000002/apply",
+    "description": "",
+    "descriptionPlain": "Escribimos software <fiable> & más.",
+    "lists": [],
+    "additional": ""
+  },
+  {
+    "id": "a1b2c3d4-0000-4000-8000-000000000003",
+    "text": "Site Reliability Engineer",
+    "categories": {
+      "location": "Exampleville",
+      "commitment": "Contract",
+      "allLocations": ["Exampleville"]
+    },
+    "workplaceType": "on-site",
+    "createdAt": 1791000000000,
+    "hostedUrl": "https://jobs.example.com/samplesoft/a1b2c3d4-0000-4000-8000-000000000003",
+    "applyUrl": "https://jobs.example.com/samplesoft/a1b2c3d4-0000-4000-8000-000000000003/apply",
+    "description": "<div>Keep the lights on.</div>",
+    "lists": [{"text": "Requirements", "content": "<li>Linux</li>"}]
+  }
+]

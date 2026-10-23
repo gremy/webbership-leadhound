@@ -1,0 +1,17 @@
+[
+  {
+    "id": "b2c3d4e5-0000-4000-8000-000000000001",
+    "text": "Softwareentwickler Go",
+    "categories": {
+      "location": "Musterstadt",
+      "commitment": "Vollzeit",
+      "allLocations": ["Musterstadt"]
+    },
+    "workplaceType": "unspecified",
+    "createdAt": 1792000000000,
+    "hostedUrl": "https://jobs.example.com/beispielwerk/b2c3d4e5-0000-4000-8000-000000000001",
+    "applyUrl": "https://jobs.example.com/beispielwerk/b2c3d4e5-0000-4000-8000-000000000001/apply",
+    "description": "<div>Wir entwickeln Software für den Mittelstand.</div>",
+    "lists": []
+  }
+]

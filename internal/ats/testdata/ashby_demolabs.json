@@ -1,0 +1,71 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "c3d4e5f6-0000-4000-8000-000000000001",
+      "title": "AI Engineer",
+      "department": "Engineering",
+      "team": "Applied AI",
+      "employmentType": "FullTime",
+      "location": "Remote",
+      "secondaryLocations": [{"location": "Exampleville", "address": {"addressLocality": "Exampleville", "addressRegion": "", "addressCountry": "Exampleland"}}],
+      "publishedAt": "2026-10-10T08:00:00.000+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "address": {"postalAddress": {"addressLocality": "", "addressRegion": "", "addressCountry": "Exampleland"}},
+      "jobUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000001",
+      "applyUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000001/application",
+      "descriptionHtml": "<p>Build agents in Go.</p>",
+      "descriptionPlain": "Build agents in Go."
+    },
+    {
+      "id": "c3d4e5f6-0000-4000-8000-000000000002",
+      "title": "Inginer Backend",
+      "employmentType": "Contract",
+      "location": "Exampleville",
+      "secondaryLocations": [],
+      "publishedAt": "2026-10-11T12:30:00.000+03:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "jobUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000002",
+      "applyUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000002/application",
+      "descriptionHtml": "<p>Căutăm un inginer backend pentru echipa noastră.</p>"
+    },
+    {
+      "id": "c3d4e5f6-0000-4000-8000-000000000003",
+      "title": "Internal Transfer Only",
+      "employmentType": "FullTime",
+      "location": "Exampleville",
+      "isListed": false,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "jobUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000003",
+      "applyUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000003/application",
+      "descriptionHtml": "<p>Not public.</p>"
+    },
+    {
+      "title": "Data Engineer",
+      "employmentType": "PartTime",
+      "location": "Exampleland",
+      "isListed": true,
+      "isRemote": true,
+      "jobUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000004",
+      "applyUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000004/application",
+      "descriptionHtml": "<p>Pipelines and dashboards.</p>"
+    },
+    {
+      "id": "c3d4e5f6-0000-4000-8000-000000000005",
+      "title": "Product Engineer",
+      "employmentType": "FullTime",
+      "location": "Exampleville",
+      "publishedAt": "2026-10-12T09:00:00Z",
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "jobUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000005",
+      "applyUrl": "https://jobs.example.com/demolabs/c3d4e5f6-0000-4000-8000-000000000005/application",
+      "descriptionHtml": "<p>Ship features end to end.</p>"
+    }
+  ]
+}

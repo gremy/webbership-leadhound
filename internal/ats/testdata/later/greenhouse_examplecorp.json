@@ -1,0 +1,55 @@
+{
+  "jobs": [
+    {
+      "id": 4000000001,
+      "internal_job_id": 3000000001,
+      "title": "Senior Go Engineer",
+      "updated_at": "2026-10-12T08:00:00-04:00",
+      "first_published": "2026-10-01T09:30:00-04:00",
+      "requisition_id": "ENG-001",
+      "company_name": "Example Corp Labs",
+      "location": {
+        "name": "Remote - Europe"
+      },
+      "absolute_url": "https://jobs.example.com/examplecorp/jobs/4000000001",
+      "language": "en",
+      "metadata": null,
+      "content": "&lt;p&gt;Tools &amp;amp; services for &amp;quot;boring&amp;quot; teams.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Go &amp;amp; PostgreSQL&lt;/li&gt;&lt;li&gt;5+ years&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "id": 1,
+          "name": "Engineering",
+          "parent_id": null,
+          "child_ids": []
+        }
+      ],
+      "offices": [
+        {
+          "id": 2,
+          "name": "Remote",
+          "location": "Remote",
+          "parent_id": null,
+          "child_ids": []
+        }
+      ]
+    },
+    {
+      "id": 4000000003,
+      "internal_job_id": 3000000003,
+      "title": "Ingénieur Backend",
+      "requisition_id": "ENG-003",
+      "location": {
+        "name": "Lyon, France"
+      },
+      "absolute_url": "https://jobs.example.com/examplecorp/jobs/4000000003",
+      "language": "fr",
+      "metadata": null,
+      "content": "&lt;p&gt;Nous cherchons un ingénieur backend pour notre équipe à Lyon.&lt;/p&gt;",
+      "departments": [],
+      "offices": []
+    }
+  ],
+  "meta": {
+    "total": 2
+  }
+}

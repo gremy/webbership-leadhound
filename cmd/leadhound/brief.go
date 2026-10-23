@@ -141,10 +141,10 @@ func runBrief(ctx context.Context, args []string) error {
 	default:
 		recheckOff = false
 		if !refused {
-			out := recheckListed(ctx, s, cfg, prof, loc, *allowFake, newClient, source)
+			out := recheckListed(ctx, s, cfg, prof, loc, day, *allowFake, newClient, source)
 			_, _ = fmt.Fprintln(notes, out.summary())
 		}
-		if _, err := leaveOutStale(ctx, q, prof, loc, *allowFake, source); err != nil {
+		if _, err := leaveOutStale(ctx, q, prof, loc, day, *allowFake, source); err != nil {
 			return err
 		}
 	}

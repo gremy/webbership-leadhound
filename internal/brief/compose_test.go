@@ -92,6 +92,17 @@ func cases() map[string]Input {
 			Day: day, Sources: healthyLinkedIn(3), Scoring: ScoringOK, Recheck: RecheckFailed,
 			Skipped: map[string]int{"unreachable": 2, "closed": 1}, Unreachable: 2,
 		},
+		// LinkedIn and one board ran clean, but two jobs left out as not seen on their board,
+		// one board's parser broke and one ATS that did not run still has a job left out.
+		"ats_boards": {
+			Day: day, Apply: applyJobs()[:1], Scoring: ScoringOK, Recheck: RecheckOK,
+			Sources: []Source{
+				{Name: "LinkedIn", State: StateOK, New: 4, Canary: CanaryOK},
+				{Name: "Greenhouse", State: StateOK, New: 3, NoCanary: true, NotSeen: 2},
+				{Name: "Lever", State: StateParserBroke, NoCanary: true},
+				{Name: "Ashby", State: StateNotRun, NoCanary: true, NotSeen: 1},
+			},
+		},
 		// The source ran clean, but the AI provider stayed busy and jobs wait unscored.
 		"scoring_throttled": {
 			Day: day, Sources: healthyLinkedIn(5), Scoring: ScoringThrottled, Recheck: RecheckNotRun,
@@ -257,6 +268,9 @@ func TestFailedSourceNeverSaysNothingNew(t *testing.T) {
 		"unreachable":        clean(func(in *Input) { in.Unreachable = 1 }),
 		"unscored":           clean(func(in *Input) { in.Unscored = 1 }),
 		"unreachable no run": clean(func(in *Input) { in.RecheckOff, in.Unreachable = true, 1 }),
+		"not seen on board": clean(func(in *Input) {
+			in.Sources = append(in.Sources, Source{Name: "Lever", State: StateOK, NoCanary: true, NotSeen: 1})
+		}),
 	} {
 		if subject, text, _ := Compose(in); strings.Contains(text, "Nothing new") || strings.Contains(subject, "nothing new") {
 			t.Errorf("%s claims nothing new:\n%s", name, text)
@@ -266,6 +280,9 @@ func TestFailedSourceNeverSaysNothingNew(t *testing.T) {
 		"recheck ok":      clean(func(*Input) {}),
 		"recheck not run": clean(func(in *Input) { in.Recheck = RecheckNotRun }),
 		"recheck off":     clean(func(in *Input) { in.RecheckOff = true }),
+		"ats clean": clean(func(in *Input) {
+			in.Sources = append(in.Sources, Source{Name: "Lever", State: StateOK, New: 2, NoCanary: true})
+		}),
 	} {
 		if _, text, _ := Compose(in); !strings.Contains(text, "Nothing new worth applying to today") {
 			t.Errorf("%s: a clean day does not say nothing new:\n%s", name, text)
@@ -306,6 +323,27 @@ func TestSubject(t *testing.T) {
 	for _, tt := range tests {
 		if got, _, _ := Compose(tt.in); got != tt.want {
 			t.Errorf("%s: subject %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestATSSourceLines: an ATS line names no canary, and the jobs left out as not seen on
+// their board are counted on it whatever its state.
+func TestATSSourceLines(t *testing.T) {
+	for _, c := range []struct {
+		src  Source
+		want string
+	}{
+		{Source{Name: "Lever", State: StateOK, New: 2, NoCanary: true}, "Health: Lever ok · 2 new"},
+		{Source{Name: "Lever", State: StateOK, New: 0, NoCanary: true, NotSeen: 1}, "Health: Lever ok · 0 new · 1 job left out, not seen on its board for 2 days"},
+		{Source{Name: "Ashby", State: StateNotRun, NoCanary: true, NotSeen: 3}, "Health: Ashby did not run · 3 jobs left out, not seen on their board for 2 days"},
+		{Source{Name: "Ashby", State: "failure_rate", NoCanary: true}, "Health: Ashby did not finish (failure rate)"},
+		{Source{Name: "Ashby", State: "budget", NoCanary: true}, "Health: Ashby did not finish (budget)"},
+		{Source{Name: "Ashby", State: StateBlocked, NoCanary: true}, "Health: Ashby paused today (blocked)"},
+		{Source{Name: "LinkedIn", State: StateOK, New: 1}, "Health: LinkedIn ok · 1 new · canary not run"},
+	} {
+		if got := healthLines(Input{Sources: []Source{c.src}})[0]; got != c.want {
+			t.Errorf("%+v: %q, want %q", c.src, got, c.want)
 		}
 	}
 }
