@@ -15,5 +15,7 @@
     "AGENTS.md",
     "CLAUDE.md",
     "STATE.md"
-  ]
+  ],
+  "remote_reviewed_at": "2026-10-23",
+  "remote": "git@github.com:gremy/webbership-leadhound.git"
 }

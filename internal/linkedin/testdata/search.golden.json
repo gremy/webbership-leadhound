@@ -1,0 +1,126 @@
+[
+  {
+    "ID": "1000000001",
+    "Title": "Senior Platform Engineer 1",
+    "Company": "Northwind Labs",
+    "CompanyURL": "https://www.linkedin.com/company/northwind-labs",
+    "CompanySlug": "northwind-labs",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-19T00:00:00Z",
+    "Benefits": [
+      "Be an early applicant"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000001"
+  },
+  {
+    "ID": "1000000002",
+    "Title": "Senior Platform Engineer 2",
+    "Company": "Contoso Systems",
+    "CompanyURL": "https://www.linkedin.com/company/contoso-systems",
+    "CompanySlug": "contoso-systems",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-17T00:00:00Z",
+    "Benefits": [
+      "Actively Hiring"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000002"
+  },
+  {
+    "ID": "1000000003",
+    "Title": "Senior Platform Engineer 3",
+    "Company": "Fabrikam Software",
+    "CompanyURL": "https://www.linkedin.com/company/fabrikam-software",
+    "CompanySlug": "fabrikam-software",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-13T00:00:00Z",
+    "Benefits": [],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000003"
+  },
+  {
+    "ID": "1000000004",
+    "Title": "Senior Platform Engineer 4",
+    "Company": "Tailspin Data",
+    "CompanyURL": "https://www.linkedin.com/company/tailspin-data",
+    "CompanySlug": "tailspin-data",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-13T00:00:00Z",
+    "Benefits": [],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000004"
+  },
+  {
+    "ID": "1000000005",
+    "Title": "Senior Platform Engineer 5",
+    "Company": "Wingtip Cloud",
+    "CompanyURL": "https://www.linkedin.com/company/wingtip-cloud",
+    "CompanySlug": "wingtip-cloud",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-13T00:00:00Z",
+    "Benefits": [
+      "Actively Hiring"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000005"
+  },
+  {
+    "ID": "1000000006",
+    "Title": "Senior Platform Engineer 6",
+    "Company": "Litware Analytics",
+    "CompanyURL": "https://www.linkedin.com/company/litware-analytics",
+    "CompanySlug": "litware-analytics",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-20T00:00:00Z",
+    "Benefits": [
+      "Be an early applicant"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000006"
+  },
+  {
+    "ID": "1000000007",
+    "Title": "Senior Platform Engineer 7",
+    "Company": "Litware Analytics",
+    "CompanyURL": "https://www.linkedin.com/company/litware-analytics",
+    "CompanySlug": "litware-analytics",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-20T00:00:00Z",
+    "Benefits": [
+      "Be an early applicant"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000007"
+  },
+  {
+    "ID": "1000000008",
+    "Title": "Senior Platform Engineer 8",
+    "Company": "Proseware Tech",
+    "CompanyURL": "https://www.linkedin.com/company/proseware-tech",
+    "CompanySlug": "proseware-tech",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-13T00:00:00Z",
+    "Benefits": [
+      "Actively Hiring"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000008"
+  },
+  {
+    "ID": "1000000009",
+    "Title": "Senior Platform Engineer 9",
+    "Company": "Woodgrove Digital",
+    "CompanyURL": "https://www.linkedin.com/company/woodgrove-digital",
+    "CompanySlug": "woodgrove-digital",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-17T00:00:00Z",
+    "Benefits": [
+      "Be an early applicant"
+    ],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000009"
+  },
+  {
+    "ID": "1000000010",
+    "Title": "Senior Platform Engineer 10",
+    "Company": "Lucerne Engineering",
+    "CompanyURL": "https://www.linkedin.com/company/lucerne-engineering",
+    "CompanySlug": "lucerne-engineering",
+    "Location": "Exampleville, Country",
+    "ListDate": "2026-10-18T00:00:00Z",
+    "Benefits": [],
+    "URL": "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000010"
+  }
+]

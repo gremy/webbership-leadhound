@@ -1,0 +1,11 @@
+{
+  "*jobPosting/1000000001": "detail_fr.html",
+  "*jobPosting/1000000002": "detail_es.html",
+  "*jobPosting/1000000004": "detail_offsite.html",
+  "*jobPosting/1000000005": "detail_onsite.html",
+  "*jobPosting/1000000006": "detail_recruiter_removed.html",
+  "*jobPosting/1000000007": "detail_simple.html",
+  "*jobPosting/1000000008": "detail_closed.html",
+  "*seeMoreJobPostings/search?*&start=0": "search.html",
+  "*seeMoreJobPostings/search?*&start=10": "search_empty.html"
+}
