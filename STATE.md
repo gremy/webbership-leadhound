@@ -1,19 +1,28 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
-CP1 foundation in progress: module, config, Makefile, contributor rules, privacy check, store and migrations.
+CP1–CP4 done: foundation and privacy checks, LinkedIn guest collector, posting sanitiser and code gates, Jev scoring, ranking and eval.
+
+## Eval baseline (jev-1.13.0, 2026-10-23)
+Private golden set, n=10, 9 of 10 non-English, 3 runs, no disagreements between runs.
+Exact match: title 90%, stack 80%, seniority 90%, location 90%, work_rights 100%, gate language 100%, gate workplace 1/1, overall 100%, all criteria 45/50 (90%).
+Input tokens 56,106 (about $0.0024).
+Early number: grow the set with 10–20 English postings before treating it as the bar.
 
 ## Current focus
 Slice 1 (jobs).
 
 ## Next (1-3)
-- [ ] Finish CP1 and pass `make check` and `make prepush`.
+- [ ] CP5: morning brief, recheck and tracker.
+- [ ] CP6: Greenhouse, Lever and Ashby boards; CP6b: the employer's own apply route.
+- [ ] CP7: deploy on timers.
 
 ## Key files
 - `CONTRIBUTING.md` (the public-repo rules)
 - `Makefile`
 - `cmd/leadhound`
 - `internal/config`
+- `internal/ai`, `internal/candidate`, `internal/scoring`, `internal/eval`
 
 ## Links
 - Live URL ->
