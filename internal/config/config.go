@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -38,14 +39,54 @@ const (
 	LiveAll             // LEADHOUND_LIVE=1: every source
 )
 
-// atsHosts are the hosts LiveATS allows, matched exactly (never as a suffix): the public ATS
-// APIs, and the Common Crawl index that boards harvest reads to find more boards.
+// atsHosts are the hosts LiveATS allows matched exactly: the public ATS APIs, and the Common
+// Crawl index that boards harvest reads to find more boards. Only the families in
+// atsHostFamilies are matched by suffix, and then narrowly.
 var atsHosts = []string{
 	"boards-api.greenhouse.io",
 	"api.lever.co",
 	"api.eu.lever.co",
 	"api.ashbyhq.com",
+	"api.smartrecruiters.com",
 	"index.commoncrawl.org",
+}
+
+// atsHostFamilies are the ATSs that serve each company's board from a host of its own,
+// <company>.<family>. LiveATS allows such a host only when it is exactly one DNS label (a-z,
+// 0-9 and inner dashes, 1-63 long) followed by one of these suffixes: "acme.teamtailor.com"
+// is allowed; "teamtailor.com", "a.b.teamtailor.com", "acmeteamtailor.com" and
+// "acme.teamtailor.com.evil.example" are not. The host is compared as given: the fetch
+// client lower-cases it and drops one trailing root dot before asking, for the first
+// request and every redirect alike.
+var atsHostFamilies = []string{
+	".teamtailor.com",
+	".jobs.personio.de",
+	".jobs.personio.com",
+}
+
+// inATSHostFamily reports whether host is one DNS label in front of an atsHostFamilies suffix.
+func inATSHostFamily(host string) bool {
+	for _, suffix := range atsHostFamilies {
+		if label, ok := strings.CutSuffix(host, suffix); ok && isDNSLabel(label) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDNSLabel reports whether s is one lower-case DNS label: 1-63 of a-z, 0-9 and '-', with
+// no '-' at either end.
+func isDNSLabel(s string) bool {
+	if len(s) == 0 || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (l Live) String() string {
@@ -59,13 +100,14 @@ func (l Live) String() string {
 	}
 }
 
-// Allows reports whether a request to host may go out under this setting.
+// Allows reports whether a request to host (lower-case, no trailing dot) may go out under
+// this setting.
 func (l Live) Allows(host string) bool {
 	switch l {
 	case LiveAll:
 		return true
 	case LiveATS:
-		return slices.Contains(atsHosts, host)
+		return slices.Contains(atsHosts, host) || inATSHostFamily(host)
 	default:
 		return false
 	}
@@ -105,6 +147,7 @@ type Config struct {
 	LinkedInSearchBudget int           // LEADHOUND_LINKEDIN_SEARCH_BUDGET: search requests per run
 	LinkedInDetailBudget int           // LEADHOUND_LINKEDIN_DETAIL_BUDGET: detail requests per run, recheck included
 	ATSInterval          time.Duration // LEADHOUND_ATS_INTERVAL: the pause between two requests to one ATS's API
+	ATSDetailBudget      int           // LEADHOUND_ATS_DETAIL_BUDGET: posting-detail requests per ATS run (SmartRecruiters)
 	Live                 Live          // LEADHOUND_LIVE
 }
 
@@ -117,6 +160,7 @@ const (
 	DefaultLinkedInSearchBudget = 60
 	DefaultLinkedInDetailBudget = 40
 	DefaultATSInterval          = time.Second
+	DefaultATSDetailBudget      = 500
 	// MinATSInterval is the shortest pause LEADHOUND_ATS_INTERVAL may set: below it, one
 	// ATS's API would see a burst from a large board list.
 	MinATSInterval = 200 * time.Millisecond
@@ -143,6 +187,7 @@ func Load(getenv func(string) string) (Config, []string) {
 	c.JevDailyCallCap = count(getenv, "LEADHOUND_JEV_DAILY_CALL_CAP", DefaultJevDailyCallCap, report)
 	c.LinkedInSearchBudget = count(getenv, "LEADHOUND_LINKEDIN_SEARCH_BUDGET", DefaultLinkedInSearchBudget, report)
 	c.LinkedInDetailBudget = count(getenv, "LEADHOUND_LINKEDIN_DETAIL_BUDGET", DefaultLinkedInDetailBudget, report)
+	c.ATSDetailBudget = count(getenv, "LEADHOUND_ATS_DETAIL_BUDGET", DefaultATSDetailBudget, report)
 
 	c.LinkedInInterval = duration(getenv, "LEADHOUND_LINKEDIN_INTERVAL", DefaultLinkedInInterval, "4s", report)
 	c.ATSInterval = duration(getenv, "LEADHOUND_ATS_INTERVAL", DefaultATSInterval, "1s", report)

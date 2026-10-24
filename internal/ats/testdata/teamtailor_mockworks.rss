@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:tt="https://teamtailor.com/locations">
+  <channel>
+    <title>Mockworks</title>
+    <description>Current job openings</description>
+    <link>https://mockworks.example.com/jobs</link>
+    <item>
+      <title>Senior Go Engineer</title>
+      <description>&lt;h4&gt;About the role&lt;/h4&gt;&lt;p&gt;Build services in Go &amp;amp; PostgreSQL.&lt;/p&gt;</description>
+      <pubDate>Fri, 09 Oct 2026 09:05:16 +0200</pubDate>
+      <link>https://mockworks.example.com/jobs/1000001-senior-go-engineer</link>
+      <remoteStatus>none</remoteStatus>
+      <guid>a1b2c3d4-0000-4000-8000-000000000001</guid>
+      <tt:locations>
+        <tt:location>
+          <tt:name>Exampleville HQ</tt:name>
+          <tt:address>1 Sample Street</tt:address>
+          <tt:zip>00001</tt:zip>
+          <tt:city>Exampleville</tt:city>
+          <tt:country>Exampleland</tt:country>
+        </tt:location>
+      </tt:locations>
+      <tt:department>Engineering</tt:department>
+      <tt:role>Backend</tt:role>
+      <tt:division>Product</tt:division>
+    </item>
+    <item>
+      <title>AI Engineer</title>
+      <description><![CDATA[<p>Build agents in Go.</p>]]></description>
+      <pubDate>Mon, 12 Oct 2026 14:33:33 +0000</pubDate>
+      <link>https://mockworks.example.com/jobs/1000002-ai-engineer</link>
+      <remoteStatus>hybrid</remoteStatus>
+      <guid>a1b2c3d4-0000-4000-8000-000000000002</guid>
+      <tt:locations>
+        <tt:location>
+          <tt:name>Exampleville HQ</tt:name>
+          <tt:address>1 Sample Street</tt:address>
+          <tt:zip>00001</tt:zip>
+          <tt:city>Exampleville</tt:city>
+          <tt:country>Exampleland</tt:country>
+        </tt:location>
+        <tt:location>
+          <tt:name>Sampletown office</tt:name>
+          <tt:address></tt:address>
+          <tt:zip></tt:zip>
+          <tt:city>Sampletown</tt:city>
+          <tt:country>Demoland</tt:country>
+        </tt:location>
+      </tt:locations>
+      <tt:department>Engineering</tt:department>
+      <tt:role>AI</tt:role>
+      <tt:division></tt:division>
+    </item>
+    <item>
+      <title>Platform Engineer</title>
+      <description>&lt;p&gt;Run the platform from anywhere.&lt;/p&gt;</description>
+      <pubDate>Tue, 13 Oct 2026 08:00:00 +0100</pubDate>
+      <link>https://mockworks.example.com/jobs/1000003-platform-engineer</link>
+      <remoteStatus>fully</remoteStatus>
+      <guid>a1b2c3d4-0000-4000-8000-000000000003</guid>
+      <tt:locations></tt:locations>
+      <tt:department>Engineering</tt:department>
+      <tt:role>Platform</tt:role>
+      <tt:division></tt:division>
+    </item>
+    <item>
+      <title>Inginer Backend</title>
+      <description>&lt;p&gt;Căutăm un inginer backend pentru echipa noastră.&lt;/p&gt;</description>
+      <pubDate>not a date</pubDate>
+      <link>https://mockworks.example.com/jobs/1000004-inginer-backend</link>
+      <guid>a1b2c3d4-0000-4000-8000-000000000004</guid>
+      <tt:locations>
+        <tt:location>
+          <tt:name>Demo Remote Hub</tt:name>
+          <tt:address></tt:address>
+          <tt:zip></tt:zip>
+          <tt:city></tt:city>
+          <tt:country></tt:country>
+        </tt:location>
+      </tt:locations>
+      <tt:department>Engineering</tt:department>
+      <tt:role>Backend</tt:role>
+      <tt:division></tt:division>
+    </item>
+    <item>
+      <title>Data Engineer</title>
+      <description>&lt;p&gt;Pipelines and dashboards.&lt;/p&gt;</description>
+      <pubDate>Wed, 14 Oct 2026 10:15:00 +0200</pubDate>
+      <link>https://mockworks.example.com/jobs/1000005-data-engineer</link>
+      <remoteStatus>temporary</remoteStatus>
+      <guid></guid>
+      <tt:locations>
+        <tt:location>
+          <tt:name></tt:name>
+          <tt:address></tt:address>
+          <tt:zip></tt:zip>
+          <tt:city>Sampletown</tt:city>
+          <tt:country>Demoland</tt:country>
+        </tt:location>
+      </tt:locations>
+      <tt:department>Data</tt:department>
+      <tt:role></tt:role>
+      <tt:division></tt:division>
+    </item>
+  </channel>
+</rss>

@@ -17,6 +17,11 @@ import (
 // broke. final_url is empty when it equals the URL; a response without a hash gets one
 // computed; a transport error (status 0) keeps body_sha256 and body_size NULL.
 func (q Queries) InsertFetch(ctx context.Context, runID int64, source string, r fetch.Record) (int64, error) {
+	return q.insertFetch(ctx, runID, source, r, r.Kind != fetch.KindBoard)
+}
+
+// insertFetch is InsertFetch, keeping the body only when keepBody is true.
+func (q Queries) insertFetch(ctx context.Context, runID int64, source string, r fetch.Record, keepBody bool) (int64, error) {
 	finalURL := r.FinalURL
 	if finalURL == r.URL {
 		finalURL = ""
@@ -35,7 +40,7 @@ func (q Queries) InsertFetch(ctx context.Context, runID int64, source string, r 
 		n := len(body)
 		size = &n
 	}
-	if r.Kind == fetch.KindBoard {
+	if !keepBody {
 		body = []byte{}
 	}
 	at := r.FetchedAt
@@ -57,8 +62,8 @@ func (q Queries) InsertFetch(ctx context.Context, runID int64, source string, r 
 // that body's hash.
 var ErrFetchBodyMismatch = errors.New("store: no fetch with that id and body hash")
 
-// AttachFetchBody keeps body on the http_fetch row fetchID, for a board answer whose parser
-// broke (InsertFetch keeps no board bodies). The row's body_sha256 must be the body's hash,
+// AttachFetchBody keeps body on the http_fetch row fetchID, for a board answer (or a size-only
+// answer, FetchRecorder.SizeOnly) whose parser broke (InsertFetch keeps no board bodies). The row's body_sha256 must be the body's hash,
 // so only the bytes that arrived can be attached; otherwise ErrFetchBodyMismatch.
 func (q Queries) AttachFetchBody(ctx context.Context, fetchID int64, body []byte) error {
 	if body == nil {
@@ -84,6 +89,8 @@ type FetchRecorder struct {
 	runID  int64
 	source string
 
+	sizeOnly map[fetch.Kind]bool // kinds kept as size and hash only, like a board answer
+
 	mu    sync.Mutex
 	last  int64
 	byURL map[string]int64
@@ -96,9 +103,22 @@ func NewFetchRecorder(q Queries, runID int64, source string) *FetchRecorder {
 	return &FetchRecorder{q: q, runID: runID, source: source, byURL: map[string]int64{}}
 }
 
+// SizeOnly makes the recorder keep the answers of kinds as InsertFetch keeps a board's:
+// size and hash only, the body attachable with AttachFetchBody. Call it before the first
+// Record; it returns f.
+func (f *FetchRecorder) SizeOnly(kinds ...fetch.Kind) *FetchRecorder {
+	if f.sizeOnly == nil {
+		f.sizeOnly = map[fetch.Kind]bool{}
+	}
+	for _, k := range kinds {
+		f.sizeOnly[k] = true
+	}
+	return f
+}
+
 // Record writes r as an http_fetch row.
 func (f *FetchRecorder) Record(ctx context.Context, r fetch.Record) error {
-	id, err := f.q.InsertFetch(ctx, f.runID, f.source, r)
+	id, err := f.q.insertFetch(ctx, f.runID, f.source, r, r.Kind != fetch.KindBoard && !f.sizeOnly[r.Kind])
 	if err != nil {
 		return err
 	}

@@ -109,9 +109,24 @@ func collector(t *testing.T, s *store.Store, dir string, override map[string]fun
 	}
 }
 
+// classicBoards are the demo boards of the ATSs that list a board in one answer
+// (Greenhouse, Lever, Ashby); the tests in this file pin their day-one and day-two
+// fixtures. The paged, retried and detailed ATSs have their own tests
+// (collector_more_integration_test.go).
+func classicBoards() []ats.Board {
+	var out []ats.Board
+	for _, b := range ats.DemoBoards() {
+		switch b.ATS {
+		case ats.Greenhouse, ats.Lever, ats.Ashby:
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func run(t *testing.T, c *ats.Collector) ats.Result {
 	t.Helper()
-	res, err := c.Run(context.Background(), ats.DemoBoards())
+	res, err := c.Run(context.Background(), classicBoards())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -167,7 +182,7 @@ func listed(t *testing.T, dir string, b ats.Board) []string {
 func listedAll(t *testing.T, dir string) map[string][]string {
 	t.Helper()
 	m := map[string][]string{}
-	for _, b := range ats.DemoBoards() {
+	for _, b := range classicBoards() {
 		m[b.String()] = listed(t, dir, b)
 	}
 	return m
@@ -288,7 +303,7 @@ func TestCollectDayTwo(t *testing.T) {
 	res := run(t, collector(t, s, dayTwo, nil, &logs))
 	var gone, added []string
 	var failedBoard ats.Board
-	for _, b := range ats.DemoBoards() {
+	for _, b := range classicBoards() {
 		if two[b.String()] == nil {
 			failedBoard = b
 			continue

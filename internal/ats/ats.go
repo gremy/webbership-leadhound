@@ -1,5 +1,8 @@
-// Package ats reads the public job boards that Greenhouse, Lever and Ashby host for a
-// company: one request per board returns every posting it lists. The board list is
+// Package ats reads the public job boards that Greenhouse, Lever, Ashby, SmartRecruiters,
+// Teamtailor and Personio host for a company. Greenhouse, Lever and Ashby list every posting
+// in one request; SmartRecruiters and Teamtailor are read page by page, Personio's feed may
+// be asked twice (see Collector), and a SmartRecruiters posting's description takes one more
+// request (see the detail step in collector.go). The board list is
 // ats-boards.yaml in LEADHOUND_DATA_DIR; the repository ships a fictional one in
 // examples/ats-boards.demo.yaml, answered by the fixtures in testdata/.
 package ats
@@ -23,13 +26,44 @@ import (
 
 // The ATS names a board line can carry.
 const (
-	Greenhouse = "greenhouse"
-	Lever      = "lever"
-	Ashby      = "ashby"
+	Greenhouse      = "greenhouse"
+	Lever           = "lever"
+	Ashby           = "ashby"
+	SmartRecruiters = "smartrecruiters"
+	Teamtailor      = "teamtailor"
+	Personio        = "personio"
 )
+
+// Names are the ATS names, in the order the collector runs them.
+var Names = []string{Greenhouse, Lever, Ashby, SmartRecruiters, Teamtailor, Personio}
+
+// namesText is the ATS names for a message: "greenhouse, lever, ... or personio".
+var namesText = strings.Join(Names[:len(Names)-1], ", ") + " or " + Names[len(Names)-1]
 
 // RegionEU is the only Lever region besides the default; it moves the API to api.eu.lever.co.
 const RegionEU = "eu"
+
+// RegionCom is the only Personio region besides the default: it moves the board from
+// <slug>.jobs.personio.de to <slug>.jobs.personio.com.
+const RegionCom = "com"
+
+// MaxBoardPages is the most list pages read from one paged board (SmartRecruiters,
+// Teamtailor) in one run: 2,000 postings at 100 a page. A board with more is saved as far as
+// it was read, and none of its jobs expire that run (see Collector).
+const MaxBoardPages = 20
+
+// MaxBoardRequests is the most list requests one board of atsName takes in a run, retries
+// for a 429 not counted: MaxBoardPages for a paged ATS, two for Personio (the feed again
+// without the language), one for the others.
+func MaxBoardRequests(atsName string) int {
+	switch atsName {
+	case SmartRecruiters, Teamtailor:
+		return MaxBoardPages
+	case Personio:
+		return 2
+	}
+	return 1
+}
 
 // BoardsFile is the board list's name inside the data directory.
 const BoardsFile = "ats-boards.yaml"
@@ -42,41 +76,98 @@ var ErrParserBroke = errors.New("ats: parser broke")
 // slugRe is what a board slug may look like; it keeps the slug safe inside a URL path.
 var slugRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
+// labelRe is one DNS label: the slug of an ATS that puts it in the host name (Teamtailor,
+// Personio), so <slug>.<ATS host> is a host with exactly one label more than the ATS's.
+var labelRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
 // Board is one line of ats-boards.yaml: `- {ats: ashby, board: examplecorp}`.
 type Board struct {
 	ATS    string `yaml:"ats"`
 	Board  string `yaml:"board"`            // the slug in the ATS's URL
 	Name   string `yaml:"name,omitempty"`   // company name when the API gives none
-	Region string `yaml:"region,omitempty"` // lever only: "eu" → api.eu.lever.co
+	Region string `yaml:"region,omitempty"` // lever: "eu" → api.eu.lever.co; personio: "com" → .jobs.personio.com
+}
+
+// regionFor is the one region each ATS may name besides none; "" for an ATS with no regions.
+func regionFor(atsName string) string {
+	switch atsName {
+	case Lever:
+		return RegionEU
+	case Personio:
+		return RegionCom
+	}
+	return ""
 }
 
 // Validate checks the ATS is known, the slug is well formed and a region is set only for
-// Lever, and only as "eu".
+// Lever ("eu") or Personio ("com"). A Teamtailor or Personio slug becomes part of a host
+// name, so it must be one DNS label (letters, digits and inner dashes, at most 63); the
+// others go in a URL path and keep their case (SmartRecruiters' company id is case-sensitive).
 func (b Board) Validate() error {
 	switch b.ATS {
-	case Greenhouse, Lever, Ashby:
+	case Greenhouse, Lever, Ashby, SmartRecruiters, Teamtailor, Personio:
 	case "":
-		return fmt.Errorf("ats: board %q: no ats (want %s, %s or %s)", b.Board, Greenhouse, Lever, Ashby)
+		return fmt.Errorf("ats: board %q: no ats (want %s)", b.Board, namesText)
 	default:
-		return fmt.Errorf("ats: board %q: unknown ats %q (want %s, %s or %s)", b.Board, b.ATS, Greenhouse, Lever, Ashby)
+		return fmt.Errorf("ats: board %q: unknown ats %q (want %s)", b.Board, b.ATS, namesText)
 	}
-	if !slugRe.MatchString(b.Board) {
-		return fmt.Errorf("ats: %s board %q: a slug is 1-100 letters, digits, dots, dashes or underscores, starting with a letter or digit", b.ATS, b.Board)
+	switch b.ATS {
+	case Teamtailor, Personio:
+		if !labelRe.MatchString(b.Board) {
+			return fmt.Errorf("ats: %s board %q: a slug is one host-name label: 1-63 letters, digits or dashes, starting and ending with a letter or digit", b.ATS, b.Board)
+		}
+	default:
+		if !slugRe.MatchString(b.Board) {
+			return fmt.Errorf("ats: %s board %q: a slug is 1-100 letters, digits, dots, dashes or underscores, starting with a letter or digit", b.ATS, b.Board)
+		}
 	}
+	region := regionFor(b.ATS)
 	switch {
 	case b.Region == "":
-	case b.ATS != Lever:
-		return fmt.Errorf("ats: %s: region is for lever boards only", b)
-	case b.Region != RegionEU:
-		return fmt.Errorf("ats: %s: unknown region %q (want %q or none)", b, b.Region, RegionEU)
+	case region == "":
+		return fmt.Errorf("ats: %s: region is for %s (%q) and %s (%q) boards only", b, Lever, RegionEU, Personio, RegionCom)
+	case b.Region != region:
+		return fmt.Errorf("ats: %s: unknown region %q (want %q or none)", b, b.Region, region)
 	}
 	return nil
 }
 
-// APIURL is the public endpoint that lists every posting on the board.
-func (b Board) APIURL() string {
+// APIURL is the public endpoint that lists the board's postings: all of them, or for a
+// paged ATS the first page (see pageURL).
+func (b Board) APIURL() string { return b.pageURL(0) }
+
+// smartRecruitersAPI is the base of SmartRecruiters' public posting API.
+const smartRecruitersAPI = "https://api.smartrecruiters.com/v1/companies/"
+
+// smartRecruitersPageSize is the most postings one list request asks for (the API's limit).
+const smartRecruitersPageSize = 100
+
+// smartRecruitersListURL is one list page of a SmartRecruiters board.
+func smartRecruitersListURL(b Board, limit, offset int) string {
+	return smartRecruitersAPI + url.PathEscape(b.Board) + "/postings?limit=" + strconv.Itoa(limit) + "&offset=" + strconv.Itoa(max(offset, 0))
+}
+
+// DetailURL is the endpoint that gives one posting's description and apply URL, for an ATS
+// whose list leaves them out (SmartRecruiters); "" for the others.
+func (b Board) DetailURL(postingID string) string {
+	if b.ATS != SmartRecruiters {
+		return ""
+	}
+	return smartRecruitersAPI + url.PathEscape(b.Board) + "/postings/" + url.PathEscape(postingID)
+}
+
+// pageURL is the list request that starts at offset: the paged ATSs (SmartRecruiters,
+// Teamtailor) take it as a query parameter; the others list everything at offset 0, and
+// Personio's feed is asked in English (see the collector for the retry without).
+func (b Board) pageURL(offset int) string {
 	slug := url.PathEscape(b.Board)
 	switch b.ATS {
+	case SmartRecruiters:
+		return smartRecruitersListURL(b, smartRecruitersPageSize, offset)
+	case Teamtailor:
+		return teamtailorPageURL(b, offset)
+	case Personio:
+		return personioFeedURL(b, personioLanguage)
 	case Greenhouse:
 		return "https://boards-api.greenhouse.io/v1/boards/" + slug + "/jobs?content=true"
 	case Lever:
@@ -92,16 +183,72 @@ func (b Board) APIURL() string {
 }
 
 // CheckURL is the lightest endpoint that still says whether the board exists and how many
-// postings it lists: Greenhouse's list without the descriptions, APIURL for the others.
+// postings it lists (read it with CountPostings): Greenhouse's list without the
+// descriptions, one SmartRecruiters posting (its totalFound counts them all), APIURL for
+// the others. Teamtailor's first page counts at most teamtailorPageSize postings.
 func (b Board) CheckURL() string {
-	if b.ATS == Greenhouse {
+	switch b.ATS {
+	case Greenhouse:
 		return "https://boards-api.greenhouse.io/v1/boards/" + url.PathEscape(b.Board) + "/jobs"
+	case SmartRecruiters:
+		return smartRecruitersListURL(b, 1, 0)
 	}
 	return b.APIURL()
 }
 
-// regionPrefix is "eu:" for an EU board and "" otherwise. A slug never holds a colon, so
-// the prefix keeps an EU board apart from the same slug in the default region.
+// CountPostings reads how many postings a board lists from its answer to CheckURL or
+// APIURL: SmartRecruiters' totalFound, else the postings Parse reads. A body of the wrong
+// shape gives ErrParserBroke.
+func CountPostings(b Board, body []byte) (int, error) {
+	if b.ATS == SmartRecruiters {
+		total, _, _, err := smartRecruitersPage(body)
+		if err != nil {
+			return 0, fmt.Errorf("ats: parse %s: %w", b, err)
+		}
+		return total, nil
+	}
+	ps, err := Parse(b, body)
+	return len(ps), err
+}
+
+// parsePage reads one list page of b that was requested at offset. next is the offset of
+// the page after it, and last says there is none: always for an ATS that lists everything
+// in one answer; for SmartRecruiters when the postings read so far reach totalFound (or the
+// page is empty); for Teamtailor when the page came back short.
+func parsePage(b Board, offset int, body []byte) (ps []Posting, next int, last bool, err error) {
+	ps, err = Parse(b, body)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	next = offset + len(ps)
+	switch b.ATS {
+	case SmartRecruiters:
+		total, _, _, err := smartRecruitersPage(body)
+		if err != nil {
+			return nil, 0, false, fmt.Errorf("ats: parse %s: %w", b, err)
+		}
+		return ps, next, len(ps) == 0 || next >= total, nil
+	case Teamtailor:
+		return ps, next, teamtailorLastPage(ps), nil
+	}
+	return ps, next, true, nil
+}
+
+// listTotal is how many postings a list page of b says the whole board holds, for an ATS
+// whose pages say so (SmartRecruiters' totalFound); ok is false for the others or a page
+// that does not say. The collector compares it across one board's pages: a board whose
+// total changed while it was read may have shifted postings across a page edge.
+func listTotal(b Board, body []byte) (total int, ok bool) {
+	if b.ATS != SmartRecruiters {
+		return 0, false
+	}
+	total, _, _, err := smartRecruitersPage(body)
+	return total, err == nil
+}
+
+// regionPrefix is "<region>:" for a board with a region ("eu:", "com:") and "" otherwise. A
+// slug never holds a colon, so the prefix keeps such a board apart from the same slug in
+// the default region.
 func (b Board) regionPrefix() string {
 	if b.Region != "" {
 		return b.Region + ":"
@@ -109,7 +256,7 @@ func (b Board) regionPrefix() string {
 	return ""
 }
 
-// String is "<ats>/<board>", or "<ats>/eu:<board>" for an EU board.
+// String is "<ats>/<board>", or "<ats>/<region>:<board>" for a board with a region.
 func (b Board) String() string { return b.ATS + "/" + b.regionPrefix() + b.Board }
 
 // key identifies a board for the duplicate check: ats, region and slug, ignoring case.
@@ -196,6 +343,9 @@ func DemoBoards() []Board {
 		{ATS: Lever, Board: "samplesoft", Name: "SampleSoft"},
 		{ATS: Lever, Board: "beispielwerk", Name: "Beispielwerk", Region: RegionEU},
 		{ATS: Ashby, Board: "demolabs", Name: "Demo Labs"},
+		{ATS: SmartRecruiters, Board: "ExampleRobotics", Name: "Example Robotics"},
+		{ATS: Teamtailor, Board: "mockworks", Name: "Mockworks"},
+		{ATS: Personio, Board: "musterfabrik", Name: "Musterfabrik"},
 	}
 }
 
@@ -226,6 +376,12 @@ func Parse(b Board, body []byte) ([]Posting, error) {
 		ps, err = parseLever(b, body)
 	case Ashby:
 		ps, err = parseAshby(b, body)
+	case SmartRecruiters:
+		ps, err = parseSmartRecruiters(b, body)
+	case Teamtailor:
+		ps, err = parseTeamtailor(b, body)
+	case Personio:
+		ps, err = parsePersonio(b, body)
 	default:
 		return nil, fmt.Errorf("ats: parse %s: unknown ats %q", b, b.ATS)
 	}
@@ -236,8 +392,8 @@ func Parse(b Board, body []byte) ([]Posting, error) {
 }
 
 // SourceJobID is the lower-cased board, a slash and the posting's id, so ids from two
-// boards never collide; an EU board's id starts "eu:", so the same slug in two regions
-// stays two boards ("eu:<board>/<id>").
+// boards never collide; a board with a region starts with it ("eu:<board>/<id>",
+// "com:<board>/<id>"), so the same slug in two regions stays two boards.
 func SourceJobID(b Board, p Posting) string {
 	return b.regionPrefix() + strings.ToLower(b.Board) + "/" + p.ID
 }

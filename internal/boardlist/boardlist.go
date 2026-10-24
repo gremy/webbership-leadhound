@@ -78,15 +78,34 @@ var (
 	greenhouseReserved = set("embed", "v1", "include", "assets", "static", "api", "job_app")
 	leverReserved      = set("v0", "v1", "api", "assets", "static", "apply", "embed")
 	ashbyReserved      = set("api", "assets", "static", "embed", "posting-api")
+	srReserved         = set("api", "assets", "static", "embed", "widget", "sitemap", "oneclick-ui", "company", "external-referrals", "public", "js", "css", "img")
 )
 
 // hosts are the board hosts FromURL accepts, matched exactly after lower-casing.
 var hosts = map[string]host{
-	"boards.greenhouse.io":     {ats: ats.Greenhouse, reserved: greenhouseReserved},
-	"job-boards.greenhouse.io": {ats: ats.Greenhouse, reserved: greenhouseReserved},
-	"jobs.lever.co":            {ats: ats.Lever, reserved: leverReserved},
-	"jobs.eu.lever.co":         {ats: ats.Lever, region: ats.RegionEU, reserved: leverReserved},
-	"jobs.ashbyhq.com":         {ats: ats.Ashby, reserved: ashbyReserved},
+	"boards.greenhouse.io":        {ats: ats.Greenhouse, reserved: greenhouseReserved},
+	"job-boards.greenhouse.io":    {ats: ats.Greenhouse, reserved: greenhouseReserved},
+	"jobs.lever.co":               {ats: ats.Lever, reserved: leverReserved},
+	"jobs.eu.lever.co":            {ats: ats.Lever, region: ats.RegionEU, reserved: leverReserved},
+	"jobs.ashbyhq.com":            {ats: ats.Ashby, reserved: ashbyReserved},
+	"jobs.smartrecruiters.com":    {ats: ats.SmartRecruiters, reserved: srReserved},
+	"careers.smartrecruiters.com": {ats: ats.SmartRecruiters, reserved: srReserved},
+}
+
+// family is an ATS that gives each board a host of its own: <slug><suffix>, the slug one
+// DNS label. reserved are labels that are the ATS's own hosts, not boards.
+type family struct {
+	suffix, ats, region string
+	reserved            map[string]bool
+}
+
+// families are the board host families FromURL accepts, matched on the lower-cased host.
+var families = []family{
+	{suffix: ".teamtailor.com", ats: ats.Teamtailor, reserved: set("www", "app", "api", "assets", "static", "cdn",
+		"images", "img", "media", "mail", "status", "support", "help", "docs", "blog", "marketplace", "partners",
+		"developer", "developers", "career", "careers", "jobs")},
+	{suffix: ".jobs.personio.de", ats: ats.Personio, reserved: set("www", "api", "app", "assets", "static", "cdn")},
+	{suffix: ".jobs.personio.com", ats: ats.Personio, region: ats.RegionCom, reserved: set("www", "api", "app", "assets", "static", "cdn")},
 }
 
 // assetExt are file extensions that mark a first path segment as a file, not a board.
@@ -95,12 +114,21 @@ var assetExt = set(".ico", ".txt", ".xml", ".js", ".css", ".png", ".jpg", ".jpeg
 
 // FromURL maps a public board URL to its Board: boards.greenhouse.io/<slug> and
 // job-boards.greenhouse.io/<slug> are Greenhouse, jobs.lever.co/<slug> is Lever,
-// jobs.eu.lever.co/<slug> is Lever in region eu, jobs.ashbyhq.com/<slug> is Ashby. The
-// host matches exactly (any case), the scheme is http or https (none is read as https),
-// and anything after the first path segment is ignored. The slug is that segment, in the
-// case the URL spells it (Lever's API is case-sensitive: AIFund answers, aifund is a 404);
-// it must pass ats.Board.Validate. Embed, API and asset paths are refused.
-// Every error wraps one of the Err* reasons above.
+// jobs.eu.lever.co/<slug> is Lever in region eu, jobs.ashbyhq.com/<slug> is Ashby,
+// jobs.smartrecruiters.com/<id> and careers.smartrecruiters.com/<id> are SmartRecruiters.
+// For these the host matches exactly (any case), and anything after the first path
+// segment is ignored. The slug is that segment, in the case the URL spells it (Lever's and
+// SmartRecruiters' APIs are case-sensitive: AIFund answers, aifund is a 404). Embed, API and
+// asset paths are refused.
+//
+// A board with a host of its own is read from the host, whatever the path:
+// <slug>.teamtailor.com is Teamtailor, <slug>.jobs.personio.de is Personio and
+// <slug>.jobs.personio.com is Personio in region com. The slug is the one label in front of
+// the suffix, lower-cased (a host has no case); a deeper host or the bare suffix is not a
+// supported host, and the ATS's own hosts (www, app, ...) are refused as not a board.
+//
+// The scheme is http or https (none is read as https) and the slug must pass
+// ats.Board.Validate. Every error wraps one of the Err* reasons above.
 func FromURL(raw string) (ats.Board, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -113,9 +141,10 @@ func FromURL(raw string) (ats.Board, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return ats.Board{}, fmt.Errorf("%w: %q", ErrBadURL, raw)
 	}
-	h, ok := hosts[strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")]
+	hostname := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	h, ok := hosts[hostname]
 	if !ok {
-		return ats.Board{}, fmt.Errorf("%w: %q", ErrUnsupportedHost, u.Hostname())
+		return fromFamilyHost(raw, hostname)
 	}
 	seg, _, _ := strings.Cut(strings.TrimPrefix(u.Path, "/"), "/")
 	if seg == "" {
@@ -131,10 +160,39 @@ func FromURL(raw string) (ats.Board, error) {
 	return b, nil
 }
 
+// fromFamilyHost maps a host of a board host family to its Board (see FromURL).
+func fromFamilyHost(raw, hostname string) (ats.Board, error) {
+	for _, f := range families {
+		label, ok := strings.CutSuffix(hostname, f.suffix)
+		if !ok || label == "" || strings.Contains(label, ".") {
+			continue
+		}
+		if f.reserved[label] {
+			return ats.Board{}, fmt.Errorf("%w: %q", ErrNotBoardPath, raw)
+		}
+		b := ats.Board{ATS: f.ats, Board: label, Region: f.region}
+		if err := b.Validate(); err != nil {
+			return ats.Board{}, fmt.Errorf("%w: %w", ErrBadSlug, err)
+		}
+		return b, nil
+	}
+	return ats.Board{}, fmt.Errorf("%w: %q", ErrUnsupportedHost, hostname)
+}
+
 // BoardURL is the public board page for b, in the form WriteCSV writes and FromURL reads.
 func BoardURL(b ats.Board) string {
 	slug := url.PathEscape(b.Board)
 	switch b.ATS {
+	case ats.SmartRecruiters:
+		return "https://jobs.smartrecruiters.com/" + slug
+	case ats.Teamtailor:
+		return "https://" + strings.ToLower(b.Board) + ".teamtailor.com/jobs"
+	case ats.Personio:
+		tld := "de"
+		if b.Region == ats.RegionCom {
+			tld = "com"
+		}
+		return "https://" + strings.ToLower(b.Board) + ".jobs.personio." + tld + "/"
 	case ats.Greenhouse:
 		return "https://job-boards.greenhouse.io/" + slug
 	case ats.Lever:

@@ -35,14 +35,19 @@ func stubNetwork(t *testing.T) *countingTransport {
 	return ct
 }
 
-// lightGreenhouse answers boards check's light Greenhouse URL (no content=true) from the
-// fixture of the full one, which is the only one the fixtures hold.
+// lightGreenhouse answers boards check's light URLs from the fixture of the full one, which
+// is the only one the fixtures hold: Greenhouse's list without content=true, and
+// SmartRecruiters' one-posting page (its totalFound is the count either way).
 type lightGreenhouse struct{ next http.RoundTripper }
 
 func (l lightGreenhouse) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Hostname() == "boards-api.greenhouse.io" && r.URL.RawQuery == "" {
+	switch {
+	case r.URL.Hostname() == "boards-api.greenhouse.io" && r.URL.RawQuery == "":
 		r = r.Clone(r.Context())
 		r.URL.RawQuery = "content=true"
+	case r.URL.Hostname() == "api.smartrecruiters.com" && r.URL.Query().Get("limit") == "1":
+		r = r.Clone(r.Context())
+		r.URL.RawQuery = "limit=100&offset=0"
 	}
 	return l.next.RoundTrip(r)
 }
@@ -158,11 +163,14 @@ func TestBoardsListCommand(t *testing.T) {
 	}
 	// Columns: unverified ok not_found error retired total.
 	for name, want := range map[string]string{
-		"ats":        "unverified ok not_found error retired total",
-		"greenhouse": "1 0 0 0 0 1",
-		"lever":      "2 0 0 0 0 2",
-		"ashby":      "0 1 0 0 0 1",
-		"total":      "3 1 0 0 0 4",
+		"ats":             "unverified ok not_found error retired total",
+		"greenhouse":      "1 0 0 0 0 1",
+		"lever":           "2 0 0 0 0 2",
+		"ashby":           "0 1 0 0 0 1",
+		"smartrecruiters": "1 0 0 0 0 1",
+		"teamtailor":      "1 0 0 0 0 1",
+		"personio":        "1 0 0 0 0 1",
+		"total":           "6 1 0 0 0 7",
 	} {
 		if got := strings.Join(fields[name], " "); got != want {
 			t.Errorf("%s row = %q, want %q\n%s", name, got, want, out)
@@ -200,10 +208,10 @@ func TestBoardsCheckCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if ct.n != 6 {
-		t.Errorf("requests = %d, want 6", ct.n)
+	if ct.n != 9 {
+		t.Errorf("requests = %d, want 9", ct.n)
 	}
-	for _, slug := range []string{"examplecorp", "samplesoft", "beispielwerk", "demolabs"} {
+	for _, slug := range []string{"examplecorp", "samplesoft", "beispielwerk", "demolabs", "ExampleRobotics", "mockworks", "musterfabrik"} {
 		if st := dbCount(t, `SELECT count(*) FROM board WHERE slug = '`+slug+`' AND state = 'ok' AND checked_at IS NOT NULL AND last_ok_at IS NOT NULL AND postings_last > 0 AND misses = 0`); st != 1 {
 			t.Errorf("%s not ok after check", slug)
 		}
@@ -219,14 +227,20 @@ func TestBoardsCheckCommand(t *testing.T) {
 		"3 boards: 2 ok, 0 not_found, 0 error, 0 no verdict, 1 retired",
 		"board states: 1 not_found→retired, 2 unverified→ok",
 		"manual board ashby/ghostmanual has missed on 3+ days; kept",
-		"boards check: 6 boards · 4 ok · 1 not_found · 0 error · 0 no verdict · 1 retired · 0 not checked · ",
+		"boards check: smartrecruiters run ",
+		"1 boards: 1 ok, 0 not_found, 0 error, 0 no verdict, 0 retired",
+		"boards check: 9 boards · 7 ok · 1 not_found · 0 error · 0 no verdict · 1 retired · 0 not checked · ",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
-	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'check' AND finished_at IS NOT NULL AND stop_reason = ''`); got != 3 {
-		t.Errorf("check runs = %d, want 3", got)
+	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'check' AND finished_at IS NOT NULL AND stop_reason = ''`); got != len(ats.Names) {
+		t.Errorf("check runs = %d, want %d", got, len(ats.Names))
+	}
+	// SmartRecruiters is counted by its totalFound from the one-posting check URL.
+	if got := boardField(t, "postings_last", "smartrecruiters", "ExampleRobotics"); got != "5" {
+		t.Errorf("smartrecruiters postings_last = %s, want 5", got)
 	}
 	if got := dbCount(t, `SELECT count(*) FROM http_fetch`); got != 0 {
 		t.Errorf("fetch rows = %d, want 0 (check keeps no bodies)", got)
@@ -305,7 +319,7 @@ func TestCollectATSReadsRegistryAndFile(t *testing.T) {
 	// Passes the table's checks, fails ats.Board.Validate (a slug starts with a letter or digit).
 	ownerExecCmd(t, `INSERT INTO board (ats, slug, origin, state) VALUES ('greenhouse', '-broken', 'seed-list', 'ok')`)
 	demo := ats.DemoBoards()
-	gh, lev, levEU, ashby := demo[0], demo[1], demo[2], demo[3]
+	gh, lev, levEU, ashby, sr, tt, pe := demo[0], demo[1], demo[2], demo[3], demo[4], demo[5], demo[6]
 	ownerExecCmd(t, `UPDATE board SET origin = 'manual', state = 'not_found' WHERE slug = $1 AND region = ''`, lev.Board)
 	ownerExecCmd(t, `UPDATE board SET state = 'not_found' WHERE region = 'eu'`)
 	ownerExecCmd(t, `UPDATE board SET state = 'retired', origin = 'manual' WHERE ats = 'ashby'`)
@@ -319,7 +333,7 @@ func TestCollectATSReadsRegistryAndFile(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	want := []string{ashby.APIURL(), lev.APIURL(), gh.APIURL()}
+	want := []string{ashby.APIURL(), lev.APIURL(), gh.APIURL(), sr.APIURL(), tt.APIURL(), pe.APIURL()}
 	sort.Strings(want)
 	if got := fetchedURLs(t); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("fetched %v\nwant %v (not %s)", got, want, levEU.APIURL())
@@ -379,8 +393,8 @@ func TestCollectATSLiveUpdatesRegistry(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if got := dbCount(t, `SELECT count(*) FROM board WHERE state = 'ok' AND checked_at IS NOT NULL AND postings_last > 0`); got != 4 {
-		t.Errorf("boards updated = %d, want 4", got)
+	if got := dbCount(t, `SELECT count(*) FROM board WHERE state = 'ok' AND checked_at IS NOT NULL AND postings_last > 0`); got != 7 {
+		t.Errorf("boards updated = %d, want 7", got)
 	}
 	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'collect' AND source IN ('greenhouse', 'lever', 'ashby')`); got != 3 {
 		t.Errorf("live collect runs = %d, want 3", got)

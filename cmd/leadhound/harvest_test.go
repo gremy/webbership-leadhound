@@ -293,3 +293,86 @@ func TestWriteHarvestExclusive(t *testing.T) {
 	}
 	noTempLeft(t, dir)
 }
+
+// TestHarvestPatternLine: a pattern's line says "capped" only when the index had more pages
+// than --max-pages; a pattern the breaker stopped says it stopped and why, and every later
+// pattern gets a "not run" line. The CSV still holds what was read.
+func TestHarvestPatternLine(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		pages    int    // pages the index says jobs.lever.co/* has
+		status   int    // status of every jobs.lever.co/* page; 429 opens the breaker
+		maxPages string // --max-pages
+		wantErr  bool
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "capped", pages: 3, status: http.StatusOK, maxPages: "2",
+			want: []string{
+				"jobs.lever.co/*: pages 2/3 (capped by --max-pages 2), page errors 0",
+				"jobs.ashbyhq.com/*: pages 1/1, page errors 0",
+			},
+			notWant: []string{"stopped", "not run"},
+		},
+		{
+			name: "stopped on breaker", pages: 1, status: http.StatusTooManyRequests, maxPages: "50", wantErr: true,
+			want: []string{
+				"jobs.lever.co/*: pages 0/1 (stopped: throttled), page errors 0",
+				"jobs.ashbyhq.com/*: not run (the run stopped)\n",
+				"harvest: 0 unique boards",
+			},
+			notWant: []string{"capped", "jobs.ashbyhq.com/*: pages"},
+		},
+		{
+			name: "normal", pages: 1, status: http.StatusOK, maxPages: "50",
+			want: []string{
+				"jobs.lever.co/*: pages 1/1, page errors 0, lines 1, boards 1, refused 0, skipped 0\n",
+				"jobs.ashbyhq.com/*: pages 1/1, page errors 0, lines 1, boards 1, refused 0, skipped 0\n",
+			},
+			notWant: []string{"capped", "stopped", "not run"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noDB(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				lever := q.Get("url") == "jobs.lever.co/*"
+				switch {
+				case q.Get("showNumPages") == "true" && lever:
+					_, _ = fmt.Fprintf(w, `{"pages": %d}`, tc.pages)
+				case q.Get("showNumPages") == "true":
+					_, _ = fmt.Fprint(w, `{"pages": 1}`)
+				case lever && tc.status != http.StatusOK:
+					w.Header().Set("Retry-After", "0")
+					http.Error(w, "slow down", tc.status)
+				case lever:
+					_, _ = fmt.Fprintf(w, "{\"url\": \"https://jobs.lever.co/samplesoft%s\"}\n", q.Get("page")) // #nosec G705 -- a test server echoing a page number
+				default:
+					_, _ = fmt.Fprint(w, `{"url": "https://jobs.ashbyhq.com/demolabs"}`+"\n")
+				}
+			}))
+			t.Cleanup(srv.Close)
+			localIndex(t, srv)
+			out := filepath.Join(t.TempDir(), "boards.csv")
+			stdout, err := runHarvest(t, "--crawl", "CC-MAIN-2099-01", "--out", out, "--max-pages", tc.maxPages,
+				"--pattern", "jobs.lever.co/*", "--pattern", "jobs.ashbyhq.com/*")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err %v, wantErr %v\n%s", err, tc.wantErr, stdout)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("stdout lacks %q:\n%s", want, stdout)
+				}
+			}
+			for _, nw := range tc.notWant {
+				if strings.Contains(stdout, nw) {
+					t.Errorf("stdout has %q:\n%s", nw, stdout)
+				}
+			}
+			if _, err := os.Stat(out); err != nil {
+				t.Errorf("CSV not written: %v", err)
+			}
+		})
+	}
+}

@@ -14,9 +14,9 @@ Early number: grow the set with 10–20 English postings before treating it as t
 Slice 1 (jobs).
 
 ## Next (1-3)
-- [ ] CP6d: European ATSs (Workable, Personio, Recruitee, Teamtailor, SmartRecruiters).
-- [ ] CP6e/6f: remote-job sites, then more sources, each checked for permission first.
-- [ ] CP6b: the employer's own apply route; then CP7: deploy on timers.
+- [x] CP6d: SmartRecruiters, Teamtailor and Personio (paged reads, SmartRecruiters details after the list-data gates). Recruitee and Workable left out: no documented public feed without a key.
+- [ ] CP7: deploy on timers.
+- [ ] CP6e/6f/6b: remote-job sites, more sources (each checked for permission first), the employer's own apply route.
 
 ## Key files
 - `CONTRIBUTING.md` (the public-repo rules)

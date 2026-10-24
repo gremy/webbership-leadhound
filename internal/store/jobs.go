@@ -89,6 +89,37 @@ func (q Queries) JobsWithoutObservation(ctx context.Context, source string, sour
 	return ids, nil
 }
 
+// JobsAwaitingDetail returns the ids among sourceJobIDs whose job of source has an
+// observation and whose latest one (by observed_at, the higher id breaking a tie, as
+// LatestObservation) was read from a board answer (http_fetch.kind 'board'): for an ATS
+// whose list carries no description, a job still waiting for its detail. A job whose detail
+// came has a latest observation read from a detail answer. They come back in input order,
+// once each.
+func (q Queries) JobsAwaitingDetail(ctx context.Context, source string, sourceJobIDs []string) ([]string, error) {
+	if len(sourceJobIDs) == 0 {
+		return []string{}, nil
+	}
+	rows, err := q.db.Query(ctx,
+		`SELECT u.id FROM (
+		   SELECT id, min(ord) AS ord FROM unnest($2::text[]) WITH ORDINALITY AS t(id, ord) GROUP BY id
+		 ) u
+		 JOIN job j ON j.source = $1 AND j.source_job_id = u.id
+		 JOIN LATERAL (
+		   SELECT o.fetch_id FROM job_observation o WHERE o.job_id = j.id
+		   ORDER BY o.observed_at DESC, o.id DESC LIMIT 1
+		 ) latest ON true
+		 JOIN http_fetch f ON f.id = latest.fetch_id AND f.kind = 'board'
+		 ORDER BY u.ord`, source, sourceJobIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: jobs awaiting detail: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("store: jobs awaiting detail: %w", err)
+	}
+	return ids, nil
+}
+
 // ObservationInsert is the facts one fetch gave about a job. GuardFindings nil is stored as
 // {}; a nil ApplicantCount or PostedAtEst is stored as NULL (unknown).
 type ObservationInsert struct {

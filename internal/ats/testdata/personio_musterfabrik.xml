@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<workzag-jobs>
+
+<position>
+    <id>4100001</id>
+    <subcompany></subcompany>
+    <office>Exampleville</office>
+    <additionalOffices>
+        <office>Sampletown</office>
+        <office>Demoburg</office>
+    </additionalOffices>
+    <department>Engineering</department>
+    <recruitingCategory>Engineering</recruitingCategory>
+    <name>Senior Go Engineer</name>
+    <jobDescriptions>
+        <jobDescription>
+            <name>Your role at Musterfabrik</name>
+            <value><![CDATA[<p>Build services in Go.</p>]]></value>
+        </jobDescription>
+        <jobDescription>
+            <name>What you&#039;ll bring</name>
+            <value><![CDATA[<ul><li>Go in production</li><li>SQL</li></ul>]]></value>
+        </jobDescription>
+    </jobDescriptions>
+    <employmentType>permanent</employmentType>
+    <seniority>experienced</seniority>
+    <schedule>full-time</schedule>
+    <yearsOfExperience>5-7</yearsOfExperience>
+    <occupation>software_and_web_development</occupation>
+    <occupationCategory>it_software</occupationCategory>
+    <createdAt>2026-10-10T10:00:00+0200</createdAt>
+</position>
+
+<position>
+    <id>4100002</id>
+    <subcompany></subcompany>
+    <office>Remote (Exampleland)</office>
+    <additionalOffices></additionalOffices>
+    <department>Engineering</department>
+    <recruitingCategory>Engineering</recruitingCategory>
+    <name>AI Engineer</name>
+    <jobDescriptions>
+        <jobDescription>
+            <name>About the job</name>
+            <value><![CDATA[<p>Ship agents to customers.</p>]]></value>
+        </jobDescription>
+    </jobDescriptions>
+    <employmentType>permanent</employmentType>
+    <seniority>experienced</seniority>
+    <schedule>part-time</schedule>
+    <yearsOfExperience>2-5</yearsOfExperience>
+    <occupation>software_and_web_development</occupation>
+    <occupationCategory>it_software</occupationCategory>
+    <createdAt>2026-10-11T09:30:00+00:00</createdAt>
+</position>
+
+<position>
+    <id>4100003</id>
+    <subcompany></subcompany>
+    <office>Sampletown</office>
+    <additionalOffices/>
+    <department>Data</department>
+    <recruitingCategory>Engineering</recruitingCategory>
+    <name>Data Engineer</name>
+    <jobDescriptions></jobDescriptions>
+    <employmentType>freelance</employmentType>
+    <seniority>experienced</seniority>
+    <schedule></schedule>
+    <yearsOfExperience>2-5</yearsOfExperience>
+    <occupation>software_and_web_development</occupation>
+    <occupationCategory>it_software</occupationCategory>
+    <createdAt></createdAt>
+</position>
+
+<position>
+    <id>4100004</id>
+    <subcompany>Musterfabrik Labs GmbH</subcompany>
+    <office>Demoburg</office>
+    <additionalOffices>
+        <office>Demoburg</office>
+    </additionalOffices>
+    <department>Platform</department>
+    <recruitingCategory>Engineering</recruitingCategory>
+    <name>Platform Engineer</name>
+    <jobDescriptions>
+        <jobDescription>
+            <name></name>
+            <value><![CDATA[<p>Run the platform.</p>]]></value>
+        </jobDescription>
+        <jobDescription>
+            <name>Benefits</name>
+            <value></value>
+        </jobDescription>
+    </jobDescriptions>
+    <employmentType>permanent</employmentType>
+    <seniority>lead</seniority>
+    <schedule>full-time</schedule>
+    <yearsOfExperience>7-10</yearsOfExperience>
+    <occupation>software_and_web_development</occupation>
+    <occupationCategory>it_software</occupationCategory>
+    <createdAt>2026-10-12T08:00:00+0100</createdAt>
+</position>
+
+</workzag-jobs>

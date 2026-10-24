@@ -36,6 +36,18 @@ const atsTimeout = 60 * time.Second
 // APIs, so a 403 is an error for one board, not a reason to stop.
 var atsProfile = fetch.Profile{Name: "ats-json", Header: http.Header{"Accept": {"application/json"}}}
 
+// atsFeedProfile is atsProfile for the ATSs that answer with a feed: Teamtailor's RSS and
+// Personio's XML.
+var atsFeedProfile = fetch.Profile{Name: "ats-feed", Header: http.Header{"Accept": {"application/rss+xml, application/xml;q=0.9, text/xml;q=0.8"}}}
+
+// atsProfileFor is the profile an ATS's client sends.
+func atsProfileFor(atsName string) fetch.Profile {
+	if atsName == ats.Teamtailor || atsName == ats.Personio {
+		return atsFeedProfile
+	}
+	return atsProfile
+}
+
 // atsFlags are the flags the ATS commands share.
 type atsFlags struct {
 	fetchFlags
@@ -192,12 +204,19 @@ func boardsPerATS(boards []ats.Board) map[string]int {
 // atsClients returns the constructor for each ATS's client. With --dry-run the client reads
 // fixtures and is never paced or gated; otherwise it is live-gated, paced at
 // LEADHOUND_ATS_INTERVAL and
-// asks for JSON. Either way each ATS gets its own breaker, whose board budget is twice that
-// ATS's boards (room for each one's 429 retry). errLiveOff means LEADHOUND_LIVE does not allow
-// every board's API host, so the command must not run. Bodies up to atsMaxBody are read.
+// asks for JSON. Either way each ATS gets its own breaker, whose board budget is twice the
+// list requests that ATS's boards may take (ats.MaxBoardRequests: one, Personio's retry,
+// or the page cap; twice for each one's 429 retry), and whose detail budget is
+// LEADHOUND_ATS_DETAIL_BUDGET. errLiveOff means LEADHOUND_LIVE does not allow every board's
+// API host, so the command must not run. Bodies up to atsMaxBody are read.
 func atsClients(cfg config.Config, f fetchFlags, boards []ats.Board) (func(string, fetch.Recorder) *fetch.Client, error) {
 	perATS := boardsPerATS(boards)
-	budgets := func(atsName string) fetch.Budgets { return fetch.Budgets{fetch.KindBoard: 2 * perATS[atsName]} }
+	budgets := func(atsName string) fetch.Budgets {
+		return fetch.Budgets{
+			fetch.KindBoard:  2 * perATS[atsName] * ats.MaxBoardRequests(atsName),
+			fetch.KindDetail: cfg.ATSDetailBudget,
+		}
+	}
 	if f.dryRun {
 		ft, err := fetch.NewFixtureTransport(f.fixtures)
 		if err != nil {
@@ -207,7 +226,7 @@ func atsClients(cfg config.Config, f fetchFlags, boards []ats.Board) (func(strin
 			return fetch.New(
 				fetch.WithFixtures(ft),
 				fetch.WithRecorder(rec),
-				fetch.WithProfile(atsProfile),
+				fetch.WithProfile(atsProfileFor(atsName)),
 				fetch.WithMaxBody(atsMaxBody),
 				fetch.WithLimiter(rate.NewLimiter(rate.Inf, 1)),
 				fetch.WithJitter(0),
@@ -222,7 +241,7 @@ func atsClients(cfg config.Config, f fetchFlags, boards []ats.Board) (func(strin
 		c := fetch.New(
 			fetch.WithLiveGate(cfg.Live),
 			fetch.WithRecorder(rec),
-			fetch.WithProfile(atsProfile),
+			fetch.WithProfile(atsProfileFor(atsName)),
 			fetch.WithMaxBody(atsMaxBody),
 			fetch.WithLimiter(rate.NewLimiter(rate.Every(cfg.ATSInterval), 1)),
 			fetch.WithBreaker(fetch.NewBreaker(budgets(atsName))),

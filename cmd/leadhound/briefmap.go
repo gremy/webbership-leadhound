@@ -36,9 +36,15 @@ var briefSources = []briefSource{
 	{ats.Greenhouse, "Greenhouse", false, ats.Greenhouse},
 	{ats.Lever, "Lever", false, ats.Lever},
 	{ats.Ashby, "Ashby", false, ats.Ashby},
+	{ats.SmartRecruiters, "SmartRecruiters", false, ats.SmartRecruiters},
+	{ats.Teamtailor, "Teamtailor", false, ats.Teamtailor},
+	{ats.Personio, "Personio", false, ats.Personio},
 	{ats.SourceFixture(ats.Greenhouse), "Greenhouse fixtures", false, ats.Greenhouse},
 	{ats.SourceFixture(ats.Lever), "Lever fixtures", false, ats.Lever},
 	{ats.SourceFixture(ats.Ashby), "Ashby fixtures", false, ats.Ashby},
+	{ats.SourceFixture(ats.SmartRecruiters), "SmartRecruiters fixtures", false, ats.SmartRecruiters},
+	{ats.SourceFixture(ats.Teamtailor), "Teamtailor fixtures", false, ats.Teamtailor},
+	{ats.SourceFixture(ats.Personio), "Personio fixtures", false, ats.Personio},
 }
 
 // atsSources are the sources of briefSources that are ATS boards.

@@ -15,6 +15,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/gates"
 	"github.com/gremy/webbership-leadhound/internal/pipeline"
+	"github.com/gremy/webbership-leadhound/internal/postingguard"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -29,7 +30,7 @@ const stopReasonParserBroke = "parser_broke"
 const applyTypeATS = "ats"
 
 // atsOrder is the order the ATSs run in, whatever order the board list names them.
-var atsOrder = []string{Greenhouse, Lever, Ashby}
+var atsOrder = Names
 
 // Collector runs one ATS collect: every board once, one run row per ATS, the ATSs side by
 // side.
@@ -87,16 +88,25 @@ type ATSResult struct {
 	BoardsFailed int  // a failed request: an unexpected status, a network error or the breaker
 	BoardsBroke  int  // answered, but the parser could not read it
 	NotFound     int  // answered 404: the board does not exist
+	Capped       int  // boards with more than MaxBoardPages pages: saved as read, nothing expired
 	Postings     int  // postings saved from the boards that parsed
 	ScreenedOut  int  // postings the title screen dropped, never stored
 	NewJobs      int  // postings with no observation yet
-	Observations int  // observations written
-	Expired      int64
-	Reopened     int64
-	Requests     int
-	Failures     int
-	StopReason   string
-	Note         string
+	Observations int  // observations written: one per new job, one per later detail
+	// The detail step (SmartRecruiters): a description fetched, one that failed (no answer,
+	// an unexpected status, a 404 or a body the parser could not read), and one left for a
+	// later run because the run's detail budget was spent or the breaker opened.
+	Details, DetailsFailed, DetailsDeferred int
+	// DetailsNotNeeded counts the postings never asked for a detail because a gate already
+	// failed on their list data (see listGatesFail): new ones, and stored ones still
+	// without their detail.
+	DetailsNotNeeded int
+	Expired          int64
+	Reopened         int64
+	Requests         int
+	Failures         int
+	StopReason       string
+	Note             string
 	// ScreenedByBoard is ScreenedOut per board ("<ats>/<board>"), for boards that dropped any.
 	ScreenedByBoard map[string]int
 	// StateChanges counts the registry boards whose state moved, by "old→new".
@@ -104,9 +114,17 @@ type ATSResult struct {
 	// Flagged are manual boards that missed on enough days to be retired, which manual
 	// boards never are.
 	Flagged []string
+	// Shifted counts the paged boards whose listing changed while they were read (a later
+	// page gave another total than the first), and Repeated those where a page added no
+	// posting not already read (an ATS ignoring the offset, or a page repeated): both are
+	// saved as read, and nothing of them expires that run.
+	Shifted, Repeated int
 
 	broke    []string // boards the parser broke on, for the note
 	notFound []string // boards that answered 404, for the note
+	capped   []string // boards read only up to MaxBoardPages, for the note
+	shifted  []string // boards whose listing changed while read, for the note
+	repeated []string // boards where a page added no new posting, for the note
 	emptied  []string // boards that listed nothing while they had open jobs, one note line each
 }
 
@@ -217,7 +235,9 @@ func (c *Collector) runATS(ctx context.Context, name string, boards []Board) (AT
 		return res, fmt.Errorf("ats: collect %s: %w", name, err)
 	}
 	res.RunID = runID
-	rec := store.NewFetchRecorder(q, runID, src)
+	// A detail answer is kept like a board answer: its size and hash, the body only when
+	// the parser broke on it.
+	rec := store.NewFetchRecorder(q, runID, src).SizeOnly(fetch.KindDetail)
 	r := &atsRun{c: c, q: q, rec: rec, client: c.NewClient(name, rec), src: src, res: &res}
 
 	runErr := r.collect(ctx, boards)
@@ -248,6 +268,10 @@ func (a *ATSResult) note() string {
 	s := fmt.Sprintf("%s: %d boards (%d ok, %d failed, %d parser broke, %d not found), %d postings, %d screened out, %d new, %d observed, %d expired, %d reopened",
 		a.ATS, a.Boards, a.BoardsOK, a.BoardsFailed, a.BoardsBroke, a.NotFound,
 		a.Postings, a.ScreenedOut, a.NewJobs, a.Observations, a.Expired, a.Reopened)
+	if a.Details+a.DetailsFailed+a.DetailsDeferred+a.DetailsNotNeeded > 0 {
+		s += fmt.Sprintf("; details: %d fetched, %d failed, %d left for a later run, %d not needed (gates failed)",
+			a.Details, a.DetailsFailed, a.DetailsDeferred, a.DetailsNotNeeded)
+	}
 	if a.StopReason != "" && a.StopReason != stopReasonParserBroke {
 		s += "; stopped: " + a.StopReason
 	}
@@ -256,6 +280,15 @@ func (a *ATSResult) note() string {
 	}
 	if len(a.broke) > 0 {
 		s += "; parser broke on " + capList(a.broke)
+	}
+	if len(a.capped) > 0 {
+		s += fmt.Sprintf("; more than %d pages, read in part, nothing expired: %s", MaxBoardPages, capList(a.capped))
+	}
+	if len(a.shifted) > 0 {
+		s += "; listing changed while reading, nothing expired: " + capList(a.shifted)
+	}
+	if len(a.repeated) > 0 {
+		s += "; a page added no new posting, read in part, nothing expired: " + capList(a.repeated)
 	}
 	if len(a.StateChanges) > 0 {
 		s += "; board states: " + StateChangeSummary(a.StateChanges)
@@ -318,6 +351,21 @@ type atsRun struct {
 	client *fetch.Client
 	src    string
 	res    *ATSResult
+	// detailStop is set once no more detail may be requested this run: the detail budget
+	// is spent, or the breaker opened (then it is the stop reason, which ends the run after
+	// the board in hand is saved).
+	detailStop      string
+	detailSpentOnly bool // detailStop is the detail budget only: the run goes on
+	// listRules are the active stored rules the list-data gates read (listGatesFail),
+	// loaded once per run; rulesLoaded says they are.
+	listRules   []gates.Rule
+	rulesLoaded bool
+}
+
+// listedPosting is one posting a board listed, with the fetch row it was read from.
+type listedPosting struct {
+	Posting
+	fetchID int64
 }
 
 // collect fetches each board once. It sets res.StopReason when the breaker opens, which
@@ -338,8 +386,93 @@ func (r *atsRun) collect(ctx context.Context, boards []Board) error {
 }
 
 // board fetches, parses and saves one board. stop is the breaker's reason when it opened.
+//
+// A paged board (SmartRecruiters, Teamtailor) is read page after page, at most
+// MaxBoardPages; every page is a request like any other, paced, budgeted and counted by the
+// breaker. A Personio feed that lists no described position in English is asked once more
+// without the language, and that answer is the board's. A board is saved only when every
+// page it was asked for parsed; any page that failed, broke or answered 404 is the board's
+// outcome, and nothing of it is saved or expired. A board cut at MaxBoardPages is saved as
+// read, but expires nothing, and so does one whose listing changed while it was read (a
+// SmartRecruiters page whose totalFound differs from the first page's: postings may have
+// shifted across a page edge unread; the rest of its pages are still read) and one where a
+// later page added no posting not already read (an ATS that ignores the offset, or a page
+// repeated: the read stops there).
 func (r *atsRun) board(ctx context.Context, b Board) (stop string, _ error) {
-	u := b.APIURL()
+	var items []listedPosting
+	complete := true
+	offset, retried := 0, false
+	firstTotal, haveTotal, shifted := 0, false, false
+	seenIDs := map[string]bool{}
+	u := b.pageURL(0)
+	for page := 0; ; page++ {
+		if page == MaxBoardPages {
+			complete = false
+			r.res.Capped++
+			r.res.capped = append(r.res.capped, b.String())
+			r.c.log().Warn("board has more pages than read", "board", b.String(), "pages", MaxBoardPages)
+			break
+		}
+		body, fetchID, done, stop, err := r.get(ctx, b, u)
+		if done || err != nil {
+			return stop, err
+		}
+		if b.ATS == Personio && !retried && personioEmptyWithLanguage(body) {
+			// No position described in English: the feed without a language is the board's.
+			retried, u = true, personioFeedURL(b, "")
+			continue
+		}
+		ps, next, last, err := parsePage(b, offset, body)
+		if err != nil {
+			return "", r.broke(ctx, b, u, body, err)
+		}
+		if total, ok := listTotal(b, body); ok {
+			switch {
+			case !haveTotal:
+				firstTotal, haveTotal = total, true
+			case total != firstTotal && !shifted:
+				shifted, complete = true, false
+				r.res.Shifted++
+				r.res.shifted = append(r.res.shifted, b.String())
+				r.c.log().Warn("board listing changed while reading; nothing expired", "board", b.String(), "first_total", firstTotal, "total", total)
+			}
+		}
+		added := false
+		for _, p := range ps {
+			if !seenIDs[p.ID] {
+				seenIDs[p.ID], added = true, true
+			}
+			items = append(items, listedPosting{Posting: p, fetchID: fetchID})
+		}
+		if page > 0 && len(ps) > 0 && !added {
+			complete = false
+			r.res.Repeated++
+			r.res.repeated = append(r.res.repeated, b.String())
+			r.c.log().Warn("a page added no new posting; read stopped, nothing expired", "board", b.String(), "offset", offset)
+			break
+		}
+		if last {
+			break
+		}
+		offset, u = next, b.pageURL(next)
+	}
+	if err := r.save(ctx, b, items, complete); err != nil {
+		return "", fmt.Errorf("board %s: %w", b, err)
+	}
+	r.res.BoardsOK++
+	if err := r.record(ctx, b, store.CheckOK, len(items)); err != nil {
+		return "", err
+	}
+	if !r.detailSpentOnly {
+		return r.detailStop, nil // a breaker that opened during the detail step ends the run
+	}
+	return "", nil
+}
+
+// get requests one list URL of b. On a 2xx it returns the body and its fetch row. Anything
+// else is the board's outcome, counted and written to the registry here, and done is true:
+// stop is the breaker's reason when it opened, err is set when the run itself must end.
+func (r *atsRun) get(ctx context.Context, b Board, u string) (body []byte, fetchID int64, done bool, stop string, _ error) {
 	resp, err := r.client.Get(ctx, fetch.KindBoard, u)
 	if err != nil {
 		r.res.BoardsFailed++
@@ -347,42 +480,39 @@ func (r *atsRun) board(ctx context.Context, b Board) (stop string, _ error) {
 		switch {
 		case stop != "":
 			r.c.log().Warn("fetching stopped", "ats", b.ATS, "reason", stop, "board", b.String())
-			return stop, nil
+			return nil, 0, true, stop, nil
 		case terr != nil:
-			return "", terr
+			return nil, 0, true, "", terr
 		}
 		// Skipped after a real attempt, already recorded and counted by the breaker; tried
 		// again next run. Only a bad answer counts against the board.
 		r.c.log().Warn("board skipped", "board", b.String(), "status", resp.Status, "outcome", outcome, "err", err)
-		return "", r.record(ctx, b, outcome, 0)
+		return nil, 0, true, "", r.record(ctx, b, outcome, 0)
 	}
 	if resp.Status == http.StatusNotFound {
 		r.res.NotFound++
 		r.res.notFound = append(r.res.notFound, b.String())
 		r.c.log().Warn("board not found", "board", b.String())
-		return "", r.record(ctx, b, store.CheckNotFound, 0)
+		return nil, 0, true, "", r.record(ctx, b, store.CheckNotFound, 0)
 	}
-	postings, err := Parse(b, resp.Body)
-	if err != nil {
-		// A board that cannot be read says nothing about which postings are gone.
-		r.res.BoardsBroke++
-		r.res.broke = append(r.res.broke, b.String())
-		r.c.log().Error("parser broke", "board", b.String(), "err", err, "parser_broke", errors.Is(err, ErrParserBroke))
-		// Board fetch rows keep no body; one the parser broke on is kept, to read why.
-		if err := r.keepBody(ctx, u, resp.Body); err != nil {
-			return "", fmt.Errorf("board %s: %w", b, err)
-		}
-		return "", r.record(ctx, b, store.CheckError, 0)
-	}
-	fetchID, found := r.rec.LastIDFor(u)
+	id, found := r.rec.LastIDFor(u)
 	if !found {
-		return "", fmt.Errorf("board %s: no fetch row recorded", b)
+		return nil, 0, true, "", fmt.Errorf("board %s: no fetch row recorded", b)
 	}
-	if err := r.save(ctx, b, fetchID, postings); err != nil {
-		return "", fmt.Errorf("board %s: %w", b, err)
+	return resp.Body, id, false, "", nil
+}
+
+// broke counts a board page the parser could not read and keeps its body. A board that
+// cannot be read says nothing about which postings are gone.
+func (r *atsRun) broke(ctx context.Context, b Board, u string, body []byte, perr error) error {
+	r.res.BoardsBroke++
+	r.res.broke = append(r.res.broke, b.String())
+	r.c.log().Error("parser broke", "board", b.String(), "err", perr, "parser_broke", errors.Is(perr, ErrParserBroke))
+	// Board fetch rows keep no body; one the parser broke on is kept, to read why.
+	if err := r.keepBody(ctx, u, body); err != nil {
+		return fmt.Errorf("board %s: %w", b, err)
 	}
-	r.res.BoardsOK++
-	return "", r.record(ctx, b, store.CheckOK, len(postings))
+	return r.record(ctx, b, store.CheckError, 0)
 }
 
 // keepBody attaches body to the fetch row recorded for u. A row whose stored hash does not
@@ -460,16 +590,19 @@ func FailedFetch(ctx context.Context, resp fetch.Response, err error) (outcome, 
 
 // save stores one parsed board: each posting's company and job, an observation for every
 // job that has none, reopens the listed jobs that had expired, and expires this board's
-// open jobs the board no longer lists. A posting the title screen drops is not stored, but
-// it still counts as listed, so it never expires or leaves unchecked a job stored earlier.
-func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Posting) error {
-	ids := make([]string, 0, len(postings))    // stored this time
+// open jobs the board no longer lists, unless complete is false (a board read only in
+// part). A posting the title screen drops is not stored, but it still counts as listed, so
+// it never expires or leaves unchecked a job stored earlier.
+//
+// For an ATS whose list carries no description (SmartRecruiters) the detail step runs on
+// the postings that passed the title screen, before anything is written: see details.
+func (r *atsRun) save(ctx context.Context, b Board, postings []listedPosting, complete bool) error {
+	ids := make([]string, 0, len(postings))    // kept by the title screen
 	listed := make([]string, 0, len(postings)) // every id the board lists
 	seen := map[string]bool{}
-	jobIDs := map[string]int64{}
-	byID := map[string]Posting{}
+	byID := map[string]listedPosting{}
 	for _, p := range postings {
-		sid := SourceJobID(b, p)
+		sid := SourceJobID(b, p.Posting)
 		if seen[sid] {
 			continue
 		}
@@ -483,8 +616,28 @@ func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Po
 			r.res.ScreenedByBoard[b.String()]++
 			continue
 		}
-		company := firstNonEmpty(p.Company, b.Name, b.Board)
-		companyID, err := r.q.UpsertCompany(ctx, company, "", "")
+		p.Company = firstNonEmpty(p.Company, b.Name, b.Board)
+		byID[sid] = p
+		ids = append(ids, sid)
+	}
+
+	// New: no observation yet, a job row or not.
+	fresh, err := r.q.JobsWithoutObservation(ctx, r.src, ids)
+	if err != nil {
+		return err
+	}
+	var later []string // stored before, now with their detail: one more observation each
+	if b.ATS == SmartRecruiters {
+		if later, err = r.details(ctx, b, ids, fresh, byID); err != nil {
+			return err
+		}
+	}
+
+	jobIDs := map[string]int64{}
+	stored := make([]string, 0, len(ids))
+	for _, sid := range ids {
+		p := byID[sid]
+		companyID, err := r.q.UpsertCompany(ctx, p.Company, "", "")
 		if errors.Is(err, store.ErrEmptyName) {
 			r.c.log().Warn("posting skipped: company name has no letters", "board", b.String(), "job", sid)
 			continue
@@ -498,19 +651,30 @@ func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Po
 		if err != nil {
 			return err
 		}
-		p.Company = company
-		jobIDs[sid], byID[sid] = jobID, p
-		ids = append(ids, sid)
+		jobIDs[sid] = jobID
+		stored = append(stored, sid)
 	}
-	r.res.Postings += len(ids)
+	r.res.Postings += len(stored)
 
-	fresh, err := r.q.JobsWithoutObservation(ctx, r.src, ids)
-	if err != nil {
-		return err
-	}
-	r.res.NewJobs += len(fresh)
 	for _, sid := range fresh {
-		if err := r.c.writeObservation(ctx, b.ATS, jobIDs[sid], fetchID, byID[sid]); err != nil {
+		jobID, ok := jobIDs[sid]
+		if !ok {
+			continue // skipped above
+		}
+		p := byID[sid]
+		if err := r.c.writeObservation(ctx, b.ATS, jobID, p.fetchID, p.Posting, true); err != nil {
+			return err
+		}
+		r.res.NewJobs++
+		r.res.Observations++
+	}
+	for _, sid := range later {
+		jobID, ok := jobIDs[sid]
+		if !ok {
+			continue
+		}
+		p := byID[sid]
+		if err := r.c.writeObservation(ctx, b.ATS, jobID, p.fetchID, p.Posting, false); err != nil {
 			return err
 		}
 		r.res.Observations++
@@ -525,6 +689,9 @@ func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Po
 	if _, err := r.q.MarkChecked(ctx, r.src, listed); err != nil {
 		return err
 	}
+	if !complete {
+		return nil
+	}
 	expired, err := r.q.ExpireMissing(ctx, r.src, boardPrefix(b), listed)
 	if err != nil {
 		return err
@@ -537,10 +704,178 @@ func (r *atsRun) save(ctx context.Context, b Board, fetchID int64, postings []Po
 	return nil
 }
 
-// writeObservation stores what one board fetch showed about a new job through
-// pipeline.Observe (the sanitised observation and its gate results), with its `new` status
-// event written in Observe's own transaction.
-func (c *Collector) writeObservation(ctx context.Context, atsName string, jobID, fetchID int64, p Posting) error {
+// details runs the detail step for one board whose list carries no description: one
+// request per posting, for the new ones (fresh) first and then the stored ones still
+// waiting for theirs, all among ids (the postings the title screen kept) and only those
+// whose list data fails no gate (listGatesFail): one that fails there is stored as any
+// other, with its gate rows, but its detail could not save it, so it is never asked for
+// one and counts as not needed. A stored job is
+// waiting when its latest observation was read from a board answer (store.JobsAwaitingDetail):
+// a posting whose detail failed or was over budget is stored with an empty description
+// (the gates flag the missing text, as they do for any posting without one), and the next
+// run that lists it asks again. A detail that answered updates the posting in byID: its
+// description, apply URL, public URL when the detail gives one, and the fetch row it cites.
+// later is the waiting stored jobs whose detail came, each owed a new observation.
+//
+// Every request is paced by the run's limiter and counted by its breaker. A spent detail
+// budget (fetch.KindDetail) stops only the detail step; a breaker that opens stops it and,
+// once this board is saved, the run.
+func (r *atsRun) details(ctx context.Context, b Board, ids, fresh []string, byID map[string]listedPosting) (later []string, _ error) {
+	isFresh := map[string]bool{}
+	for _, sid := range fresh {
+		isFresh[sid] = true
+	}
+	var stored []string
+	for _, sid := range ids {
+		if !isFresh[sid] {
+			stored = append(stored, sid)
+		}
+	}
+	waiting, err := r.q.JobsAwaitingDetail(ctx, r.src, stored)
+	if err != nil {
+		return nil, err
+	}
+	isWaiting := map[string]bool{}
+	for _, sid := range waiting {
+		isWaiting[sid] = true
+	}
+	var eligible []string
+	for _, sid := range append(append([]string{}, fresh...), waiting...) {
+		failed, err := r.listGatesFail(ctx, byID[sid].Posting)
+		if err != nil {
+			return nil, err
+		}
+		if failed {
+			r.res.DetailsNotNeeded++
+			continue
+		}
+		eligible = append(eligible, sid)
+	}
+	for _, sid := range eligible {
+		if r.detailStop != "" {
+			r.res.DetailsDeferred++
+			continue
+		}
+		p := byID[sid]
+		ok, err := r.detail(ctx, b, &p)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		byID[sid] = p
+		if isWaiting[sid] {
+			later = append(later, sid)
+		}
+	}
+	return later, nil
+}
+
+// listGatesFail reports whether a posting fails a gate on its list data alone, which no
+// detail can change: the gates (gates.Evaluate, with the collector's candidate gates and the
+// active stored rules) read its title, company and location with its workplace label, each
+// cleaned as pipeline.Observe cleans it, and no description. Every fail counts except
+// those that rest only on the description being empty, so that posting still gets its
+// detail:
+//   - the language gate reads the title when the description is empty; the description
+//     decides the language, so it is not judged here (the observation carries a candidate
+//     language, which also lets the other gates run on a title in another language);
+//   - a location field with no workplace label is read as an office's address only while
+//     nothing says remote, which the description may: ListedRemote turns that one reading
+//     off, as it does for a source that lists remote jobs only;
+//   - a rule on the description field reads the empty text, so it is left out.
+//
+// The posting's stored list observation still gets every gate as Observe evaluates it.
+func (r *atsRun) listGatesFail(ctx context.Context, p Posting) (bool, error) {
+	if !r.rulesLoaded {
+		stored, err := r.q.ActiveRules(ctx)
+		if err != nil {
+			return false, err
+		}
+		for _, rl := range stored {
+			if rl.Field == "description" {
+				continue
+			}
+			r.listRules = append(r.listRules, gates.Rule{ID: rl.ID, Kind: rl.Kind, Field: rl.Field, Pattern: rl.Pattern, Reason: rl.Reason})
+		}
+		r.rulesLoaded = true
+	}
+	lang := "en"
+	if len(r.c.Gates.Languages) > 0 {
+		lang = r.c.Gates.Languages[0]
+	}
+	obs := gates.Observation{
+		Title:          postingguard.CleanField(p.Title),
+		Company:        postingguard.CleanField(p.Company),
+		Location:       postingguard.CleanField(p.Location),
+		Lang:           lang,
+		LangConfidence: 1,
+		ListedRemote:   true,
+	}
+	for _, g := range gates.Evaluate(obs, r.c.Gates, r.listRules) {
+		if g.Verdict == gates.Fail && g.Gate != gates.GateLanguage {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// detail requests one posting's detail and fills p from it. ok is false when the detail
+// did not come (counted in the result); err is set only when the run itself must end.
+func (r *atsRun) detail(ctx context.Context, b Board, p *listedPosting) (ok bool, _ error) {
+	u := b.DetailURL(p.ID)
+	resp, err := r.client.Get(ctx, fetch.KindDetail, u)
+	if err != nil {
+		var open *fetch.OpenError
+		if errors.As(err, &open) && open.Reason == fetch.StopBudget && open.Kind == fetch.KindDetail && open.Err == nil {
+			r.detailStop, r.detailSpentOnly = string(fetch.StopBudget), true
+			r.res.DetailsDeferred++
+			r.c.log().Info("detail budget spent; the rest wait for a later run", "board", b.String())
+			return false, nil
+		}
+		_, stop, terr := FailedFetch(ctx, resp, err)
+		switch {
+		case stop != "":
+			r.detailStop = stop
+			r.res.DetailsDeferred++
+			r.c.log().Warn("fetching stopped", "ats", b.ATS, "reason", stop, "board", b.String())
+			return false, nil
+		case terr != nil:
+			return false, terr
+		}
+		r.res.DetailsFailed++
+		r.c.log().Warn("detail skipped", "board", b.String(), "job", p.ID, "status", resp.Status, "err", err)
+		return false, nil
+	}
+	if resp.Status == http.StatusNotFound {
+		r.res.DetailsFailed++
+		r.c.log().Warn("detail not found", "board", b.String(), "job", p.ID)
+		return false, nil
+	}
+	desc, apply, public, err := parseSmartRecruitersDetail(resp.Body)
+	if err != nil {
+		r.res.DetailsFailed++
+		r.c.log().Error("parser broke on a detail", "board", b.String(), "job", p.ID, "err", err)
+		return false, r.keepBody(ctx, u, resp.Body)
+	}
+	fetchID, found := r.rec.LastIDFor(u)
+	if !found {
+		return false, fmt.Errorf("detail %s %s: no fetch row recorded", b, p.ID)
+	}
+	p.DescriptionHTML, p.ApplyURL, p.fetchID = desc, apply, fetchID
+	if public != "" {
+		p.URL = public
+	}
+	r.res.Details++
+	return true, nil
+}
+
+// writeObservation stores what one fetch showed about a job through pipeline.Observe (the
+// sanitised observation and its gate results). For a new job (isNew) its `new` status event
+// is written in Observe's own transaction; a later observation (a detail that came on a
+// later run) writes none.
+func (c *Collector) writeObservation(ctx context.Context, atsName string, jobID, fetchID int64, p Posting, isNew bool) error {
 	_, err := pipeline.Observe(ctx, c.Store, pipeline.Input{
 		JobID:           jobID,
 		FetchID:         fetchID,
@@ -555,6 +890,9 @@ func (c *Collector) writeObservation(ctx context.Context, atsName string, jobID,
 		ApplyURL:        p.ApplyURL,
 		Gates:           c.Gates,
 	}, func(q store.Queries, _ pipeline.ObserveResult) error {
+		if !isNew {
+			return nil
+		}
 		_, err := q.InsertStatusEvent(ctx, jobID, "new", "", "system", nil)
 		return err
 	})

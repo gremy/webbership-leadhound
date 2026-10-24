@@ -123,7 +123,12 @@ func TestBriefLeavesOutATSJobNotSeen(t *testing.T) {
 	if !strings.Contains(out, "Link: "+fresh.url+"\n") {
 		t.Errorf("the job seen today is not listed:\n%s", out)
 	}
-	name := map[string]string{"greenhouse-fixture": "Greenhouse fixtures", "lever-fixture": "Lever fixtures", "ashby-fixture": "Ashby fixtures"}[stale.source]
+	var name string
+	for _, bs := range briefSources {
+		if bs.source == stale.source {
+			name = bs.name
+		}
+	}
 	if got, want := healthLine(out, name), "Health: "+name+" did not run · 1 job left out, not seen on its board for 2 days"; got != want {
 		t.Errorf("health line %q, want %q:\n%s", got, want, out)
 	}

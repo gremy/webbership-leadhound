@@ -47,13 +47,26 @@ const harvestMaxBody = 64 << 20
 // draws from the site budget.
 const harvestKind = fetch.KindSite
 
-// defaultHarvestPatterns are the board hosts asked for when no --pattern is given.
+// defaultHarvestPatterns are the board hosts asked for when no --pattern is given. The
+// SmartRecruiters, Teamtailor and Personio boards are asked for by name (moreHarvestPatterns):
+// a domain pattern reads every page of every company on the ATS, so it is the operator's
+// call when to spend the pages.
 var defaultHarvestPatterns = []string{
 	"boards.greenhouse.io/*",
 	"job-boards.greenhouse.io/*",
 	"jobs.lever.co/*",
 	"jobs.eu.lever.co/*",
 	"jobs.ashbyhq.com/*",
+}
+
+// moreHarvestPatterns are the --pattern values that find SmartRecruiters, Teamtailor and
+// Personio boards. Teamtailor and Personio give each company a host of its own, so their
+// patterns are domain patterns, *.HOST: every host under HOST.
+var moreHarvestPatterns = []string{
+	"jobs.smartrecruiters.com/*",
+	"*.teamtailor.com",
+	"*.jobs.personio.de",
+	"*.jobs.personio.com",
 }
 
 // crawlRe is a Common Crawl crawl id.
@@ -63,7 +76,16 @@ var crawlRe = regexp.MustCompile(`^CC-MAIN-[0-9]{4}-[0-9]{2}$`)
 // end in *.
 var patternRe = regexp.MustCompile(`^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/[A-Za-z0-9._~/-]*\*?)?$`)
 
-const harvestUsage = "usage: leadhound boards harvest --crawl CC-MAIN-YYYY-WW --out FILE [--pattern HOST/*]... [--max-pages N] [--force] [--dry-run --fixtures DIR]"
+// domainPatternRe is a domain pattern: "*." and a host with no path. The index is asked
+// for the host and every host under it (matchType=domain).
+var domainPatternRe = regexp.MustCompile(`^\*\.([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$`)
+
+// validPattern reports whether p is a pattern --pattern takes.
+func validPattern(p string) bool { return patternRe.MatchString(p) || domainPatternRe.MatchString(p) }
+
+const harvestUsage = "usage: leadhound boards harvest --crawl CC-MAIN-YYYY-WW --out FILE [--pattern HOST/* | --pattern '*.HOST']... [--max-pages N] [--force] [--dry-run --fixtures DIR]" +
+	"\n  default patterns: boards.greenhouse.io/* job-boards.greenhouse.io/* jobs.lever.co/* jobs.eu.lever.co/* jobs.ashbyhq.com/*" +
+	"\n  SmartRecruiters, Teamtailor, Personio: --pattern 'jobs.smartrecruiters.com/*' --pattern '*.teamtailor.com' --pattern '*.jobs.personio.de' --pattern '*.jobs.personio.com'"
 
 // harvestRecorder records nothing: a harvest opens no database, but fetch.Client refuses
 // to fetch without a Recorder.
@@ -104,7 +126,7 @@ func runBoardsHarvest(ctx context.Context, args []string) error {
 	)
 	ff.register(fset)
 	fset.StringVar(&opts.crawl, "crawl", "", "crawl id, CC-MAIN-YYYY-WW")
-	fset.Var(&patterns, "pattern", "CDX url pattern, HOST/* (repeatable; default: the five board hosts)")
+	fset.Var(&patterns, "pattern", "CDX url pattern, HOST/* or *.HOST for every host under HOST (repeatable; default: the five Greenhouse, Lever and Ashby board hosts; for the others: "+strings.Join(moreHarvestPatterns, ", ")+")")
 	fset.IntVar(&opts.maxPages, "max-pages", 50, "most index pages read per pattern")
 	fset.StringVar(&out, "out", "", "CSV file to write (required; never stdout)")
 	fset.BoolVar(&force, "force", false, "overwrite --out if it exists")
@@ -130,8 +152,8 @@ func runBoardsHarvest(ctx context.Context, args []string) error {
 		opts.patterns = nil
 		for _, p := range patterns {
 			p = strings.TrimSpace(p)
-			if !patternRe.MatchString(p) {
-				return usageError("--pattern %q: want HOST/* with no scheme, e.g. jobs.lever.co/*", p)
+			if !validPattern(p) {
+				return usageError("--pattern %q: want HOST/* or *.HOST with no scheme, e.g. jobs.lever.co/* or *.teamtailor.com", p)
 			}
 			opts.patterns = append(opts.patterns, p)
 		}
@@ -207,23 +229,44 @@ func isLoopbackHost(host string) bool {
 
 // harvest reads every pattern in turn and prints one line per pattern. A page that fails
 // is reported and skipped. The error is set when the client's breaker opened (every later
-// request would be refused) or the context ended; results hold what was read until then.
+// request would be refused) or the context ended; the stopped pattern's line says why, each
+// pattern after it gets a "not run" line, and results hold what was read until then.
 func harvest(ctx context.Context, c *fetch.Client, o harvestOpts) ([]patternResult, error) {
 	var results []patternResult
-	for _, p := range o.patterns {
+	for i, p := range o.patterns {
 		r, err := harvestPattern(ctx, c, o, p)
 		results = append(results, r)
-		capped := ""
-		if r.ofPages > r.pages+r.pageErrors {
-			capped = fmt.Sprintf(" (capped by --max-pages %d)", o.maxPages)
+		note := ""
+		switch {
+		case err != nil:
+			note = " (stopped: " + stopReason(err) + ")"
+		case r.ofPages > o.maxPages:
+			note = fmt.Sprintf(" (capped by --max-pages %d)", o.maxPages)
 		}
 		_, _ = fmt.Fprintf(stdout, "%s: pages %d/%d%s, page errors %d, lines %d, boards %d, refused %d, skipped %d\n",
-			p, r.pages, r.ofPages, capped, r.pageErrors, r.lines, len(r.entries), len(r.refused), r.skipped)
+			p, r.pages, r.ofPages, note, r.pageErrors, r.lines, len(r.entries), len(r.refused), r.skipped)
 		if err != nil {
+			for _, rest := range o.patterns[i+1:] {
+				_, _ = fmt.Fprintf(stdout, "%s: not run (the run stopped)\n", rest)
+			}
 			return results, err
 		}
 	}
 	return results, nil
+}
+
+// stopReason says in a word or two why a stop error ended the run: the breaker's reason,
+// or that the context was cancelled or timed out.
+func stopReason(err error) string {
+	var open *fetch.OpenError
+	switch {
+	case errors.As(err, &open):
+		return string(open.Reason)
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	default:
+		return "cancelled"
+	}
 }
 
 // harvestPattern asks the index how many pages the pattern has, then reads up to maxPages
@@ -282,9 +325,14 @@ func harvestPattern(ctx context.Context, c *fetch.Client, o harvestOpts, pattern
 }
 
 // indexURL is one index query: the pattern, JSON lines with the url field only, plus extra
-// (showNumPages=true or page=N).
+// (showNumPages=true or page=N). A domain pattern, *.HOST, asks for HOST with
+// matchType=domain: HOST and every host under it.
 func indexURL(crawl, pattern, extra string) string {
-	return ccIndexBase + "/" + crawl + "-index?url=" + url.QueryEscape(pattern) + "&output=json&fl=url&" + extra
+	q := "url=" + url.QueryEscape(pattern)
+	if host, ok := strings.CutPrefix(pattern, "*."); ok {
+		q = "url=" + url.QueryEscape(host) + "&matchType=domain"
+	}
+	return ccIndexBase + "/" + crawl + "-index?" + q + "&output=json&fl=url&" + extra
 }
 
 // indexGet requests one index URL and returns its body and status. A 404 (no captures) is

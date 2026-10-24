@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"github.com/gremy/webbership-leadhound/internal/ats"
 	"reflect"
 	"slices"
 	"strings"
@@ -216,8 +217,17 @@ func TestNotSeenBySource(t *testing.T) {
 }
 
 func TestATSSources(t *testing.T) {
-	want := []string{"greenhouse", "lever", "ashby", "greenhouse-fixture", "lever-fixture", "ashby-fixture"}
+	want := []string{"greenhouse", "lever", "ashby", "smartrecruiters", "teamtailor", "personio",
+		"greenhouse-fixture", "lever-fixture", "ashby-fixture", "smartrecruiters-fixture", "teamtailor-fixture", "personio-fixture"}
 	if got := atsSources(); !slices.Equal(got, want) {
 		t.Errorf("atsSources = %v, want %v", got, want)
+	}
+	// Every ATS has a health line, live and in a dry run, so the not-seen rule covers it.
+	for _, name := range ats.Names {
+		for _, src := range []string{name, ats.SourceFixture(name)} {
+			if !slices.ContainsFunc(briefSources, func(bs briefSource) bool { return bs.source == src && bs.ats == name && bs.name != "" }) {
+				t.Errorf("no brief source for %s", src)
+			}
+		}
 	}
 }

@@ -1,0 +1,30 @@
+{
+  "id": "700000000000001",
+  "name": "Go Platform Engineer",
+  "uuid": "e5f6a7b8-0000-4000-8000-000000000001",
+  "jobId": "e5f6a7b8-0000-4000-8000-0000000000b1",
+  "jobAdId": "e5f6a7b8-0000-4000-8000-0000000000a1",
+  "defaultJobAd": true,
+  "refNumber": "REF0001X",
+  "company": {"name": "Example Robotics", "identifier": "ExampleRobotics"},
+  "location": {"city": "Exampleville", "region": "North Region", "country": "xl", "remote": true, "hybrid": false, "fullLocation": "Exampleville, North Region, Exampleland"},
+  "customField": [],
+  "releasedDate": "2026-10-14T09:15:00.000Z",
+  "creator": {"name": "", "avatarUrl": ""},
+  "postingUrl": "https://jobs.example.com/ExampleRobotics/700000000000001-go-platform-engineer",
+  "applyUrl": "https://jobs.example.com/ExampleRobotics/700000000000001-go-platform-engineer?oga=true",
+  "referralUrl": "https://jobs.example.com/external-referrals/company/ExampleRobotics/publication/e5f6a7b8-0000-4000-8000-000000000001",
+  "jobAd": {
+    "sections": {
+      "companyDescription": {"title": "Company Description", "text": "<p>We build friendly robots.</p>"},
+      "jobDescription": {"title": "Job Description", "text": "<p>Run the Go platform &amp; its agents.</p>"},
+      "qualifications": {"title": "Qualifications", "text": "<ul><li>Go in production</li></ul>"},
+      "additionalInformation": {"title": "Additional Information", "text": "<p>Remote within Exampleland.</p>"}
+    }
+  },
+  "active": true,
+  "visibility": "PUBLIC",
+  "department": {"id": 1000001, "label": "Engineering"},
+  "typeOfEmployment": {"id": "permanent", "label": "Full-time"},
+  "language": {"code": "en", "label": "English", "labelNative": "English (US)"}
+}

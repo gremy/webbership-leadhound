@@ -86,14 +86,14 @@ func runBoardsVerify(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var newClient func() *fetch.Client
+	var newClient func(atsName string) *fetch.Client
 	if af.dryRun {
 		ft, err := fetch.NewFixtureTransport(af.fixtures)
 		if err != nil {
 			return usageError("%v", err)
 		}
-		newClient = func() *fetch.Client {
-			return fetch.New(fetch.WithFixtures(ft), fetch.WithRecorder(verifyRecorder{}), fetch.WithProfile(atsProfile), fetch.WithMaxBody(atsMaxBody),
+		newClient = func(atsName string) *fetch.Client {
+			return fetch.New(fetch.WithFixtures(ft), fetch.WithRecorder(verifyRecorder{}), fetch.WithProfile(atsProfileFor(atsName)), fetch.WithMaxBody(atsMaxBody),
 				fetch.WithLimiter(rate.NewLimiter(rate.Inf, 1)), fetch.WithJitter(0))
 		}
 	} else {
@@ -101,8 +101,8 @@ func runBoardsVerify(ctx context.Context, args []string) error {
 			_, _ = fmt.Fprintf(stdout, "boards verify: %s (LEADHOUND_LIVE is %s); nothing requested\n", liveOffMessage, cfg.Live)
 			return nil
 		}
-		newClient = func() *fetch.Client {
-			c := fetch.New(fetch.WithLiveGate(cfg.Live), fetch.WithRecorder(verifyRecorder{}), fetch.WithProfile(atsProfile), fetch.WithMaxBody(atsMaxBody),
+		newClient = func(atsName string) *fetch.Client {
+			c := fetch.New(fetch.WithLiveGate(cfg.Live), fetch.WithRecorder(verifyRecorder{}), fetch.WithProfile(atsProfileFor(atsName)), fetch.WithMaxBody(atsMaxBody),
 				fetch.WithLimiter(rate.NewLimiter(rate.Every(cfg.ATSInterval), 1)))
 			c.HTTP.Timeout = atsTimeout
 			return c
@@ -119,7 +119,7 @@ func runBoardsVerify(ctx context.Context, args []string) error {
 		seen[b.String()] = true
 		c := clients[b.ATS]
 		if c == nil {
-			c = newClient()
+			c = newClient(b.ATS)
 			clients[b.ATS] = c
 		}
 		line, ok, err := verifyBoard(ctx, c, b)
@@ -150,15 +150,15 @@ func verifyBoard(ctx context.Context, c *fetch.Client, b ats.Board) (line string
 	case resp.Status == http.StatusNotFound:
 		return fmt.Sprintf("404 %s  not found", b), false, nil
 	}
-	postings, err := ats.Parse(b, resp.Body)
+	n, err := ats.CountPostings(b, resp.Body)
 	if err != nil {
 		slog.Warn("board unreadable", "board", b.String(), "err", err)
 		return fmt.Sprintf("error %s  parser broke", b), false, nil
 	}
-	if len(postings) == 0 {
+	if n == 0 {
 		return fmt.Sprintf("ok  %s  0 postings (check the slug)", b), true, nil
 	}
-	return fmt.Sprintf("ok  %s  %d postings", b, len(postings)), true, nil
+	return fmt.Sprintf("ok  %s  %d postings", b, n), true, nil
 }
 
 // shortReason says in a few words why a request failed.
@@ -194,7 +194,7 @@ type importRefusal struct {
 // is idempotent: a board already there keeps its state, and its origin only moves up
 // (manual > found > seed-list = commoncrawl).
 func runBoardsImport(ctx context.Context, args []string) error {
-	const usage = "usage: leadhound boards import FILE --origin manual|found|seed-list|commoncrawl [--ats greenhouse|lever|ashby]"
+	usage := "usage: leadhound boards import FILE --origin manual|found|seed-list|commoncrawl [--ats " + strings.Join(atsNames, "|") + "]"
 	fs := flag.NewFlagSet("boards import", flag.ContinueOnError)
 	origin := fs.String("origin", "", "how these boards were found: "+strings.Join(store.Origins, ", "))
 	atsName := fs.String("ats", "", "take only this ATS's boards")
@@ -287,7 +287,7 @@ func readBoardFile(path string) ([]ats.Board, []importRefusal, error) {
 }
 
 // atsNames are the ATSs the registry holds, in run order.
-var atsNames = []string{ats.Greenhouse, ats.Lever, ats.Ashby}
+var atsNames = ats.Names
 
 // boardFilterFlags are the --state and --ats flags boards list and check share.
 type boardFilterFlags struct {
@@ -403,13 +403,18 @@ func writeBoardCounts(w io.Writer, counts []store.BoardCount) {
 // the day (PausedToday reads every command).
 const commandCheck = "check"
 
-// allATSHosts is every API host a board in the registry can be requested from.
+// allATSHosts is a board on every API host a board in the registry can be requested from:
+// for Teamtailor and Personio, whose hosts are one per board, a board on that host family.
 func allATSHosts() []ats.Board {
 	return []ats.Board{
 		{ATS: ats.Greenhouse, Board: "x"},
 		{ATS: ats.Lever, Board: "x"},
 		{ATS: ats.Lever, Board: "x", Region: ats.RegionEU},
 		{ATS: ats.Ashby, Board: "x"},
+		{ATS: ats.SmartRecruiters, Board: "x"},
+		{ATS: ats.Teamtailor, Board: "x"},
+		{ATS: ats.Personio, Board: "x"},
+		{ATS: ats.Personio, Board: "x", Region: ats.RegionCom},
 	}
 }
 
@@ -574,7 +579,7 @@ func checkATS(ctx context.Context, cfg config.Config, q store.Queries, loc *time
 	c := fetch.New(
 		fetch.WithLiveGate(cfg.Live),
 		fetch.WithRecorder(verifyRecorder{}),
-		fetch.WithProfile(atsProfile),
+		fetch.WithProfile(atsProfileFor(name)),
 		fetch.WithMaxBody(atsMaxBody),
 		fetch.WithLimiter(rate.NewLimiter(rate.Every(cfg.ATSInterval), 1)),
 		fetch.WithBreaker(fetch.NewBreaker(fetch.Budgets{fetch.KindBoard: 2 * len(boards)})),
@@ -627,8 +632,9 @@ func checkATS(ctx context.Context, cfg config.Config, q store.Queries, loc *time
 	return t
 }
 
-// checkBoard requests one board at its light check URL and sorts the answer into a
-// registry outcome: ok with the posting count, not_found for a 404, error for an unexpected
+// checkBoard requests one board at its light check URL (ats.Board.CheckURL, the cheapest
+// list request each ATS has) and sorts the answer into a registry outcome: ok with the
+// posting count (ats.CountPostings), not_found for a 404, error for an unexpected
 // status or a body the parser cannot read, no_verdict when nothing answered (a timeout, a
 // network error, a body over the size limit). stop is the breaker's reason when it opened
 // (the board was not checked); err is set only when the command must stop (its context is
@@ -645,10 +651,10 @@ func checkBoard(ctx context.Context, c *fetch.Client, b ats.Board) (outcome stri
 	case resp.Status == http.StatusNotFound:
 		return store.CheckNotFound, 0, "", nil
 	}
-	ps, err := ats.Parse(b, resp.Body)
+	n, err := ats.CountPostings(b, resp.Body)
 	if err != nil {
 		slog.Warn("board unreadable", "board", b.String(), "err", err)
 		return store.CheckError, 0, "", nil
 	}
-	return store.CheckOK, len(ps), "", nil
+	return store.CheckOK, n, "", nil
 }

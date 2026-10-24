@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -134,10 +135,27 @@ type ScoreInput struct {
 	LastInputSHA256 []byte // nil when the job was never decided
 }
 
-// scoreable is the condition a job must meet to be worth scoring: an open listing whose
-// current observation (o) is not closed and whose current status (s) is new or shortlisted
-// (a job already applied for or skipped costs nothing).
-const scoreable = `j.listing_status = 'open' AND NOT o.closed AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`
+// DetailSources are the job sources whose board list carries no description, so a job is
+// stored first from its board answer and its description arrives with a later detail
+// fetch: SmartRecruiters, live and dry run (the ats package's source names, which a test
+// there keeps in step).
+var DetailSources = []string{"smartrecruiters", "smartrecruiters-fixture"}
+
+// openForScoring is the condition a job must meet to be worth scoring once it has its
+// description: an open listing whose current observation (o) is not closed and whose
+// current status (s) is new or shortlisted (a job already applied for or skipped costs
+// nothing).
+const openForScoring = `j.listing_status = 'open' AND NOT o.closed AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`
+
+// awaitingDetail is true for a job of a DetailSources source whose current observation (o)
+// was read from a board fetch: it has no description yet, and scoring it now would decide
+// on its title and location alone and pay again when the detail comes.
+var awaitingDetail = `(j.source IN ('` + strings.Join(DetailSources, "', '") + `')
+	 AND EXISTS (SELECT 1 FROM http_fetch f WHERE f.id = o.fetch_id AND f.kind = 'board'))`
+
+// scoreable is the condition a job must meet to be worth scoring now: openForScoring, and
+// not awaiting its detail.
+var scoreable = openForScoring + ` AND NOT ` + awaitingDetail
 
 // latestObsAndStatus joins a job's current observation as o and current status as s.
 const latestObsAndStatus = `
@@ -164,18 +182,26 @@ type ScoreQueue struct {
 	// GateFailed counts the scoreable jobs left out because a gate failed: they are never
 	// sent, and their descriptions are never read.
 	GateFailed int
+	// AwaitingDetail counts the jobs otherwise worth scoring that are held back until their
+	// detail arrives (see awaitingDetail): the detail's observation gets gates of its own.
+	// One whose list observation already failed a gate other than the language gate (which
+	// read the title, the description being empty) is never asked for a detail (the ATS
+	// collector's list-data gates), so it counts as GateFailed instead.
+	AwaitingDetail int
 }
 
 // ScoreQueue reads id, title, first-seen time and whether the current observation is
 // decided for every job worth scoring, about a hundred bytes a job. A job whose current
-// observation has a failing gate is counted, not returned.
+// observation has a failing gate, or that awaits its detail, is counted, not returned.
 func (q Queries) ScoreQueue(ctx context.Context) (ScoreQueue, error) {
 	rows, err := q.db.Query(ctx,
 		`SELECT j.id, o.title, j.first_seen_at,
 		        EXISTS (SELECT 1 FROM gate_result g WHERE g.observation_id = o.id AND g.verdict = 'fail'),
-		        EXISTS (SELECT 1 FROM decision d WHERE d.job_id = j.id AND d.observation_id = o.id)
+		        EXISTS (SELECT 1 FROM gate_result g WHERE g.observation_id = o.id AND g.verdict = 'fail' AND g.gate <> 'language'),
+		        EXISTS (SELECT 1 FROM decision d WHERE d.job_id = j.id AND d.observation_id = o.id),
+		        `+awaitingDetail+`
 		 FROM job j`+latestObsAndStatus+`
-		 WHERE `+scoreable+`
+		 WHERE `+openForScoring+`
 		 ORDER BY j.first_seen_at DESC, j.id`)
 	if err != nil {
 		return ScoreQueue{}, fmt.Errorf("store: score queue: %w", err)
@@ -184,9 +210,13 @@ func (q Queries) ScoreQueue(ctx context.Context) (ScoreQueue, error) {
 	var out ScoreQueue
 	for rows.Next() {
 		var e QueueEntry
-		var gateFailed bool
-		if err := rows.Scan(&e.JobID, &e.Title, &e.FirstSeenAt, &gateFailed, &e.Decided); err != nil {
+		var gateFailed, listFailed, awaiting bool
+		if err := rows.Scan(&e.JobID, &e.Title, &e.FirstSeenAt, &gateFailed, &listFailed, &e.Decided, &awaiting); err != nil {
 			return ScoreQueue{}, fmt.Errorf("store: score queue: %w", err)
+		}
+		if awaiting && !listFailed {
+			out.AwaitingDetail++
+			continue
 		}
 		if gateFailed {
 			out.GateFailed++
@@ -202,7 +232,7 @@ func (q Queries) ScoreQueue(ctx context.Context) (ScoreQueue, error) {
 
 // ScoreInputsFor returns the full score input (description and gates included) of each
 // job in ids that is still worth scoring, in the order of ids. A job that stopped being
-// worth scoring since the queue was read is left out.
+// worth scoring since the queue was read, or that awaits its detail, is left out.
 func (q Queries) ScoreInputsFor(ctx context.Context, ids []int64) ([]ScoreInput, error) {
 	if len(ids) == 0 {
 		return nil, nil

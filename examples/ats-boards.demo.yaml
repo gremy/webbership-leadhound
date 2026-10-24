@@ -3,3 +3,6 @@
 - {ats: lever, board: samplesoft, name: SampleSoft}
 - {ats: lever, board: beispielwerk, name: Beispielwerk, region: eu}
 - {ats: ashby, board: demolabs, name: Demo Labs}
+- {ats: smartrecruiters, board: ExampleRobotics, name: Example Robotics}
+- {ats: teamtailor, board: mockworks, name: Mockworks}
+- {ats: personio, board: musterfabrik, name: Musterfabrik}

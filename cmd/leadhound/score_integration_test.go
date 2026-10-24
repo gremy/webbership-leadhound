@@ -152,3 +152,38 @@ func TestScoreTitleCheck(t *testing.T) {
 		t.Fatalf("second run: exit %d, stdout %q", code, out)
 	}
 }
+
+// TestScoreHoldsJobsAwaitingDetail: after an ATS dry run, the SmartRecruiters postings whose
+// detail did not come (four of the demo board's five) are never sent, and the summary line
+// counts them as awaiting detail, as does the score run's note.
+func TestScoreHoldsJobsAwaitingDetail(t *testing.T) {
+	commandDB(t)
+	t.Setenv("LEADHOUND_DATA_DIR", "")
+	captureNotes(t)
+	if code, out := runCmd(t, "collect", "ats", "--dry-run", "--fixtures", atsTestdata); code != 0 {
+		t.Fatalf("collect ats: exit %d, %q", code, out)
+	}
+	t.Setenv("LEADHOUND_DATA_DIR", examplesDir)
+	t.Setenv("TYPESAFE_API_KEY", "")
+	t.Setenv("LEADHOUND_JEV_DAILY_CALL_CAP", "")
+	waiting := dbCount(t, `SELECT count(*) FROM job j
+		JOIN LATERAL (SELECT fetch_id FROM job_observation o WHERE o.job_id = j.id ORDER BY observed_at DESC, id DESC LIMIT 1) o ON true
+		JOIN http_fetch f ON f.id = o.fetch_id AND f.kind = 'board'
+		WHERE j.source = 'smartrecruiters-fixture'`)
+	if waiting != 4 {
+		t.Fatalf("smartrecruiters jobs awaiting detail = %d, want 4 (the fixtures changed?)", waiting)
+	}
+
+	code, out := runCmd(t, "score", "--decider", "fake")
+	if code != 0 || !strings.Contains(out, fmt.Sprintf("awaiting detail %d", waiting)) {
+		t.Fatalf("exit %d, stdout %q", code, out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM decision d JOIN job j ON j.id = d.job_id
+		JOIN http_fetch f ON f.id = (SELECT fetch_id FROM job_observation WHERE id = d.observation_id)
+		WHERE j.source = 'smartrecruiters-fixture' AND f.kind = 'board'`); got != 0 {
+		t.Errorf("decisions on board-read smartrecruiters observations = %d, want 0", got)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'score' AND note LIKE '%awaiting detail 4%'`); got != 1 {
+		t.Errorf("score run notes naming the held jobs = %d, want 1", got)
+	}
+}

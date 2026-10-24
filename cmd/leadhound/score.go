@@ -126,11 +126,11 @@ func runScore(ctx context.Context, args []string) error {
 	defer s.Close()
 
 	q := s.Q()
-	runID, res, err := scoreRun(ctx, s, cfg, prof, decider, loc)
+	runID, res, awaiting, err := scoreRunCounted(ctx, s, cfg, prof, decider, loc)
 	if err != nil {
 		return err
 	}
-	note := res.Note()
+	note := scoreNote(res, awaiting)
 	stop := res.StopReason
 	if stop == "" {
 		stop = "none"
@@ -157,17 +157,45 @@ func runScore(ctx context.Context, args []string) error {
 // scoreRun scores every job worth scoring as one recorded score run, behind the daily cap.
 // A run stopped by the cap or an unavailable provider is a result, not an error.
 func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location) (int64, scoring.Result, error) {
+	runID, res, _, err := scoreRunCounted(ctx, s, cfg, prof, decider, loc)
+	return runID, res, err
+}
+
+// scoreNote is the score run's summary: the scorer's note and the jobs held back until
+// their detail arrives.
+func scoreNote(res scoring.Result, awaitingDetail int) string {
+	return fmt.Sprintf("%s · awaiting detail %d", res.Note(), awaitingDetail)
+}
+
+// queueCounter is the scorer's store, keeping the count of jobs the queue held back until
+// their detail arrives (store.ScoreQueue.AwaitingDetail).
+type queueCounter struct {
+	scoring.StoreAdapter
+	awaitingDetail int
+}
+
+// ScoreQueue reads the queue and keeps its awaiting-detail count.
+func (c *queueCounter) ScoreQueue(ctx context.Context) (store.ScoreQueue, error) {
+	q, err := c.StoreAdapter.ScoreQueue(ctx)
+	c.awaitingDetail = q.AwaitingDetail
+	return q, err
+}
+
+// scoreRunCounted is scoreRun, also returning how many jobs were held back until their
+// detail arrives (also in the run's note).
+func scoreRunCounted(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location) (int64, scoring.Result, int, error) {
 	q := s.Q()
 	remaining, err := remainingCalls(ctx, q, decider, cfg.JevDailyCallCap, loc)
 	if err != nil {
-		return 0, scoring.Result{}, err
+		return 0, scoring.Result{}, 0, err
 	}
 	runID, err := q.StartRun(ctx, "score", "")
 	if err != nil {
-		return 0, scoring.Result{}, err
+		return 0, scoring.Result{}, 0, err
 	}
+	qc := &queueCounter{StoreAdapter: scoring.StoreAdapter{S: s}}
 	sc := &scoring.Scorer{
-		Store:            scoring.StoreAdapter{S: s},
+		Store:            qc,
 		Decider:          &ai.Capped{Decider: decider, Store: q, DailyCalls: cfg.JevDailyCallCap, Loc: loc},
 		Criteria:         prof.Candidate.Criteria.List(),
 		EvidenceKeywords: prof.Candidate.EvidenceKeywords,
@@ -176,17 +204,17 @@ func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candi
 		Batch:            scoring.BatchFor(remaining),
 	}
 	res, runErr := sc.Run(ctx)
-	note := res.Note()
+	note := scoreNote(res, qc.awaitingDetail)
 	if runErr != nil {
-		note += " · error"
+		note += scoreErrorSuffix
 	}
 	// Record the run even when Run failed; a cancelled context still gets its row closed.
 	finishErr := q.FinishRun(context.WithoutCancel(ctx), runID, store.RunResult{
 		Requests: res.Calls, Failures: res.Failures, StopReason: res.StopReason, Note: note})
 	if runErr != nil {
-		return runID, res, runErr
+		return runID, res, qc.awaitingDetail, runErr
 	}
-	return runID, res, finishErr
+	return runID, res, qc.awaitingDetail, finishErr
 }
 
 // remainingCalls is how many calls the daily cap still allows today, counted as ai.Capped

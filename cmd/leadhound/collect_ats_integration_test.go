@@ -5,6 +5,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/gremy/webbership-leadhound/internal/ats"
 )
 
 func TestCollectATSCommandDryRun(t *testing.T) {
@@ -15,13 +17,26 @@ func TestCollectATSCommandDryRun(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, stdout %q", code, out)
 	}
-	for _, name := range []string{"greenhouse", "lever", "ashby"} {
+	for _, name := range ats.Names {
 		if !strings.Contains(out, "collect ats: "+name+" run ") {
 			t.Errorf("stdout %q, want a line for %s", out, name)
 		}
 	}
-	if strings.Count(out, "stop none") != 3 {
-		t.Errorf("stdout %q, want three clean runs", out)
+	if strings.Count(out, "stop none") != len(ats.Names) {
+		t.Errorf("stdout %q, want a clean run per ATS", out)
+	}
+	// The new ATSs' demo boards: every posting stored and observed under its fixture source,
+	// the SmartRecruiters one with its detail where the fixtures hold one.
+	for src, want := range map[string]int{"smartrecruiters-fixture": 5, "teamtailor-fixture": 5, "personio-fixture": 4} {
+		if got := dbCount(t, `SELECT count(*) FROM job j WHERE j.source = '`+src+`' AND EXISTS (SELECT 1 FROM job_observation o WHERE o.job_id = j.id)`); got != want {
+			t.Errorf("%s observed jobs = %d, want %d", src, got, want)
+		}
+	}
+	if !strings.Contains(out, "details: 1 fetched, 4 failed, 0 left for a later run") {
+		t.Errorf("stdout %q, want the SmartRecruiters detail line", out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM job_observation o JOIN http_fetch f ON f.id = o.fetch_id WHERE f.kind = 'detail' AND o.description_clean <> ''`); got != 1 {
+		t.Errorf("observations from a detail = %d, want 1", got)
 	}
 	if got := dbCount(t, `SELECT count(*) FROM job_observation WHERE apply_type = 'ats'`); got == 0 {
 		t.Error("no ats observations")

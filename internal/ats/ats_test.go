@@ -74,6 +74,13 @@ func TestBoardValidate(t *testing.T) {
 		{ATS: Lever, Board: "samplesoft", Region: RegionEU},
 		{ATS: Ashby, Board: "9demo", Name: "Demo Labs"},
 		{ATS: Ashby, Board: strings.Repeat("a", 100)},
+		{ATS: SmartRecruiters, Board: "ExampleRobotics"},
+		{ATS: SmartRecruiters, Board: "Example_Robotics.2"},
+		{ATS: Teamtailor, Board: "mockworks"},
+		{ATS: Teamtailor, Board: "mock-works-2"},
+		{ATS: Teamtailor, Board: strings.Repeat("a", 63)},
+		{ATS: Personio, Board: "musterfabrik"},
+		{ATS: Personio, Board: "musterfabrik", Region: RegionCom},
 	}
 	for _, b := range ok {
 		if err := b.Validate(); err != nil {
@@ -81,19 +88,32 @@ func TestBoardValidate(t *testing.T) {
 		}
 	}
 	bad := map[string]Board{
-		"no ats":               {Board: "x"},
-		"unknown ats":          {ATS: "workday", Board: "x"},
-		"ats case":             {ATS: "Lever", Board: "x"},
-		"empty slug":           {ATS: Ashby},
-		"slug with slash":      {ATS: Ashby, Board: "a/b"},
-		"slug with query":      {ATS: Ashby, Board: "a?b=1"},
-		"slug leading dot":     {ATS: Ashby, Board: ".hidden"},
-		"slug leading dash":    {ATS: Ashby, Board: "-x"},
-		"slug with space":      {ATS: Ashby, Board: "a b"},
-		"slug too long":        {ATS: Ashby, Board: strings.Repeat("a", 101)},
-		"region on ashby":      {ATS: Ashby, Board: "x", Region: RegionEU},
-		"region on gh":         {ATS: Greenhouse, Board: "x", Region: RegionEU},
-		"unknown lever region": {ATS: Lever, Board: "x", Region: "us"},
+		"no ats":                {Board: "x"},
+		"unknown ats":           {ATS: "workday", Board: "x"},
+		"ats case":              {ATS: "Lever", Board: "x"},
+		"empty slug":            {ATS: Ashby},
+		"slug with slash":       {ATS: Ashby, Board: "a/b"},
+		"slug with query":       {ATS: Ashby, Board: "a?b=1"},
+		"slug leading dot":      {ATS: Ashby, Board: ".hidden"},
+		"slug leading dash":     {ATS: Ashby, Board: "-x"},
+		"slug with space":       {ATS: Ashby, Board: "a b"},
+		"slug too long":         {ATS: Ashby, Board: strings.Repeat("a", 101)},
+		"region on ashby":       {ATS: Ashby, Board: "x", Region: RegionEU},
+		"region on gh":          {ATS: Greenhouse, Board: "x", Region: RegionEU},
+		"unknown lever region":  {ATS: Lever, Board: "x", Region: "us"},
+		"workable":              {ATS: "workable", Board: "x"},
+		"region on sr":          {ATS: SmartRecruiters, Board: "x", Region: RegionEU},
+		"region on teamtailor":  {ATS: Teamtailor, Board: "x", Region: RegionCom},
+		"eu on personio":        {ATS: Personio, Board: "x", Region: RegionEU},
+		"com on lever":          {ATS: Lever, Board: "x", Region: RegionCom},
+		"de on personio":        {ATS: Personio, Board: "x", Region: "de"},
+		"teamtailor dot":        {ATS: Teamtailor, Board: "a.b"},
+		"teamtailor underscore": {ATS: Teamtailor, Board: "a_b"},
+		"teamtailor end dash":   {ATS: Teamtailor, Board: "ab-"},
+		"teamtailor too long":   {ATS: Teamtailor, Board: strings.Repeat("a", 64)},
+		"personio dot":          {ATS: Personio, Board: "evil.example"},
+		"personio underscore":   {ATS: Personio, Board: "muster_fabrik"},
+		"sr slash":              {ATS: SmartRecruiters, Board: "a/b"},
 	}
 	for name, b := range bad {
 		if err := b.Validate(); err == nil || !strings.HasPrefix(err.Error(), "ats: ") {
@@ -111,6 +131,10 @@ func TestBoardAPIURLAndString(t *testing.T) {
 		{Board{ATS: Lever, Board: "samplesoft"}, "https://api.lever.co/v0/postings/samplesoft?mode=json", "lever/samplesoft"},
 		{Board{ATS: Lever, Board: "beispielwerk", Region: RegionEU}, "https://api.eu.lever.co/v0/postings/beispielwerk?mode=json", "lever/eu:beispielwerk"},
 		{Board{ATS: Ashby, Board: "demolabs"}, "https://api.ashbyhq.com/posting-api/job-board/demolabs", "ashby/demolabs"},
+		{Board{ATS: SmartRecruiters, Board: "ExampleRobotics"}, "https://api.smartrecruiters.com/v1/companies/ExampleRobotics/postings?limit=100&offset=0", "smartrecruiters/ExampleRobotics"},
+		{Board{ATS: Teamtailor, Board: "mockworks"}, "https://mockworks.teamtailor.com/jobs.rss?offset=0&per_page=100", "teamtailor/mockworks"},
+		{Board{ATS: Personio, Board: "musterfabrik"}, "https://musterfabrik.jobs.personio.de/xml?language=en", "personio/musterfabrik"},
+		{Board{ATS: Personio, Board: "musterfabrik", Region: RegionCom}, "https://musterfabrik.jobs.personio.com/xml?language=en", "personio/com:musterfabrik"},
 		{Board{ATS: "workday", Board: "x"}, "", "workday/x"},
 	} {
 		if got := tc.b.APIURL(); got != tc.url {
@@ -185,7 +209,7 @@ func TestLoadBoardsRefuses(t *testing.T) {
 		{"unknown key", "- {ats: ashby, board: demolabs, url: x}\n", "url"},
 		{"bad ats", "- {ats: ashby, board: a}\n- {ats: workday, board: demolabs}\n", "line 2"},
 		{"bad slug", "- {ats: ashby, board: \"../x\"}\n", "line 1"},
-		{"region on non-lever", "- {ats: greenhouse, board: x, region: eu}\n", "lever boards only"},
+		{"region on non-lever", "- {ats: greenhouse, board: x, region: eu}\n", `personio ("com") boards only`},
 		{"ats is lower-case", "- {ats: ashby, board: demolabs}\n- {ats: Ashby, board: x}\n", "line 2: ats: board \"x\": unknown ats"},
 		{"duplicate", "- {ats: lever, board: samplesoft}\n- {ats: lever, board: samplesoft}\n", "line 2: lever/samplesoft is listed twice (first on line 1)"},
 		{"duplicate in the eu", "- {ats: lever, board: x, region: eu}\n- {ats: lever, board: X, region: eu}\n", "line 2: lever/eu:X is listed twice (first on line 1)"},
@@ -227,8 +251,8 @@ func TestDemoBoardsMatchExample(t *testing.T) {
 		}
 		ats[b.ATS] = true
 	}
-	if len(ats) != 3 {
-		t.Errorf("DemoBoards covers %d ATSs, want all 3", len(ats))
+	if len(ats) != len(Names) {
+		t.Errorf("DemoBoards covers %d ATSs, want all %d", len(ats), len(Names))
 	}
 }
 

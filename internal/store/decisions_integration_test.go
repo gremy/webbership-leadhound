@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -302,5 +303,120 @@ func TestRankInputsSeenAt(t *testing.T) {
 	}
 	if d := time.Since(got[1].SeenAt); d < 0 || d > time.Hour {
 		t.Errorf("job b seen at %v, want now", got[1].SeenAt)
+	}
+}
+
+// seedSourced stores one job of source and a fetch row of kind for it, as seedJob does for
+// linkedin, and returns the job and the fetch.
+func seedSourced(t *testing.T, q store.Queries, source, sourceJobID string, kind fetch.Kind) (jobID, fetchID int64) {
+	t.Helper()
+	ctx := context.Background()
+	runID, err := q.StartRun(ctx, "collect", source)
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	rec := store.NewFetchRecorder(q, runID, source)
+	if err := rec.Record(ctx, fetch.Record{Kind: kind, URL: "https://api.example/" + source + "/" + sourceJobID, Status: 200, Body: []byte("x")}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	companyID, err := q.UpsertCompany(ctx, "Initech", "", "")
+	if err != nil {
+		t.Fatalf("UpsertCompany: %v", err)
+	}
+	jobID, err = q.UpsertJob(ctx, store.JobUpsert{Source: source, SourceJobID: sourceJobID, CompanyID: companyID,
+		Title: "Go Engineer", URL: "https://jobs.example/" + sourceJobID})
+	if err != nil {
+		t.Fatalf("UpsertJob: %v", err)
+	}
+	return jobID, rec.LastID()
+}
+
+// TestScoreQueueHoldsJobsAwaitingDetail: a SmartRecruiters job (live or dry run) whose
+// current observation came from a board fetch has no description yet: it is left out of
+// the queue and the score inputs and counted as awaiting detail; once an observation from
+// its detail fetch arrives it is queued. A Greenhouse job read from a board fetch is queued
+// as before.
+func TestScoreQueueHoldsJobsAwaitingDetail(t *testing.T) {
+	ctx := context.Background()
+	s := appStore(t)
+	q := s.Q()
+
+	live, liveBoard := seedSourced(t, q, "smartrecruiters", "examplerobotics/1", fetch.KindBoard)
+	observeFor(t, q, live, liveBoard, "Go Engineer", false, "language", "pass")
+	dry, dryBoard := seedSourced(t, q, "smartrecruiters-fixture", "examplerobotics/2", fetch.KindBoard)
+	observeFor(t, q, dry, dryBoard, "Go Engineer", false, "language", "pass")
+	gh, ghBoard := seedSourced(t, q, "greenhouse", "examplecorp/3", fetch.KindBoard)
+	observeFor(t, q, gh, ghBoard, "Go Engineer", false, "language", "pass")
+
+	ids := func(queue store.ScoreQueue) []int64 {
+		var out []int64
+		for _, e := range queue.Entries {
+			out = append(out, e.JobID)
+		}
+		slices.Sort(out)
+		return out
+	}
+	inputs := func() []int64 {
+		got, err := q.ScoreInputsFor(ctx, []int64{live, dry, gh})
+		if err != nil {
+			t.Fatalf("ScoreInputsFor: %v", err)
+		}
+		var out []int64
+		for _, in := range got {
+			out = append(out, in.JobID)
+		}
+		slices.Sort(out)
+		return out
+	}
+
+	queue, err := q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	if got := ids(queue); !slices.Equal(got, []int64{gh}) || queue.AwaitingDetail != 2 || queue.GateFailed != 0 {
+		t.Errorf("queue %v, awaiting %d, gate failed %d; want [%d], 2, 0", got, queue.AwaitingDetail, queue.GateFailed, gh)
+	}
+	if got := inputs(); !slices.Equal(got, []int64{gh}) {
+		t.Errorf("inputs %v, want [%d]", got, gh)
+	}
+
+	// The live job's detail arrives: an observation cited to a detail fetch.
+	_, detailFetch := seedSourced(t, q, "smartrecruiters", "examplerobotics/1", fetch.KindDetail)
+	observeFor(t, q, live, detailFetch, "Go Engineer", false, "language", "pass")
+	queue, err = q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	if got, want := ids(queue), []int64{live, gh}; !slices.Equal(got, want) || queue.AwaitingDetail != 1 {
+		t.Errorf("after the detail: queue %v, awaiting %d; want %v, 1", got, queue.AwaitingDetail, want)
+	}
+	if got, want := inputs(), []int64{live, gh}; !slices.Equal(got, want) {
+		t.Errorf("after the detail: inputs %v, want %v", got, want)
+	}
+}
+
+// TestScoreQueueListGateFailNotAwaitingDetail: a SmartRecruiters job whose current
+// observation came from a board fetch and failed a gate other than the language gate is
+// never asked for a detail, so it counts as gate-failed, not as awaiting its detail. One
+// whose only fail is the language gate (read from the title while the description is
+// empty) still awaits its detail.
+func TestScoreQueueListGateFailNotAwaitingDetail(t *testing.T) {
+	ctx := context.Background()
+	s := appStore(t)
+	q := s.Q()
+
+	located, locatedBoard := seedSourced(t, q, "smartrecruiters", "examplerobotics/1", fetch.KindBoard)
+	observeFor(t, q, located, locatedBoard, "Go Engineer", false, "language", "pass", "location", "fail")
+	titled, titledBoard := seedSourced(t, q, "smartrecruiters-fixture", "examplerobotics/2", fetch.KindBoard)
+	observeFor(t, q, titled, titledBoard, "Go Engineer", false, "language", "fail")
+	waiting, waitingBoard := seedSourced(t, q, "smartrecruiters", "examplerobotics/3", fetch.KindBoard)
+	observeFor(t, q, waiting, waitingBoard, "Go Engineer", false, "language", "pass", "workplace", "flag")
+
+	queue, err := q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	if len(queue.Entries) != 0 || queue.GateFailed != 1 || queue.AwaitingDetail != 2 {
+		t.Errorf("queue: %d entries, %d gate failed, %d awaiting detail; want 0, 1, 2", len(queue.Entries), queue.GateFailed, queue.AwaitingDetail)
 	}
 }
