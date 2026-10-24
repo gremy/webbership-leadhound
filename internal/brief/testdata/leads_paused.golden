@@ -1,0 +1,32 @@
+== subject
+LeadHound · Fri 23 Oct · 3 other messages to read
+== text
+LeadHound · Fri 23 Oct · 3 other messages to read
+
+Nothing new worth applying to today.
+
+Leads
+1. Read 3 other messages in the outreach mailbox (not matched to a lead)
+2. Sending is paused (dns: dmarc missing): fix it, then run leadhound leads senders check
+3. Check by hand whether 2 emails went out (never resent)
+Leads health: 1 sent, 0 bounced, 0 opted out yesterday · probe checked 40 sites yesterday, none on Drupal
+
+Health: LinkedIn ok · 0 new · canary ok
+Health: Scoring ok
+Health: recheck not run
+== html
+<!doctype html>
+<html><body>
+<p><strong>LeadHound · Fri 23 Oct · 3 other messages to read</strong></p>
+<p>Nothing new worth applying to today.</p>
+<h2>Leads</h2>
+<ol start="1">
+<li>Read 3 other messages in the outreach mailbox (not matched to a lead)</li>
+<li>Sending is paused (dns: dmarc missing): fix it, then run leadhound leads senders check</li>
+<li>Check by hand whether 2 emails went out (never resent)</li>
+</ol>
+<p>Leads health: 1 sent, 0 bounced, 0 opted out yesterday · probe checked 40 sites yesterday, none on Drupal</p>
+<p>Health: LinkedIn ok · 0 new · canary ok</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck not run</p>
+</body></html>

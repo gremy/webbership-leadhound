@@ -1,0 +1,28 @@
+== subject
+LeadHound · Fri 23 Oct · batch 3 to approve
+== text
+LeadHound · Fri 23 Oct · batch 3 to approve
+
+Nothing new worth applying to today.
+
+Leads
+1. Approve batch 3 (1 email): leadhound leads batch show 3
+Leads health: 0 sent, 0 bounced, 0 opted out yesterday
+
+Health: LinkedIn ok · 0 new · canary ok
+Health: Scoring ok
+Health: recheck not run
+== html
+<!doctype html>
+<html><body>
+<p><strong>LeadHound · Fri 23 Oct · batch 3 to approve</strong></p>
+<p>Nothing new worth applying to today.</p>
+<h2>Leads</h2>
+<ol start="1">
+<li>Approve batch 3 (1 email): leadhound leads batch show 3</li>
+</ol>
+<p>Leads health: 0 sent, 0 bounced, 0 opted out yesterday</p>
+<p>Health: LinkedIn ok · 0 new · canary ok</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck not run</p>
+</body></html>

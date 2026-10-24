@@ -12,10 +12,17 @@ Early number: grow the set with 10–20 English postings before treating it as t
 
 ## Current focus
 Slice 1 (jobs).
+Slice 2 (Drupal leads) is built to CP6 on its task branch: site import and probe, agencies and contact routes, leads, batches and suppression, the sender with reply sync and the sending-domain check, and the leads block in the brief.
+
+## Slice 2 notes
+- `fetch.WithPublicOnly` (`internal/fetch/guard.go`), `internal/robots` and `probe.HostRobots` exist for slice 1's CP6b to reuse.
+- The leads migrations are their own set (`internal/leadstore/migrations/`, three migrations), versioned in `goose_db_version_leads`; `leadhound migrate` runs the core set, then the leads set.
+- `storetest.ResetDB` keeps every goose version table.
+- Live-unproven until the shadow week: real SMTP, IMAP and DNS (UIDVALIDITY rescan, Junk and Sent discovery, appending to Sent); the fakes cover them in tests.
 
 ## Next (1-3)
 - [x] CP6d: SmartRecruiters, Teamtailor and Personio (paged reads, SmartRecruiters details after the list-data gates). Recruitee and Workable left out: no documented public feed without a key.
-- [ ] CP7: deploy on timers.
+- [ ] CP7: deploy on timers, with the leads units beside the jobs units.
 - [ ] CP6e/6f/6b: remote-job sites, more sources (each checked for permission first), the employer's own apply route.
 
 ## Key files
@@ -25,6 +32,7 @@ Slice 1 (jobs).
 - `internal/config`
 - `internal/ai`, `internal/candidate`, `internal/scoring`, `internal/eval`
 - `internal/brief`, `internal/mail`, `internal/ats`
+- `internal/leadconfig`, `internal/leadstore`, `internal/probe`, `internal/contacts`, `internal/outreach`, `internal/mailbox`, `internal/leadbrief`
 
 ## Links
 - Live URL ->

@@ -10,6 +10,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/config"
+	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 	"github.com/gremy/webbership-leadhound/internal/mail"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -154,6 +155,7 @@ func runBrief(ctx context.Context, args []string) error {
 		return err
 	}
 	in.ConsoleURL = briefConsoleURL(cfg.ConsoleURL)
+	in.Leads = briefLeads(ctx, s, day, loc)
 	subject, text, html := brief.Compose(in)
 	_, _ = fmt.Fprint(stdout, text)
 	ids := in.JobIDs()
@@ -192,6 +194,26 @@ func runBrief(ctx context.Context, args []string) error {
 		return err
 	}
 	return sendBrief(ctx, s, cfg, b, &note)
+}
+
+// briefLeads is the brief's leads section, read only when the leads tables exist; nil
+// (no block) without them. A section that cannot be read gets one notes line and never
+// stops the jobs brief.
+func briefLeads(ctx context.Context, s *store.Store, day time.Time, loc *time.Location) *leadbrief.Section {
+	var present bool
+	if err := s.Pool().QueryRow(ctx, "SELECT to_regclass('public.lead') IS NOT NULL").Scan(&present); err != nil {
+		_, _ = fmt.Fprintf(notes, "brief: leads section left out: %v\n", err)
+		return nil
+	}
+	if !present {
+		return nil
+	}
+	sec, err := leadbrief.Load(ctx, s.Pool(), day, loc)
+	if err != nil {
+		_, _ = fmt.Fprintf(notes, "brief: leads section left out: %v\n", err)
+		return nil
+	}
+	return &sec
 }
 
 // briefConsoleURL is the console URL the footer names: u when it is a usable https URL,

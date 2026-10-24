@@ -1,0 +1,46 @@
+== subject
+LeadHound · Fri 23 Oct · 1 to apply
+== text
+LeadHound · Fri 23 Oct · 1 to apply
+
+Apply
+1. Senior Go Engineer · Northwind Labs · remote EU · 12 applicants · posted today · apply on their site
+   Why: stack pass (Go, Postgres) · seniority pass (senior) · location pass
+        "Build Go services on Postgres" · "Fully remote within the EU"
+   Link: https://www.linkedin.com/jobs/view/1000000001
+   Find a referral: https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20recruiter · https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20engineering%20manager
+
+Leads
+2. Read 2 replies in the outreach mailbox: alpha.example, beta.example
+3. Read 1 other message in the outreach mailbox (not matched to a lead)
+4. Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note): leadhound leads batch show 12
+5. Send 3 contact forms and LinkedIn notes by hand, then mark each: leadhound leads done <message>
+6. Check by hand whether 1 email went out (never resent)
+Leads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe checked 120 sites yesterday, 14 on Drupal (9 on 7, 4 on 10, 1 version unknown)
+
+Health: LinkedIn ok · 0 new · canary ok
+Health: Scoring ok
+Health: recheck not run
+Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number.
+== html
+<!doctype html>
+<html><body>
+<p><strong>LeadHound · Fri 23 Oct · 1 to apply</strong></p>
+<h2>Apply</h2>
+<ol start="1">
+<li>Senior Go Engineer · Northwind Labs · remote EU · 12 applicants · posted today · apply on their site<br>Why: stack pass (Go, Postgres) · seniority pass (senior) · location pass<br>&#34;Build Go services on Postgres&#34; · &#34;Fully remote within the EU&#34;<br>Link: <a href="https://www.linkedin.com/jobs/view/1000000001">https://www.linkedin.com/jobs/view/1000000001</a><br>Find a referral: <a href="https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20recruiter">recruiters</a> · <a href="https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20engineering%20manager">engineering managers</a></li>
+</ol>
+<h2>Leads</h2>
+<ol start="2">
+<li>Read 2 replies in the outreach mailbox: alpha.example, beta.example</li>
+<li>Read 1 other message in the outreach mailbox (not matched to a lead)</li>
+<li>Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note): leadhound leads batch show 12</li>
+<li>Send 3 contact forms and LinkedIn notes by hand, then mark each: leadhound leads done &lt;message&gt;</li>
+<li>Check by hand whether 1 email went out (never resent)</li>
+</ol>
+<p>Leads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe checked 120 sites yesterday, 14 on Drupal (9 on 7, 4 on 10, 1 version unknown)</p>
+<p>Health: LinkedIn ok · 0 new · canary ok</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck not run</p>
+<p>Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number.</p>
+</body></html>

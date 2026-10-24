@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 )
 
 // Source states, as the collector's run outcome names them.
@@ -80,6 +82,8 @@ type Input struct {
 	// ConsoleURL is the console's base URL; the footer links its jobs page. Empty names
 	// the track commands instead.
 	ConsoleURL string
+	// Leads is the leads block, shown after the jobs; nil shows no block.
+	Leads *leadbrief.Section
 }
 
 // Job is one listed job.
@@ -189,6 +193,9 @@ func Compose(in Input) (subject, text, htmlBody string) {
 		fmt.Fprintf(&t, "%s\n\n", line)
 		fmt.Fprintf(&h, "<p>%s</p>\n", esc(line))
 	}
+	if in.Leads != nil {
+		writeLeads(&t, &h, n, *in.Leads)
+	}
 
 	var tail []string
 	if ru := in.RunnerUp; ru != nil {
@@ -234,6 +241,10 @@ func composeSubject(in Input) string {
 	switch {
 	case len(parts) > 0:
 		return head + strings.Join(parts, ", ")
+	case in.Leads != nil && in.Leads.Todo():
+		// No job to show: the subject names the first leads action instead.
+		_, first := leadsItems(*in.Leads)
+		return head + first
 	case in.healthy():
 		return head + "nothing new"
 	default:
@@ -289,6 +300,130 @@ func writeJob(t, h *strings.Builder, n int, j Job, day time.Time, yourCall bool)
 	rec, mgr := referralURLs(j.Company)
 	fmt.Fprintf(t, "   Find a referral: %s · %s\n", rec, mgr)
 	fmt.Fprintf(h, "<br>Find a referral: %s · %s</li>\n", link(rec, "recruiters"), link(mgr, "engineering managers"))
+}
+
+// writeLeads writes the leads block decision-first, numbered on from the jobs (leadsItems),
+// then one health line. With nothing to act on it is the health line alone.
+func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section) {
+	health := leadsHealth(s)
+	if !s.Todo() {
+		line := "Leads: nothing to do · " + health
+		fmt.Fprintf(t, "%s\n\n", line)
+		fmt.Fprintf(h, "<p>%s</p>\n", esc(line))
+		return
+	}
+	items, _ := leadsItems(s)
+	t.WriteString("Leads\n")
+	fmt.Fprintf(h, "<h2>Leads</h2>\n<ol start=\"%d\">\n", n)
+	for i, it := range items {
+		fmt.Fprintf(t, "%d. %s\n", n+i, it)
+		fmt.Fprintf(h, "<li>%s</li>\n", esc(it))
+	}
+	h.WriteString("</ol>\n")
+	line := "Leads health: " + health
+	fmt.Fprintf(t, "%s\n\n", line)
+	fmt.Fprintf(h, "<p>%s</p>\n", esc(line))
+}
+
+// leadsItems are the leads actions in decision order: replies to read, other messages to
+// read, a sending pause to fix, the batch to approve, the manual items, the emails to check
+// by hand. first is the first one in a few words, for the subject.
+func leadsItems(s leadbrief.Section) (items []string, first string) {
+	add := func(item, short string) {
+		if first == "" {
+			first = short
+		}
+		items = append(items, item)
+	}
+	if n := len(s.Replies); n > 0 {
+		add(fmt.Sprintf("Read %s in the outreach mailbox: %s", plural(n, "reply", "replies"), strings.Join(s.Replies, ", ")),
+			plural(n, "reply", "replies")+" to read")
+	}
+	if s.Other > 0 {
+		add(fmt.Sprintf("Read %s in the outreach mailbox (not matched to a lead)", plural(s.Other, "other message", "other messages")),
+			plural(s.Other, "other message", "other messages")+" to read")
+	}
+	if s.Paused != "" {
+		add(fmt.Sprintf("Sending is paused (%s): fix it, then run leadhound leads senders check", s.Paused), "sending paused")
+	}
+	if b := s.Batch; b != nil {
+		var parts []string
+		for _, c := range []struct {
+			n         int
+			one, many string
+		}{{b.Emails, "email", "emails"}, {b.Forms, "form", "forms"}, {b.LinkedIn, "LinkedIn note", "LinkedIn notes"}} {
+			if c.n > 0 {
+				parts = append(parts, plural(c.n, c.one, c.many))
+			}
+		}
+		verb, short := "Approve batch", fmt.Sprintf("batch %d to approve", b.ID)
+		if b.Shadow {
+			verb, short = "Read and approve shadow batch", fmt.Sprintf("shadow batch %d to approve", b.ID)
+		}
+		add(fmt.Sprintf("%s %d (%s): leadhound leads batch show %d", verb, b.ID, strings.Join(parts, ", "), b.ID), short)
+	}
+	if s.ManualWaiting > 0 {
+		add(fmt.Sprintf("Send %s by hand, then mark each: leadhound leads done <message>",
+			plural(s.ManualWaiting, "contact form or LinkedIn note", "contact forms and LinkedIn notes")),
+			plural(s.ManualWaiting, "manual item", "manual items")+" to send")
+	}
+	if s.CheckByHand > 0 {
+		add(fmt.Sprintf("Check by hand whether %s went out (never resent)", plural(s.CheckByHand, "email", "emails")),
+			plural(s.CheckByHand, "email", "emails")+" to check")
+	}
+	return items, first
+}
+
+// leadsHealth is the leads health line: yesterday's sends, bounces and opt-outs and
+// yesterday's probe numbers.
+func leadsHealth(s leadbrief.Section) string {
+	sent := fmt.Sprintf("%d sent", s.Sent)
+	if s.ShadowSent > 0 {
+		sent += fmt.Sprintf(", %d shadow", s.ShadowSent)
+	}
+	parts := []string{fmt.Sprintf("%s, %d bounced, %d opted out yesterday", sent, s.Bounced, s.OptedOut)}
+	if p := s.Probe; p != nil {
+		l := fmt.Sprintf("probe checked %s yesterday", plural(p.Checked, "site", "sites"))
+		if p.Drupal == 0 {
+			l += ", none on Drupal"
+		} else {
+			l += fmt.Sprintf(", %d on Drupal", p.Drupal)
+			majors := make([]int, 0, len(p.ByMajor))
+			for m, c := range p.ByMajor {
+				if c > 0 {
+					majors = append(majors, m)
+				}
+			}
+			slices.SortFunc(majors, func(a, b int) int {
+				// The unknown major (0) comes last.
+				if (a == 0) != (b == 0) {
+					return cmp.Compare(b, a)
+				}
+				return cmp.Compare(a, b)
+			})
+			var by []string
+			for _, m := range majors {
+				if m == 0 {
+					by = append(by, fmt.Sprintf("%d version unknown", p.ByMajor[m]))
+				} else {
+					by = append(by, fmt.Sprintf("%d on %d", p.ByMajor[m], m))
+				}
+			}
+			if len(by) > 0 {
+				l += " (" + strings.Join(by, ", ") + ")"
+			}
+		}
+		parts = append(parts, l)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// plural is "1 reply" or "2 replies".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // whyLine is each criterion's short verdict: stack pass (Go, Postgres) · location pass.
