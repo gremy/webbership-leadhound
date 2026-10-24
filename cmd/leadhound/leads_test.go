@@ -14,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/gremy/webbership-leadhound/internal/config"
+	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
@@ -84,6 +85,9 @@ func TestSiteClientsLiveNeedsLiveAll(t *testing.T) {
 	}
 	if c.HTTP.Timeout != 10*time.Second {
 		t.Errorf("timeout = %v, want 10s", c.HTTP.Timeout)
+	}
+	if c.MaxBody != drupal.MaxBody {
+		t.Errorf("max body = %d, want %d", c.MaxBody, drupal.MaxBody)
 	}
 	if c.Limiter != lim {
 		t.Error("the client does not use the run's limiter")
