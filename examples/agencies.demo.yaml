@@ -1,0 +1,20 @@
+# A fictional agency list for the demo. The real list is agencies.yaml in
+# LEADHOUND_DATA_DIR and is never committed.
+#
+# Each row: name, website, country (ISO 3166-1 alpha-2, or blank), evidence_url,
+# drupalorg_slug. A row without a website is skipped until one is filled in.
+- name: Northwind Digital
+  website: https://www.northwind.example/
+  country: GB
+  evidence_url: https://www.northwind.example/services/drupal-upgrades
+  drupalorg_slug: northwind-digital
+- name: Contoso Web Studio
+  website: https://contoso.example/
+  country: ""
+  evidence_url: https://contoso.example/blog/moving-off-drupal-7
+  drupalorg_slug: ""
+- name: Fabrikam Interactive
+  website: ""
+  country: DE
+  evidence_url: ""
+  drupalorg_slug: fabrikam-interactive

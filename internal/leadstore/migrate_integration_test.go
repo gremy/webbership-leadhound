@@ -97,8 +97,19 @@ func appHas(t *testing.T, owner *pgx.Conn, table, priv string) bool {
 	return ok
 }
 
-// assertLeadPrivileges fails the test when the app role may write the leads version table
-// or UPDATE an append-only lead table.
+// appHasColumn reports whether the app role holds priv on column of table.
+func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) bool {
+	t.Helper()
+	var ok bool
+	q := "SELECT has_column_privilege('leadhound_app', format('public.%I', $1::text), $2, $3)"
+	if err := owner.QueryRow(context.Background(), q, table, column, priv).Scan(&ok); err != nil {
+		t.Fatalf("has_column_privilege(%s.%s, %s): %v", table, column, priv, err)
+	}
+	return ok
+}
+
+// assertLeadPrivileges fails the test when the app role may write the leads version table,
+// UPDATE an append-only lead table, or UPDATE an org column other than site_id.
 func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 	t.Helper()
 	for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
@@ -106,7 +117,7 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 			t.Errorf("%s: leadhound_app has %s on goose_db_version_leads, want none", when, priv)
 		}
 	}
-	for _, table := range []string{"site_probe", "fetch_header"} {
+	for _, table := range []string{"site_probe", "fetch_header", "contact_route", "agency_finding", "contact_attempt"} {
 		if appHas(t, owner, table, "UPDATE") {
 			t.Errorf("%s: leadhound_app has UPDATE on %s, want none", when, table)
 		}
@@ -117,12 +128,34 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 	if !appHas(t, owner, "site", "UPDATE") {
 		t.Errorf("%s: leadhound_app lacks UPDATE on site (its state pointers)", when)
 	}
+	if appHas(t, owner, "org", "UPDATE") {
+		t.Errorf("%s: leadhound_app has table-wide UPDATE on org, want site_id only", when)
+	}
+	if !appHasColumn(t, owner, "org", "site_id", "UPDATE") {
+		t.Errorf("%s: leadhound_app lacks UPDATE on org.site_id", when)
+	}
+	for _, col := range []string{"kind", "domain", "name", "country", "source", "source_fetch_id"} {
+		if appHasColumn(t, owner, "org", col, "UPDATE") {
+			t.Errorf("%s: leadhound_app has UPDATE on org.%s, want none", when, col)
+		}
+	}
+	if !appHas(t, owner, "org", "INSERT") {
+		t.Errorf("%s: leadhound_app lacks INSERT on org", when)
+	}
 }
 
 func TestLeadsMigrateFromEmpty(t *testing.T) {
 	ctx := context.Background()
 	owner := storetest.OwnerConn(t)
 	dropSchema(t, owner)
+	grants, err := os.ReadFile("../../deploy/sql/grants.sql")
+	if err != nil {
+		t.Fatalf("read grants.sql: %v", err)
+	}
+	// grants.sql runs clean on an empty database: every revoke is guarded by its table.
+	if _, err := owner.Exec(ctx, string(grants)); err != nil {
+		t.Fatalf("run grants.sql on an empty database: %v", err)
+	}
 	migrateAll(t)
 
 	var version int64
@@ -167,10 +200,6 @@ func TestLeadsMigrateFromEmpty(t *testing.T) {
 
 	// grants.sql after migrate (the deploy order) re-grants every table and must still leave
 	// the leads revokes in place; a migrate after it keeps them too.
-	grants, err := os.ReadFile("../../deploy/sql/grants.sql")
-	if err != nil {
-		t.Fatalf("read grants.sql: %v", err)
-	}
 	if _, err := owner.Exec(ctx, string(grants)); err != nil {
 		t.Fatalf("run grants.sql after migrate: %v", err)
 	}
@@ -226,6 +255,10 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM site",
 		"DELETE FROM site_probe",
 		"DELETE FROM fetch_header",
+		"DELETE FROM org",
+		"DELETE FROM contact_route",
+		"DELETE FROM agency_finding",
+		"DELETE FROM contact_attempt",
 		"TRUNCATE site",
 		"DROP TABLE site",
 	} {
@@ -244,6 +277,10 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 	for _, q := range []string{
 		"UPDATE site_probe SET outcome = 'ok'",
 		"UPDATE fetch_header SET headers = '{}'",
+		"UPDATE contact_route SET mx_ok = true",
+		"UPDATE agency_finding SET phrase = ''",
+		"UPDATE contact_attempt SET routes_found = 0",
+		"UPDATE org SET name = ''",
 	} {
 		t.Run(q, func(t *testing.T) {
 			_, err := app.Exec(context.Background(), q)

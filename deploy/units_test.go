@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -365,29 +366,64 @@ func TestNoHostsOrAddresses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for n, line := range strings.Split(string(b), "\n") {
-			if ipv4.MatchString(line) {
-				t.Errorf("%s:%d: an IPv4 address", path, n+1)
-			}
-			for _, m := range ipv6.FindAllString(line, -1) {
-				if strings.Contains(m, "::") || strings.ContainsAny(strings.ToLower(m), "abcdef") {
-					t.Errorf("%s:%d: an IPv6 address", path, n+1)
-				}
-			}
-			for _, m := range dotted.FindAllString(line, -1) {
-				labels := strings.Split(strings.ToLower(m), ".")
-				// A Go name such as store.Migrate: its last part starts with a capital.
-				if last := m[strings.LastIndex(m, ".")+1:]; last[0] >= 'A' && last[0] <= 'Z' {
-					continue
-				}
-				if slices.Contains(fileSuffixes, labels[len(labels)-1]) ||
-					slices.Contains(labels, "example") || slices.Contains(labels, "invalid") {
-					continue
-				}
-				t.Errorf("%s:%d: %q looks like a host name; use a reserved .example or .invalid one", path, n+1, m)
-			}
+		for _, f := range hostFindings(path, string(b)) {
+			t.Error(f)
 		}
 	}
+}
+
+// TestHostFindingsSQL: in a .sql file a schema-qualified name such as public.org is not a
+// host, and a real host in a comment still is.
+func TestHostFindingsSQL(t *testing.T) {
+	host := "contoso" + "." + "org" // built at runtime so the repo holds no host name
+	for _, tc := range []struct {
+		path, line string
+		want       int
+	}{
+		{"sql/grants.sql", "REVOKE UPDATE ON public.org FROM leadhound_app;", 0},
+		{"sql/grants.sql", "IF to_regclass('public.site') IS NOT NULL THEN", 0},
+		{"sql/grants.sql", "-- see " + host, 1},
+		{"sql/grants.sql", "-- see www." + host + " and public.org", 1},
+		{"README.md", "public.org", 1}, // the schema rule is for .sql files only
+	} {
+		if got := hostFindings(tc.path, tc.line); len(got) != tc.want {
+			t.Errorf("%s %q: findings %v, want %d", tc.path, tc.line, got, tc.want)
+		}
+	}
+}
+
+// hostFindings returns one message per IPv4 address, IPv6 address or non-reserved host name
+// in text, the contents of path.
+func hostFindings(path, text string) []string {
+	var out []string
+	isSQL := filepath.Ext(path) == ".sql"
+	for n, line := range strings.Split(text, "\n") {
+		if ipv4.MatchString(line) {
+			out = append(out, fmt.Sprintf("%s:%d: an IPv4 address", path, n+1))
+		}
+		for _, m := range ipv6.FindAllString(line, -1) {
+			if strings.Contains(m, "::") || strings.ContainsAny(strings.ToLower(m), "abcdef") {
+				out = append(out, fmt.Sprintf("%s:%d: an IPv6 address", path, n+1))
+			}
+		}
+		for _, m := range dotted.FindAllString(line, -1) {
+			labels := strings.Split(strings.ToLower(m), ".")
+			// A Go name such as store.Migrate: its last part starts with a capital.
+			if last := m[strings.LastIndex(m, ".")+1:]; last[0] >= 'A' && last[0] <= 'Z' {
+				continue
+			}
+			// A schema-qualified SQL name such as public.org.
+			if isSQL && len(labels) == 2 && labels[0] == "public" {
+				continue
+			}
+			if slices.Contains(fileSuffixes, labels[len(labels)-1]) ||
+				slices.Contains(labels, "example") || slices.Contains(labels, "invalid") {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s:%d: %q looks like a host name; use a reserved .example or .invalid one", path, n+1, m))
+		}
+	}
+	return out
 }
 
 // installSteps is deploy/install.sh as its lines, comments left out.

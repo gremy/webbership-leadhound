@@ -47,5 +47,19 @@ BEGIN
   IF to_regclass('public.fetch_header') IS NOT NULL THEN
     REVOKE UPDATE ON public.fetch_header FROM leadhound_app;
   END IF;
+  IF to_regclass('public.contact_route') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_route FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.agency_finding') IS NOT NULL THEN
+    REVOKE UPDATE ON public.agency_finding FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.contact_attempt') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_attempt FROM leadhound_app;
+  END IF;
+  -- org's one state pointer: UPDATE on site_id only.
+  IF to_regclass('public.org') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org FROM leadhound_app;
+    GRANT UPDATE (site_id) ON public.org TO leadhound_app;
+  END IF;
 END
 $$;

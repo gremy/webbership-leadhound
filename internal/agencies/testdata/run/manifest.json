@@ -1,0 +1,9 @@
+{
+  "https://www.wingtip.example/robots.txt": "robots-open.txt",
+  "https://www.wingtip.example/": "wingtip-home.html",
+  "https://www.wingtip.example/services/drupal-upgrades": "wingtip-upgrades.html",
+  "https://adatum.example/robots.txt": "robots-open.txt",
+  "https://adatum.example/": "adatum-home.html",
+  "https://www.drupal.org/*": "adatum-home.html",
+  "https://northwind.example/*": "adatum-home.html"
+}

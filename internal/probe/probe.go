@@ -298,8 +298,8 @@ type siteProbe struct {
 	rec *siteRecorder
 	cut bool // a fetch got no answer once the run was stopping: the site is not stored
 
-	homepageID int64                 // the homepage fetch row, once fetched
-	robotsBy   map[string]robotsRead // scheme://host → what that host's robots.txt said
+	homepageID int64       // the homepage fetch row, once fetched
+	robots     *HostRobots // what each host's robots.txt said
 }
 
 func (p *siteProbe) get(kind fetch.Kind, rawURL string) answer {
@@ -337,25 +337,53 @@ func (p *siteProbe) signalID(a answer) int64 {
 	return 0
 }
 
-// robotsRead is what one host's robots.txt said.
-type robotsRead struct {
-	verdict robots.Verdict
-	rules   *robots.Rules
+// RobotsRead is what one host's robots.txt said for one scheme.
+type RobotsRead struct {
+	Verdict robots.Verdict
+	Rules   *robots.Rules // nil allows every path
 	a       answer
 }
 
-// robotsAt reads host's robots.txt for scheme: over https with one http try when https
-// got no answer (RA11), over http only for http. A read is kept under the scheme asked for
-// and the scheme that answered, so each host and scheme is read at most once.
-func (p *siteProbe) robotsAt(scheme, host string) robotsRead {
-	if r, ok := p.robotsBy[scheme+"://"+host]; ok {
+// HostRobots reads and keeps the robots.txt of each host and scheme one client asks about:
+// over https with one http try when https got no answer (RA11), over http only for http.
+// A read is kept under the scheme asked for and the scheme that answered, so each host and
+// scheme is read at most once. It is not safe for concurrent use.
+type HostRobots struct {
+	get func(ctx context.Context, rawURL string) answer
+	by  map[string]RobotsRead // scheme://host → what that host's robots.txt said
+}
+
+// NewHostRobots reads robots.txt through c, as fetch.KindRobots.
+func NewHostRobots(c *fetch.Client) *HostRobots {
+	return &HostRobots{get: func(ctx context.Context, rawURL string) answer {
+		resp, err := c.Get(ctx, fetch.KindRobots, rawURL)
+		scheme, _, _ := strings.Cut(rawURL, "://")
+		return answer{resp: resp, err: err, scheme: scheme}
+	}}
+}
+
+// NewHostRobotsFunc reads robots.txt through get, which fetches one robots.txt URL.
+func NewHostRobotsFunc(get func(ctx context.Context, rawURL string) (fetch.Response, error)) *HostRobots {
+	return &HostRobots{get: func(ctx context.Context, rawURL string) answer {
+		resp, err := get(ctx, rawURL)
+		scheme, _, _ := strings.Cut(rawURL, "://")
+		return answer{resp: resp, err: err, scheme: scheme}
+	}}
+}
+
+// At is what host's robots.txt says for scheme, read on the first ask.
+func (h *HostRobots) At(ctx context.Context, scheme, host string) RobotsRead {
+	if r, ok := h.by[scheme+"://"+host]; ok {
 		return r
 	}
 	var a answer
 	if scheme == "https" {
-		a = p.getBoth(fetch.KindRobots, host, "/robots.txt")
+		a = h.get(ctx, "https://"+host+"/robots.txt")
+		if a.retryHTTP(ctx) {
+			a = h.get(ctx, "http://"+host+"/robots.txt")
+		}
 	} else {
-		a = p.get(fetch.KindRobots, "http://"+host+"/robots.txt")
+		a = h.get(ctx, "http://"+host+"/robots.txt")
 	}
 	var decideErr error
 	switch {
@@ -367,18 +395,34 @@ func (p *siteProbe) robotsAt(scheme, host string) robotsRead {
 	case a.err != nil && !errors.Is(a.err, fetch.ErrStatus) && !errors.Is(a.err, fetch.ErrBodyTooLarge):
 		decideErr = a.err // a refused redirect or a broken read
 	}
-	r := robotsRead{verdict: robots.Decide(a.resp.Status, a.resp.Body, decideErr), a: a}
-	if r.verdict == robots.VerdictRules {
-		r.rules = robots.Parse(a.resp.Body)
+	r := RobotsRead{Verdict: robots.Decide(a.resp.Status, a.resp.Body, decideErr), a: a}
+	if r.Verdict == robots.VerdictRules {
+		r.Rules = robots.Parse(a.resp.Body)
 	}
-	if p.robotsBy == nil {
-		p.robotsBy = map[string]robotsRead{}
+	if h.by == nil {
+		h.by = map[string]RobotsRead{}
 	}
-	p.robotsBy[scheme+"://"+host] = r
+	h.by[scheme+"://"+host] = r
 	if !a.noAnswer() {
-		p.robotsBy[a.scheme+"://"+host] = r
+		h.by[a.scheme+"://"+host] = r
 	}
 	return r
+}
+
+// For is At as a verdict and rules, the shape contacts.RobotsFor takes.
+func (h *HostRobots) For(ctx context.Context, scheme, host string) (robots.Verdict, *robots.Rules) {
+	r := h.At(ctx, scheme, host)
+	return r.Verdict, r.Rules
+}
+
+// robotsAt reads host's robots.txt for scheme through the site's own HostRobots.
+func (p *siteProbe) robotsAt(scheme, host string) RobotsRead {
+	if p.robots == nil {
+		p.robots = &HostRobots{get: func(_ context.Context, rawURL string) answer {
+			return p.get(fetch.KindRobots, rawURL)
+		}}
+	}
+	return p.robots.At(p.ctx, scheme, host)
 }
 
 // verdictFor is an outcome with its signals. failed builds the transport_error one with
@@ -460,10 +504,10 @@ func probeSite(ctx context.Context, d Deps, shared *sharedRecorder, site leadsto
 func (p *siteProbe) run(host string) (leadstore.ProbeRow, verdictFor) {
 	var row leadstore.ProbeRow
 	rr := p.robotsAt("https", host)
-	if rr.verdict == robots.VerdictSkip {
+	if rr.Verdict == robots.VerdictSkip {
 		return row, p.failed(rr.a, SigRobots)
 	}
-	if !rr.rules.Allowed(p.c.UserAgent, "/") {
+	if !rr.Rules.Allowed(p.c.UserAgent, "/") {
 		return row, disallowed(p.signalID(rr.a))
 	}
 
@@ -483,10 +527,10 @@ func (p *siteProbe) run(host string) (leadstore.ProbeRow, verdictFor) {
 	}
 	// The page is used only when the robots.txt of its own scheme and host allows its path.
 	fr := p.robotsAt(final.Scheme, finalHost)
-	if fr.verdict == robots.VerdictSkip {
+	if fr.Verdict == robots.VerdictSkip {
 		return row, p.failed(fr.a, SigRobots)
 	}
-	if !fr.rules.Allowed(p.c.UserAgent, final.RequestURI()) {
+	if !fr.Rules.Allowed(p.c.UserAgent, final.RequestURI()) {
 		return row, disallowed(p.signalID(fr.a))
 	}
 

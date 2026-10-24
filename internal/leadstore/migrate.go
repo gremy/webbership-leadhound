@@ -79,7 +79,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 
 // revokeLeadsSQL takes from the app role what the owner's default privileges gave it and
 // it must not have: every write on the leads version table, and UPDATE on the append-only
-// lead tables. It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
+// lead tables. On org, whose one state pointer is site_id, it swaps the table-wide UPDATE
+// for UPDATE on that column only. It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
 // same, so either may run last. Each statement is skipped when the app role or its table
 // does not exist.
 const revokeLeadsSQL = `DO $$
@@ -95,6 +96,19 @@ BEGIN
   END IF;
   IF to_regclass('public.fetch_header') IS NOT NULL THEN
     REVOKE UPDATE ON public.fetch_header FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.contact_route') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_route FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.agency_finding') IS NOT NULL THEN
+    REVOKE UPDATE ON public.agency_finding FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.contact_attempt') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_attempt FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.org') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org FROM leadhound_app;
+    GRANT UPDATE (site_id) ON public.org TO leadhound_app;
   END IF;
 END
 $$`

@@ -1,0 +1,18 @@
+{
+  "https://northwind.example/robots.txt": "robots-open.txt",
+  "https://northwind.example/": "northwind-home.html",
+  "https://northwind.example/contact": "northwind-contact.html",
+  "https://northwind.example/impressum": "northwind-impressum.html",
+  "https://contoso.example/robots.txt": "robots-no-contact.txt",
+  "https://contoso.example/": "contoso-home.html",
+  "https://contoso.example/contact": "contoso-contact.html",
+  "https://fabrikam.example/robots.txt": "robots-open.txt",
+  "https://fabrikam.example/": "plain-drupal.html",
+  "https://tailspin.example/robots.txt": "robots-open.txt",
+  "https://tailspin.example/": "plain-drupal.html",
+  "https://www.wingtip.example/robots.txt": "robots-open.txt",
+  "https://www.wingtip.example/": "wingtip-home.html",
+  "https://www.wingtip.example/contact-us": "wingtip-contact.html",
+  "https://adatum.example/robots.txt": "robots-open.txt",
+  "https://adatum.example/": "adatum-home.html"
+}

@@ -1,0 +1,13 @@
+- name: Bad Scheme
+  website: ftp://files.northwind.example/
+- name: No Host
+  website: "https://"
+- name: Bad Evidence
+  website: https://contoso.example/
+  evidence_url: "not a url"
+- website: https://fabrikam.example/
+- name: Bad Country
+  website: https://tailspin.example/
+  country: United Kingdom
+- name: Same Domain
+  website: https://shop.contoso.example/

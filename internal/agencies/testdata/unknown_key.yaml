@@ -1,0 +1,6 @@
+- name: Northwind Digital
+  website: https://www.northwind.example/
+  homepage: https://www.northwind.example/
+- name: Contoso Web
+  website: https://contoso.example
+  phone: "0"

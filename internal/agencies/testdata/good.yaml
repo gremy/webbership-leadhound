@@ -1,0 +1,10 @@
+# Fictional agencies for the parser tests.
+- name: Northwind Digital
+  website: https://www.northwind.example/
+  country: GB
+  evidence_url: https://www.northwind.example/services/upgrades
+  drupalorg_slug: northwind
+- name: Contoso Web
+  website: https://contoso.example
+- name: Fabrikam Studio
+  drupalorg_slug: fabrikam
