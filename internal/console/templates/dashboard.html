@@ -1,0 +1,70 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <h1>{{if $d.Day.IsZero}}Today{{else}}{{day $d.Day}}{{end}}</h1>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <h2>This morning's email</h2>
+    {{with $d.LastBrief}}
+    <p class="muted">{{day .Day}} · sent {{clock .SentAt}} · {{.Listed}} {{if eq .Listed 1}}job{{else}}jobs{{end}} listed</p>
+    {{if .Health}}<ul class="health">{{range .Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">No health lines in that email.</p>{{end}}
+    {{else}}
+    <p class="empty">No brief has been sent yet.</p>
+    {{end}}
+  </section>
+  <section class="card">
+    <h2>Now</h2>
+    <p class="muted">as of {{clock $d.AsOf}}</p>
+    {{if $d.Health}}<ul class="health">{{range $d.Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">Nothing to report yet.</p>{{end}}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Today's jobs</h2>
+  <dl class="stats">
+    <div><dt>Apply</dt><dd>{{thousands $d.ApplyNow}}</dd></div>
+    <div><dt>Your call</dt><dd>{{thousands $d.YourCallNow}}</dd></div>
+    <div><dt>Unscored</dt><dd>{{thousands $d.Unscored}}</dd></div>
+    <div><dt>Unreachable</dt><dd>{{thousands $d.Unreachable}}</dd></div>
+  </dl>
+  <h3>New today</h3>
+  {{with sources $d.Funnel.NewBySource}}
+  <ul class="counts">
+    {{range .}}<li><span>{{.Name}}</span><span class="num">{{thousands .N}}</span></li>{{end}}
+  </ul>
+  {{else}}<p class="muted">No new jobs today.</p>{{end}}
+  <h3>Funnel</h3>
+  <dl class="stats">
+    <div><dt>Gated</dt><dd>{{thousands $d.Funnel.Gated}}</dd></div>
+    <div><dt>Gate failed</dt><dd>{{thousands $d.Funnel.GateFailed}}</dd></div>
+    <div><dt>Scored</dt><dd>{{thousands $d.Funnel.Scored}}</dd></div>
+  </dl>
+  <h3>Scoring</h3>
+  <p class="cost">{{costLine $d}}</p>
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Boards</h2>
+    {{if $d.Boards}}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th scope="col">ATS</th><th scope="col">State</th><th scope="col" class="num">Boards</th></tr></thead>
+      <tbody>{{range $d.Boards}}<tr><td>{{.ATS}}</td><td>{{.State}}</td><td class="num">{{thousands .N}}</td></tr>{{end}}</tbody>
+    </table>
+    </div>
+    {{else}}<p class="empty">No boards yet.</p>{{end}}
+  </section>
+  <section class="card">
+    <h2>Last runs</h2>
+    {{if $d.LastRuns}}
+    <ul class="item-list">
+      {{range $d.LastRuns}}{{template "run_item" .}}{{end}}
+    </ul>
+    <p><a href="/runs">All runs</a></p>
+    {{else}}<p class="empty">No runs yet.</p>{{end}}
+  </section>
+</div>
+{{end}}

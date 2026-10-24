@@ -1,0 +1,42 @@
+{{define "content"}}
+<h1>Tracked</h1>
+{{template "tracked_list" .Data}}
+{{end}}
+
+{{define "tracked_list"}}
+<section id="tracked-list">
+  <nav class="filters" aria-label="Status">
+    <ul>
+      {{range .Filters}}<li><a href="/tracked{{if .Path}}?status={{.Path}}{{end}}"{{if eq .Path $.Status}} aria-current="true"{{end}}>{{.Label}}</a></li>{{end}}
+    </ul>
+  </nav>
+  {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+  {{if .Rows}}
+  <div class="jobs">
+    {{range .Rows}}
+    <article class="job tracked" id="tracked-{{.JobID}}">
+      <div class="job-main">
+        <h2 class="job-title">{{.Title}}</h2>
+        <p class="job-company">{{.Company}}</p>
+        <p class="job-meta">Since {{when .Since}}{{if .Reason}} · {{.Reason}}{{end}}</p>
+      </div>
+      <span class="status status-{{.Status}}">{{.Status}}</span>
+      <div class="actions">
+        {{$id := .JobID}}
+        {{range laterThan .Status}}
+        <form method="post" action="/jobs/track" hx-post="/jobs/track" hx-target="#tracked-list" hx-swap="outerHTML">
+          <input type="hidden" name="ref" value="job:{{$id}}">
+          <input type="hidden" name="action" value="{{.}}">
+          <input type="hidden" name="status" value="{{$.Status}}">
+          <button type="submit">{{.}}</button>
+        </form>
+        {{end}}
+      </div>
+    </article>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">No jobs with this status.</p>
+  {{end}}
+</section>
+{{end}}

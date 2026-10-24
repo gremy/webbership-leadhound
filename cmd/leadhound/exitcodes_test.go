@@ -65,6 +65,29 @@ func TestUnitCommandsBadConfigExitTwo(t *testing.T) {
 	}
 }
 
+// TestUnitCommandsIgnoreConsoleSettings: an unusable console address or URL is never bad
+// config for a timer command, so each one gets past its config to the database (exit 1
+// here, where the database is not there) instead of stopping with exit 2.
+func TestUnitCommandsIgnoreConsoleSettings(t *testing.T) {
+	t.Setenv("LEADHOUND_DATABASE_URL", "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=1")
+	t.Setenv("LEADHOUND_DATA_DIR", demoDataDir(t))
+	t.Setenv("LEADHOUND_LIVE", "")
+	t.Setenv("LEADHOUND_CONSOLE_ADDR", "192.0.2.10:8090")
+	t.Setenv("LEADHOUND_CONSOLE_URL", "nonsense")
+	t.Setenv("LEADHOUND_CONSOLE_PASSWORD_HASH", "not-a-hash")
+	captureNotes(t)
+	for _, args := range unitCommands {
+		args = withOutbox(t, args)
+		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
+			captureStdout(t)
+			var stderr bytes.Buffer
+			if code := run(context.Background(), args, &stderr); code != 1 || strings.Contains(stderr.String(), "CONSOLE") {
+				t.Errorf("%v: exit %d, want 1; stderr %s", args, code, stderr.String())
+			}
+		})
+	}
+}
+
 // demoDataDir is a data directory holding the fictional demo profile as leadhound.yaml.
 func demoDataDir(t *testing.T) string {
 	t.Helper()

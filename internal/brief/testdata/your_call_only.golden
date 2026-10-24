@@ -14,7 +14,7 @@ Skipped today: 3 (2 criteria, 1 closed)
 Health: LinkedIn ok · 4 new · canary not run
 Health: Scoring ok
 Health: recheck ok
-Reply to Glitch with "applied N", "skip N <reason>" or "maybe N", N being the job's number.
+Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number.
 == html
 <!doctype html>
 <html><body>
@@ -27,5 +27,5 @@ Reply to Glitch with "applied N", "skip N <reason>" or "maybe N", N being the jo
 <p>Health: LinkedIn ok · 4 new · canary not run</p>
 <p>Health: Scoring ok</p>
 <p>Health: recheck ok</p>
-<p>Reply to Glitch with &#34;applied N&#34;, &#34;skip N &lt;reason&gt;&#34; or &#34;maybe N&#34;, N being the job&#39;s number.</p>
+<p>Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number.</p>
 </body></html>

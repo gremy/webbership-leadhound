@@ -14,5 +14,9 @@
 
   Subcommands (planned for slice 1): `collect`, `score`, `routes`, `brief`, `track`, `rules`, `canary`, `recheck`, `eval`, `boards` (`verify`, `add`), `probe company` and `migrate`, run as `go run ./cmd/leadhound <subcommand>`.
   Without `LEADHOUND_LIVE`, no command fetches from a job source.
+- **Console**: `leadhound serve` is a small web console for one operator, on loopback behind a reverse proxy: the day's health, the latest brief's jobs to mark applied, skip or maybe (the same writes as `track`), the tracked jobs, the runs and the rules.
+  It signs in with an email and a bcrypt hash from the environment: `make console-password` writes the hash, and `make console-local` serves it locally in dev mode.
+  A device that signed in before can still sign in during a flood of failed attempts, and a new password forgets every device.
+  On a server it runs as `leadhound-console.service`; see the Console section of `deploy/README.md`.
 - **Contributing**: see `CONTRIBUTING.md`; ported work is credited in `NOTICE`.
 - **State**: see `STATE.md` (the head-pointer for where this left off).

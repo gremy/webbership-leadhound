@@ -1,0 +1,66 @@
+# The web console (leadhound serve). It runs all the time, listening on loopback only
+# (LEADHOUND_CONSOLE_ADDR); Caddy on this machine is the way in (deploy/README.md, Console).
+# Sessions live in memory, so every restart, a deploy included, signs the operator out.
+[Unit]
+Description=leadhound web console
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=leadhound
+Group=leadhound
+# root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
+EnvironmentFile=/etc/leadhound/env
+ExecStart=/opt/leadhound/bin/leadhound serve
+# A crash restarts it after five seconds. Exit 2 is bad config (no email or password hash, a
+# hash that is not bcrypt, an address off loopback): a restart cannot fix it.
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=2
+TimeoutStartSec=30s
+# A stop lets requests in flight finish.
+TimeoutStopSec=20s
+# The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
+# neighbour. Past MemoryHigh the unit is slowed and reclaimed, past MemoryMax it is killed.
+MemoryHigh=900M
+MemoryMax=1200M
+# A ceiling on CPU too: every sign-in check is a bcrypt, so a burst of them takes half a core
+# at most.
+CPUQuota=50%
+# Hardening, the same as the timed units: the whole file system is read-only to leadhound
+# except the data directory (LEADHOUND_DATA_DIR).
+WorkingDirectory=/opt/leadhound
+ReadWritePaths=/opt/leadhound/data
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# The console reaches only this machine: Postgres over localhost and Caddy in front of it.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

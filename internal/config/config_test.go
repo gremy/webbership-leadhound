@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -38,6 +39,10 @@ func TestLoadDefaults(t *testing.T) {
 		ResendAPIKey:         "",
 		MailFrom:             "",
 		MailTo:               "",
+		ConsoleAddr:          "127.0.0.1:8090",
+		ConsoleEmail:         "",
+		ConsolePasswordHash:  "",
+		ConsoleURL:           "",
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("Load(empty) = %#v\nwant %#v", cfg, want)
@@ -61,6 +66,10 @@ func TestLoadValues(t *testing.T) {
 		"LEADHOUND_LINKEDIN_DETAIL_BUDGET": "0",
 		"LEADHOUND_ATS_DETAIL_BUDGET":      "25",
 		"LEADHOUND_LIVE":                   "ats",
+		"LEADHOUND_CONSOLE_ADDR":           "localhost:9000",
+		"LEADHOUND_CONSOLE_EMAIL":          "me@mail.example",
+		"LEADHOUND_CONSOLE_PASSWORD_HASH":  "hash-test",
+		"LEADHOUND_CONSOLE_URL":            "https://console.example",
 	}))
 	if len(problems) != 0 {
 		t.Fatalf("problems = %v, want none", problems)
@@ -84,6 +93,10 @@ func TestLoadValues(t *testing.T) {
 		{"LinkedInDetailBudget", cfg.LinkedInDetailBudget, 0},
 		{"ATSDetailBudget", cfg.ATSDetailBudget, 25},
 		{"Live", cfg.Live, LiveATS},
+		{"ConsoleAddr", cfg.ConsoleAddr, "localhost:9000"},
+		{"ConsoleEmail", cfg.ConsoleEmail.Reveal(), "me@mail.example"},
+		{"ConsolePasswordHash", cfg.ConsolePasswordHash.Reveal(), "hash-test"},
+		{"ConsoleURL", cfg.ConsoleURL, "https://console.example"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -153,6 +166,98 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 	}))
 	if len(problems) != 3 {
 		t.Fatalf("problems = %q, want 3", problems)
+	}
+}
+
+// TestLoadConsoleNeverReports: Load reports nothing about the console variables, however
+// bad, so a console setting can never stop a timer command. serve and brief check them.
+func TestLoadConsoleNeverReports(t *testing.T) {
+	cfg, problems := Load(env(map[string]string{
+		"LEADHOUND_CONSOLE_ADDR":          "192.0.2.10:8090",
+		"LEADHOUND_CONSOLE_EMAIL":         "not an address",
+		"LEADHOUND_CONSOLE_PASSWORD_HASH": "not a hash",
+		"LEADHOUND_CONSOLE_URL":           "http://console.example/path?q=1",
+	}))
+	if len(problems) != 0 {
+		t.Fatalf("problems = %q, want none", problems)
+	}
+	// The values are kept as given, for the callers to check.
+	if cfg.ConsoleAddr != "192.0.2.10:8090" || cfg.ConsoleURL != "http://console.example/path?q=1" {
+		t.Errorf("ConsoleAddr = %q, ConsoleURL = %q; want the values as set", cfg.ConsoleAddr, cfg.ConsoleURL)
+	}
+}
+
+func TestValidConsoleAddr(t *testing.T) {
+	tests := []struct {
+		addr string
+		ok   bool
+	}{
+		{"127.0.0.1:8090", true},
+		{"[::1]:8090", true},
+		{"localhost:8090", true},
+		{"127.0.0.2:8090", true},
+		{"192.0.2.10:8090", false},
+		{"0.0.0.0:8090", false},
+		{"[::]:8090", false},
+		{":8090", false},
+		{"8090", false},
+		{"", false},
+		{"127.0.0.1", false},
+		{"127.0.0.1:", false},
+		{"127.0.0.1:0", false},
+		{"127.0.0.1:65536", false},
+		{"127.0.0.1:http", false},
+		{"LOCALHOST:8090", false},
+		{"localhost.example:8090", false},
+		{"console.example:8090", false},
+	}
+	for _, tt := range tests {
+		err := ValidConsoleAddr(tt.addr)
+		if (err == nil) != tt.ok {
+			t.Errorf("ValidConsoleAddr(%q) = %v, want ok=%v", tt.addr, err, tt.ok)
+		}
+		if err != nil && !strings.Contains(err.Error(), "LEADHOUND_CONSOLE_ADDR") {
+			t.Errorf("ValidConsoleAddr(%q) = %v, want the variable named", tt.addr, err)
+		}
+	}
+	if err := ValidConsoleAddr(DefaultConsoleAddr); err != nil {
+		t.Errorf("the default %q is refused: %v", DefaultConsoleAddr, err)
+	}
+}
+
+func TestValidConsoleURL(t *testing.T) {
+	tests := []struct {
+		url string
+		ok  bool
+	}{
+		{"https://console.example", true},
+		{"https://console.example/", true},
+		{"https://console.example:8443", true},
+		{"http://console.example", false},
+		{"https://console.example/console", false},
+		{"https://console.example/jobs/", false},
+		{"https://console.example?x=1", false},
+		{"https://console.example/?", false},
+		{"https://console.example#top", false},
+		{"https://console.example/#", false},
+		{"https:///jobs", false},
+		{"https://", false},
+		{"https://:443", false},
+		{"https://user" + "@" + "console.example", false},
+		{"console.example", false},
+		{"//console.example", false},
+		{"https:console.example", false},
+		{"", false},
+		{" https://console.example", false},
+	}
+	for _, tt := range tests {
+		err := ValidConsoleURL(tt.url)
+		if (err == nil) != tt.ok {
+			t.Errorf("ValidConsoleURL(%q) = %v, want ok=%v", tt.url, err, tt.ok)
+		}
+		if err != nil && !strings.Contains(err.Error(), "LEADHOUND_CONSOLE_URL") {
+			t.Errorf("ValidConsoleURL(%q) = %v, want the variable named", tt.url, err)
+		}
 	}
 }
 
@@ -251,6 +356,19 @@ func TestRequire(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("Require = %q, want %q", got, want)
 	}
+	// The console's two secrets have no default, so Require can name them.
+	got = Require(cfg, "LEADHOUND_CONSOLE_EMAIL", "LEADHOUND_CONSOLE_PASSWORD_HASH")
+	want = []string{"LEADHOUND_CONSOLE_EMAIL is not set", "LEADHOUND_CONSOLE_PASSWORD_HASH is not set"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Require(console) = %q, want %q", got, want)
+	}
+	set, _ := Load(env(map[string]string{
+		"LEADHOUND_CONSOLE_EMAIL":         "me@mail.example",
+		"LEADHOUND_CONSOLE_PASSWORD_HASH": "hash-test",
+	}))
+	if got := Require(set, "LEADHOUND_CONSOLE_EMAIL", "LEADHOUND_CONSOLE_PASSWORD_HASH"); len(got) != 0 {
+		t.Fatalf("Require(console set) = %q, want none", got)
+	}
 	if got := Require(cfg, "LEADHOUND_DATABASE_URL"); len(got) != 0 {
 		t.Fatalf("Require(set) = %q, want none", got)
 	}
@@ -263,12 +381,14 @@ func TestRequire(t *testing.T) {
 func TestSecretRedaction(t *testing.T) {
 	const canary = "redaction-canary-value"
 	cfg, _ := Load(env(map[string]string{
-		"TYPESAFE_API_KEY":               canary,
-		"RESEND_API_KEY":                 canary,
-		"LEADHOUND_DATABASE_URL":         "postgres://app:" + canary + "@db.example/x",
-		"LEADHOUND_MIGRATE_DATABASE_URL": "postgres://owner:" + canary + "@db.example/x",
-		"LEADHOUND_MAIL_FROM":            canary + "@mail.example",
-		"LEADHOUND_MAIL_TO":              canary + "@inbox.example",
+		"TYPESAFE_API_KEY":                canary,
+		"RESEND_API_KEY":                  canary,
+		"LEADHOUND_DATABASE_URL":          "postgres://app:" + canary + "@db.example/x",
+		"LEADHOUND_MIGRATE_DATABASE_URL":  "postgres://owner:" + canary + "@db.example/x",
+		"LEADHOUND_MAIL_FROM":             canary + "@mail.example",
+		"LEADHOUND_MAIL_TO":               canary + "@inbox.example",
+		"LEADHOUND_CONSOLE_EMAIL":         canary + "@console.example",
+		"LEADHOUND_CONSOLE_PASSWORD_HASH": "$2a$12$" + canary,
 	}))
 	s := Secret(canary)
 
@@ -277,6 +397,11 @@ func TestSecretRedaction(t *testing.T) {
 	log.Info("cfg", "config", cfg, "key", s, "ptr", &cfg)
 	logText := slog.New(slog.NewTextHandler(&logged, nil))
 	logText.Info("cfg", "config", cfg, "key", s)
+
+	asJSON, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	outputs := map[string]string{
 		"%v secret":   fmt.Sprintf("%v", s),
@@ -290,17 +415,21 @@ func TestSecretRedaction(t *testing.T) {
 		"%+v pointer": fmt.Sprintf("%+v", &cfg),
 		"Println":     fmt.Sprintln(s, cfg),
 		"slog":        logged.String(),
+		"json config": string(asJSON),
 	}
 	for name, out := range outputs {
 		if strings.Contains(out, canary) {
 			t.Errorf("%s leaks the secret: %s", name, out)
 		}
 	}
-	if !strings.Contains(outputs["%v secret"], "[redacted]") || !strings.Contains(outputs["slog"], "[redacted]") {
+	if !strings.Contains(outputs["%v secret"], "[redacted]") || !strings.Contains(outputs["slog"], "[redacted]") ||
+		!strings.Contains(outputs["json config"], `"ConsoleEmail":"[redacted]"`) ||
+		!strings.Contains(outputs["json config"], `"ConsolePasswordHash":"[redacted]"`) {
 		t.Errorf("redacted marker missing: %q / %q", outputs["%v secret"], outputs["slog"])
 	}
 	// The value stays reachable for the code that needs it.
-	if s.Reveal() != canary || string(cfg.TypesafeAPIKey) != canary || cfg.MailTo.Reveal() != canary+"@inbox.example" {
+	if s.Reveal() != canary || string(cfg.TypesafeAPIKey) != canary || cfg.MailTo.Reveal() != canary+"@inbox.example" ||
+		cfg.ConsoleEmail.Reveal() != canary+"@console.example" || cfg.ConsolePasswordHash.Reveal() != "$2a$12$"+canary {
 		t.Error("Reveal or conversion lost the value")
 	}
 	if b, err := s.MarshalJSON(); err != nil || strings.Contains(string(b), canary) {
