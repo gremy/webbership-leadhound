@@ -239,6 +239,7 @@ func TestConsoleService(t *testing.T) {
 		{"Service", "Restart", "on-failure"},
 		{"Service", "RestartPreventExitStatus", "2"},
 		{"Service", "NoNewPrivileges", "yes"},
+		{"Service", "CPUQuota", "50%"},
 		{"Service", "IPAddressDeny", "any"},
 		{"Service", "IPAddressAllow", "localhost"},
 		{"Install", "WantedBy", "multi-user.target"},

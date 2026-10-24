@@ -25,6 +25,9 @@ TimeoutStopSec=20s
 # neighbour. Past MemoryHigh the unit is slowed and reclaimed, past MemoryMax it is killed.
 MemoryHigh=900M
 MemoryMax=1200M
+# A ceiling on CPU too: every sign-in check is a bcrypt, so a burst of them takes half a core
+# at most.
+CPUQuota=50%
 # Hardening, the same as the timed units: the whole file system is read-only to leadhound
 # except the data directory (LEADHOUND_DATA_DIR).
 WorkingDirectory=/opt/leadhound
