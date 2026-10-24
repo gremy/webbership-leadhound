@@ -1,0 +1,27 @@
+# The nightly dump of the leadhound database: pg_dump -Fc into /var/backups/leadhound, the
+# newest 14 kept (deploy/leadhound-backup.sh). Runs as postgres over the local socket, so it
+# needs no password and reads every table. Started by leadhound-backup.timer.
+[Unit]
+Description=leadhound database dump
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+Environment=LEADHOUND_BACKUP_DIR=/var/backups/leadhound
+Environment=LEADHOUND_BACKUP_DB=leadhound
+Environment=LEADHOUND_BACKUP_KEEP=14
+ExecStart=/opt/leadhound/bin/leadhound-backup
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

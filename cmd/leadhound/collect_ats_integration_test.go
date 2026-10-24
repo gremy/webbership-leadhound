@@ -3,10 +3,12 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/gremy/webbership-leadhound/internal/ats"
+	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
 func TestCollectATSCommandDryRun(t *testing.T) {
@@ -77,5 +79,31 @@ func TestCollectLinkedInUnchanged(t *testing.T) {
 	}
 	if got := dbCount(t, `SELECT count(*) FROM run WHERE source <> 'linkedin-fixture'`); got != 0 {
 		t.Errorf("non-linkedin runs = %d, want 0", got)
+	}
+}
+
+// TestCollectATSRecordedStopExitsZero: a stop collect ats records is an outcome, not a
+// crash: the nightly unit's score step runs after it either way, but exit 0 keeps the unit
+// green. Each ATS paused today (an earlier throttled run) records its pause and exits 0.
+func TestCollectATSRecordedStopExitsZero(t *testing.T) {
+	commandDB(t)
+	t.Setenv("LEADHOUND_DATA_DIR", "")
+	captureNotes(t)
+	for _, name := range ats.Names {
+		if _, err := storetest.OwnerConn(t).Exec(context.Background(),
+			`INSERT INTO run (command, source, finished_at, requests, stop_reason) VALUES ('collect', $1, now(), 2, 'throttled')`,
+			ats.SourceFixture(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out := runCmd(t, "collect", "ats", "--dry-run", "--fixtures", atsTestdata)
+	if code != 0 {
+		t.Fatalf("exit %d, stdout %q", code, out)
+	}
+	if got := strings.Count(out, "paused today: throttled"); got != len(ats.Names) {
+		t.Errorf("stdout %q, want every ATS paused", out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM http_fetch`); got != 0 {
+		t.Errorf("fetch rows = %d, want 0", got)
 	}
 }

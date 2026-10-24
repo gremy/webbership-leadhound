@@ -1,0 +1,12 @@
+# LinkedIn collect and score twice a day (leadhound-collect.service).
+[Unit]
+Description=leadhound LinkedIn collect and score, morning and afternoon
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 Europe/Bucharest
+OnCalendar=*-*-* 14:30:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

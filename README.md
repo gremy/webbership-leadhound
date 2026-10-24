@@ -9,7 +9,8 @@
   - `make migrate`: apply migrations to the dev database as the owner role.
   - `make hooks`: install the pre-commit and commit-msg privacy hooks.
   - `make prepush`: the full gate before a push.
-  - `make build-linux`: static ARM64 Linux binary.
+  - `make build-linux`: static Linux binary (`ARCH=arm64`, the default, or `amd64`).
+  - `make deploy`, `make deploy-data`, `make remote`: run it on a server under systemd timers; see `deploy/README.md`.
 
   Subcommands (planned for slice 1): `collect`, `score`, `routes`, `brief`, `track`, `rules`, `canary`, `recheck`, `eval`, `boards` (`verify`, `add`), `probe company` and `migrate`, run as `go run ./cmd/leadhound <subcommand>`.
   Without `LEADHOUND_LIVE`, no command fetches from a job source.

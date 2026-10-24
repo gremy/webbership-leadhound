@@ -7,7 +7,57 @@ LEADHOUND_MIGRATE_DATABASE_URL ?= postgres://leadhound_owner@localhost/leadhound
 TEST_DB_DSN                    ?= postgres://leadhound_app@localhost/leadhound_test?sslmode=disable
 TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound_test?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration check db-local migrate hooks privacy-tree prepush build-linux
+.PHONY: fmt fmt-check vet lint-if-present test test-integration check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote
+
+# Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
+# never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
+# leadhound.yaml and ats-boards.yaml, outside this repository.
+HOST                  ?=
+ARCH                  ?= arm64
+CONFIRM               ?=
+ARGS                  ?=
+LEADHOUND_PRIVATE_DIR ?= ../job-hunt/leadhound
+SSH                   ?= ssh
+SCP                   ?= scp
+LINUX_BINARY          := bin/$(BINARY)-linux-$(ARCH)
+
+# Refuse before anything runs, a dry run (make -n) included.
+ifneq ($(filter deploy deploy-data remote,$(MAKECMDGOALS)),)
+ifeq ($(strip $(HOST)),)
+$(error HOST is required: make $(firstword $(filter deploy deploy-data remote,$(MAKECMDGOALS))) HOST=<ssh host> ...)
+endif
+endif
+ifneq ($(filter deploy deploy-data,$(MAKECMDGOALS)),)
+ifneq ($(CONFIRM),1)
+$(error this changes the server: add CONFIRM=1 to run it)
+endif
+endif
+# remote runs read-only commands freely; anything else writes or reaches the network
+# (collect, canary, brief, score, migrate, recheck, probe, track <n>, rules add ...), so it
+# needs CONFIRM=1 too. REMOTE_VERB is ARGS' first two words joined by _, e.g. track_list.
+empty               :=
+space               := $(empty) $(empty)
+REMOTE_READONLY     := track_list rules_list boards_list
+REMOTE_VERB         := $(subst $(space),_,$(strip $(wordlist 1,2,$(ARGS))))
+ifneq ($(filter remote,$(MAKECMDGOALS)),)
+ifeq ($(filter $(REMOTE_VERB),$(REMOTE_READONLY)),)
+ifneq ($(CONFIRM),1)
+$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list))
+endif
+endif
+endif
+# remote takes the lock the units take for the same work, without waiting: when a timer's
+# run holds it, flock exits 75 and nothing runs (deploy/README.md).
+REMOTE_LOCK :=
+ifneq ($(filter collect_linkedin canary canary_% brief brief_%,$(REMOTE_VERB)),)
+REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.linkedin.lock
+endif
+ifneq ($(filter score score_%,$(REMOTE_VERB)),)
+REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.score.lock
+endif
+ifneq ($(filter $(ARCH),arm64 amd64),$(ARCH))
+$(error ARCH must be arm64 or amd64, not $(ARCH))
+endif
 
 ## fmt: format every Go file with gofmt -s
 fmt:
@@ -75,6 +125,37 @@ prepush: privacy-tree
 	go run ./cmd/privacycheck history
 	gitleaks git --no-banner .
 
-## build-linux: static ARM64 Linux binary for the server
+## build-linux: static Linux binary for the server, for ARCH (arm64 or amd64; default arm64)
 build-linux:
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/$(BINARY)-linux-arm64 $(CMD)
+	GOOS=linux GOARCH=$(ARCH) CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(LINUX_BINARY) $(CMD)
+
+## deploy: make deploy HOST=<ssh host> [ARCH=arm64|amd64] CONFIRM=1: check, build, copy the
+## binary, backup script and units, migrate as the owner role, enable the timers
+deploy: check build-linux
+	@stage=$$($(SSH) $(HOST) mktemp -d) && \
+	$(SCP) $(LINUX_BINARY) $(HOST):$$stage/leadhound && \
+	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/leadhound-*.service deploy/leadhound-*.timer $(HOST):$$stage/ && \
+	$(SSH) -t $(HOST) sudo sh $$stage/install.sh $$stage
+
+## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile, then copy
+## leadhound.yaml and ats-boards.yaml from LEADHOUND_PRIVATE_DIR to the server (nothing else)
+deploy-data:
+	@for f in leadhound.yaml ats-boards.yaml; do \
+		test -f "$(LEADHOUND_PRIVATE_DIR)/$$f" || { echo "deploy-data: $$f not found in LEADHOUND_PRIVATE_DIR"; exit 1; }; \
+	done
+	LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' go run $(CMD) score --check-config
+	@stage=$$($(SSH) $(HOST) mktemp -d) && \
+	$(SCP) '$(LEADHOUND_PRIVATE_DIR)/leadhound.yaml' '$(LEADHOUND_PRIVATE_DIR)/ats-boards.yaml' $(HOST):$$stage/ && \
+	$(SSH) -t $(HOST) "sudo install -o root -g leadhound -m 0640 $$stage/leadhound.yaml $$stage/ats-boards.yaml /opt/leadhound/data/ && rm -rf $$stage"
+
+## remote: make remote HOST=<ssh host> ARGS='track list' [CONFIRM=1]: run one leadhound
+## command on the server as the leadhound user, with the units' environment. ARGS is split
+## into words by your own shell, as on a command line; each word reaches leadhound whole,
+## single-quoted for the server's shell. Anything but a read-only list needs CONFIRM=1.
+remote:
+	@$(if $(strip $(ARGS)),:,echo "remote: ARGS is required (for example ARGS='track list')"; exit 2)
+	@set -f; set -- $(value ARGS); cmd=; \
+	for a in "$$@"; do cmd="$$cmd '$$(printf '%s' "$$a" | sed "s/'/'\\\\''/g")'"; done; \
+	$(SSH) -t $(HOST) "sudo systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound \
+		-p EnvironmentFile=/etc/leadhound/env -p WorkingDirectory=/opt/leadhound \
+		$(REMOTE_LOCK) /opt/leadhound/bin/leadhound$$cmd"

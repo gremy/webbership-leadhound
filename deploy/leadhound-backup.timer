@@ -1,0 +1,11 @@
+# Nightly database dump (leadhound-backup.service).
+[Unit]
+Description=Nightly leadhound database dump
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

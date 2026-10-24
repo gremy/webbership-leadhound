@@ -1,0 +1,11 @@
+# The morning canary, before the brief (leadhound-prebrief.service).
+[Unit]
+Description=leadhound morning canary
+
+[Timer]
+OnCalendar=*-*-* 07:30:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

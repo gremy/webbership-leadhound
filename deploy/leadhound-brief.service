@@ -1,0 +1,70 @@
+# The daily brief email. Its own unit, so Restart= retries only the email and never repeats
+# a collect. A day already sent is refused with exit 0; a failed send exits 1 and leaves the
+# day unsent, so the retry delivers it under the same idempotency key. Started by
+# leadhound-brief.timer.
+[Unit]
+Description=leadhound daily brief
+# After a collect and a canary started at the same moment (a persistent catch-up after
+# downtime), so the brief lists what they found.
+After=network-online.target postgresql.service leadhound-collect.service leadhound-prebrief.service
+Wants=network-online.target
+# At most three starts (the first and two retries) within four hours, then systemd gives up
+# until the next day's timer. The interval must be longer than the three tries take: three
+# times TimeoutStartSec plus two RestartSec.
+StartLimitIntervalSec=4h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=leadhound
+Group=leadhound
+# root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
+EnvironmentFile=/etc/leadhound/env
+# The recheck before the brief reaches LinkedIn, so the brief holds the LinkedIn lock every
+# LinkedIn step shares (leadhound-collect.service). It waits up to 30 minutes; past that
+# flock exits 75, which is a failure, so Restart= tries again. 75 is not 2, so a lock
+# timeout is never mistaken for bad config.
+ExecStart=/usr/bin/flock --wait 1800 --conflict-exit-code 75 /opt/leadhound/data/.linkedin.lock /opt/leadhound/bin/leadhound brief --send
+Restart=on-failure
+RestartSec=10min
+# Exit 2 is bad config or usage: a retry cannot fix it.
+RestartPreventExitStatus=2
+# The 30-minute lock wait and 30 minutes for the brief, whose recheck paces its LinkedIn
+# requests.
+TimeoutStartSec=1h
+# The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
+# neighbour. A collect has peaked near 530 MB; past MemoryHigh the unit is slowed and reclaimed,
+# past MemoryMax it is killed.
+MemoryHigh=900M
+MemoryMax=1200M
+# Hardening. The whole file system is read-only to leadhound except the data directory
+# (LEADHOUND_DATA_DIR), where a brief that is not sent goes to its outbox and the score lock
+# lives. It needs the network (job sources, the scoring API, mail, Postgres) and nothing else.
+WorkingDirectory=/opt/leadhound
+ReadWritePaths=/opt/leadhound/data
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

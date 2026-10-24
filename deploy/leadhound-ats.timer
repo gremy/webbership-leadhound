@@ -1,0 +1,13 @@
+# Nightly ATS collect and score (leadhound-ats.service). The full board registry takes hours,
+# so it runs at night, apart from the LinkedIn collect. Persistent: a night missed while the
+# server was down runs at the next boot.
+[Unit]
+Description=Nightly leadhound ATS collect and score
+
+[Timer]
+OnCalendar=*-*-* 01:00:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
