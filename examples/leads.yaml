@@ -16,7 +16,9 @@ sender:
   dkim_selector: spacemail
   operator_addresses: [operator@sender.example]
   site_url: https://sender.example/
-facts: {d10_eol: 2026-12-09, d7_eol: 2025-01-05} # dates the templates may state
+  opt_out_lines: # language -> the opt-out line; every language an email country uses needs one
+    en: "Not the right time? Reply \"unsubscribe\" and I will not write to you again."
+facts: {d6_eol: 2016-02-24, d7_eol: 2025-01-05, d8_eol: 2021-11-17, d9_eol: 2023-11-01, d10_eol: 2026-12-09} # dates the templates may state
 templates_dir: leads-templates # relative to the data dir
 kinds_priority: [agency_partner, unsupported, d10]
 copy: {first_words: [90, 120], followup_words: [70, 80], banned_words: [synergy, guarantee]}

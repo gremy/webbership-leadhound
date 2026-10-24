@@ -277,6 +277,9 @@ func TestConfigProblems(t *testing.T) {
 		{"no batch", "batch_size: 10", "batch_size: 0", "batch_size", false},
 		{"bad site url", "site_url: https://sender.example/", "site_url: sender.example", "sender.site_url", false},
 		{"bad operator address", "[operator@sender.example]", "[operator]", "sender.operator_addresses", false},
+		{"email language without opt-out line", "    en: ", "    de: ", "sender.opt_out_lines.en", false},
+		{"blank opt-out line", `    en: "Not the right time? Reply \"unsubscribe\" and I will not write to you again."`, `    en: "  "`, "sender.opt_out_lines.en", false},
+		{"bad d6 date", "d6_eol: 2016-02-24", "d6_eol: later", "facts.d6_eol", false},
 		{"no identity line", `identity_line: "Demo Ltd, 1 Example Street, Example City"`, `identity_line: ""`, "sender.identity_line", false},
 		{"absolute templates dir", "templates_dir: leads-templates", "templates_dir: /etc", "templates_dir", false},
 	}
@@ -380,8 +383,12 @@ func demoSlots(t *testing.T, cfg Config, kind string) map[string]string {
 		"EOLDate":      cfg.Facts.D7EOL.Format("2 January 2006"),
 		"SenderName":   cfg.Sender.Name,
 		"IdentityLine": cfg.Sender.IdentityLine,
-		"OptOutLine":   "Reply stop and I will not write to you again.",
 	}
+	line, ok := cfg.Sender.OptOutLine("en")
+	if !ok {
+		t.Fatal("demo has no English opt-out line")
+	}
+	s["OptOutLine"] = line
 	switch kind {
 	case KindAgencyPartner:
 		s["EvidenceLine"] = "your services page offers Drupal 7 migrations"
@@ -449,5 +456,37 @@ func TestDemoTemplatesWithinBounds(t *testing.T) {
 				t.Errorf("%s/en/%s.txt renders %q", kind, name, out)
 			}
 		}
+	}
+}
+
+func TestFactsEOL(t *testing.T) {
+	cfg, err := Load(examplesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{6: "2016-02-24", 7: "2025-01-05", 8: "2021-11-17", 9: "2023-11-01", 10: "2026-12-09"}
+	for major, date := range want {
+		d, ok := cfg.Facts.EOL(major)
+		if !ok || d.Format("2006-01-02") != date {
+			t.Errorf("EOL(%d) = %v, %v; want %s", major, d, ok, date)
+		}
+	}
+	for _, major := range []int{5, 11, 0} {
+		if _, ok := cfg.Facts.EOL(major); ok {
+			t.Errorf("EOL(%d) found a date", major)
+		}
+	}
+}
+
+func TestOptOutLine(t *testing.T) {
+	cfg, err := Load(examplesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line, ok := cfg.Sender.OptOutLine("en"); !ok || strings.TrimSpace(line) == "" {
+		t.Errorf("OptOutLine(en) = %q, %v", line, ok)
+	}
+	if _, ok := cfg.Sender.OptOutLine("ro"); ok {
+		t.Error("OptOutLine(ro) found a line the demo does not have")
 	}
 }

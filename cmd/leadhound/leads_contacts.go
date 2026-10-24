@@ -22,6 +22,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/contacts"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/outreach"
 	"github.com/gremy/webbership-leadhound/internal/probe"
 	"github.com/gremy/webbership-leadhound/internal/robots"
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
@@ -254,16 +255,10 @@ type contactSearch struct {
 	publicSuffixes []string
 }
 
-// isPublicBody reports whether domain is, or sits under, one of the public-body suffixes.
+// isPublicBody reports whether domain is, or sits under, one of the public-body suffixes:
+// the same rule outreach.Classify applies.
 func isPublicBody(domain string, suffixes []string) bool {
-	d := strings.ToLower(domain)
-	for _, s := range suffixes {
-		s = strings.ToLower(strings.Trim(s, ". "))
-		if s != "" && (d == s || strings.HasSuffix(d, "."+s)) {
-			return true
-		}
-	}
-	return false
+	return outreach.PublicBody(domain, suffixes)
 }
 
 // search reads one org's routes. A completed search stores its routes, the bodies of the

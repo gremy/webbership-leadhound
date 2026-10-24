@@ -1,0 +1,222 @@
+package outreach
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+)
+
+// MaxSubjectRunes is the longest subject Check passes.
+const MaxSubjectRunes = 70
+
+// Rules a Problem names.
+const (
+	RuleStep          = "step"           // the email step is outside the sequence
+	RuleWords         = "words"          // the copy above the footer is outside the word bounds
+	RulePlaceholder   = "placeholder"    // "{{" or "<no value>" is left in the text
+	RuleEmptySlot     = "empty-slot"     // a slot the text uses is empty
+	RuleSource        = "source"         // a slot the text uses names no stored row
+	RuleBanned        = "banned-word"    // a copy.banned_words entry appears
+	RuleOptOut        = "opt-out"        // the opt-out line is missing from the email
+	RuleIdentity      = "identity"       // the identity line is missing from the email
+	RuleNumber        = "number"         // a number traces to neither the template nor a slot
+	RuleSubjectLength = "subject-length" // the subject is over MaxSubjectRunes
+	RuleSubjectBang   = "subject-bang"   // the subject holds "!"
+	RuleURL           = "url"            // a URL other than the finding's or the sender's site
+)
+
+// Problem is one reason a draft may not go out.
+type Problem struct {
+	Rule   string
+	Detail string
+}
+
+func (p Problem) String() string { return p.Rule + ": " + p.Detail }
+
+// Check fact-checks a rendered draft against the drafting rules. step is the email's place
+// in the sequence (0 is the first email); it is ignored for a form or LinkedIn text.
+//
+// Every text gets the placeholder, empty-slot, source, banned-word, number and URL rules.
+// An email also gets the step, word-bound, subject and footer (opt-out and identity) rules;
+// a form or LinkedIn text has no subject or footer and is not held to an email's length.
+//
+// The number rule: a number is a run of digits, with any further digit runs joined to it
+// by a single ".", ":", "/" or "-" (10, 10.6.14, 2026-12-09, 09:30), that touches no
+// letter, digit or "_" on either side (so web2 or h2o is a name, not a number); URLs are
+// taken out first, as the URL rule owns them. Each number in the subject and body must
+// be a number of the template's own text (FixedText), or the whole value of a slot (so
+// Major "10" allows 10, while a name such as "Example, since 1998" allows nothing), or a
+// number inside a slot leads.yaml writes (SenderName, IdentityLine, OptOutLine, EOLDate),
+// which is the operator's own text like the template's.
+//
+// The URL rule: a URL is "http://" or "https://" up to white space, or a bare "www." name,
+// with trailing punctuation dropped. It must be the FindingURL slot, the sender's site_url
+// (a trailing "/" ignored either way), or, when bare, the Host or Domain slot.
+func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
+	var p []Problem
+	add := func(rule, format string, a ...any) {
+		p = append(p, Problem{Rule: rule, Detail: fmt.Sprintf(format, a...)})
+	}
+	text := d.Subject + "\n" + d.Body
+
+	if d.Kind == DraftEmail {
+		p = append(p, checkEmail(d, step, cfg)...)
+	}
+
+	for _, bad := range []string{"{{", "<no value>"} {
+		if strings.Contains(text, bad) {
+			add(RulePlaceholder, "the text holds %q", bad)
+		}
+	}
+	for _, name := range d.Used {
+		s := d.Slots.field(name)
+		if s == nil {
+			add(RuleSource, "the text uses %s, which is not a slot", name)
+			continue
+		}
+		if strings.TrimSpace(s.Value) == "" {
+			add(RuleEmptySlot, "%s is empty", name)
+		}
+		switch {
+		case s.Source.Table == "":
+			add(RuleSource, "%s names no source", name)
+		case s.Source != ConfigSource && s.Source.ID <= 0:
+			add(RuleSource, "%s names table %s but no row", name, s.Source.Table)
+		}
+	}
+	for _, w := range cfg.Copy.BannedWords {
+		if checkWordRe(w).MatchString(text) {
+			add(RuleBanned, "the text uses %q", w)
+		}
+	}
+
+	allowed := map[string]bool{}
+	for _, n := range checkNumbers(d.FixedText) {
+		allowed[n] = true
+	}
+	for _, ns := range d.Slots.named() {
+		if ns.name == "Footer" || ns.slot.Value == "" {
+			continue
+		}
+		allowed[ns.slot.Value] = true
+		switch ns.name {
+		case "SenderName", "IdentityLine", "OptOutLine", "EOLDate":
+			for _, n := range checkNumbers(ns.slot.Value) {
+				allowed[n] = true
+			}
+		}
+	}
+	for _, n := range checkNumbers(text) {
+		if !allowed[n] {
+			add(RuleNumber, "%s is in neither the template's text nor a slot", n)
+			allowed[n] = true // report each number once
+		}
+	}
+
+	okURL := map[string]bool{}
+	for _, u := range []string{d.Slots.FindingURL.Value, cfg.Sender.SiteURL} {
+		if u != "" {
+			okURL[checkURLKey(u)] = true
+		}
+	}
+	for _, h := range []string{d.Slots.Host.Value, d.Slots.Domain.Value} {
+		if h != "" && !strings.Contains(h, "://") {
+			okURL[checkURLKey(h)] = true
+		}
+	}
+	for _, u := range checkURLs(text) {
+		if !okURL[checkURLKey(u)] {
+			add(RuleURL, "%s is neither the finding's URL nor the sender's site", u)
+		}
+	}
+	return p
+}
+
+// checkEmail holds the rules only an email gets.
+func checkEmail(d Draft, step int, cfg leadconfig.Config) []Problem {
+	var p []Problem
+	add := func(rule, format string, a ...any) {
+		p = append(p, Problem{Rule: rule, Detail: fmt.Sprintf(format, a...)})
+	}
+	bounds, which := cfg.Copy.FollowupWords, "follow-up"
+	if step == 0 {
+		bounds, which = cfg.Copy.FirstWords, "first email"
+	}
+	switch {
+	case step < 0 || step >= leadconfig.Steps:
+		add(RuleStep, "step %d is outside 0 to %d", step, leadconfig.Steps-1)
+	case len(bounds) != 2:
+		add(RuleWords, "copy has no %s word bounds", which)
+	default:
+		if n := len(strings.Fields(d.BodyAboveFooter)); n < bounds[0] || n > bounds[1] {
+			add(RuleWords, "%d words above the footer, a %s needs %d to %d", n, which, bounds[0], bounds[1])
+		}
+	}
+	if n := utf8.RuneCountInString(d.Subject); n > MaxSubjectRunes {
+		add(RuleSubjectLength, "the subject is %d characters, at most %d", n, MaxSubjectRunes)
+	}
+	if strings.Contains(d.Subject, "!") {
+		add(RuleSubjectBang, "the subject holds \"!\"")
+	}
+	for _, l := range []struct {
+		rule, name, value string
+	}{
+		{RuleOptOut, "opt-out", d.Slots.OptOutLine.Value},
+		{RuleIdentity, "identity", d.Slots.IdentityLine.Value},
+	} {
+		switch {
+		case strings.TrimSpace(l.value) == "":
+			add(l.rule, "the %s line is empty", l.name)
+		case !strings.Contains(d.Body, l.value):
+			add(l.rule, "the %s line is not in the email", l.name)
+		}
+	}
+	return p
+}
+
+// checkWordRe matches w as a whole word, any case.
+func checkWordRe(w string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}_])` + regexp.QuoteMeta(strings.TrimSpace(w)) + `(?:$|[^\p{L}\p{N}_])`)
+}
+
+var (
+	checkURLRe    = regexp.MustCompile(`(?i)(?:https?://|www\.)[^\s<>"']+`)
+	checkNumberRe = regexp.MustCompile(`\d+(?:[.:/-]\d+)*`)
+)
+
+// checkURLs lists the URLs in text, trailing punctuation dropped.
+func checkURLs(text string) []string {
+	var out []string
+	for _, u := range checkURLRe.FindAllString(text, -1) {
+		out = append(out, strings.TrimRight(u, ".,;:!?)]}"))
+	}
+	return out
+}
+
+func checkURLKey(u string) string { return strings.ToLower(strings.TrimRight(u, "/")) }
+
+// checkNumbers lists the numbers in text, in order (see Check for the definition).
+func checkNumbers(text string) []string {
+	text = checkURLRe.ReplaceAllStringFunc(text, func(u string) string { return strings.Repeat(" ", len(u)) })
+	var out []string
+	for _, loc := range checkNumberRe.FindAllStringIndex(text, -1) {
+		if loc[0] > 0 {
+			if r, _ := utf8.DecodeLastRuneInString(text[:loc[0]]); checkGlued(r) {
+				continue
+			}
+		}
+		if loc[1] < len(text) {
+			if r, _ := utf8.DecodeRuneInString(text[loc[1]:]); checkGlued(r) {
+				continue
+			}
+		}
+		out = append(out, text[loc[0]:loc[1]])
+	}
+	return out
+}
+
+func checkGlued(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) }

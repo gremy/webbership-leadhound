@@ -455,11 +455,13 @@ func TestRunNetworkDown(t *testing.T) {
 			if sum.StopReason != StopFailureRate {
 				t.Fatalf("stop %q, want failure_rate", sum.StopReason)
 			}
-			if sum.Sites < 100 || sum.Sites >= 120 || len(w) != sum.Sites {
-				t.Errorf("stored %d sites (%d writes), want 100 to 119", sum.Sites, len(w))
+			// The stop fires at the 100th stored site; a site already handed to a worker
+			// then still finishes and is stored, so up to conc more can follow it.
+			if sum.Sites < 100 || sum.Sites > 100+conc || len(w) != sum.Sites {
+				t.Errorf("stored %d sites (%d writes), want 100 to %d", sum.Sites, len(w), 100+conc)
 			}
-			if conc == 1 && sum.Sites != 100 {
-				t.Errorf("one worker: stored %d, want exactly 100", sum.Sites)
+			if sum.Sites+sum.Interrupted >= 120 {
+				t.Errorf("stored %d + cut %d: the stop did not stop dispatching", sum.Sites, sum.Interrupted)
 			}
 		})
 	}

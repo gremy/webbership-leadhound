@@ -126,12 +126,41 @@ type Sender struct {
 	DKIMSelector      string          `yaml:"dkim_selector"`
 	OperatorAddresses []config.Secret `yaml:"operator_addresses"`
 	SiteURL           string          `yaml:"site_url"` // the one URL besides the finding's that a draft may hold
+	// OptOutLines maps a language to its opt-out line; every language an email country
+	// uses needs one.
+	OptOutLines map[string]string `yaml:"opt_out_lines"`
+}
+
+// OptOutLine returns the opt-out line for a language.
+func (s Sender) OptOutLine(lang string) (string, bool) {
+	line, ok := s.OptOutLines[lang]
+	return line, ok && strings.TrimSpace(line) != ""
 }
 
 // Facts are dates the templates may state.
 type Facts struct {
-	D10EOL Date `yaml:"d10_eol"`
+	D6EOL  Date `yaml:"d6_eol"`
 	D7EOL  Date `yaml:"d7_eol"`
+	D8EOL  Date `yaml:"d8_eol"`
+	D9EOL  Date `yaml:"d9_eol"`
+	D10EOL Date `yaml:"d10_eol"`
+}
+
+// EOL returns the end-of-life date of a Drupal major version, for majors 6 to 10.
+func (f Facts) EOL(major int) (Date, bool) {
+	switch major {
+	case 6:
+		return f.D6EOL, true
+	case 7:
+		return f.D7EOL, true
+	case 8:
+		return f.D8EOL, true
+	case 9:
+		return f.D9EOL, true
+	case 10:
+		return f.D10EOL, true
+	}
+	return Date{}, false
 }
 
 // Copy holds the drafting rules. The word bounds count the rendered body above the footer.
@@ -351,8 +380,16 @@ func (cfg *Config) checkRest() []string {
 		}
 	}
 
-	p = append(p, cfg.Facts.D10EOL.check("facts.d10_eol")...)
+	p = append(p, cfg.Facts.D6EOL.check("facts.d6_eol")...)
 	p = append(p, cfg.Facts.D7EOL.check("facts.d7_eol")...)
+	p = append(p, cfg.Facts.D8EOL.check("facts.d8_eol")...)
+	p = append(p, cfg.Facts.D9EOL.check("facts.d9_eol")...)
+	p = append(p, cfg.Facts.D10EOL.check("facts.d10_eol")...)
+	for _, lang := range sortedKeys(s.OptOutLines) {
+		if !langCode.MatchString(lang) {
+			p = append(p, fmt.Sprintf("sender.opt_out_lines: %q is not an ISO 639-1 code", lang))
+		}
+	}
 
 	if cfg.TemplatesDir == "" {
 		p = append(p, "templates_dir is missing")
@@ -372,6 +409,11 @@ func (cfg *Config) checkRest() []string {
 	}
 	for _, code := range sortedKeys(cfg.Countries) {
 		c := cfg.Countries[code]
+		if c.Channel == ChannelEmail && langCode.MatchString(c.Lang) {
+			if _, ok := s.OptOutLine(c.Lang); !ok {
+				p = append(p, fmt.Sprintf("sender.opt_out_lines.%s is missing (email country %s uses it)", c.Lang, code))
+			}
+		}
 		if c.Channel == ChannelEmail && c.Footer == "" {
 			p = append(p, "countries."+code+".footer is missing (an email country needs one)")
 		}

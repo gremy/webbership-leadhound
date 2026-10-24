@@ -79,8 +79,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 
 // revokeLeadsSQL takes from the app role what the owner's default privileges gave it and
 // it must not have: every write on the leads version table, and UPDATE on the append-only
-// lead tables. On org, whose one state pointer is site_id, it swaps the table-wide UPDATE
-// for UPDATE on that column only. It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
+// lead tables. On org, lead, outreach_batch and outreach_message it swaps the table-wide
+// UPDATE for UPDATE on their state-pointer columns only (00002 and 00003 name them);
+// mailbox_cursor keeps its table-wide UPDATE, every column of it being a pointer. It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
 // same, so either may run last. Each statement is skipped when the app role or its table
 // does not exist.
 const revokeLeadsSQL = `DO $$
@@ -109,6 +110,30 @@ BEGIN
   IF to_regclass('public.org') IS NOT NULL THEN
     REVOKE UPDATE ON public.org FROM leadhound_app;
     GRANT UPDATE (site_id) ON public.org TO leadhound_app;
+  END IF;
+  IF to_regclass('public.lead') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead FROM leadhound_app;
+    GRANT UPDATE (state, state_at, kind, probe_id, agency_finding_id, channel, route_id) ON public.lead TO leadhound_app;
+  END IF;
+  IF to_regclass('public.outreach_batch') IS NOT NULL THEN
+    REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
+    GRANT UPDATE (approved_at, approved_hash) ON public.outreach_batch TO leadhound_app;
+  END IF;
+  IF to_regclass('public.outreach_message') IS NOT NULL THEN
+    REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
+    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256) ON public.outreach_message TO leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_event') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_event FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.suppression') IS NOT NULL THEN
+    REVOKE UPDATE ON public.suppression FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.mailbox_event') IS NOT NULL THEN
+    REVOKE UPDATE ON public.mailbox_event FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.sender_check') IS NOT NULL THEN
+    REVOKE UPDATE ON public.sender_check FROM leadhound_app;
   END IF;
 END
 $$`

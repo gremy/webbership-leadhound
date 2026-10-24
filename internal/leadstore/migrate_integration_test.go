@@ -117,7 +117,8 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 			t.Errorf("%s: leadhound_app has %s on goose_db_version_leads, want none", when, priv)
 		}
 	}
-	for _, table := range []string{"site_probe", "fetch_header", "contact_route", "agency_finding", "contact_attempt"} {
+	for _, table := range []string{"site_probe", "fetch_header", "contact_route", "agency_finding", "contact_attempt",
+		"lead_event", "suppression", "mailbox_event", "sender_check"} {
 		if appHas(t, owner, table, "UPDATE") {
 			t.Errorf("%s: leadhound_app has UPDATE on %s, want none", when, table)
 		}
@@ -141,6 +142,55 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 	}
 	if !appHas(t, owner, "org", "INSERT") {
 		t.Errorf("%s: leadhound_app lacks INSERT on org", when)
+	}
+	assertPointerColumns(t, owner, when)
+	if !appHas(t, owner, "mailbox_cursor", "UPDATE") || !appHas(t, owner, "mailbox_cursor", "INSERT") {
+		t.Errorf("%s: leadhound_app lacks INSERT or UPDATE on mailbox_cursor (every column a pointer)", when)
+	}
+	for _, table := range []string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
+		"mailbox_event", "mailbox_cursor", "sender_check"} {
+		if appHas(t, owner, table, "DELETE") || appHas(t, owner, table, "TRUNCATE") {
+			t.Errorf("%s: leadhound_app may DELETE or TRUNCATE %s", when, table)
+		}
+	}
+}
+
+// pointerColumns are the outreach tables whose app UPDATE is cut to their state pointers
+// (00003's header): table → pointer columns, then the columns that must stay fixed.
+var pointerColumns = map[string][2][]string{
+	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "channel", "route_id"},
+		{"org_id", "created_at"}},
+	"outreach_batch": {{"approved_at", "approved_hash"},
+		{"shadow", "created_at", "content_sha256", "templates_sha256"}},
+	"outreach_message": {{"state", "due_at", "sent_at", "smtp_reply", "cancel_reason", "approved_sha256"},
+		{"batch_id", "lead_id", "step", "channel", "to_address", "subject", "body_text", "message_id",
+			"in_reply_to", "slots", "created_at"}},
+}
+
+// assertPointerColumns fails the test when the app role holds table-wide UPDATE on an
+// outreach table with pointers, lacks UPDATE on a pointer, or holds it on another column.
+func assertPointerColumns(t *testing.T, owner *pgx.Conn, when string) {
+	t.Helper()
+	for table, cols := range pointerColumns {
+		if appHas(t, owner, table, "UPDATE") {
+			t.Errorf("%s: leadhound_app has table-wide UPDATE on %s", when, table)
+		}
+		if !appHas(t, owner, table, "INSERT") {
+			t.Errorf("%s: leadhound_app lacks INSERT on %s", when, table)
+		}
+		for _, c := range cols[0] {
+			if !appHasColumn(t, owner, table, c, "UPDATE") {
+				t.Errorf("%s: leadhound_app lacks UPDATE on %s.%s", when, table, c)
+			}
+		}
+		for _, c := range cols[1] {
+			if !appHasColumn(t, owner, table, c, "SELECT") {
+				t.Errorf("%s: leadhound_app lacks SELECT on %s.%s", when, table, c)
+			}
+			if appHasColumn(t, owner, table, c, "UPDATE") {
+				t.Errorf("%s: leadhound_app has UPDATE on %s.%s, want none", when, table, c)
+			}
+		}
 	}
 }
 
@@ -259,6 +309,15 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM contact_route",
 		"DELETE FROM agency_finding",
 		"DELETE FROM contact_attempt",
+		"DELETE FROM lead",
+		"DELETE FROM lead_event",
+		"DELETE FROM outreach_batch",
+		"DELETE FROM outreach_message",
+		"DELETE FROM suppression",
+		"DELETE FROM mailbox_event",
+		"DELETE FROM mailbox_cursor",
+		"DELETE FROM sender_check",
+		"TRUNCATE suppression",
 		"TRUNCATE site",
 		"DROP TABLE site",
 	} {
@@ -281,6 +340,14 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE agency_finding SET phrase = ''",
 		"UPDATE contact_attempt SET routes_found = 0",
 		"UPDATE org SET name = ''",
+		"UPDATE lead_event SET reason = ''",
+		"UPDATE suppression SET reason = 'manual'",
+		"UPDATE mailbox_event SET kind = 'reply'",
+		"UPDATE sender_check SET spf = true",
+		"UPDATE outreach_message SET body_text = ''",
+		"UPDATE outreach_batch SET content_sha256 = ''",
+		"UPDATE lead SET org_id = 1",
+		"UPDATE lead SET created_at = now()",
 	} {
 		t.Run(q, func(t *testing.T) {
 			_, err := app.Exec(context.Background(), q)
