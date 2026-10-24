@@ -114,6 +114,23 @@ var schedule = map[string]struct {
 	},
 }
 
+// daemons are the services that run all the time rather than from a timer, with their
+// ExecStart line.
+var daemons = map[string]struct{ exec string }{
+	"leadhound-console": {exec: "/opt/leadhound/bin/leadhound serve"},
+}
+
+// hardening is the sandbox every leadhound service but the backup shares.
+var hardening = map[string]string{
+	"User":            "leadhound",
+	"Group":           "leadhound",
+	"EnvironmentFile": "/etc/leadhound/env",
+	"ProtectSystem":   "strict",
+	"ReadWritePaths":  "/opt/leadhound/data",
+	"ProtectHome":     "yes",
+	"PrivateTmp":      "yes",
+}
+
 // linkedinLockPath is the one lock every LinkedIn step on the server holds, and
 // linkedinLock is the flock call up to its wait in seconds.
 const (
@@ -163,11 +180,14 @@ func TestTimers(t *testing.T) {
 
 func TestServices(t *testing.T) {
 	services := units(t, "*.service")
-	if len(services) != len(schedule) {
-		t.Errorf("%d services, want %d", len(services), len(schedule))
+	if len(services) != len(schedule)+len(daemons) {
+		t.Errorf("%d services, want %d", len(services), len(schedule)+len(daemons))
 	}
 	for path, u := range services {
 		name := base(path)
+		if _, ok := daemons[name]; ok {
+			continue // TestConsoleService
+		}
 		want, ok := schedule[name]
 		if !ok {
 			t.Errorf("%s: not in the schedule", path)
@@ -197,18 +217,39 @@ func TestServices(t *testing.T) {
 		if name == "leadhound-backup" {
 			continue
 		}
-		for key, want := range map[string]string{
-			"User":            "leadhound",
-			"Group":           "leadhound",
-			"EnvironmentFile": "/etc/leadhound/env",
-			"ProtectSystem":   "strict",
-			"ReadWritePaths":  "/opt/leadhound/data",
-			"ProtectHome":     "yes",
-			"PrivateTmp":      "yes",
-		} {
+		for key, want := range hardening {
 			if got := u.one(t, path, "Service", key); got != want {
 				t.Errorf("%s: %s = %s, want %s", path, key, got, want)
 			}
+		}
+	}
+}
+
+// TestConsoleService: the console runs all the time, restarts after a crash but never after
+// bad config (exit 2), shares the timers' sandbox and reaches only this machine.
+func TestConsoleService(t *testing.T) {
+	const path = "leadhound-console.service"
+	u := readUnit(t, path)
+	if _, err := os.Stat("leadhound-console.timer"); err == nil {
+		t.Errorf("%s: has a matching .timer; the console is not timed", path)
+	}
+	for _, kv := range [][3]string{
+		{"Service", "Type", "exec"},
+		{"Service", "ExecStart", daemons["leadhound-console"].exec},
+		{"Service", "Restart", "on-failure"},
+		{"Service", "RestartPreventExitStatus", "2"},
+		{"Service", "NoNewPrivileges", "yes"},
+		{"Service", "IPAddressDeny", "any"},
+		{"Service", "IPAddressAllow", "localhost"},
+		{"Install", "WantedBy", "multi-user.target"},
+	} {
+		if got := u.one(t, path, kv[0], kv[1]); got != kv[2] {
+			t.Errorf("%s: [%s] %s = %s, want %s", path, kv[0], kv[1], got, kv[2])
+		}
+	}
+	for key, want := range hardening {
+		if got := u.one(t, path, "Service", key); got != want {
+			t.Errorf("%s: %s = %s, want %s", path, key, got, want)
 		}
 	}
 }
@@ -217,6 +258,9 @@ func TestServices(t *testing.T) {
 // lets all three tries happen before it trips.
 func TestBriefRetriesAlone(t *testing.T) {
 	for path, u := range units(t, "*.service") {
+		if _, ok := daemons[base(path)]; ok {
+			continue // a daemon restarts after a crash: TestConsoleService
+		}
 		brief := base(path) == "leadhound-brief"
 		sends := false
 		for _, e := range u["Service"]["ExecStart"] {
@@ -257,7 +301,10 @@ func systemdDuration(v string) (time.Duration, error) {
 	return time.ParseDuration(strings.ReplaceAll(v, "min", "m"))
 }
 
-// TestInstallEnablesEveryTimer: deploy/install.sh enables exactly the timers in deploy/.
+// TestInstallEnablesEveryTimer: deploy/install.sh enables exactly the timers in deploy/, and
+// enables and restarts every daemon after the new binary is in place, so the running server
+// picks it up. The console is skipped while the env file has no password hash, so a deploy
+// before the console is configured still succeeds.
 func TestInstallEnablesEveryTimer(t *testing.T) {
 	b, err := os.ReadFile("install.sh")
 	if err != nil {
@@ -273,6 +320,33 @@ func TestInstallEnablesEveryTimer(t *testing.T) {
 	slices.Sort(timers)
 	if !slices.Equal(enabled, timers) {
 		t.Errorf("install.sh enables %q, want %q", enabled, timers)
+	}
+
+	steps := installSteps(t)
+	swap := firstLine(steps, "mv -f", `"$bin/.leadhound.new"`, `"$bin/leadhound"`)
+	for name := range daemons {
+		enable := firstLine(steps, "systemctl enable "+name+".service")
+		restart := firstLine(steps, "systemctl restart "+name+".service")
+		switch {
+		case enable < 0 || restart < 0:
+			t.Errorf("install.sh does not enable and restart %s.service", name)
+		case enable < swap || restart < swap:
+			t.Errorf("install.sh enables or restarts %s.service before the binary swap (line %d)", name, swap)
+		}
+	}
+	guard := firstLine(steps, "grep", "LEADHOUND_CONSOLE_PASSWORD_HASH=", "/etc/leadhound/env")
+	enable := firstLine(steps, "systemctl enable leadhound-console.service")
+	switch {
+	case guard < 0:
+		t.Error("install.sh does not check /etc/leadhound/env for LEADHOUND_CONSOLE_PASSWORD_HASH= before starting the console")
+	case enable >= 0 && guard > enable:
+		t.Errorf("install.sh checks for the password hash (line %d) after enabling the console (line %d)", guard, enable)
+	}
+	if healthz := firstLine(steps, "curl", "/healthz"); healthz < 0 || healthz < firstLine(steps, "systemctl restart leadhound-console.service") {
+		t.Error("install.sh does not wait for the console's /healthz after restarting it")
+	}
+	if firstLine(steps, "journalctl -u leadhound-console.service") < 0 {
+		t.Error("install.sh does not show the console's log when it does not answer")
 	}
 }
 

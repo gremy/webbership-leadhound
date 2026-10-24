@@ -2,8 +2,8 @@
 # install.sh STAGE: installs a release that `make deploy` copied into the directory STAGE.
 # Run on the server as root (make deploy runs it with sudo). Order: the env files' owner and
 # mode, the new binary beside the old one, migrate with the new binary as the owner role,
-# then the swap, the backup script, the units and the timers. A failed migrate leaves the
-# old binary and the old units in place. STAGE is removed at the end.
+# then the swap, the backup script, the units, the timers and the console. A failed migrate
+# leaves the old binary and the old units in place. STAGE is removed once the units are in.
 set -eu
 
 stage=${1:?usage: install.sh STAGE}
@@ -49,6 +49,29 @@ systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer
 systemctl list-timers 'leadhound-*' --no-pager
-
 rm -rf -- "$stage"
+
+# The console starts only once its sign-in is configured (deploy/README.md, Console), so a
+# deploy before that still succeeds. It is restarted on every deploy to run the new binary,
+# which signs the operator out. With Type=exec systemd calls it active the moment it starts,
+# even when it then exits on bad config, so install waits for /healthz to answer.
+if grep -q '^LEADHOUND_CONSOLE_PASSWORD_HASH=.' /etc/leadhound/env; then
+	systemctl enable leadhound-console.service
+	systemctl restart leadhound-console.service
+	addr=$(sed -n 's/^LEADHOUND_CONSOLE_ADDR=//p' /etc/leadhound/env | tail -n 1 | tr -d "\"'")
+	addr=${addr:-localhost:8090}
+	tries=0
+	until curl -fsS -o /dev/null "http://$addr/healthz" 2>/dev/null; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 10 ]; then
+			journalctl -u leadhound-console.service -n 20 --no-pager
+			fail "the console did not answer on $addr within 10 seconds (its log is above); the timers are in place"
+		fi
+		sleep 1
+	done
+	echo "install: the console answers on $addr"
+else
+	echo "install: console not started: /etc/leadhound/env has no LEADHOUND_CONSOLE_PASSWORD_HASH yet (deploy/README.md, Console)"
+fi
+
 echo "install: done"
