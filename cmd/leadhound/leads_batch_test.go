@@ -11,6 +11,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
+	"github.com/gremy/webbership-leadhound/internal/outreach"
 )
 
 func demoLeadsConfig(t *testing.T) leadconfig.Config {
@@ -180,17 +181,17 @@ func TestNextBusinessSlot(t *testing.T) {
 		"2026-10-30 17:00": "2026-11-02 09:30", // Friday evening → Monday
 		"2026-10-31 10:00": "2026-11-02 09:30", // Saturday
 	} {
-		if got := nextBusinessSlot(at(now), london, bh); !got.Equal(at(want)) {
-			t.Errorf("nextBusinessSlot(%s) = %s, want %s", now, got.In(london), want)
+		if got := outreach.NextSlot(london, bh, at(now)); !got.Equal(at(want)) {
+			t.Errorf("NextSlot(%s) = %s, want %s", now, got.In(london), want)
 		}
 	}
 	// The zone is the recipient's: 08:00 UTC is 10:00 in Berlin in summer time.
 	berlin, _ := time.LoadLocation("Europe/Berlin")
 	now := time.Date(2026, 6, 2, 8, 0, 0, 0, time.UTC)
-	if got := nextBusinessSlot(now, berlin, bh); !got.Equal(now) {
+	if got := outreach.NextSlot(berlin, bh, now); !got.Equal(now) {
 		t.Errorf("Berlin: %s", got)
 	}
-	if !nextBusinessSlot(now, london, leadconfig.BusinessHours{Start: "x"}).IsZero() {
+	if !outreach.NextSlot(london, leadconfig.BusinessHours{Start: "x"}, now).IsZero() {
 		t.Error("unparsable hours: want zero")
 	}
 }

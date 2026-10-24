@@ -41,17 +41,20 @@ func renderDemoSlots(t *testing.T, cfg leadconfig.Config, kind string) Slots {
 	case leadconfig.KindD10:
 		s.Major = fetched("10", 21)
 		s.Exact = fetched("10.6.14", 21)
-		s.EOLDate = ConfigSlot(FormatDate(cfg.Facts.D10EOL.Time))
-		s.EvidenceLine.Value, err = EvidenceLine(drupal.Signal{Name: drupal.SigCoreAssetV, Value: "10.6.14"}, 10)
+		s.EOLDate = ConfigSlot(renderMustDate(t, cfg.Facts.D10EOL.Time))
+		s.EvidenceSignal = drupal.Signal{Name: drupal.SigCoreAssetV, Value: "10.6.14"}
+		s.EvidenceLine.Value, err = EvidenceLine(s.EvidenceSignal, 10, "en")
 		s.EvidenceLine.Source = Provenance{Table: "probe", ID: 21}
 	case leadconfig.KindUnsupported:
 		s.Major = fetched("7", 22)
-		s.EOLDate = ConfigSlot(FormatDate(cfg.Facts.D7EOL.Time))
-		s.EvidenceLine.Value, err = EvidenceLine(drupal.Signal{Name: drupal.SigD7Settings}, 7)
+		s.EOLDate = ConfigSlot(renderMustDate(t, cfg.Facts.D7EOL.Time))
+		s.EvidenceSignal = drupal.Signal{Name: drupal.SigD7Settings}
+		s.EvidenceLine.Value, err = EvidenceLine(s.EvidenceSignal, 7, "en")
 		s.EvidenceLine.Source = Provenance{Table: "probe", ID: 22}
 	case leadconfig.KindAgencyPartner:
 		s.Major = fetched("9", 23)
-		s.EvidenceLine.Value, err = EvidenceLine(drupal.Signal{Name: drupal.SigXGenerator, Value: "9"}, 9)
+		s.EvidenceSignal = drupal.Signal{Name: drupal.SigXGenerator, Value: "9"}
+		s.EvidenceLine.Value, err = EvidenceLine(s.EvidenceSignal, 9, "en")
 		s.EvidenceLine.Source = Provenance{Table: "probe", ID: 23}
 	}
 	if err != nil {
@@ -234,19 +237,28 @@ func TestSlotProvenanceSweep(t *testing.T) {
 
 func TestEvidenceLine(t *testing.T) {
 	cases := []struct {
-		sig   drupal.Signal
-		major int
-		want  string
+		sig    drupal.Signal
+		major  int
+		en, ro string
 	}{
-		{drupal.Signal{Name: drupal.SigMetaGenerator, Value: "10"}, 10, "the page's Generator tag names Drupal 10"},
-		{drupal.Signal{Name: drupal.SigXGenerator, Value: "9"}, 9, "the X-Generator header names Drupal 9"},
-		{drupal.Signal{Name: drupal.SigD7Settings}, 7, "the site's settings block is Drupal 7's"},
-		{drupal.Signal{Name: drupal.SigCoreAssetV, Value: "10.6.14"}, 10, "the page loads Drupal's core files at version 10.6.14"},
+		{drupal.Signal{Name: drupal.SigMetaGenerator, Value: "10"}, 10,
+			"the page's Generator tag names Drupal 10", "eticheta Generator a paginii indică Drupal 10"},
+		{drupal.Signal{Name: drupal.SigXGenerator, Value: "9"}, 9,
+			"the X-Generator header names Drupal 9", "antetul X-Generator indică Drupal 9"},
+		{drupal.Signal{Name: drupal.SigD7Settings}, 7,
+			"the site's settings block is Drupal 7's", "blocul de setări al site-ului este cel din Drupal 7"},
+		{drupal.Signal{Name: drupal.SigCoreAssetV, Value: "10.6.14"}, 10,
+			"the page loads Drupal's core files at version 10.6.14", "pagina încarcă fișierele de bază Drupal la versiunea 10.6.14"},
 	}
 	for _, c := range cases {
-		got, err := EvidenceLine(c.sig, c.major)
-		if err != nil || got != c.want {
-			t.Errorf("%v: %q, %v; want %q", c.sig, got, err, c.want)
+		for lang, want := range map[string]string{"en": c.en, "ro": c.ro} {
+			got, err := EvidenceLine(c.sig, c.major, lang)
+			if err != nil || got != want {
+				t.Errorf("%v %s: %q, %v; want %q", c.sig, lang, got, err, want)
+			}
+		}
+		if got, err := EvidenceLine(c.sig, c.major, "de"); err == nil {
+			t.Errorf("%v de: %q, want an error for an unknown language", c.sig, got)
 		}
 	}
 	bad := []struct {
@@ -260,7 +272,7 @@ func TestEvidenceLine(t *testing.T) {
 		{drupal.Signal{Name: drupal.SigXGenerator, Value: ""}, 10},
 	}
 	for _, b := range bad {
-		if got, err := EvidenceLine(b.sig, b.major); err == nil {
+		if got, err := EvidenceLine(b.sig, b.major, "en"); err == nil {
 			t.Errorf("%v major %d: %q, want an error", b.sig, b.major, got)
 		}
 	}
@@ -281,9 +293,27 @@ func TestOrgNameFallsBackToDomain(t *testing.T) {
 }
 
 func TestFormatDate(t *testing.T) {
-	if got := FormatDate(time.Date(2026, 12, 9, 0, 0, 0, 0, time.UTC)); got != "9 December 2026" {
-		t.Errorf("got %q", got)
+	d := time.Date(2026, 12, 9, 0, 0, 0, 0, time.UTC)
+	for lang, want := range map[string]string{"en": "9 December 2026", "ro": "9 decembrie 2026"} {
+		if got, err := FormatDate(d, lang); err != nil || got != want {
+			t.Errorf("%s: %q, %v; want %q", lang, got, err, want)
+		}
 	}
+	if got, err := FormatDate(time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC), "ro"); err != nil || got != "5 ianuarie 2025" {
+		t.Errorf("ro january: %q, %v", got, err)
+	}
+	if got, err := FormatDate(d, "fr"); err == nil {
+		t.Errorf("fr: %q, want an error", got)
+	}
+}
+
+func renderMustDate(t *testing.T, d time.Time) string {
+	t.Helper()
+	s, err := FormatDate(d, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 func TestNewMessageID(t *testing.T) {

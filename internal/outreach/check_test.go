@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
 
@@ -225,5 +226,29 @@ func TestNumbers(t *testing.T) {
 	want := []string{"10.6.14", "2026-12-09", "09:30", "7", "42", "3/4"}
 	if !slices.Equal(got, want) {
 		t.Errorf("numbers %v, want %v", got, want)
+	}
+}
+
+// A core-files evidence line names the full version; with no Exact slot its number is
+// allowed because the stored signal names the same version, and refused when it does not.
+func TestCheckCoreFilesEvidenceNumber(t *testing.T) {
+	cfg := renderDemoConfig(t)
+	_, tmpls, _ := renderDemoTemplates(t, cfg, leadconfig.KindD10)
+	s := renderDemoSlots(t, cfg, leadconfig.KindD10)
+	s.Exact = Slot{}
+	d, err := Render(tmpls[0], s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := Check(d, 0, cfg); len(p) > 0 {
+		t.Fatalf("core-files line without Exact: %v", p)
+	}
+	d.Slots.EvidenceSignal.Value = "10.6.13"
+	if got := checkRules(Check(d, 0, cfg)); !slices.Contains(got, RuleNumber) {
+		t.Errorf("a version the stored signal does not hold passed: %v", got)
+	}
+	d.Slots.EvidenceSignal = drupal.Signal{}
+	if got := checkRules(Check(d, 0, cfg)); !slices.Contains(got, RuleNumber) {
+		t.Errorf("an evidence line without its signal passed: %v", got)
 	}
 }

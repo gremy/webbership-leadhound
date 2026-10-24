@@ -51,7 +51,9 @@ func (p Problem) String() string { return p.Rule + ": " + p.Detail }
 // be a number of the template's own text (FixedText), or the whole value of a slot (so
 // Major "10" allows 10, while a name such as "Example, since 1998" allows nothing), or a
 // number inside a slot leads.yaml writes (SenderName, IdentityLine, OptOutLine, EOLDate),
-// which is the operator's own text like the template's.
+// which is the operator's own text like the template's, or a number inside EvidenceLine
+// that equals the value of the stored signal it was built from (Slots.EvidenceSignal), so
+// "at version 10.6.14" passes when the signal is core-asset-v 10.6.14 and fails otherwise.
 //
 // The URL rule: a URL is "http://" or "https://" up to white space, or a bare "www." name,
 // with trailing punctuation dropped. It must be the FindingURL slot, the sender's site_url
@@ -107,6 +109,12 @@ func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
 		case "SenderName", "IdentityLine", "OptOutLine", "EOLDate":
 			for _, n := range checkNumbers(ns.slot.Value) {
 				allowed[n] = true
+			}
+		case "EvidenceLine":
+			for _, n := range checkNumbers(ns.slot.Value) {
+				if n == d.Slots.EvidenceSignal.Value {
+					allowed[n] = true
+				}
 			}
 		}
 	}

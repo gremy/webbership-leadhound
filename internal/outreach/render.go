@@ -56,6 +56,11 @@ type Slots struct {
 	IdentityLine Slot
 	OptOutLine   Slot
 	Footer       Slot
+
+	// EvidenceSignal is the stored signal EvidenceLine was built from; it is not a template
+	// slot. Check allows a number inside EvidenceLine only when it equals this signal's
+	// value, so a core-files line ("… at version 10.6.14") passes with or without Exact.
+	EvidenceSignal drupal.Signal
 }
 
 type renderNamedSlot struct {
@@ -112,34 +117,82 @@ func OrgNameSlot(name, domain Slot) Slot {
 	return name
 }
 
-// FormatDate writes a date as the templates state it, "9 December 2026".
-func FormatDate(t time.Time) string { return t.Format("2 January 2006") }
+// Languages EvidenceLine, AgencyEvidenceLine and FormatDate write. Any other language is
+// an error, so a lead in it gets no draft until its wording is added here.
+const (
+	LangEnglish  = "en"
+	LangRomanian = "ro"
+)
 
-// EvidenceLine states the one signal a finding rests on, as a clause the templates use
-// ("I noticed that <line> on <url>"). Only signals that name the version can carry a
-// claim, and the version they name must agree with major; anything else is an error, so a
-// finding without such a signal gets no draft.
-func EvidenceLine(sig drupal.Signal, major int) (string, error) {
+var renderMonthsRO = [12]string{
+	"ianuarie", "februarie", "martie", "aprilie", "mai", "iunie",
+	"iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie",
+}
+
+// FormatDate writes a date as the templates state it: "9 December 2026" in English,
+// "9 decembrie 2026" in Romanian.
+func FormatDate(t time.Time, lang string) (string, error) {
+	switch lang {
+	case LangEnglish:
+		return t.Format("2 January 2006"), nil
+	case LangRomanian:
+		return fmt.Sprintf("%d %s %d", t.Day(), renderMonthsRO[t.Month()-1], t.Year()), nil
+	}
+	return "", fmt.Errorf("outreach: date: no wording for language %q", lang)
+}
+
+// renderEvidenceWords holds each signal's clause per language; %s is the version.
+var renderEvidenceWords = map[string]map[string]string{
+	LangEnglish: {
+		drupal.SigMetaGenerator: "the page's Generator tag names Drupal %s",
+		drupal.SigXGenerator:    "the X-Generator header names Drupal %s",
+		drupal.SigCoreAssetV:    "the page loads Drupal's core files at version %s",
+		drupal.SigD7Settings:    "the site's settings block is Drupal %s's",
+		"agency":                "your page at %s offers Drupal upgrades",
+	},
+	LangRomanian: {
+		drupal.SigMetaGenerator: "eticheta Generator a paginii indică Drupal %s",
+		drupal.SigXGenerator:    "antetul X-Generator indică Drupal %s",
+		drupal.SigCoreAssetV:    "pagina încarcă fișierele de bază Drupal la versiunea %s",
+		drupal.SigD7Settings:    "blocul de setări al site-ului este cel din Drupal %s",
+		"agency":                "pagina de pe %s oferă actualizări Drupal",
+	},
+}
+
+func renderEvidenceFormat(lang, key string) (string, error) {
+	words, ok := renderEvidenceWords[lang]
+	if !ok {
+		return "", fmt.Errorf("outreach: evidence: no wording for language %q", lang)
+	}
+	return words[key], nil
+}
+
+// EvidenceLine states the one signal a finding rests on, in lang, as a clause the
+// templates use ("I noticed that <line> on <url>"). Only signals that name the version can
+// carry a claim, and the version they name must agree with major; anything else is an
+// error, so a finding without such a signal gets no draft. The caller puts sig in
+// Slots.EvidenceSignal, which is what lets Check accept the version the line names.
+func EvidenceLine(sig drupal.Signal, major int, lang string) (string, error) {
+	format, err := renderEvidenceFormat(lang, sig.Name)
+	if err != nil {
+		return "", err
+	}
 	m := strconv.Itoa(major)
 	if major <= 0 {
 		return "", fmt.Errorf("outreach: evidence %s: no major version", sig)
 	}
 	switch sig.Name {
-	case drupal.SigMetaGenerator:
+	case drupal.SigMetaGenerator, drupal.SigXGenerator:
 		if sig.Value == m {
-			return "the page's Generator tag names Drupal " + m, nil
-		}
-	case drupal.SigXGenerator:
-		if sig.Value == m {
-			return "the X-Generator header names Drupal " + m, nil
+			return fmt.Sprintf(format, m), nil
 		}
 	case drupal.SigCoreAssetV:
 		if strings.HasPrefix(sig.Value, m+".") {
-			return "the page loads Drupal's core files at version " + sig.Value, nil
+			return fmt.Sprintf(format, sig.Value), nil
 		}
 	case drupal.SigD7Settings:
 		if major == 7 || major == 6 {
-			return "the site's settings block is Drupal " + m + "'s", nil
+			return fmt.Sprintf(format, m), nil
 		}
 	default:
 		return "", fmt.Errorf("outreach: evidence %s: the signal names no version", sig)
@@ -147,12 +200,16 @@ func EvidenceLine(sig drupal.Signal, major int) (string, error) {
 	return "", fmt.Errorf("outreach: evidence %s: does not name Drupal %d", sig, major)
 }
 
-// AgencyEvidenceLine states an agency's finding as a clause the templates use ("I saw
-// that <line> (<url>)"): the host of the stored finding page, without "www.", and that it
-// offers Drupal upgrades, which is what the agency finding pattern matched there. The URL
-// itself stays in the FindingURL slot. A URL that is not absolute http(s) is an error, so
-// such a finding gets no draft.
-func AgencyEvidenceLine(findingURL string) (string, error) {
+// AgencyEvidenceLine states an agency's finding in lang as a clause the templates use ("I
+// saw that <line> (<url>)"): the host of the stored finding page, without "www.", and that
+// it offers Drupal upgrades, which is what the agency finding pattern matched there. The
+// URL itself stays in the FindingURL slot. A URL that is not absolute http(s), or a
+// language without wording, is an error, so such a finding gets no draft.
+func AgencyEvidenceLine(findingURL, lang string) (string, error) {
+	format, err := renderEvidenceFormat(lang, "agency")
+	if err != nil {
+		return "", err
+	}
 	u, err := url.Parse(strings.TrimSpace(findingURL))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
 		return "", fmt.Errorf("outreach: agency evidence: %q is not an absolute http(s) URL", findingURL)
@@ -161,7 +218,7 @@ func AgencyEvidenceLine(findingURL string) (string, error) {
 	if !renderDomainOK(host) {
 		return "", fmt.Errorf("outreach: agency evidence: %q has no usable host", findingURL)
 	}
-	return "your page at " + host + " offers Drupal upgrades", nil
+	return fmt.Sprintf(format, host), nil
 }
 
 // DraftKind says which text a draft is: an email step, a contact-form message or a

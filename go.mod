@@ -4,6 +4,9 @@ go 1.27
 
 require (
 	github.com/PuerkitoBio/goquery v1.13.0
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
+	github.com/emersion/go-smtp v0.25.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pemistahl/lingua-go v1.4.0
 	github.com/pressly/goose/v3 v3.29.0
@@ -15,6 +18,7 @@ require (
 
 require (
 	github.com/andybalholm/cascadia v1.3.4 // indirect
+	github.com/emersion/go-message v0.18.2 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect

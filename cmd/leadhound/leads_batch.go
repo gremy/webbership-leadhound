@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -210,7 +209,8 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 		IdentityLine: outreach.ConfigSlot(cfg.Sender.IdentityLine),
 	}
 	// A language without an opt-out line leaves the slot empty, so Check stops its emails.
-	if line, ok := cfg.Sender.OptOutLine(cfg.Policy(c.Country).Lang); ok {
+	lang := cfg.Policy(c.Country).Lang
+	if line, ok := cfg.Sender.OptOutLine(lang); ok {
 		s.OptOutLine = outreach.ConfigSlot(line)
 	}
 	s.OrgName = outreach.OrgNameSlot(outreach.Slot{Value: orgNameValue(c.OrgName), Source: org}, s.Domain)
@@ -218,13 +218,15 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 	case ev.ProbeID != nil:
 		probe := outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}
 		var (
-			line  string
-			fetch leadstore.EvidenceFetch
+			line   string
+			fetch  leadstore.EvidenceFetch
+			stored drupal.Signal
 		)
 		for _, sig := range ev.Signals {
-			l, err := outreach.EvidenceLine(drupal.Signal{Name: sig.Signal.Signal, Value: sig.Value}, ev.Major)
+			ds := drupal.Signal{Name: sig.Signal.Signal, Value: sig.Value}
+			l, err := outreach.EvidenceLine(ds, ev.Major, lang)
 			if err == nil && sig.Fetch.ID > 0 {
-				line, fetch = l, sig.Fetch
+				line, fetch, stored = l, sig.Fetch, ds
 				break
 			}
 		}
@@ -232,6 +234,7 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 			return outreach.Slots{}, fmt.Errorf("no stored signal names Drupal %d", ev.Major)
 		}
 		s.EvidenceLine = outreach.Slot{Value: line, Source: probe}
+		s.EvidenceSignal = stored
 		s.FindingURL = outreach.Slot{Value: cmpOr(fetch.FinalURL, fetch.URL), Source: outreach.Provenance{Table: slotFetch, ID: fetch.ID}}
 		s.Host = outreach.Slot{Value: cmpOr(ev.FinalHost, c.Domain), Source: probe}
 		s.Major = outreach.Slot{Value: strconv.Itoa(ev.Major), Source: probe}
@@ -239,11 +242,14 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 			s.Exact = outreach.Slot{Value: ev.ExactVersion, Source: probe}
 		}
 		if eol, ok := cfg.Facts.EOL(ev.Major); ok && !eol.IsZero() {
-			s.EOLDate = outreach.ConfigSlot(outreach.FormatDate(eol.Time))
+			// A language without date wording leaves the slot empty: a template using it gets no draft.
+			if d, err := outreach.FormatDate(eol.Time, lang); err == nil {
+				s.EOLDate = outreach.ConfigSlot(d)
+			}
 		}
 	case ev.AgencyFindingID != nil:
 		finding := outreach.Provenance{Table: slotFinding, ID: *ev.AgencyFindingID}
-		line, err := outreach.AgencyEvidenceLine(ev.FindingURL)
+		line, err := outreach.AgencyEvidenceLine(ev.FindingURL, lang)
 		if err != nil {
 			return outreach.Slots{}, err
 		}
@@ -618,34 +624,6 @@ func parseSkip(v string) ([]int, error) {
 	return out, nil
 }
 
-// nextBusinessSlot is the first moment at or after now inside the business hours, in loc:
-// now itself when it falls inside them, else the start of the next business day's window.
-// It returns the zero time when the hours do not parse or no day in the next two weeks is
-// a business day.
-func nextBusinessSlot(now time.Time, loc *time.Location, bh leadconfig.BusinessHours) time.Time {
-	start, err1 := time.Parse("15:04", bh.Start)
-	end, err2 := time.Parse("15:04", bh.End)
-	if err1 != nil || err2 != nil {
-		return time.Time{}
-	}
-	t := now.In(loc)
-	for i := range 15 {
-		d := t.AddDate(0, 0, i)
-		if !slices.Contains(bh.Days, d.Weekday().String()[:3]) {
-			continue
-		}
-		open := time.Date(d.Year(), d.Month(), d.Day(), start.Hour(), start.Minute(), 0, 0, loc)
-		shut := time.Date(d.Year(), d.Month(), d.Day(), end.Hour(), end.Minute(), 0, 0, loc)
-		switch {
-		case i > 0 || t.Before(open):
-			return open
-		case t.Before(shut):
-			return t
-		}
-	}
-	return time.Time{}
-}
-
 // runBatchApprove is `leads batch approve N --hash H [--skip 3,5]`: it approves what batch
 // show printed (the hash binds it, RA2). Each first email is due at the next business slot
 // in its recipient's time zone; follow-ups and the manual items have no due time.
@@ -707,7 +685,7 @@ func runBatchApprove(ctx context.Context, args []string) error {
 		if m.Step != 0 {
 			return time.Time{}
 		}
-		t := nextBusinessSlot(now, locs[m.LeadID], setup.leads.Schedule.BusinessHours)
+		t := outreach.NextSlot(locs[m.LeadID], setup.leads.Schedule.BusinessHours, now)
 		if !t.IsZero() && (firstDue.IsZero() || t.Before(firstDue)) {
 			firstDue = t
 		}
