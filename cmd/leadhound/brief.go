@@ -153,6 +153,7 @@ func runBrief(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	in.ConsoleURL = briefConsoleURL(cfg.ConsoleURL)
 	subject, text, html := brief.Compose(in)
 	_, _ = fmt.Fprint(stdout, text)
 	ids := in.JobIDs()
@@ -191,6 +192,20 @@ func runBrief(ctx context.Context, args []string) error {
 		return err
 	}
 	return sendBrief(ctx, s, cfg, b, &note)
+}
+
+// briefConsoleURL is the console URL the footer names: u when it is a usable https URL,
+// else "" (the footer names the track commands). An unusable one gets one notes line and
+// never stops the brief.
+func briefConsoleURL(u string) string {
+	if u == "" {
+		return ""
+	}
+	if config.ValidConsoleURL(u) != nil {
+		_, _ = fmt.Fprintln(notes, "brief: LEADHOUND_CONSOLE_URL is not an https URL; the footer names the track commands")
+		return ""
+	}
+	return u
 }
 
 // sendBrief sends the stored brief b as it is, under its stored key. On success, or when

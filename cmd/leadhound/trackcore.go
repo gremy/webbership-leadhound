@@ -123,3 +123,30 @@ func trackJob(ctx context.Context, s *store.Store, req trackRequest) (trackResul
 	}
 	return res, err
 }
+
+// trackRefusal is the usage error for a refusal from trackJob, in the words both track
+// and the console show; an error that is not a refusal comes back as it is.
+func trackRefusal(err error, jobID int64, res trackResult) error {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return usageError("job:%d does not exist", jobID)
+	case errors.Is(err, errPastApplying):
+		return usageError("already %s; use withdrawn", res.From)
+	case errors.Is(err, store.ErrInvalidRule):
+		return usageError("%v", err)
+	}
+	return err
+}
+
+// trackOutcomeLine is the line track prints, and the console shows, for what a mark did.
+func trackOutcomeLine(res trackResult) string {
+	switch {
+	case res.NoOp:
+		return fmt.Sprintf("already %s; nothing changed", res.To)
+	case res.Noted:
+		return fmt.Sprintf("noted; status stays %s", res.To)
+	case res.RuleID > 0:
+		return fmt.Sprintf("%s → %s; rule %d added", res.From, res.To, res.RuleID)
+	}
+	return fmt.Sprintf("%s → %s", res.From, res.To)
+}

@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Runs</h1>
+{{if .Data}}
+{{template "run_table" .Data}}
+{{else}}
+<p class="empty">No runs yet.</p>
+{{end}}
+{{end}}

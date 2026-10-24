@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Jobs</h1>
+{{if not .Data.SentAt}}
+<p class="empty">No brief has been sent yet.</p>
+{{else}}
+<p class="lede">From the brief of {{day .Data.Day}}, sent at {{clock .Data.SentAt}}. The numbers are the ones the email used.</p>
+{{if .Data.Jobs}}
+<div class="jobs">
+{{range .Data.Jobs}}{{template "job_row" (row . $.Data.Day)}}{{end}}
+</div>
+{{else}}
+<p class="empty">That brief listed no jobs.</p>
+{{end}}
+{{end}}
+{{end}}

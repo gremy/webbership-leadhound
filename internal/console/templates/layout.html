@@ -1,0 +1,69 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"selfRequestsOnly":true,"attributesToSettle":["class","width","height"]}'>
+<title>{{.Title}} · LeadHound</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/console.css?v={{cssVersion}}">
+<script src="/static/htmx-2.0.11.min.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="bar">
+    <span class="brand">LeadHound</span>
+    {{if .SignedIn}}
+    <form class="logout" method="post" action="/logout">
+      <button type="submit" class="quiet">Sign out</button>
+    </form>
+    {{end}}
+  </div>
+  {{if .SignedIn}}
+  <nav aria-label="Main">
+    <ul>
+      {{range .Nav}}<li><a href="{{.Path}}"{{if eq .Path $.Active}} aria-current="page"{{end}}>{{.Label}}</a></li>{{end}}
+    </ul>
+  </nav>
+  {{end}}
+</header>
+<main id="main">
+{{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "run_table"}}
+<ul class="item-list narrow-only">
+  {{range .}}{{template "run_item" .}}{{end}}
+</ul>
+<div class="table-wrap wide-only">
+<table class="runs">
+  <thead><tr><th scope="col">Started</th><th scope="col">Command</th><th scope="col">Source</th><th scope="col">Took</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Failures</th><th scope="col">Stopped</th><th scope="col">Note</th></tr></thead>
+  <tbody>
+  {{range .}}
+  <tr>
+    <td>{{when .StartedAt}}</td>
+    <td>{{.Command}}</td>
+    <td>{{.Source}}</td>
+    <td>{{took .}}</td>
+    <td class="num">{{thousands .Requests}}</td>
+    <td class="num{{if .Failures}} bad{{end}}">{{thousands .Failures}}</td>
+    <td>{{.StopReason}}</td>
+    <td>{{.Note}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "run_item"}}<li>
+  <span class="item-head">{{.Command}}{{if .Source}} · {{.Source}}{{end}}</span>
+  <span class="item-meta">{{when .StartedAt}} · {{took .}}{{if .Failures}} · <span class="bad">{{thousands .Failures}} failed</span>{{end}}{{if .StopReason}} · {{.StopReason}}{{end}}{{if .Note}} · {{.Note}}{{end}}</span>
+</li>{{end}}

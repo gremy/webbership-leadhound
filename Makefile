@@ -7,7 +7,7 @@ LEADHOUND_MIGRATE_DATABASE_URL ?= postgres://leadhound_owner@localhost/leadhound
 TEST_DB_DSN                    ?= postgres://leadhound_app@localhost/leadhound_test?sslmode=disable
 TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound_test?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote
+.PHONY: fmt fmt-check vet lint-if-present test test-integration check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -106,6 +106,19 @@ db-local:
 ## migrate: apply the migrations to the dev database as the owner role
 migrate:
 	LEADHOUND_MIGRATE_DATABASE_URL='$(LEADHOUND_MIGRATE_DATABASE_URL)' go run $(CMD) migrate
+
+## console-password: ask for the console password twice (not shown) and write its hash to data/console-password.hash, mode 0600
+console-password:
+	@mkdir -p data && tmp=$$(mktemp) && \
+	if go run $(CMD) console hash-password > "$$tmp"; then \
+		install -m 0600 "$$tmp" data/console-password.hash && rm -f "$$tmp" && \
+		echo "console-password: wrote data/console-password.hash"; \
+	else rm -f "$$tmp"; exit 1; fi
+
+## console-local: serve the console on loopback in dev mode, with .env's settings and the hash make console-password wrote
+console-local:
+	@test -f data/console-password.hash || { echo "console-local: run make console-password first"; exit 1; }
+	@set -a; . ./.env; set +a; LEADHOUND_CONSOLE_PASSWORD_HASH=$$(cat data/console-password.hash) go run $(CMD) serve --dev
 
 ## hooks: install the pre-commit and commit-msg privacy checks (never touches pre-push)
 hooks:

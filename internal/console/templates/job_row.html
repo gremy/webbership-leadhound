@@ -1,0 +1,51 @@
+{{define "job_row"}}
+<article class="job" id="job-{{.Job.N}}">
+  <span class="job-n" aria-label="Number">{{if .Job.N}}{{.Job.N}}{{end}}</span>
+  <div class="job-main">
+    <h2 class="job-title">{{if .Job.URL}}<a href="{{.Job.URL}}" rel="noreferrer noopener" target="_blank">{{.Job.Title}}</a>{{else}}{{.Job.Title}}{{end}}</h2>
+    <p class="job-company">{{.Job.Company}}{{if and .Job.ListingStatus (ne .Job.ListingStatus "open")}} <span class="tag">listing {{.Job.ListingStatus}}</span>{{end}}</p>
+  </div>
+  {{if .Job.Status}}<span class="status status-{{.Job.Status}}">{{.Job.Status}}</span>{{end}}
+  {{if .Message}}<p class="row-note{{if .Error}} row-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+  {{if and .Job.N .Job.Status}}
+  <div class="actions">
+    <form method="post" action="/jobs/track" hx-post="/jobs/track" hx-target="closest article" hx-swap="outerHTML">
+      <input type="hidden" name="ref" value="{{.Job.N}}">
+      <input type="hidden" name="day" value="{{.Day}}">
+      <input type="hidden" name="action" value="applied">
+      <button type="submit" class="primary">Applied</button>
+    </form>
+    <details>
+      <summary>Maybe</summary>
+      <form method="post" action="/jobs/track" hx-post="/jobs/track" hx-target="closest article" hx-swap="outerHTML">
+        <input type="hidden" name="ref" value="{{.Job.N}}">
+        <input type="hidden" name="day" value="{{.Day}}">
+        <input type="hidden" name="action" value="maybe">
+        <label for="maybe-reason-{{.Job.N}}">Note (optional)</label>
+        <input id="maybe-reason-{{.Job.N}}" name="reason" maxlength="500">
+        <button type="submit">Save maybe</button>
+      </form>
+    </details>
+    <details>
+      <summary>Skip</summary>
+      <form method="post" action="/jobs/track" hx-post="/jobs/track" hx-target="closest article" hx-swap="outerHTML">
+        <input type="hidden" name="ref" value="{{.Job.N}}">
+        <input type="hidden" name="day" value="{{.Day}}">
+        <input type="hidden" name="action" value="skip">
+        <label for="skip-reason-{{.Job.N}}">Reason</label>
+        <input id="skip-reason-{{.Job.N}}" name="reason" maxlength="500">
+        <label for="skip-field-{{.Job.N}}">Also skip future jobs whose</label>
+        <select id="skip-field-{{.Job.N}}" name="rule_field">
+          <option value="">(no rule)</option>
+          {{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+        <label for="skip-pattern-{{.Job.N}}">matches (pattern)</label>
+        <input id="skip-pattern-{{.Job.N}}" name="rule_pattern" maxlength="500" aria-describedby="skip-pattern-hint-{{.Job.N}}">
+        <p id="skip-pattern-hint-{{.Job.N}}" class="hint">A regular expression; case is ignored.</p>
+        <button type="submit">Skip</button>
+      </form>
+    </details>
+  </div>
+  {{end}}
+</article>
+{{end}}

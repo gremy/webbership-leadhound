@@ -77,26 +77,10 @@ func runTrack(ctx context.Context, args []string) error {
 	if res.Job.JobID != 0 {
 		_, _ = fmt.Fprintf(stdout, "%s → %s · %s (job:%d)\n", label, res.Job.Title, res.Job.Company, jobID)
 	}
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return usageError("job:%d does not exist", jobID)
-	case errors.Is(err, errPastApplying):
-		return usageError("already %s; use withdrawn", res.From)
-	case errors.Is(err, store.ErrInvalidRule):
-		return usageError("%v", err)
-	case err != nil:
-		return err
+	if err != nil {
+		return trackRefusal(err, jobID, res)
 	}
-	switch {
-	case res.NoOp:
-		_, _ = fmt.Fprintf(stdout, "already %s; nothing changed\n", res.To)
-	case res.Noted:
-		_, _ = fmt.Fprintf(stdout, "noted; status stays %s\n", res.To)
-	case res.RuleID > 0:
-		_, _ = fmt.Fprintf(stdout, "%s → %s; rule %d added\n", res.From, res.To, res.RuleID)
-	default:
-		_, _ = fmt.Fprintf(stdout, "%s → %s\n", res.From, res.To)
-	}
+	_, _ = fmt.Fprintln(stdout, trackOutcomeLine(res))
 	return nil
 }
 

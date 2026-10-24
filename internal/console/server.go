@@ -1,0 +1,821 @@
+package console
+
+import (
+	"bytes"
+	"cmp"
+	"crypto/sha256"
+	"embed"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"html/template"
+	"io/fs"
+	"log/slog"
+	"mime"
+	"net/http"
+	"net/url"
+	"path"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+)
+
+//go:embed templates/*.html
+var templateFS embed.FS
+
+// staticFS holds the console's CSS, favicon, robots.txt and htmx.
+// static/htmx-2.0.11.min.js is https://unpkg.com/htmx.org@2.0.11/dist/htmx.min.js,
+// SHA-256 d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717.
+// It is served from here only, never from a CDN.
+//
+//go:embed static
+var staticFS embed.FS
+
+const (
+	// maxBody caps every POST body.
+	maxBody = 64 << 10
+
+	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
+		"connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+	loginFailed  = "That email and password don't match."
+	signedOut    = "Signed out. Sign in again."
+	tooMany      = "Too many sign-in attempts. Wait a minute and try again."
+	tooLarge     = "The form is too large."
+	serverFailed = "Something went wrong. The details are in the server log."
+	noBriefYet   = "No brief has been sent yet."
+)
+
+// cssVersion is the start of console.css's SHA-256. The page links the
+// stylesheet with it as a query, so a new stylesheet is fetched at once although
+// static files are cached for a day.
+var cssVersion = func() string {
+	b, err := fs.ReadFile(staticFS, "static/console.css")
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:4])
+}()
+
+// route is one entry of the console's routing table. New builds the mux from
+// routes, and the tests sweep the same table.
+type route struct {
+	pattern string // ServeMux pattern
+	sample  string // a concrete path that reaches the route
+	public  bool   // reachable without a session
+	handle  func(*server, http.ResponseWriter, *http.Request)
+}
+
+// routes is every route the console serves. Each route that is not public is
+// wrapped in requireSession.
+var routes = []route{
+	{"GET /login", "/login", true, (*server).loginPage},
+	{"POST /login", "/login", true, (*server).login},
+	{"POST /logout", "/logout", false, (*server).logout},
+	{"GET /{$}", "/", false, (*server).dashboard},
+	{"GET /jobs", "/jobs", false, (*server).jobs},
+	{"POST /jobs/track", "/jobs/track", false, (*server).track},
+	{"GET /tracked", "/tracked", false, (*server).tracked},
+	{"GET /runs", "/runs", false, (*server).runs},
+	{"GET /rules", "/rules", false, (*server).rules},
+	{"GET /static/", "/static/console.css", true, (*server).static},
+	{"GET /robots.txt", "/robots.txt", true, (*server).robots},
+	{"GET /favicon.ico", "/favicon.ico", true, (*server).favicon},
+	{"GET /healthz", "/healthz", true, (*server).healthz},
+}
+
+// navItem is one link of the page header.
+type navItem struct{ Label, Path string }
+
+// nav is the header's links, in order.
+var nav = []navItem{
+	{"Dashboard", "/"},
+	{"Jobs", "/jobs"},
+	{"Tracked", "/tracked"},
+	{"Runs", "/runs"},
+	{"Rules", "/rules"},
+}
+
+// trackedFilters are the Tracked page's status filters: "" is every job no
+// longer new, "all" every job with a status, then each status.
+var trackedFilters = []navItem{
+	{"Active", ""}, {"All", "all"},
+	{"Shortlisted", "shortlisted"}, {"Applied", "applied"}, {"Interviewing", "interviewing"},
+	{"Offer", "offer"}, {"Rejected", "rejected"}, {"Skipped", "skipped"},
+	{"Withdrawn", "withdrawn"}, {"New", "new"},
+}
+
+// laterStatuses are the statuses the Tracked page moves a job to.
+var laterStatuses = []string{"interviewing", "offer", "rejected", "withdrawn"}
+
+// ruleFields are the fields a skip rule may match, as the store accepts them.
+var ruleFields = []string{"company", "title", "description", "location"}
+
+// server holds what the handlers share.
+type server struct {
+	b      Backend
+	a      *Auth
+	opt    Options
+	log    *slog.Logger
+	cookie string // the session cookie's name
+	flash  string // the one-time message cookie's name
+	device string // the trusted-device cookie's name
+	pages  map[string]*template.Template
+	next   map[string]bool // the pages a sign-in may return to
+}
+
+// page is what the layout renders.
+type page struct {
+	Title    string
+	Active   string
+	Nav      []navItem
+	SignedIn bool
+	Message  string
+	Error    bool
+	Data     any
+}
+
+// rowView is one job of the Jobs page, with the result of the last action on it.
+// Day is the brief's day, YYYY-MM-DD, which every form of the row posts so its
+// number is read in that brief and no other.
+type rowView struct {
+	Job     BriefJob
+	Day     string
+	Message string
+	Error   bool
+}
+
+// trackedView is the Tracked page's list.
+type trackedView struct {
+	Status  string
+	Filters []navItem
+	Rows    []Tracked
+	Message string
+	Error   bool
+}
+
+// loginView is the sign-in form.
+type loginView struct{ Next string }
+
+// New returns the console's handler. Every response carries the security
+// headers; cross-origin POSTs are refused; POST bodies are capped at 64 KiB;
+// every route but the sign-in page, static files, robots.txt, the favicon and
+// /healthz needs
+// a session.
+func New(b Backend, a *Auth, opt Options) http.Handler {
+	if opt.Location == nil {
+		opt.Location = time.UTC
+	}
+	if opt.Logger == nil {
+		opt.Logger = slog.New(slog.DiscardHandler)
+	}
+	s := &server{
+		b:      b,
+		a:      a,
+		opt:    opt,
+		log:    opt.Logger,
+		cookie: "__Host-lh_session",
+		flash:  "__Host-lh_flash",
+		device: "__Host-lh_device",
+		next:   make(map[string]bool),
+	}
+	if opt.Dev {
+		s.cookie, s.flash, s.device = "lh_session", "lh_flash", "lh_device"
+	}
+	s.pages = s.parseTemplates()
+
+	mux := http.NewServeMux()
+	for _, rt := range routes {
+		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { rt.handle(s, w, r) })
+		if rt.public {
+			mux.Handle(rt.pattern, h)
+			continue
+		}
+		mux.Handle(rt.pattern, s.requireSession(h))
+		if strings.HasPrefix(rt.pattern, "GET ") {
+			s.next[rt.sample] = true
+		}
+	}
+	cop := http.NewCrossOriginProtection()
+	return s.headers(cop.Handler(capBody(mux)))
+}
+
+// parseTemplates parses the layout and the job row once, then each page over a
+// copy of them.
+func (s *server) parseTemplates() map[string]*template.Template {
+	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
+		"templates/layout.html", "templates/job_row.html"))
+	pages := make(map[string]*template.Template)
+	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules"} {
+		t := template.Must(base.Clone())
+		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
+	}
+	pages["job_row"] = base
+	return pages
+}
+
+// funcs are the helpers the templates use. Times are shown in Options.Location.
+func (s *server) funcs() template.FuncMap {
+	// format takes a time.Time or a *time.Time; a zero or nil time is "".
+	format := func(layout string) func(any) string {
+		return func(v any) string {
+			var t time.Time
+			switch v := v.(type) {
+			case time.Time:
+				t = v
+			case *time.Time:
+				if v != nil {
+					t = *v
+				}
+			}
+			if t.IsZero() {
+				return ""
+			}
+			return t.In(s.opt.Location).Format(layout)
+		}
+	}
+	return template.FuncMap{
+		"clock": format("15:04"),
+		"when":  format("Mon 2 Jan 15:04"),
+		"day": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.Format("Monday 2 January")
+		},
+		"thousands":  thousands,
+		"health":     func(l string) string { return strings.TrimPrefix(l, "Health: ") },
+		"took":       took,
+		"sources":    sources,
+		"costLine":   costLine,
+		"row":        func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
+		"ruleFields": func() []string { return ruleFields },
+		"cssVersion": func() string { return cssVersion },
+		"laterThan": func(status string) []string {
+			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })
+		},
+	}
+}
+
+// headers sets the security headers on every response, and no-store on every
+// response outside /static/.
+func (s *server) headers(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Robots-Tag", "noindex, nofollow")
+		if !s.opt.Dev {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		if !strings.HasPrefix(r.URL.Path, "/static/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// capBody limits every POST body to maxBody bytes.
+func capBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireSession lets a request with a live session through. Without one, a
+// plain GET is sent to the sign-in page with next set to where it was going; an
+// htmx request gets 401 with HX-Redirect to the sign-in page; any other request
+// gets 401 and the sign-in form.
+func (s *server) requireSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.a.Valid(s.token(r)) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch {
+		case isHX(r):
+			w.Header().Set("HX-Redirect", "/login")
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.Method == http.MethodGet || r.Method == http.MethodHead:
+			target := r.URL.Path
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, "/login?next="+url.QueryEscape(target), http.StatusSeeOther)
+		default:
+			s.renderLogin(w, r, http.StatusUnauthorized, "/")
+		}
+	})
+}
+
+// token returns the session cookie's value, or "".
+func (s *server) token(r *http.Request) string {
+	c, err := r.Cookie(s.cookie)
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
+func isHX(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
+
+// setSession sets the session cookie; an empty token clears it.
+func (s *server) setSession(w http.ResponseWriter, token string) {
+	c := &http.Cookie{ //nolint:gosec // G124: Secure is off only in dev mode, over plain http on loopback
+		Name:     s.cookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.opt.Dev,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(sessionTTL / time.Second),
+	}
+	if token == "" {
+		c.MaxAge = -1
+	}
+	http.SetCookie(w, c)
+}
+
+// setDevice marks this browser as a device that has signed in. Logout leaves
+// it: it marks the device, not the session.
+func (s *server) setDevice(w http.ResponseWriter, value string) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is off only in dev mode, over plain http on loopback
+		Name:     s.device,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.opt.Dev,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(deviceTTL / time.Second),
+	})
+}
+
+// trustedDevice reports whether the request carries a trusted-device cookie
+// made under the current password.
+func (s *server) trustedDevice(r *http.Request) bool {
+	c, err := r.Cookie(s.device)
+	return err == nil && s.a.TrustedDevice(c.Value)
+}
+
+// setFlash stores a one-line message for the next page; an empty message clears it.
+func (s *server) setFlash(w http.ResponseWriter, msg string) {
+	c := &http.Cookie{ //nolint:gosec // G124: Secure is off only in dev mode, over plain http on loopback
+		Name:     s.flash,
+		Value:    base64.RawURLEncoding.EncodeToString([]byte(msg)),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.opt.Dev,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   60,
+	}
+	if msg == "" {
+		c.MaxAge = -1
+	}
+	http.SetCookie(w, c)
+}
+
+// takeFlash returns the one-line message set by the last action, and clears it.
+func (s *server) takeFlash(w http.ResponseWriter, r *http.Request) string {
+	c, err := r.Cookie(s.flash)
+	if err != nil {
+		return ""
+	}
+	s.setFlash(w, "")
+	b, err := base64.RawURLEncoding.DecodeString(c.Value)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// safeNext returns next when it is the path of a signed-in page, with its query;
+// anything else, another host included, is "/".
+func (s *server) safeNext(next string) string {
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, `/\`) {
+		return "/"
+	}
+	u, err := url.Parse(next)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil {
+		return "/"
+	}
+	if !s.next[u.Path] || path.Clean(u.Path) != u.Path {
+		return "/"
+	}
+	if u.RawQuery != "" {
+		return u.Path + "?" + u.RawQuery
+	}
+	return u.Path
+}
+
+// render writes the named page inside the layout with status code.
+func (s *server) render(w http.ResponseWriter, r *http.Request, code int, name string, p page) {
+	p.Nav = nav
+	s.write(w, r, code, s.pages[name], "layout", p)
+}
+
+// write executes one template into a buffer, then sends it, so a template
+// failure becomes a 500 rather than half a page.
+func (s *server) write(w http.ResponseWriter, r *http.Request, code int, t *template.Template, name string, data any) {
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+		s.fail(w, r, fmt.Errorf("console: render %s: %w", name, err))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// fail logs err and answers 500 with a plain line that does not repeat it.
+func (s *server) fail(w http.ResponseWriter, r *http.Request, err error) {
+	s.log.Error("console error", "path", r.URL.Path, "err", err.Error())
+	http.Error(w, serverFailed, http.StatusInternalServerError)
+}
+
+// parseForm reads a POST form. A body over the cap answers 413 and reports false.
+func parseForm(w http.ResponseWriter, r *http.Request) (ok, tooBig bool) {
+	err := r.ParseForm()
+	if err == nil {
+		return true, false
+	}
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		http.Error(w, tooLarge, http.StatusRequestEntityTooLarge)
+		return false, true
+	}
+	return false, false
+}
+
+// renderLogin shows the sign-in form. A request that still carries a session
+// cookie no longer valid (the server restarted, or it expired) is told it was
+// signed out, and the cookie is cleared.
+func (s *server) renderLogin(w http.ResponseWriter, r *http.Request, code int, next string) {
+	p := page{Title: "Sign in", Data: loginView{Next: next}}
+	if tok := s.token(r); tok != "" && !s.a.Valid(tok) {
+		s.setSession(w, "")
+		p.Message = signedOut
+	}
+	s.render(w, r, code, "login", p)
+}
+
+// loginPage is GET /login. Signed in already, it goes on to next.
+func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
+	next := s.safeNext(r.URL.Query().Get("next"))
+	if s.a.Valid(s.token(r)) {
+		http.Redirect(w, r, next, http.StatusSeeOther) //nolint:gosec // G710: next comes from safeNext, a signed-in page's path
+		return
+	}
+	s.renderLogin(w, r, http.StatusOK, next)
+}
+
+// login is POST /login: the limiter first, then the check. A browser with a
+// trusted-device cookie skips the limiter's global bound. Every failure past
+// the limiter counts toward the global bound and gets the same answer. A
+// success replaces any session the request carried with a new one and sets a
+// fresh device cookie.
+func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	ip := ClientIP(r)
+	trusted := s.trustedDevice(r)
+	if !s.a.AllowLoginFrom(ip, trusted) {
+		s.log.Warn("console login", "outcome", "limited", "ip", ip, "trusted", trusted)
+		http.Error(w, tooMany, http.StatusTooManyRequests)
+		return
+	}
+	ok, tooBig := parseForm(w, r)
+	if tooBig {
+		s.a.RecordFailure()
+		s.log.Warn("console login", "outcome", "denied", "ip", ip, "trusted", trusted)
+		return
+	}
+	email, password := r.PostForm.Get("email"), r.PostForm.Get("password")
+	next := s.safeNext(r.PostForm.Get("next"))
+	if !ok || email == "" || password == "" || !s.a.Check(email, password) {
+		s.a.RecordFailure()
+		s.log.Warn("console login", "outcome", "denied", "ip", ip, "trusted", trusted)
+		s.render(w, r, http.StatusUnauthorized, "login", page{
+			Title: "Sign in", Message: loginFailed, Error: true, Data: loginView{Next: next},
+		})
+		return
+	}
+	device, err := s.a.NewDevice()
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.a.Revoke(s.token(r))
+	token, err := s.a.NewSession()
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.setSession(w, token)
+	s.setDevice(w, device)
+	s.log.Info("console login", "outcome", "ok", "ip", ip, "trusted", trusted)
+	http.Redirect(w, r, next, http.StatusSeeOther) //nolint:gosec // G710: next comes from safeNext, a signed-in page's path
+}
+
+// logout is POST /logout: it ends the session and clears the cookie.
+func (s *server) logout(w http.ResponseWriter, r *http.Request) {
+	s.a.Revoke(s.token(r))
+	s.setSession(w, "")
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// dashboard is GET /.
+func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
+	d, err := s.b.Dashboard(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "dashboard", page{Title: "Dashboard", Active: "/", SignedIn: true, Data: d})
+}
+
+// jobs is GET /jobs: the latest sent brief's jobs under the numbers it used.
+func (s *server) jobs(w http.ResponseWriter, r *http.Request) {
+	msg := s.takeFlash(w, r)
+	s.renderJobs(w, r, http.StatusOK, msg, false)
+}
+
+func (s *server) renderJobs(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
+	bj, err := s.b.BriefJobs(r.Context(), "")
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.render(w, r, code, "jobs", page{
+		Title: "Jobs", Active: "/jobs", SignedIn: true, Message: msg, Error: isErr, Data: bj,
+	})
+}
+
+// tracked is GET /tracked?status=S. An unknown status shows the active jobs.
+func (s *server) tracked(w http.ResponseWriter, r *http.Request) {
+	msg := s.takeFlash(w, r)
+	s.renderTracked(w, r, http.StatusOK, trackedStatus(r.URL.Query().Get("status")), msg, false, false)
+}
+
+// trackedStatus returns status when it is one of the Tracked page's filters, else "".
+func trackedStatus(status string) string {
+	for _, f := range trackedFilters {
+		if f.Path == status {
+			return status
+		}
+	}
+	return ""
+}
+
+func (s *server) renderTracked(w http.ResponseWriter, r *http.Request, code int, status, msg string, isErr, fragment bool) {
+	rows, err := s.b.Tracked(r.Context(), status)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	v := trackedView{Status: status, Filters: trackedFilters, Rows: rows, Message: msg, Error: isErr}
+	if fragment {
+		s.write(w, r, code, s.pages["tracked"], "tracked_list", v)
+		return
+	}
+	s.render(w, r, code, "tracked", page{Title: "Tracked", Active: "/tracked", SignedIn: true, Data: v})
+}
+
+// track is POST /jobs/track. A ref "N" comes from the Jobs page with the day of
+// the brief that numbered it, and answers there; a ref "job:ID" comes from the
+// Tracked page and answers there, keeping its status filter. An htmx request gets
+// the updated row (or list) in place; a plain form gets a redirect with the result
+// in a one-time cookie. A refusal the operator can fix is shown in place (htmx,
+// 200) or on the page (422).
+func (s *server) track(w http.ResponseWriter, r *http.Request) {
+	ok, tooBig := parseForm(w, r)
+	if tooBig {
+		return
+	}
+	if !ok {
+		http.Error(w, "The form could not be read.", http.StatusBadRequest)
+		return
+	}
+	f := r.PostForm
+	req := TrackRequest{
+		Ref:         strings.TrimSpace(f.Get("ref")),
+		Day:         strings.TrimSpace(f.Get("day")),
+		Action:      f.Get("action"),
+		Reason:      f.Get("reason"),
+		RuleField:   f.Get("rule_field"),
+		RulePattern: f.Get("rule_pattern"),
+	}
+	fromTracked := strings.HasPrefix(req.Ref, "job:")
+	status := trackedStatus(f.Get("status"))
+
+	out, err := s.b.Track(r.Context(), req)
+	if err != nil && !errors.Is(err, ErrUserFixable) {
+		s.fail(w, r, err)
+		return
+	}
+	if err != nil {
+		// The refusal's words follow ErrUserFixable in the error text.
+		msg := cmp.Or(strings.TrimPrefix(strings.TrimPrefix(err.Error(), ErrUserFixable.Error()), ": "), out.Message)
+		s.log.Info("console track refused", "ref", req.Ref, "action", req.Action, "why", msg)
+		switch {
+		case fromTracked:
+			code := http.StatusUnprocessableEntity
+			if isHX(r) {
+				code = http.StatusOK
+			}
+			s.renderTracked(w, r, code, status, msg, true, isHX(r))
+		case isHX(r):
+			s.unchangedRow(w, r, req, msg)
+		default:
+			s.renderJobs(w, r, http.StatusUnprocessableEntity, msg, true)
+		}
+		return
+	}
+
+	s.log.Info("console track", "job", out.Job.JobID, "from", out.From, "to", out.To)
+	switch {
+	case fromTracked && isHX(r):
+		s.renderTracked(w, r, http.StatusOK, status, outcomeLine(out), false, true)
+	case fromTracked:
+		s.setFlash(w, outcomeLine(out))
+		target := "/tracked"
+		if status != "" {
+			target += "?status=" + url.QueryEscape(status)
+		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
+	case isHX(r):
+		s.write(w, r, http.StatusOK, s.pages["job_row"], "job_row", rowView{Job: out.Job, Day: req.Day, Message: out.Message})
+	default:
+		s.setFlash(w, outcomeLine(out))
+		http.Redirect(w, r, "/jobs#job-"+strconv.Itoa(out.Job.N), http.StatusSeeOther)
+	}
+}
+
+// outcomeLine names the job and says what happened to it.
+func outcomeLine(out TrackOutcome) string {
+	if out.Job.Title == "" {
+		return out.Message
+	}
+	return out.Job.Title + ": " + out.Message
+}
+
+// unchangedRow answers a refused htmx action on the Jobs page with the row as
+// it stands in the brief of req.Day, carrying the refusal. When that brief has
+// no such row (a bad number or day, or no such brief) there is no row to show:
+// the page reloads (HX-Refresh) and shows the refusal from the one-time cookie.
+func (s *server) unchangedRow(w http.ResponseWriter, r *http.Request, req TrackRequest, msg string) {
+	bj, err := s.b.BriefJobs(r.Context(), req.Day)
+	if err != nil && !errors.Is(err, ErrUserFixable) {
+		s.fail(w, r, err)
+		return
+	}
+	if n, nerr := strconv.Atoi(req.Ref); err == nil && nerr == nil {
+		for _, j := range bj.Jobs {
+			if j.N == n {
+				s.write(w, r, http.StatusOK, s.pages["job_row"], "job_row", rowView{Job: j, Day: req.Day, Message: msg, Error: true})
+				return
+			}
+		}
+	}
+	s.setFlash(w, msg)
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusOK)
+}
+
+// runs is GET /runs: the latest 100 runs.
+func (s *server) runs(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.b.Runs(r.Context(), 100)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "runs", page{Title: "Runs", Active: "/runs", SignedIn: true, Data: rows})
+}
+
+// rules is GET /rules: every rule, disabled ones included.
+func (s *server) rules(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.b.Rules(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "rules", page{Title: "Rules", Active: "/rules", SignedIn: true, Data: rows})
+}
+
+// static serves the embedded files under /static/, cached for a day.
+func (s *server) static(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/static/")
+	if name == "" || strings.Contains(name, "/") {
+		w.Header().Set("Cache-Control", "no-store")
+		http.NotFound(w, r)
+		return
+	}
+	s.serveFile(w, r, "static/"+name, "public, max-age=86400")
+}
+
+// favicon is GET /favicon.ico, which browsers ask for on their own: the SVG icon.
+func (s *server) favicon(w http.ResponseWriter, r *http.Request) {
+	s.serveFile(w, r, "static/favicon.svg", "")
+}
+
+// robots is GET /robots.txt.
+func (s *server) robots(w http.ResponseWriter, r *http.Request) {
+	s.serveFile(w, r, "static/robots.txt", "")
+}
+
+func (s *server) serveFile(w http.ResponseWriter, r *http.Request, name, cacheControl string) {
+	b, err := fs.ReadFile(staticFS, name)
+	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		http.NotFound(w, r)
+		return
+	}
+	if cacheControl != "" {
+		w.Header().Set("Cache-Control", cacheControl)
+	}
+	if ct := mime.TypeByExtension(path.Ext(name)); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	http.ServeContent(w, r, path.Base(name), time.Time{}, bytes.NewReader(b))
+}
+
+// healthz is GET /healthz: "ok" and nothing else.
+func (s *server) healthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+// thousands writes n with a comma between each group of three digits.
+func thousands(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
+}
+
+// compact writes a token count as 950, 12.4K or 2.7M.
+func compact(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return strconv.FormatFloat(float64(n)/1e6, 'f', 1, 64) + "M"
+	case n >= 1_000:
+		return strconv.FormatFloat(float64(n)/1e3, 'f', 1, 64) + "K"
+	default:
+		return strconv.Itoa(n)
+	}
+}
+
+// costLine is the dashboard's scoring line, e.g.
+// "$0.12 · 2,387 of 10,000 calls · 2.7M input tokens".
+func costLine(d Dashboard) string {
+	calls := thousands(d.AICalls) + " calls"
+	if d.CallCap > 0 {
+		calls = thousands(d.AICalls) + " of " + thousands(d.CallCap) + " calls"
+	}
+	return fmt.Sprintf("$%.2f · %s · %s input tokens", d.AICostUSD, calls, compact(d.AIInputTokens))
+}
+
+// took is how long a run took, or "running" when it has not finished.
+func took(r RunRow) string {
+	if r.FinishedAt == nil {
+		return "running"
+	}
+	d := r.FinishedAt.Sub(r.StartedAt).Round(time.Second)
+	if d < time.Minute {
+		return strconv.Itoa(int(d/time.Second)) + "s"
+	}
+	return strconv.Itoa(int(d/time.Minute)) + "m " + strconv.Itoa(int(d%time.Minute/time.Second)) + "s"
+}
+
+// sourceCount is one source's new jobs, for a stable order in the template.
+type sourceCount struct {
+	Name string
+	N    int
+}
+
+// sources lists the funnel's new jobs per source, largest first, then by name.
+func sources(m map[string]int) []sourceCount {
+	out := make([]sourceCount, 0, len(m))
+	for k, v := range m {
+		out = append(out, sourceCount{k, v})
+	}
+	slices.SortFunc(out, func(a, b sourceCount) int {
+		return cmp.Or(cmp.Compare(b.N, a.N), strings.Compare(a.Name, b.Name))
+	})
+	return out
+}
