@@ -144,6 +144,70 @@ func TestSearchCardSelectorDriftIsParserBroke(t *testing.T) {
 	}
 }
 
+// TestSearchLinkCardVariant: LinkedIn sometimes renders a card as the link itself, an
+// <a class="base-search-card ..."> carrying the job URN and the job href, with no inner
+// full-card link and a company with no link. search_link_card.html is a scrubbed live page
+// with nine div cards and one such link card; every card on it must parse, and the link
+// card takes its URL from its own href.
+func TestSearchLinkCardVariant(t *testing.T) {
+	cards, err := ParseSearch(readFixture(t, "search_link_card.html"))
+	if err != nil {
+		t.Fatalf("ParseSearch: %v", err)
+	}
+	if len(cards) != pageSize {
+		t.Fatalf("got %d cards, want %d", len(cards), pageSize)
+	}
+	var link *Card
+	for i := range cards {
+		if cards[i].ID == "1000000009" {
+			link = &cards[i]
+		}
+	}
+	if link == nil {
+		t.Fatal("the link card (job 1000000009) was not parsed")
+	}
+	if link.URL != "https://www.linkedin.com/jobs/view/senior-platform-engineer-1000000009" {
+		t.Errorf("link card URL = %q, want its own href, canonical", link.URL)
+	}
+	if link.Title == "" || link.Company == "" || link.CompanyURL != "" || link.CompanySlug != "" {
+		t.Errorf("link card = %+v, want a title, a plain company name and no company link", *link)
+	}
+
+	// A minimal link card on its own parses too, and a link card that lost its title is
+	// still a broken parser.
+	linkCard := func(title string) string {
+		return `<li><a class="base-card base-search-card base-search-card--link job-search-card"
+	data-entity-urn="urn:li:jobPosting:1000000201" href="https://ro.linkedin.com/jobs/view/engineer-1000000201?position=9&amp;refId=x">
+	<h3 class="base-search-card__title">` + title + `</h3>
+	<h4 class="base-search-card__subtitle">Northwind Labs</h4></a></li>`
+	}
+	got, err := ParseSearch([]byte(linkCard("Engineer")))
+	if err != nil || len(got) != 1 || got[0].URL != "https://www.linkedin.com/jobs/view/engineer-1000000201" {
+		t.Fatalf("ParseSearch(link card) = %+v, %v; want one card with its canonical href", got, err)
+	}
+	if _, err := ParseSearch([]byte(linkCard(""))); !errors.Is(err, ErrParserBroke) {
+		t.Fatalf("link card without a title: err = %v, want ErrParserBroke", err)
+	}
+}
+
+// TestSearchEndOfResultsIsEmpty: past the last result LinkedIn answers 200 with a near
+// empty document (a doctype and a comment). That is the end of the results: no cards and
+// no error, never a broken parser.
+func TestSearchEndOfResultsIsEmpty(t *testing.T) {
+	for name, page := range map[string]string{
+		"doctype and comment": "<!DOCTYPE html>\n\n<!---->  ",
+		"empty body":          "",
+		"whitespace":          "  \n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cards, err := ParseSearch([]byte(page))
+			if err != nil || len(cards) != 0 {
+				t.Fatalf("ParseSearch = %d cards, %v; want 0, nil", len(cards), err)
+			}
+		})
+	}
+}
+
 func TestSearchCardMissingCompanyIsParserBroke(t *testing.T) {
 	page := `<li><div class="base-search-card" data-entity-urn="urn:li:jobPosting:1000000099">
 	<h3 class="base-search-card__title">Engineer</h3>

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -20,6 +21,12 @@ import (
 
 // probeEnv names the private directory of raw probe pages. The sweep skips without it.
 const probeEnv = "LEADHOUND_PROBE_DIR"
+
+// probeExtraEnv names more private probe directories, as a path list: raw job pages
+// probed after the fixture set, such as a page a live run could not parse, each named as
+// jobPageRe says and scrubbed on its own into a fixture. They have no sources.json. Both
+// sweeps read their pages as well as probeEnv's.
+const probeExtraEnv = "LEADHOUND_PROBE_EXTRA"
 
 // TestInvariantSweep scrubs every raw probe page and checks that no output holds the
 // recruiter card class, a profile link, a denylist entry, or any original job ID, company
@@ -38,42 +45,62 @@ func TestInvariantSweep(t *testing.T) {
 	})
 	var detailCount, searchCount int
 	for _, p := range pages {
-		name := filepath.Base(p)
-		raw, err := os.ReadFile(p) // #nosec G304 G703 -- test reads the operator's probe directory
-		if err != nil {
-			t.Fatal(err)
-		}
-		kind := KindDetail
-		if name == "search.html" {
-			kind = KindSearch
+		if pageKind(p) == KindSearch {
 			searchCount++
 		} else {
 			detailCount++
 		}
-		out, err := s.Scrub(raw, Options{Kind: kind})
-		if err != nil {
-			t.Fatalf("%s: scrub failed: %v", name, err)
-		}
-		orig := meaningful(CollectOriginals(raw))
-		if kind == KindDetail && (len(orig.JobIDs) == 0 || len(orig.Slugs) == 0 || len(orig.Companies) == 0) {
-			t.Errorf("%s: collector found %d job IDs, %d slugs, %d names; the sweep would prove nothing", name, len(orig.JobIDs), len(orig.Slugs), len(orig.Companies))
-		}
-		for _, rule := range Leaks(out, orig) {
-			t.Errorf("%s: rule %s", name, rule)
-		}
-		if hit := denyHit(string(out), deny); hit {
-			t.Errorf("%s: rule denylist", name)
-		}
-		closed, err := NewScrubber(detectPhraseLang).Scrub(raw, Options{Kind: kind, Closed: kind == KindDetail})
-		if err != nil {
-			t.Fatalf("%s: closed variant failed: %v", name, err)
-		}
-		for _, rule := range Leaks(closed, orig) {
-			t.Errorf("%s (closed variant): rule %s", name, rule)
-		}
+		sweepPage(t, p, p, s, deny)
 	}
 	if searchCount != 1 || detailCount != 10 {
 		t.Errorf("swept %d search and %d detail pages, want 1 and 10", searchCount, detailCount)
+	}
+	// Each extra page is scrubbed on its own, as `scrubfixture --kind` does.
+	for i, p := range extraPages(t) {
+		sweepPage(t, p, "extra page "+strconv.Itoa(i+1), NewScrubber(detectPhraseLang), deny)
+	}
+}
+
+// pageKind is a probe page's kind by its name: search.html is a search page, every other
+// job page a detail page.
+func pageKind(path string) Kind {
+	if filepath.Base(path) == "search.html" {
+		return KindSearch
+	}
+	return KindDetail
+}
+
+// sweepPage scrubs one raw probe page with s and checks that neither the output nor its
+// closed variant breaks a leak rule or holds a denylist entry. label names the page in
+// failures; no value from the page is printed.
+func sweepPage(t *testing.T, path, label string, s *Scrubber, deny []string) {
+	t.Helper()
+	name := filepath.Base(label)
+	raw, err := os.ReadFile(path) // #nosec G304 G703 -- test reads the operator's probe directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind := pageKind(path)
+	out, err := s.Scrub(raw, Options{Kind: kind})
+	if err != nil {
+		t.Fatalf("%s: scrub failed: %v", name, err)
+	}
+	orig := meaningful(CollectOriginals(raw))
+	if len(orig.JobIDs) == 0 || (kind == KindDetail && (len(orig.Slugs) == 0 || len(orig.Companies) == 0)) {
+		t.Errorf("%s: collector found %d job IDs, %d slugs, %d names; the sweep would prove nothing", name, len(orig.JobIDs), len(orig.Slugs), len(orig.Companies))
+	}
+	for _, rule := range Leaks(out, orig) {
+		t.Errorf("%s: rule %s", name, rule)
+	}
+	if hit := denyHit(string(out), deny); hit {
+		t.Errorf("%s: rule denylist", name)
+	}
+	closed, err := NewScrubber(detectPhraseLang).Scrub(raw, Options{Kind: kind, Closed: kind == KindDetail})
+	if err != nil {
+		t.Fatalf("%s: closed variant failed: %v", name, err)
+	}
+	for _, rule := range Leaks(closed, orig) {
+		t.Errorf("%s (closed variant): rule %s", name, rule)
 	}
 }
 
@@ -93,7 +120,7 @@ func TestRepoSweep(t *testing.T) {
 		t.Skip(probeEnv + " is not set; the sweep needs the private probe pages")
 	}
 	deny := loadDenylist(t)
-	pages := jobPages(t, dir)
+	pages := append(jobPages(t, dir), extraPages(t)...)
 	nums := map[string]bool{}
 	var orig Originals
 	for _, p := range pages {
@@ -276,6 +303,37 @@ func jobPages(t *testing.T, dir string) []string {
 	pages := make([]string, len(names))
 	for i, n := range names {
 		pages[i] = filepath.Join(dir, n)
+	}
+	return pages
+}
+
+// extraPages returns the job pages, by jobPageRe, of every directory in probeExtraEnv, or
+// none when it is not set. A listed directory that holds no job page fails the test, so a
+// wrong path never passes as a sweep.
+func extraPages(t *testing.T) []string {
+	t.Helper()
+	var pages []string
+	for _, dir := range filepath.SplitList(os.Getenv(probeExtraEnv)) {
+		if dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("%s: a listed directory is unreadable", probeExtraEnv)
+		}
+		n := 0
+		for _, e := range entries {
+			if e.Type().IsRegular() && jobPageRe.MatchString(e.Name()) {
+				pages = append(pages, filepath.Join(dir, e.Name()))
+				n++
+			}
+		}
+		if n == 0 {
+			t.Fatalf("%s: a listed directory holds no job page", probeExtraEnv)
+		}
+	}
+	if len(pages) == 0 {
+		t.Log(probeExtraEnv + " is not set; only " + probeEnv + " is swept")
 	}
 	return pages
 }

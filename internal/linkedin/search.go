@@ -24,8 +24,9 @@ type Card struct {
 
 var jobURNRE = regexp.MustCompile(`urn:li:jobPosting:(\d+)`)
 
-// ParseSearch parses a guest search page. A page with no job URNs gives zero cards and no
-// error. A page with cards where any card lacks an ID, title or company gives
+// ParseSearch parses a guest search page. A card is either a div holding a full-card link
+// or, in a variant LinkedIn also serves, the link itself. A page with no job URNs (such as
+// the near-empty page past the last result) gives zero cards and no error. A page with cards where any card lacks an ID, title or company gives
 // ErrParserBroke and no cards, so nothing from that page is written. So does a page whose
 // job URNs, counted apart from the card selector, are not exactly the cards parsed: the
 // card markup drifted, and a drifted page must never read as an empty one.
@@ -120,7 +121,11 @@ func parseCard(s *goquery.Selection) Card {
 		}
 	})
 
-	if href, ok := s.Find(sel.cardLink).First().Attr("href"); ok && href != "" {
+	href, ok := s.Find(sel.cardLink).First().Attr("href")
+	if (!ok || href == "") && s.Is(sel.cardSelfLink) {
+		href, ok = s.Attr("href")
+	}
+	if ok && href != "" {
 		c.URL = CanonicalJobURL(href)
 	} else if c.ID != "" {
 		c.URL = "https://www.linkedin.com/jobs/view/" + c.ID

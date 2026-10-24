@@ -23,6 +23,7 @@ const (
 type selectors struct {
 	// Search cards.
 	card         string // the card; its data-entity-urn carries the job ID
+	cardSelfLink string // a card that is itself the link to the job view (no cardLink inside)
 	jobURN       string // any element carrying a job URN, counted apart from card
 	cardLink     string // the full-card link to the job view
 	cardTitle    string
@@ -51,7 +52,8 @@ type selectors struct {
 }
 
 var sel = selectors{
-	card:         "li div.base-search-card",
+	card:         "li div.base-search-card, li a.base-search-card",
+	cardSelfLink: "a.base-search-card",
 	jobURN:       `[data-entity-urn^="urn:li:jobPosting:"]`,
 	cardLink:     "a.base-card__full-link",
 	cardTitle:    "h3.base-search-card__title",

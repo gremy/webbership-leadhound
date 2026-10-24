@@ -52,7 +52,7 @@ type Result struct {
 	ColdStart     bool // no warm collect had run before (store.HasWarmRun): 7-day window, MaxPages pages
 	Searches      int  // search pages parsed
 	Cards         int  // cards saved, counted per page
-	NewIDs        int  // distinct jobs with no observation yet
+	NewIDs        int  // distinct jobs with no observation yet, queued for a detail fetch
 	Observations  int  // observations written
 	DetailMissing int  // new jobs whose detail page was 404
 	Requests      int
@@ -179,7 +179,10 @@ type collectRun struct {
 }
 
 // collect runs the search phase, then the detail phase. It sets res.StopReason for a
-// recorded stop and returns an error only when the run itself failed.
+// recorded stop and returns an error only when the run itself failed. Each search page's
+// cards are saved as the page is read, so a stop later in the run (a parser break
+// included) keeps the jobs already read; it only skips the requests still to come, the
+// details among them, which the next run fetches when it sees those jobs again.
 func (r *collectRun) collect(ctx context.Context, m Matrix) error {
 	stopAll, err := r.searchAll(ctx, m)
 	if err != nil || stopAll {
@@ -320,12 +323,12 @@ func (r *collectRun) saveCards(ctx context.Context, cards []Card) (unseen int, e
 			r.order = append(r.order, id)
 		}
 	}
+	r.res.NewIDs = len(r.order)
 	return unseen, nil
 }
 
 // details fetches the detail page of every queued job and writes its observation.
 func (r *collectRun) details(ctx context.Context) error {
-	r.res.NewIDs = len(r.order)
 	for _, id := range r.order {
 		u := DetailURL(id)
 		resp, err := r.client.Get(ctx, fetch.KindDetail, u)
@@ -367,12 +370,16 @@ func (r *collectRun) details(ctx context.Context) error {
 	return nil
 }
 
-// note is the run row's note: what the run did, plus where the parser broke.
+// note is the run row's note: what the run did, plus where the parser broke and how many
+// new jobs were saved without their details.
 func (r *collectRun) note() string {
 	s := fmt.Sprintf("%d searches, %d cards, %d new, %d observed, %d detail missing",
 		r.res.Searches, r.res.Cards, r.res.NewIDs, r.res.Observations, r.res.DetailMissing)
 	if r.broke != "" {
 		s += "; parser broke on " + r.broke
+		if waiting := r.res.NewIDs - r.res.Observations - r.res.DetailMissing; waiting > 0 {
+			s += fmt.Sprintf("; %d new jobs saved without their details", waiting)
+		}
 	}
 	return s
 }

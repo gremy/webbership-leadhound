@@ -487,6 +487,115 @@ func TestCollectorParserBroke(t *testing.T) {
 	}
 }
 
+// pageStub answers search pages from pages (a URL substring → a testdata file name, or
+// the body itself when it names no file), every detail page with a 404, and anything else
+// with a test error.
+func pageStub(t *testing.T, pages map[string]string) *stubTransport {
+	t.Helper()
+	return &stubTransport{fn: func(r *http.Request) (int, string) {
+		u := r.URL.String()
+		if strings.Contains(u, "/jobPosting/") {
+			return http.StatusNotFound, ""
+		}
+		for part, page := range pages {
+			if !strings.Contains(u, part) {
+				continue
+			}
+			if !strings.HasSuffix(page, ".html") {
+				return http.StatusOK, page
+			}
+			b, err := os.ReadFile(filepath.Join(testdata, page)) // #nosec G304 -- the test's own testdata
+			if err != nil {
+				t.Errorf("read %s: %v", page, err)
+			}
+			return http.StatusOK, string(b)
+		}
+		t.Errorf("unexpected request %s", u)
+		return http.StatusNotFound, ""
+	}}
+}
+
+// endOfResults is what LinkedIn answers, with a 200, for a search page past the last result.
+const endOfResults = "<!DOCTYPE html>\n\n<!---->  "
+
+// The near-empty page past the last result ends that query's pages: no jobs, no stop, and
+// the run goes on to the next query and the details.
+func TestCollectorEndOfResultsPage(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	stub := pageStub(t, map[string]string{"&start=0": "search_link_card.html", "&start=10": endOfResults})
+	var logs bytes.Buffer
+	res, err := collector(t, s, stub, time.Now, &logs).Run(ctx, demo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StopReason != "" || res.Searches != 4 || res.NewIDs != 10 {
+		t.Fatalf("result = %+v, want no stop, 4 searches, 10 new", res)
+	}
+	if got := count(t, `SELECT count(*) FROM job`); got != 10 {
+		t.Errorf("jobs = %d, want 10", got)
+	}
+	if got := len(requestedURLs(t, "detail")); got != 10 {
+		t.Errorf("detail requests = %d, want 10", got)
+	}
+	if run := latestRun(t, "collect"); run.StopReason != "" || strings.Contains(run.Note, "parser broke") {
+		t.Errorf("run = %+v, want a clean finish", run)
+	}
+}
+
+// A page that breaks the parser stops the run's requests, but the cards read from the pages
+// before it stay saved and are counted as new; their details come on the next run, which is
+// still a cold start because a parser_broke run never ends one.
+func TestCollectorParserBrokeKeepsEarlierPages(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	stub := pageStub(t, map[string]string{
+		"keywords=go+engineer&location=European+Union&f_WT=2&f_TPR=r604800&start=0":       "search.html",
+		"keywords=go+engineer&location=European+Union&f_WT=2&f_TPR=r604800&start=10":      endOfResults,
+		"keywords=platform+engineer&location=European+Union&f_WT=2&f_TPR=r604800&start=0": "search_broken.html",
+	})
+	var logs bytes.Buffer
+	res, err := collector(t, s, stub, time.Now, &logs).Run(ctx, demo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StopReason != "parser_broke" || res.Searches != 2 || res.Cards != 10 || res.NewIDs != 10 || res.Observations != 0 {
+		t.Fatalf("result = %+v, want parser_broke after 2 searches with 10 cards, 10 new, none observed", res)
+	}
+	if stub.Hits() != 3 {
+		t.Errorf("requests = %d, want 3 (nothing after the broken page)", stub.Hits())
+	}
+	if got := len(requestedURLs(t, "detail")); got != 0 {
+		t.Errorf("detail requests = %d, want 0 after a parser break", got)
+	}
+	if got := count(t, `SELECT count(*) FROM job WHERE source = 'linkedin'`); got != 10 {
+		t.Errorf("jobs = %d, want the 10 from the good page", got)
+	}
+	if got := count(t, `SELECT count(*) FROM company`); got < 1 {
+		t.Errorf("companies = %d, want some", got)
+	}
+	run := latestRun(t, "collect")
+	if run.StopReason != "parser_broke" ||
+		!strings.Contains(run.Note, "2 searches, 10 cards, 10 new, 0 observed") ||
+		!strings.Contains(run.Note, "parser broke on search page") ||
+		!strings.Contains(run.Note, "10 new jobs saved without their details") {
+		t.Errorf("run = %+v, want parser_broke with the saved jobs counted", run)
+	}
+
+	// The next run (the parser fixed) is still a cold start and fetches the details.
+	ft := fixtures(t, testdata)
+	res, err = collector(t, s, ft, time.Now, &logs).Run(ctx, demo)
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if !res.ColdStart || res.StopReason != "" || res.NewIDs != 10 || res.Observations != 7 {
+		t.Fatalf("second result = %+v, want a clean cold start observing the 7 details on hand", res)
+	}
+	if got := count(t, `SELECT count(*) FROM job`); got != 10 {
+		t.Errorf("jobs = %d, want the same 10", got)
+	}
+}
+
 func TestCollectorRawKept(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
