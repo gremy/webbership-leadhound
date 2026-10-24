@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,22 +45,12 @@ func runTrack(ctx context.Context, args []string) error {
 		return usageError("%s", trackUsage)
 	}
 	ref, action := pos[0], pos[1]
-	var ruleField, rulePattern string
-	if *ruleFlag != "" {
-		if action != "skip" {
-			return usageError("--rule goes with skip only")
-		}
-		var ok bool
-		ruleField, rulePattern, ok = strings.Cut(*ruleFlag, "=")
-		switch {
-		case !ok || !slices.Contains(store.RuleFields, ruleField):
-			return usageError("--rule must be field=PATTERN with field one of %s", strings.Join(store.RuleFields, ", "))
-		case strings.TrimSpace(rulePattern) == "":
-			return usageError("--rule needs a pattern after %s=", ruleField)
-		}
-		if _, err := regexp.Compile("(?i)" + rulePattern); err != nil {
-			return usageError("--rule pattern does not compile: %v", err)
-		}
+	if err := ruleGoesWithSkip(action, *ruleFlag); err != nil {
+		return err
+	}
+	ruleField, rulePattern, err := parseTrackRule(*ruleFlag)
+	if err != nil {
+		return err
 	}
 	if *dayFlag != "" {
 		if _, err := time.Parse(time.DateOnly, *dayFlag); err != nil {
@@ -84,65 +73,29 @@ func runTrack(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	sum, err := q.JobSummaryByID(ctx, jobID)
-	if errors.Is(err, store.ErrNotFound) {
+	res, err := trackJob(ctx, s, trackRequest{JobID: jobID, Action: action, Reason: *reason, RuleField: ruleField, RulePattern: rulePattern})
+	if res.Job.JobID != 0 {
+		_, _ = fmt.Fprintf(stdout, "%s → %s · %s (job:%d)\n", label, res.Job.Title, res.Job.Company, jobID)
+	}
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		return usageError("job:%d does not exist", jobID)
-	}
-	if err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(stdout, "%s → %s · %s (job:%d)\n", label, sum.Title, sum.Company, jobID)
-
-	status := action
-	switch action {
-	case "maybe":
-		status = sum.Status // the status stays; only the reason is written
-	case "skip":
-		status = "skipped"
-		if slices.Contains(pastApplying, sum.Status) {
-			return usageError("already %s; use withdrawn", sum.Status)
-		}
-	}
-	if action != "maybe" && status == sum.Status {
-		_, _ = fmt.Fprintf(stdout, "already %s; nothing changed\n", status)
-		return nil
-	}
-	why := strings.TrimSpace(*reason)
-	if action == "maybe" {
-		why = strings.TrimSpace("maybe: " + why)
-		why = strings.TrimSuffix(why, ":")
-	}
-
-	var ruleID int64
-	err = s.InTx(ctx, func(tq store.Queries) error {
-		var rid *int64
-		if ruleField != "" {
-			ruleReason := why
-			if ruleReason == "" {
-				ruleReason = fmt.Sprintf("skipped job %d", jobID)
-			}
-			id, err := tq.AddRule(ctx, "skip", ruleField, rulePattern, ruleReason, &jobID)
-			if err != nil {
-				return err
-			}
-			ruleID, rid = id, &id
-		}
-		_, err := tq.InsertStatusEvent(ctx, jobID, status, why, "gremy", rid)
-		return err
-	})
-	if errors.Is(err, store.ErrInvalidRule) {
+	case errors.Is(err, errPastApplying):
+		return usageError("already %s; use withdrawn", res.From)
+	case errors.Is(err, store.ErrInvalidRule):
 		return usageError("%v", err)
-	}
-	if err != nil {
+	case err != nil:
 		return err
 	}
 	switch {
-	case action == "maybe":
-		_, _ = fmt.Fprintf(stdout, "noted; status stays %s\n", status)
-	case ruleID > 0:
-		_, _ = fmt.Fprintf(stdout, "%s → %s; rule %d added\n", sum.Status, status, ruleID)
+	case res.NoOp:
+		_, _ = fmt.Fprintf(stdout, "already %s; nothing changed\n", res.To)
+	case res.Noted:
+		_, _ = fmt.Fprintf(stdout, "noted; status stays %s\n", res.To)
+	case res.RuleID > 0:
+		_, _ = fmt.Fprintf(stdout, "%s → %s; rule %d added\n", res.From, res.To, res.RuleID)
 	default:
-		_, _ = fmt.Fprintf(stdout, "%s → %s\n", sum.Status, status)
+		_, _ = fmt.Fprintf(stdout, "%s → %s\n", res.From, res.To)
 	}
 	return nil
 }

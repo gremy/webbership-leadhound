@@ -6,8 +6,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -149,6 +152,10 @@ type Config struct {
 	ATSInterval          time.Duration // LEADHOUND_ATS_INTERVAL: the pause between two requests to one ATS's API
 	ATSDetailBudget      int           // LEADHOUND_ATS_DETAIL_BUDGET: posting-detail requests per ATS run (SmartRecruiters)
 	Live                 Live          // LEADHOUND_LIVE
+	ConsoleAddr          string        // LEADHOUND_CONSOLE_ADDR: host:port the console listens on (loopback only)
+	ConsoleEmail         Secret        // LEADHOUND_CONSOLE_EMAIL: the operator's sign-in address
+	ConsolePasswordHash  Secret        // LEADHOUND_CONSOLE_PASSWORD_HASH: bcrypt hash of the operator's password
+	ConsoleURL           string        // LEADHOUND_CONSOLE_URL: the console's public https URL, for the brief's footer
 }
 
 // Defaults for the variables that have one.
@@ -161,6 +168,7 @@ const (
 	DefaultLinkedInDetailBudget = 40
 	DefaultATSInterval          = time.Second
 	DefaultATSDetailBudget      = 500
+	DefaultConsoleAddr          = "127.0.0.1:8090"
 	// MinATSInterval is the shortest pause LEADHOUND_ATS_INTERVAL may set: below it, one
 	// ATS's API would see a burst from a large board list.
 	MinATSInterval = 200 * time.Millisecond
@@ -169,6 +177,10 @@ const (
 // Load reads the environment through getenv (os.Getenv in main, a map in tests). It returns
 // the config with defaults filled in and one problem per variable whose value cannot be used;
 // a bad value keeps its default. Problems never repeat a value that may be secret.
+//
+// The four console variables are read as given and never reported here, so a console
+// setting cannot stop a timer command: serve checks them with ValidConsoleAddr and
+// Require, and brief uses the URL only when ValidConsoleURL accepts it.
 func Load(getenv func(string) string) (Config, []string) {
 	c := Config{
 		DatabaseURL:        Secret(getenv("LEADHOUND_DATABASE_URL")),
@@ -180,6 +192,11 @@ func Load(getenv func(string) string) (Config, []string) {
 		MailFrom:           Secret(getenv("LEADHOUND_MAIL_FROM")),
 		MailTo:             Secret(getenv("LEADHOUND_MAIL_TO")),
 		TZ:                 or(getenv("LEADHOUND_TZ"), DefaultTZ),
+
+		ConsoleAddr:         or(getenv("LEADHOUND_CONSOLE_ADDR"), DefaultConsoleAddr),
+		ConsoleEmail:        Secret(getenv("LEADHOUND_CONSOLE_EMAIL")),
+		ConsolePasswordHash: Secret(getenv("LEADHOUND_CONSOLE_PASSWORD_HASH")),
+		ConsoleURL:          getenv("LEADHOUND_CONSOLE_URL"),
 	}
 	var problems []string
 	report := func(p string) { problems = append(problems, p) }
@@ -205,6 +222,38 @@ func Load(getenv func(string) string) (Config, []string) {
 	}
 	c.Live = live
 	return c, problems
+}
+
+// ValidConsoleAddr checks LEADHOUND_CONSOLE_ADDR: host:port, where the host is the literal
+// "localhost" or a loopback IP and the port is a number from 1 to 65535. It resolves no
+// name, so "localhost" is trusted to be the loopback name it is on every system.
+func ValidConsoleAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("LEADHOUND_CONSOLE_ADDR must be host:port, such as %s, not %q", DefaultConsoleAddr, addr)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("LEADHOUND_CONSOLE_ADDR must listen on localhost or a loopback address, not %q", addr)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("LEADHOUND_CONSOLE_ADDR must end in a port from 1 to 65535, not %q", addr)
+	}
+	return nil
+}
+
+// errConsoleURL is the one refusal ValidConsoleURL gives. It never repeats the value,
+// which names a private host.
+var errConsoleURL = errors.New("LEADHOUND_CONSOLE_URL must be an https URL with a host and nothing after it, such as https://console.example")
+
+// ValidConsoleURL checks LEADHOUND_CONSOLE_URL: an absolute https URL with a host (and an
+// optional port), no user, no path beyond "/", no query and no fragment.
+func ValidConsoleURL(u string) error {
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != "https" || p.Opaque != "" || p.User != nil || p.Hostname() == "" ||
+		(p.Path != "" && p.Path != "/") || p.RawQuery != "" || p.ForceQuery || strings.Contains(u, "#") {
+		return errConsoleURL
+	}
+	return nil
 }
 
 // duration reads a non-negative duration variable, keeping def when it is unset or unusable.
@@ -269,6 +318,10 @@ func (c Config) value(name string) (string, bool) {
 		return string(c.MailFrom), true
 	case "LEADHOUND_MAIL_TO":
 		return string(c.MailTo), true
+	case "LEADHOUND_CONSOLE_EMAIL":
+		return string(c.ConsoleEmail), true
+	case "LEADHOUND_CONSOLE_PASSWORD_HASH":
+		return string(c.ConsolePasswordHash), true
 	case "LEADHOUND_LIVE":
 		if c.Live == LiveOff {
 			return "", true

@@ -77,6 +77,9 @@ type Input struct {
 	// Unreachable and Unscored count every job, whatever day it was seen, that would be
 	// listed but whose listing could not be reached or whose criteria are not all decided.
 	Unreachable, Unscored int
+	// ConsoleURL is the console's base URL; the footer links its jobs page. Empty names
+	// the track commands instead.
+	ConsoleURL string
 }
 
 // Job is one listed job.
@@ -204,13 +207,13 @@ func Compose(in Input) (subject, text, htmlBody string) {
 	if s := skippedLine(in.Skipped); s != "" {
 		tail = append(tail, s)
 	}
-	tail = append(tail, healthLines(in)...)
-	if n > 1 {
-		tail = append(tail, `Reply to Glitch with "applied N", "skip N <reason>" or "maybe N", N being the job's number.`)
-	}
+	tail = append(tail, HealthLines(in)...)
 	for _, l := range tail {
 		fmt.Fprintf(&t, "%s\n", l)
 		fmt.Fprintf(&h, "<p>%s</p>\n", esc(l))
+	}
+	if n > 1 {
+		writeFooter(&t, &h, in.ConsoleURL)
 	}
 	h.WriteString("</body></html>\n")
 	return subject, t.String(), h.String()
@@ -412,6 +415,27 @@ func skippedLine(m map[string]int) string {
 	}
 	return fmt.Sprintf("Skipped today: %d (%s)", total, strings.Join(parts, ", "))
 }
+
+// writeFooter tells the reader how to mark a listed job: on the console's jobs page when
+// its URL is set, else with the track commands.
+func writeFooter(t, h *strings.Builder, consoleURL string) {
+	if consoleURL == "" {
+		line := "Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number."
+		fmt.Fprintf(t, "%s\n", line)
+		fmt.Fprintf(h, "<p>%s</p>\n", esc(line))
+		return
+	}
+	jobs := strings.TrimSuffix(consoleURL, "/") + "/jobs"
+	fmt.Fprintf(t, "Mark jobs in the console: %s\n", jobs)
+	if p, err := url.Parse(jobs); err != nil || (p.Scheme != "http" && p.Scheme != "https") {
+		fmt.Fprintf(h, "<p>Mark jobs in the console: %s</p>\n", esc(jobs))
+		return
+	}
+	fmt.Fprintf(h, "<p>Mark jobs in the console: <a href=\"%s\" rel=\"noreferrer\">%s</a></p>\n", esc(jobs), esc(jobs))
+}
+
+// HealthLines is the brief's "Health:" lines, as Compose writes them.
+func HealthLines(in Input) []string { return healthLines(in) }
 
 // healthLines is one "Health:" line per source, with the jobs left out as not seen on
 // their board, then scoring and recheck.

@@ -347,3 +347,105 @@ func TestATSSourceLines(t *testing.T) {
 		}
 	}
 }
+
+// cliFooter is the footer when no console URL is set.
+const cliFooter = "Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number."
+
+// TestFooter: with a console URL the footer links its jobs page, without one it names
+// the track commands, and a day with nothing listed has no footer.
+func TestFooter(t *testing.T) {
+	in := cases()["normal_day"]
+	_, text, html := Compose(in)
+	if !strings.HasSuffix(text, "\n"+cliFooter+"\n") {
+		t.Errorf("text does not end with the track line:\n%s", text)
+	}
+	if !strings.Contains(html, "\n<p>"+cliFooter+"</p>\n</body>") {
+		t.Errorf("html does not end with the track line:\n%s", html)
+	}
+
+	for _, u := range []string{"https://console.example", "https://console.example/"} {
+		in.ConsoleURL = u
+		_, text, html = Compose(in)
+		if !strings.HasSuffix(text, "\nMark jobs in the console: https://console.example/jobs\n") {
+			t.Errorf("%s: text does not end with the console line:\n%s", u, text)
+		}
+		want := `<p>Mark jobs in the console: <a href="https://console.example/jobs" rel="noreferrer">https://console.example/jobs</a></p>`
+		if !strings.Contains(html, "\n"+want+"\n</body>") {
+			t.Errorf("%s: html lacks %s:\n%s", u, want, html)
+		}
+		if strings.Contains(text, "leadhound track") || strings.Contains(html, "leadhound track") {
+			t.Errorf("%s: the console footer also names the track commands", u)
+		}
+	}
+
+	// The URL is escaped in the attribute and the text.
+	in.ConsoleURL = `https://console.example/a"b<c>`
+	_, _, html = Compose(in)
+	if strings.Contains(html, `a"b`) || strings.Contains(html, "<c>") {
+		t.Errorf("html carries the URL unescaped:\n%s", html)
+	}
+	if !strings.Contains(html, `href="https://console.example/a&#34;b&lt;c&gt;/jobs"`) {
+		t.Errorf("html lacks the escaped href:\n%s", html)
+	}
+
+	// A URL that is not http or https is written as text, never linked.
+	in.ConsoleURL = "javascript:alert(1)"
+	_, _, html = Compose(in)
+	if strings.Contains(html, `href="javascript:`) {
+		t.Errorf("html links a non-http console URL:\n%s", html)
+	}
+
+	for _, name := range []string{"empty_day", "parser_broke", "spend_cap"} {
+		for _, u := range []string{"", "https://console.example"} {
+			in := cases()[name]
+			in.ConsoleURL = u
+			_, text, html := Compose(in)
+			if strings.Contains(text, "Mark ") || strings.Contains(html, "Mark ") {
+				t.Errorf("%s (console %q) has a footer with nothing listed", name, u)
+			}
+		}
+	}
+}
+
+// TestHealthLinesParity: HealthLines is exactly the "Health:" lines Compose writes, for
+// every golden input.
+func TestHealthLinesParity(t *testing.T) {
+	for name, in := range cases() {
+		_, text, _ := Compose(in)
+		var got []string
+		for l := range strings.SplitSeq(text, "\n") {
+			if strings.HasPrefix(l, "Health: ") {
+				got = append(got, l)
+			}
+		}
+		if want := HealthLines(in); !slices.Equal(got, want) {
+			t.Errorf("%s: Compose wrote %q, HealthLines is %q", name, got, want)
+		}
+	}
+}
+
+// TestNoAssistantName: no golden and no source file in this package names the assistant
+// the brief used to point at. The word is built here so this file does not carry it.
+func TestNoAssistantName(t *testing.T) {
+	word := "Gli" + "tch"
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goldens, err := filepath.Glob(filepath.Join("testdata", "*.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 || len(goldens) == 0 {
+		t.Fatalf("sweep found %d source files and %d goldens", len(files), len(goldens))
+	}
+	for _, f := range append(files, goldens...) {
+		b, err := os.ReadFile(f) // #nosec G304 -- a path globbed inside this package
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ToLower(string(b)), strings.ToLower(word)) {
+			t.Errorf("%s names %s", f, word)
+		}
+	}
+}
