@@ -12,12 +12,18 @@ import (
 // checkURL is the one place a URL is judged before it is requested, for the first request
 // and for every redirect hop.
 //
-// It holds the dev-safety live gate only. CP6b's SSRF guard, WithPublicOnly, is a separate
-// option with its own check (refusing private hosts, the opposite of this gate, which lets
-// only loopback through when live fetching is off); the two are never merged into one flag.
+// It holds the dev-safety live gate and, when WithPublicOnly is on, the SSRF guard's URL
+// check (checkPublic: refusing private hosts, the opposite of the live gate, which lets only
+// loopback through when live fetching is off). They are two options, never one flag, and
+// both must allow. The guard applies to fixture URLs too; the live gate does not.
 func (c *Client) checkURL(u *url.URL) error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return fmt.Errorf("%w: %q", ErrBadURL, u.Redacted())
+	}
+	if c.publicOnly {
+		if err := checkPublic(u); err != nil {
+			return err
+		}
 	}
 	if !c.fixtures {
 		host := normalHost(u.Hostname())

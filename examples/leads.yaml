@@ -1,0 +1,30 @@
+# A fictional leads policy for the Drupal-site outreach (leadhound leads ...).
+# Copy examples/ into your LEADHOUND_DATA_DIR and make it your own; every value here is a demo.
+site_lists:
+  tlds: [uk, ie, nl, be, ro, de, at, ch] # registrable-domain suffixes kept on import
+probe:
+  reprobe_after_days: 30
+public_body_suffixes: [ac.uk, gov.uk, nhs.uk, police.uk, sch.uk, gov.ro, gov.ie, overheid.nl] # demo values
+role_local_parts: [office, contact, info, hello, enquiries, enquiry, web, webmaster, digital, admin, secretariat, kontakt, contacto, contactt] # demo values
+countries: # country -> policy; a country missing here means channel none
+  GB: {channel: email, lang: en, tz: Europe/London, footer: footer-en}
+  DE: {channel: form, lang: en, tz: Europe/Berlin}
+agency_finding_pattern: '(?i)drupal\s*(7|8|9|10|11)|upgrade|migrat'
+sender:
+  name: "Demo Sender"
+  identity_line: "Demo Ltd, 1 Example Street, Example City"
+  dkim_selector: spacemail
+  operator_addresses: [operator@sender.example]
+  site_url: https://sender.example/
+facts: {d10_eol: 2026-12-09, d7_eol: 2025-01-05} # dates the templates may state
+templates_dir: leads-templates # relative to the data dir
+kinds_priority: [agency_partner, unsupported, d10]
+copy: {first_words: [90, 120], followup_words: [70, 80], banned_words: [synergy, guarantee]}
+schedule:
+  business_hours: {start: "09:30", end: "16:30", days: [Mon, Tue, Wed, Thu, Fri]}
+  followup_business_days: [4, 7] # step 1 after step 0, step 2 after step 1
+  spacing_minutes: [3, 9]
+caps:
+  start_date: 2026-11-16
+  ramp: [{from_day: 0, per_day: 5}, {from_day: 7, per_day: 12}, {from_day: 14, per_day: 25}]
+  batch_size: 10

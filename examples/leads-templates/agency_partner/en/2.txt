@@ -1,0 +1,9 @@
+Subject: Re: Drupal upgrade help for {{.OrgName}}
+
+Hello,
+
+This is my last note on this, and I will leave it there. If you ever have a Drupal upgrade your team cannot fit in, I would be glad to help as a partner under your name, on a fixed price agreed before any work starts. You can reply to this address at any time, even months from now, and I will pick it up.
+
+Thank you for reading, and good luck with the work.
+
+{{.Footer}}

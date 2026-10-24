@@ -10,6 +10,7 @@ package fetch
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 )
 
@@ -52,6 +53,7 @@ type Response struct {
 	FinalURL    string // the URL after redirects
 	Body        []byte // at most the client's body limit
 	ContentType string
+	Header      http.Header // the allowlisted response headers only (see headerAllowlist)
 	FetchedAt   time.Time
 }
 
@@ -63,8 +65,9 @@ type Record struct {
 	Status      int    // 0 = transport error
 	Body        []byte
 	ContentType string
-	SHA256      []byte // nil when there is no response
-	Err         string // "" when nothing went wrong
+	SHA256      []byte      // nil when there is no response
+	Err         string      // "" when nothing went wrong
+	Header      http.Header // the allowlisted response headers; nil when there is no response
 	FetchedAt   time.Time
 }
 

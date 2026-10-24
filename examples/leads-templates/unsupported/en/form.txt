@@ -1,0 +1,5 @@
+Hello,
+
+I noticed that {{.EvidenceLine}} on {{.FindingURL}}. Drupal {{.Major}} stopped getting security updates on {{.EOLDate}}. I am a Drupal developer and I can write a short audit of what moving to a current version would involve, with a fixed price. A reply to this message reaches me.
+
+{{.SenderName}}, {{.IdentityLine}}

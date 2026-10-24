@@ -1,0 +1,9 @@
+Subject: Re: {{.Host}} still runs Drupal {{.Major}}
+
+Hello again,
+
+A short follow-up to my note about {{.Host}}, in case it got buried. Moving off Drupal {{.Major}} is usually smaller than people expect once the content is mapped, and the site can stay up the whole time. The written audit I offered costs you nothing to read and commits you to nothing at all. It lists what moves as it is and what needs rework.
+
+Shall I send it over this week?
+
+{{.Footer}}

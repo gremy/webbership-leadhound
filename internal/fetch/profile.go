@@ -28,6 +28,17 @@ var LinkedInJobs = Profile{
 	BlockedPaths:    []string{"/authwall", "/login", "/checkpoint"},
 }
 
+// Site is the profile for an organisation's own website: browser-like Accept headers and
+// nothing blocked, so one site's 403 is that site's answer and never stops the run. The
+// User-Agent stays the honest UserAgentFor.
+var Site = Profile{
+	Name: "site",
+	Header: http.Header{
+		"Accept":          {"text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"},
+		"Accept-Language": {"en;q=0.9,*;q=0.5"},
+	},
+}
+
 // clone returns a deep copy, so a Client never shares maps or slices with a package value.
 func (p Profile) clone() Profile {
 	p.Header = p.Header.Clone()

@@ -67,7 +67,8 @@ func Migrated(t testing.TB) {
 
 // ResetDB migrates the test database if this process has not yet, then empties every table
 // (TRUNCATE … RESTART IDENTITY CASCADE as the owner), so a test starts from an empty database
-// with ids from 1. goose's version table is left alone.
+// with ids from 1. Every goose version table (goose_db_version, goose_db_version_leads) is
+// left alone.
 func ResetDB(t testing.TB) {
 	t.Helper()
 	Migrated(t)
@@ -75,7 +76,7 @@ func ResetDB(t testing.TB) {
 	conn := OwnerConn(t)
 	rows, err := conn.Query(ctx,
 		`SELECT quote_ident(tablename) FROM pg_tables
-		 WHERE schemaname = 'public' AND tablename <> 'goose_db_version' ORDER BY tablename`)
+		 WHERE schemaname = 'public' AND tablename NOT LIKE 'goose\_db\_version%' ORDER BY tablename`)
 	if err != nil {
 		t.Fatalf("storetest: list tables: %v", err)
 	}

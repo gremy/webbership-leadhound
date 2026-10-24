@@ -1,0 +1,9 @@
+Subject: Re: {{.Host}} and the Drupal {{.Major}} end of life
+
+Hello again,
+
+A short follow-up to my note about {{.Host}}, in case it got buried. The move off Drupal {{.Major}} is mostly routine when it is planned early, and harder when it is rushed near the deadline. The written audit I offered costs nothing to read and commits you to nothing. It lists the modules that move as they are and the ones that need work.
+
+Shall I send it over this week?
+
+{{.Footer}}

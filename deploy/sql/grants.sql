@@ -23,13 +23,29 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO leadhound_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO leadhound_app;
 
--- goose's version table stays read-only to the app: a version row the app could forge would
--- make goose skip a real migration. store.Migrate runs the same revoke after every migrate,
--- so the order of this file and a migrate does not matter.
+-- goose's version tables stay read-only to the app: a version row the app could forge would
+-- make goose skip a real migration. store.Migrate and leadstore.Migrate run the same revokes
+-- after every migrate, so the order of this file and a migrate does not matter.
 DO $$
 BEGIN
   IF to_regclass('public.goose_db_version') IS NOT NULL THEN
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.goose_db_version FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.goose_db_version_leads') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.goose_db_version_leads FROM leadhound_app;
+  END IF;
+END
+$$;
+
+-- The append-only lead tables take no UPDATE from the app; the blanket grant above gave it.
+-- leadstore.Migrate runs the same revokes.
+DO $$
+BEGIN
+  IF to_regclass('public.site_probe') IS NOT NULL THEN
+    REVOKE UPDATE ON public.site_probe FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.fetch_header') IS NOT NULL THEN
+    REVOKE UPDATE ON public.fetch_header FROM leadhound_app;
   END IF;
 END
 $$;

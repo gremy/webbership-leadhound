@@ -1,0 +1,11 @@
+Subject: Drupal upgrade help for {{.OrgName}}
+
+Hello {{.OrgName}} team,
+
+I saw that {{.EvidenceLine}} ({{.FindingURL}}). I am a Drupal developer who has spent many years moving sites from older Drupal versions to current ones, and I take on upgrade work for agencies as a quiet partner, under your name.
+
+Upgrades tend to arrive all at once, and they are slow, careful work that ties up a team for weeks. If you have one waiting that your people have no room for, I could take it from the first audit to the launch, at a price agreed up front.
+
+Would a short call next week be useful?
+
+{{.Footer}}

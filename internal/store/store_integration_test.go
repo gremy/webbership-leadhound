@@ -150,8 +150,9 @@ func TestAppRoleCannotDeleteOrDrop(t *testing.T) {
 }
 
 // TestAppRolePrivileges checks the app role's rights on every table the migrations made, so a
-// later migration's table is covered without editing this test. goose's version table is
-// read-only to the app: a forged version row would make goose skip a real migration.
+// later migration's table is covered without editing this test. Every goose version table
+// (goose_db_version, goose_db_version_leads) is read-only to the app: a forged version row
+// would make goose skip a real migration.
 func TestAppRolePrivileges(t *testing.T) {
 	ctx := context.Background()
 	storetest.Migrated(t)
@@ -186,10 +187,10 @@ func TestAppRolePrivileges(t *testing.T) {
 					t.Errorf("leadhound_app has %s on %s, want none", priv, table)
 				}
 			}
-			if table == "goose_db_version" {
+			if strings.HasPrefix(table, "goose_db_version") {
 				for _, priv := range []string{"INSERT", "UPDATE"} {
 					if has(table, priv) {
-						t.Errorf("leadhound_app has %s on goose_db_version, want none", priv)
+						t.Errorf("leadhound_app has %s on %s, want none", priv, table)
 					}
 				}
 				return

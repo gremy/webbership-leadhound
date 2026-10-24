@@ -1,0 +1,11 @@
+Subject: {{.Host}} and the Drupal {{.Major}} end of life
+
+Hello,
+
+I noticed that {{.EvidenceLine}} on {{.FindingURL}}. Drupal {{.Major}} stops getting security updates on {{.EOLDate}}, so the move to the next version is worth planning before then, while there is still time to do it calmly.
+
+I am a Drupal developer, and these upgrades are most of my work. I can start with a short written audit of what the move would involve for {{.OrgName}}, with a fixed price, and you decide from there. The audit is yours to keep either way.
+
+Would that be useful?
+
+{{.Footer}}

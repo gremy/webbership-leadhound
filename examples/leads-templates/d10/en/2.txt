@@ -1,0 +1,9 @@
+Subject: Re: {{.Host}} and the Drupal {{.Major}} end of life
+
+Hello,
+
+This is my last note about {{.Host}}, and I will not write again after it. If the move off Drupal {{.Major}} comes up before {{.EOLDate}}, you can reply to this address at any time and I will pick it up from there, with the same short audit and a fixed price agreed before any work starts.
+
+Thank you for reading this far, and good luck with the site.
+
+{{.Footer}}

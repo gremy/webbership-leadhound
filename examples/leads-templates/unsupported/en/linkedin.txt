@@ -1,0 +1,1 @@
+Hello, I noticed that {{.Host}} runs Drupal {{.Major}}, which stopped getting security updates on {{.EOLDate}}. I help organisations move to a current version. Happy to connect.

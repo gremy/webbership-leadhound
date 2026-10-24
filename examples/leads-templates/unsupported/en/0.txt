@@ -1,0 +1,11 @@
+Subject: {{.Host}} still runs Drupal {{.Major}}
+
+Hello,
+
+I noticed that {{.EvidenceLine}} on {{.FindingURL}}. Drupal {{.Major}} stopped getting security updates on {{.EOLDate}}, so new problems found in it are no longer fixed, and each one stays open on the site.
+
+I am a Drupal developer, and moving sites like yours to a current version is most of my work. I can start with a short written audit of what the move would involve for {{.OrgName}}, with a fixed price, and you decide from there. The audit is yours to keep either way.
+
+Would that be useful?
+
+{{.Footer}}

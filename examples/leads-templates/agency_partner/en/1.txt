@@ -1,0 +1,9 @@
+Subject: Re: Drupal upgrade help for {{.OrgName}}
+
+Hello again,
+
+I am writing once more in case my last note got buried. If an upgrade project ever needs an extra pair of hands, I am happy to work under your name, from the audit to the launch, at a price agreed before we start. Your client keeps talking to you, and I stay in the background doing the slow part of the work.
+
+Is this worth a short chat this week or next?
+
+{{.Footer}}

@@ -45,6 +45,10 @@ type Client struct {
 	transport http.RoundTripper   // nil: the real network
 	fixtures  bool                // transport is a *FixtureTransport given by WithFixtures
 	live      config.Live
+
+	publicOnly   bool          // WithPublicOnly: the SSRF guard is on
+	timeout      time.Duration // the http.Client timeout
+	maxRedirects int           // requests in a redirect chain before CheckRedirect stops
 }
 
 // Option configures a Client.
@@ -77,6 +81,15 @@ func WithUserAgent(ua string) Option { return func(c *Client) { c.UserAgent = ua
 // WithMaxBody sets how many body bytes are read (default DefaultMaxBody).
 func WithMaxBody(n int64) Option { return func(c *Client) { c.MaxBody = n } }
 
+// WithTimeout sets the whole-request timeout (default DefaultTimeout).
+func WithTimeout(d time.Duration) Option { return func(c *Client) { c.timeout = d } }
+
+// WithMaxRedirects sets n, the most requests in one Get's redirect chain (the first request
+// included, as net/http counts its own default), so at most n-1 redirects are followed and
+// the n-th is refused. Following up to 3 redirects is WithMaxRedirects(4), which sites use.
+// The default is 10.
+func WithMaxRedirects(n int) Option { return func(c *Client) { c.maxRedirects = n } }
+
 // WithTransport replaces the network with rt, for tests. The live gate still applies: a
 // host that is not loopback goes out only when WithLiveGate allows it.
 func WithTransport(rt http.RoundTripper) Option {
@@ -100,6 +113,9 @@ func New(opts ...Option) *Client {
 		MaxBody:   DefaultMaxBody,
 		clock:     realClock{},
 		randInt:   jitterRand,
+
+		timeout:      DefaultTimeout,
+		maxRedirects: maxRedirects,
 	}
 	for _, o := range opts {
 		o(c)
@@ -110,12 +126,16 @@ func New(opts ...Option) *Client {
 	if c.Breaker == nil {
 		c.Breaker = NewBreaker(nil)
 	}
+	transport := c.transport
+	if transport == nil && c.publicOnly {
+		transport = guardedTransport()
+	}
 	c.HTTP = &http.Client{
-		Transport: c.transport,
-		Timeout:   DefaultTimeout,
+		Transport: transport,
+		Timeout:   c.timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxRedirects {
-				return fmt.Errorf("fetch: stopped after %d redirects", maxRedirects)
+			if len(via) >= c.maxRedirects {
+				return fmt.Errorf("fetch: stopped after %d redirects", c.maxRedirects)
 			}
 			return c.checkURL(req.URL)
 		},
@@ -217,6 +237,7 @@ func (c *Client) attempt(ctx context.Context, kind Kind, u *url.URL) (Response, 
 		FinalURL:    final.String(),
 		Body:        body,
 		ContentType: res.Header.Get("Content-Type"),
+		Header:      allowedHeaders(res.Header),
 		FetchedAt:   at,
 	}
 	sum := sha256.Sum256(body)
@@ -227,6 +248,7 @@ func (c *Client) attempt(ctx context.Context, kind Kind, u *url.URL) (Response, 
 		Body:        body,
 		ContentType: resp.ContentType,
 		SHA256:      sum[:],
+		Header:      resp.Header,
 		FetchedAt:   at,
 	}
 	if resp.FinalURL != rec.URL {
@@ -245,8 +267,8 @@ func (c *Client) attempt(ctx context.Context, kind Kind, u *url.URL) (Response, 
 // A refusal by the live gate is not a failure; a redirect loop or a bad target is.
 func (c *Client) refusedRedirect(ctx context.Context, kind Kind, u *url.URL, res *http.Response, err error, at time.Time) (Response, http.Header, error) {
 	final := res.Request.URL
-	resp := Response{Status: res.StatusCode, FinalURL: final.String(), ContentType: res.Header.Get("Content-Type"), FetchedAt: at}
-	rec := Record{Kind: kind, URL: u.String(), Status: res.StatusCode, ContentType: resp.ContentType, Err: err.Error(), FetchedAt: at}
+	resp := Response{Status: res.StatusCode, FinalURL: final.String(), ContentType: res.Header.Get("Content-Type"), Header: allowedHeaders(res.Header), FetchedAt: at}
+	rec := Record{Kind: kind, URL: u.String(), Status: res.StatusCode, ContentType: resp.ContentType, Err: err.Error(), Header: resp.Header, FetchedAt: at}
 	if resp.FinalURL != rec.URL {
 		rec.FinalURL = resp.FinalURL
 	}
@@ -311,6 +333,27 @@ func finish(err, recErr error, opened StopReason) error {
 		return &OpenError{Reason: opened, Err: err}
 	}
 	return err
+}
+
+// headerAllowlist is every response header copied into Response.Header and Record.Header;
+// no other header is kept.
+var headerAllowlist = []string{
+	"X-Generator", "X-Drupal-Cache", "X-Drupal-Dynamic-Cache", "Expires",
+	"Content-Type", "Server", "Cf-Mitigated", "Retry-After",
+}
+
+// allowedHeaders copies the allowlisted headers of h; nil when h has none of them.
+func allowedHeaders(h http.Header) http.Header {
+	var out http.Header
+	for _, k := range headerAllowlist {
+		if vs := h.Values(k); len(vs) > 0 {
+			if out == nil {
+				out = http.Header{}
+			}
+			out[k] = append([]string(nil), vs...)
+		}
+	}
+	return out
 }
 
 // readCapped reads at most max bytes; a longer body is cut to max and ErrBodyTooLarge.

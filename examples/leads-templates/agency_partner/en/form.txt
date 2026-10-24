@@ -1,0 +1,5 @@
+Hello {{.OrgName}} team,
+
+I saw that {{.EvidenceLine}} ({{.FindingURL}}). I am a Drupal developer and I take on upgrade work for agencies as a partner, under your name, at a price agreed up front. If that could help with a project, a reply to this message reaches me.
+
+{{.SenderName}}, {{.IdentityLine}}
