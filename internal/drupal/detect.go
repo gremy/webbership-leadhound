@@ -123,14 +123,15 @@ func Detect(status int, header http.Header, body []byte, finalURL string) Findin
 		set(SigSystemBaseCSS, "")
 	}
 
-	exact, miscJS, agg := "", false, false
+	miscJS, agg := false, false
 	own := hostKey(finalURL)
+	var seenV, ownV []string
 	for _, u := range p.urls {
 		path := u.EscapedPath()
 		if v, ok := coreMiscVersion(u); ok {
-			set(SigCoreAssetV, v)
-			if exact == "" && sameHost(u, own) {
-				exact = v
+			seenV = append(seenV, v)
+			if sameHost(u, own) {
+				ownV = append(ownV, v)
 			}
 		}
 		for _, pre := range corePathPrefixes {
@@ -156,6 +157,18 @@ func Detect(status int, header http.Header, body []byte, finalURL string) Findin
 		}
 	}
 
+	knownMajor := headerMajor
+	if knownMajor == 0 {
+		knownMajor = metaMajor
+	}
+	exact := pickExact(ownV, knownMajor)
+	switch {
+	case exact != "":
+		sig[SigCoreAssetV] = exact
+	case len(seenV) > 0:
+		sig[SigCoreAssetV] = seenV[0]
+	}
+
 	f := Finding{Signals: ordered(sig), SiteName: p.siteName}
 	f.IsDrupal = headerMajor > 0 || metaMajor > 0 || p.settingsJSON || p.d7Settings
 	if !f.IsDrupal {
@@ -170,7 +183,7 @@ func Detect(status int, header http.Header, body []byte, finalURL string) Findin
 	case metaMajor > 0:
 		f.Major = metaMajor
 	case exact != "":
-		f.Major, _ = strconv.Atoi(exact[:strings.IndexByte(exact, '.')])
+		f.Major = versionMajor(exact)
 	case d8Plus && agg:
 		f.Ambiguous = Ambiguous10Or11
 	case d8Plus:
@@ -211,6 +224,28 @@ func hostKey(raw string) string {
 // host; a link with no host at all counts as the page's own.
 func sameHost(u *url.URL, own string) bool {
 	return u.Host == "" || strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.") == own
+}
+
+// versionMajor is the first number of an X.Y.Z version.
+func versionMajor(v string) int {
+	n, _ := strconv.Atoi(v[:strings.IndexByte(v, '.')])
+	return n
+}
+
+// pickExact is the first /core/misc/ version that is Drupal core's: major 8 to 11, and
+// equal to knownMajor when another signal gave one. A bundled library's ?v= (3.11.7,
+// 4.3.0) fails both and is evidence only.
+func pickExact(versions []string, knownMajor int) string {
+	for _, v := range versions {
+		m := versionMajor(v)
+		if m < minExactMajor || m > maxExactMajor {
+			continue
+		}
+		if knownMajor == 0 || m == knownMajor {
+			return v
+		}
+	}
+	return ""
 }
 
 // coreMiscVersion is the X.Y.Z of a /core/misc/*.js?v=X.Y.Z asset.

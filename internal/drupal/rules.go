@@ -12,6 +12,12 @@ const MaxBody = 2 << 20
 // SiteNameMaxRunes caps Finding.SiteName.
 const SiteNameMaxRunes = 80
 
+// An exact version is core's only when its major is in this range.
+const (
+	minExactMajor = 8
+	maxExactMajor = 11
+)
+
 // Signal names. A Signal renders in the evidence string as its Name, or as Name:Value
 // when it has a value (Finding.Evidence joins them with "|" in the order below).
 //
