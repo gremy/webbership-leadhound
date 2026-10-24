@@ -382,10 +382,22 @@ func (r *collectRun) note() string {
 // event written in Observe's own transaction. company is the card's company name, used
 // when the detail page shows none.
 func (c *Collector) writeObservation(ctx context.Context, jobID, fetchID int64, company string, d Detail) error {
+	_, err := pipeline.Observe(ctx, c.Store, observeInput(jobID, fetchID, company, d, c.Gates), func(q store.Queries, _ pipeline.ObserveResult) error {
+		_, err := q.InsertStatusEvent(ctx, jobID, "new", "", "system", nil)
+		return err
+	})
+	return err
+}
+
+// observeInput is what one detail page showed, as pipeline.Observe takes it; the collector
+// and the recheck both write through it. company is the card's or the target's company
+// name, used when the page shows none. ListedRemote is always set: the guest search is
+// remote-filtered (f_WT=2, see SearchURL), and its location field carries no workplace label.
+func observeInput(jobID, fetchID int64, company string, d Detail, g gates.CandidateGates) pipeline.Input {
 	if d.Company != "" {
 		company = d.Company
 	}
-	_, err := pipeline.Observe(ctx, c.Store, pipeline.Input{
+	return pipeline.Input{
 		JobID:           jobID,
 		FetchID:         fetchID,
 		DerivedBy:       DerivedBy,
@@ -402,10 +414,7 @@ func (c *Collector) writeObservation(ctx context.Context, jobID, fetchID int64, 
 		PostedAtEst:     d.PostedAtEst,
 		ApplyType:       d.ApplyType,
 		Closed:          d.Closed,
-		Gates:           c.Gates,
-	}, func(q store.Queries, _ pipeline.ObserveResult) error {
-		_, err := q.InsertStatusEvent(ctx, jobID, "new", "", "system", nil)
-		return err
-	})
-	return err
+		ListedRemote:    true,
+		Gates:           g,
+	}
 }

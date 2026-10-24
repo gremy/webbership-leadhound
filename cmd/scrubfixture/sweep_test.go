@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -82,13 +83,10 @@ var rawNumberRe = regexp.MustCompile(`\d{7,}`)
 // digitRunRe finds every whole digit run in a repository file.
 var digitRunRe = regexp.MustCompile(`\d+`)
 
-// skipDirs are the repository directories the repo sweep does not walk: git's own store
-// and the ignored build and data output.
-var skipDirs = map[string]bool{".git": true, "bin": true, "data": true, "node_modules": true}
-
-// TestRepoSweep walks every text file in the repository and checks that none holds a
-// long number, company name or company slug from any raw probe page, or a denylist
-// entry. Failures name the file and the rule, never the matched value.
+// TestRepoSweep reads every text file git could commit and checks that none holds a long
+// number, company name or company slug from any raw probe page, or a denylist entry.
+// Ignored files (.env, build output, raw pages) can never be committed, so they are not
+// read. Failures name the file and the rule, never the matched value.
 func TestRepoSweep(t *testing.T) {
 	dir := os.Getenv(probeEnv)
 	if dir == "" {
@@ -120,48 +118,126 @@ func TestRepoSweep(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		t.Fatalf("repository root not found from the test directory")
 	}
-	files := 0
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path != root && (skipDirs[d.Name()] || (d.Name() == "raw" && filepath.Base(filepath.Dir(path)) == "testdata")) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		data, err := os.ReadFile(path) // #nosec G304 G122 -- test walks its own repository
-		if err != nil {
-			return err
-		}
-		if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
-			return nil // binary
-		}
-		files++
-		rel, _ := filepath.Rel(root, path)
-		if numberHit(data, nums) {
-			t.Errorf("%s: rule original-number", rel)
-		}
-		if containsAny(data, orig.Slugs, true) {
-			t.Errorf("%s: rule original-company-slug", rel)
-		}
-		if containsAny(data, orig.Companies, true) {
-			t.Errorf("%s: rule original-company-name", rel)
-		}
-		if denyHit(string(data), deny) {
-			t.Errorf("%s: rule denylist", rel)
-		}
-		return nil
-	})
+	files, findings, err := sweepRepo(root, sweepRules{nums: nums, orig: orig, deny: deny})
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, f := range findings {
+		t.Error(f)
+	}
 	if files < 20 {
 		t.Errorf("swept only %d files; the walk missed the repository", files)
+	}
+}
+
+// sweepRules are the original values the repo sweep looks for.
+type sweepRules struct {
+	nums map[string]bool
+	orig Originals
+	deny []string
+}
+
+// committableFiles lists, relative to root, the files git could commit: tracked files plus
+// untracked files that are not ignored. Like privacycheck tree, it asks git rather than
+// walking the folder, and it only reads.
+func committableFiles(root string) ([]string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard") // #nosec G204 -- fixed binary and arguments
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, errors.New("git ls-files failed")
+	}
+	set := map[string]bool{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			set[p] = true
+		}
+	}
+	return sorted(set), nil
+}
+
+// sweepRepo checks every committable regular text file under root against rules and
+// returns how many files it read and one "<file>: rule <rule>" finding per hit. A tracked
+// file missing from disk, a symlink and a binary file are skipped.
+func sweepRepo(root string, rules sweepRules) (files int, findings []string, err error) {
+	paths, err := committableFiles(root)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, rel := range paths {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return files, findings, err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(path) // #nosec G304 G122 -- paths come from git ls-files of the test's own repository
+		if err != nil {
+			return files, findings, err
+		}
+		if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
+			continue // binary
+		}
+		files++
+		if numberHit(data, rules.nums) {
+			findings = append(findings, rel+": rule original-number")
+		}
+		if containsAny(data, rules.orig.Slugs, true) {
+			findings = append(findings, rel+": rule original-company-slug")
+		}
+		if containsAny(data, rules.orig.Companies, true) {
+			findings = append(findings, rel+": rule original-company-name")
+		}
+		if denyHit(string(data), rules.deny) {
+			findings = append(findings, rel+": rule denylist")
+		}
+	}
+	return files, findings, nil
+}
+
+// TestRepoSweepReadsOnlyCommittableFiles plants one original number in a tracked file, an
+// untracked file that is not ignored, and an ignored .env in a temporary repository. The
+// sweep must report the first two and never read the third.
+func TestRepoSweepReadsOnlyCommittableFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(context.Background(), "git", append([]string{"-C", root}, args...)...) // #nosec G204 -- fixed binary, test temp repository
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", args[0], err, out)
+		}
+	}
+	git("init", "-q")
+	planted := "40" + "91" + "736" // built at runtime, as CONTRIBUTING asks
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", ".env*\n")
+	write("tracked.txt", "job "+planted+"\n")
+	write(".env", "ID="+planted+"\n")
+	git("add", ".gitignore", "tracked.txt")
+	write("untracked.txt", "see "+planted+"\n")
+
+	files, findings, err := sweepRepo(root, sweepRules{nums: map[string]bool{planted: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"tracked.txt: rule original-number", "untracked.txt: rule original-number"}
+	if strings.Join(findings, "|") != strings.Join(want, "|") {
+		t.Errorf("findings = %q, want %q", findings, want)
+	}
+	if files != 3 {
+		t.Errorf("swept %d files, want 3 (.gitignore, tracked.txt, untracked.txt)", files)
 	}
 }
 

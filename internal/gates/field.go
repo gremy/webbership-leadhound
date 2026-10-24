@@ -2,6 +2,7 @@ package gates
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -16,7 +17,7 @@ const (
 var (
 	// atsLabelRE is the label the ATS collectors append: "Lisbon (On-site)".
 	atsLabelRE   = regexp.MustCompile(`(?i)\((remote|hybrid|on-site)\)\s*$`)
-	remoteWordRE = regexp.MustCompile(`(?i)\b(?:remote|home[- ]based|work\s+from\s+home|WFH)\b`)
+	remoteWordRE = regexp.MustCompile(`(?i)\b(?:remote(?:ly)?|home[- ]based|work\s+from\s+home|WFH)\b`)
 	hybridWordRE = regexp.MustCompile(`(?i)\bhybrid\b`)
 	onsiteWordRE = regexp.MustCompile(`(?i)\b(?:on[- ]?site|in[- ]office)\b`)
 	// globalRE reads "Global" as anywhere, in the location field only: in a description
@@ -30,6 +31,7 @@ var (
 type fieldReading struct {
 	text   string  // the field, whitespace collapsed
 	work   string  // workRemote, workHybrid, workOnsite, or "" when it says none or several
+	bare   bool    // it says no workplace at all: no ATS label and no workplace word
 	places []place // the places it names
 	city   string  // an allowed city it names, as the candidate wrote it
 }
@@ -54,6 +56,7 @@ func readField(location string, c CandidateGates) fieldReading {
 	if onsiteWordRE.MatchString(fr.text) {
 		kinds[workOnsite] = true
 	}
+	fr.bare = len(kinds) == 0
 	if len(kinds) == 1 {
 		for k := range kinds {
 			fr.work = k
@@ -106,12 +109,26 @@ func fieldLocation(fr fieldReading, c CandidateGates, limited bool) (finding, bo
 	return f, true
 }
 
+// fieldSignals is what the rest of the posting says that bears on its location field.
+type fieldSignals struct {
+	saysRemote   bool // the text says fully remote (fullyRemoteRE, not negated)
+	remoteWord   bool // the text holds a plain remote word (remoteWordRE, not negated)
+	listedRemote bool // the source lists remote jobs only (Observation.ListedRemote)
+}
+
 // fieldWorkplace is the workplace gate's finding from a hybrid or on-site location field
 // for a remote-only candidate: office work outside every allowed city fails. When the
-// description says fully remote, the two disagree and it only flags. Otherwise none; the
-// field's words still flag through the workplace patterns as before.
-func fieldWorkplace(fr fieldReading, c CandidateGates, saysRemote bool) (finding, bool) {
-	if !c.RemoteOnly || fr.city != "" || (fr.work != workHybrid && fr.work != workOnsite) {
+// description says fully remote, the two disagree and it only flags. A bare field, one
+// that names places but no workplace, is read as an office there: see bareFieldWorkplace.
+// Otherwise none; the field's words still flag through the workplace patterns as before.
+func fieldWorkplace(fr fieldReading, c CandidateGates, sig fieldSignals) (finding, bool) {
+	if !c.RemoteOnly || fr.city != "" {
+		return finding{}, false
+	}
+	if fr.bare {
+		return bareFieldWorkplace(fr, c, sig)
+	}
+	if fr.work != workHybrid && fr.work != workOnsite {
 		return finding{}, false
 	}
 	where := placeNames(fr.places)
@@ -124,8 +141,37 @@ func fieldWorkplace(fr fieldReading, c CandidateGates, saysRemote bool) (finding
 		snippet: fr.snippet(),
 		pos:     -1,
 	}
-	if saysRemote {
+	if sig.saysRemote {
 		f.verdict = Flag
+	}
+	return f, true
+}
+
+// bareFieldWorkplace reads a location field that names only places, none of them
+// allowed, as an office's address: a remote-only candidate fails, or gets a flag when the
+// posting says remote but not fully remote or from where. It gives none when the posting
+// says fully remote, when the source lists remote jobs only, when the field names nothing
+// known or an allowed place, and when the candidate set no country limit and the field
+// names no city. It sits after every match in the text, so a phrase there that fails as
+// well (office days in a named city) gives the reason.
+func bareFieldWorkplace(fr fieldReading, c CandidateGates, sig fieldSignals) (finding, bool) {
+	if sig.saysRemote || sig.listedRemote || len(fr.places) == 0 ||
+		anyAllowed(fr.places, c.AllowedCountries) || (!hasCountryLimit(c) && !anyCity(fr.places)) {
+		return finding{}, false
+	}
+	where := placeNames(fr.places)
+	if !anyCity(fr.places) {
+		where += ", outside your allowed countries,"
+	}
+	f := finding{
+		verdict: Fail,
+		reason:  fmt.Sprintf("The location field names %s and nothing says remote; you want remote only.", where),
+		snippet: fr.snippet(),
+		pos:     math.MaxInt,
+	}
+	if sig.remoteWord {
+		f.verdict = Flag
+		f.reason = fmt.Sprintf("The location field names %s; the posting says remote but not where from, so check it.", strings.TrimSuffix(where, ","))
 	}
 	return f, true
 }

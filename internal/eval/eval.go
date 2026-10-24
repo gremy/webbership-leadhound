@@ -228,8 +228,10 @@ func prepare(dir string, j Job, opt Options) (scoring.Posting, []gates.Result, e
 		langText = title
 	}
 	lang, conf := gates.DetectLanguage(langText)
+	// Every golden row is a LinkedIn detail page (parsed above), and LinkedIn's search lists
+	// remote jobs only, as the collector tells the gates.
 	gs := gates.Evaluate(gates.Observation{Title: title, Company: company, Location: location, Description: desc,
-		Lang: lang, LangConfidence: conf}, opt.Profile.Gates(), nil)
+		Lang: lang, LangConfidence: conf, ListedRemote: true}, opt.Profile.Gates(), nil)
 	return scoring.Posting{Title: title, Company: company, Location: location, Seniority: d.Seniority,
 		EmploymentType: d.EmploymentType, Description: desc}, gs, nil
 }

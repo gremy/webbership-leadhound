@@ -37,6 +37,10 @@ type Input struct {
 	ApplyType       string
 	ApplyURL        string
 	Closed          bool
+	// ListedRemote is set by a source that lists remote jobs only (the LinkedIn collector
+	// and recheck: its search is remote-filtered); the gates read it as
+	// gates.Observation.ListedRemote. The ATS collectors leave it false.
+	ListedRemote bool
 
 	Gates gates.CandidateGates
 }
@@ -134,7 +138,7 @@ func observeTx(ctx context.Context, q store.Queries, in Input) (ObserveResult, e
 	// and the stored lang is the gate's basis.
 	results := evaluate(gates.Observation{
 		Title: title, Company: company, Location: location, Description: clean.Visible,
-		Lang: lang, LangConfidence: conf,
+		Lang: lang, LangConfidence: conf, ListedRemote: in.ListedRemote,
 	}, in.Gates, rules)
 	if len(results) == 0 { // the language gate always runs; never commit an ungated observation
 		return ObserveResult{}, fmt.Errorf("pipeline: observe job %d: the gates gave no result", in.JobID)

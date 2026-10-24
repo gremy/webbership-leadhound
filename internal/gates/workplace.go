@@ -61,6 +61,16 @@ func evalWorkplace(obs Observation, c CandidateGates) Result {
 		}
 	}
 
+	// A plain remote word ("Remote, EU", "a remote role", "work remotely") says remote
+	// without saying fully remote or from where.
+	remoteWord := false
+	for _, m := range remoteWordRE.FindAllStringIndex(text, -1) {
+		if !negated(text, m[0]) && !negatedAfter(text, m[1]) {
+			remoteWord = true
+			break
+		}
+	}
+
 	var fs []finding
 	for _, m := range officeDaysRE.FindAllStringSubmatchIndex(text, -1) {
 		f := finding{verdict: Flag, reason: "Asks for days in the office.", snippet: snippet(text, m[0], m[1]), pos: m[0]}
@@ -92,7 +102,7 @@ func evalWorkplace(obs Observation, c CandidateGates) Result {
 	for _, m := range inOfficeRE.FindAllStringIndex(text, -1) {
 		fs = append(fs, finding{verdict: Flag, reason: "Posting says the job is in-office.", snippet: snippet(text, m[0], m[1]), pos: m[0]})
 	}
-	if f, ok := fieldWorkplace(readField(obs.Location, c), c, remote >= 0); ok {
+	if f, ok := fieldWorkplace(readField(obs.Location, c), c, fieldSignals{saysRemote: remote >= 0, remoteWord: remoteWord, listedRemote: obs.ListedRemote}); ok {
 		fs = append(fs, f)
 	}
 	f, found := worst(fs)

@@ -20,7 +20,7 @@ func TestLocationField(t *testing.T) {
 		{"San Carlos, CA (On-site)", Pass, Fail},
 		{"Vilnius, Kaunas (Hybrid)", Pass, Fail},
 		{"San Francisco (On-site)", Pass, Fail},
-		{"London, United Kingdom", Pass, Pass},
+		{"London, United Kingdom", Pass, Fail}, // a bare place outside the allowed ones is an office
 		{"Home based - Worldwide", Pass, Pass},
 		{"Home based - EMEA", Pass, Pass},
 		{"United States (Remote)", Fail, Pass},
@@ -172,5 +172,149 @@ func TestHubTableHasNoHomeCity(t *testing.T) {
 	}
 	if n < 200 {
 		t.Errorf("hub table has %d names, want a few hundred", n)
+	}
+}
+
+// TestLocationFieldBarePlace: a location field that names only places, none of them
+// allowed, is an office there; a remote-only candidate fails unless the description says
+// fully remote. Unknown places, allowed places, workplace labels and candidates open to
+// office work keep today's verdicts.
+func TestLocationFieldBarePlace(t *testing.T) {
+	const remoteDesc = english + "This role is fully remote."
+	openToOffice := fieldCandidate
+	openToOffice.RemoteOnly = false
+	noLimit := CandidateGates{Languages: []string{"en"}, RemoteOnly: true}
+	cases := []struct {
+		name, location, description string
+		c                           CandidateGates
+		want, reasonHas             string
+	}{
+		{"city with state code", "San Carlos, CA", english, fieldCandidate, Fail, "names San Carlos, CA (United States) and nothing says remote"},
+		{"two-word city with state code", "Redwood City, CA", english, fieldCandidate, Fail, "names Redwood City, CA (United States) and nothing says remote"},
+		{"city, state, country", "Saint Paul, Minnesota, United States", english, fieldCandidate, Fail, "names Minnesota (United States) or United States, outside your allowed countries, and nothing says remote"},
+		{"city with short state code", "Burlington, VT", english, fieldCandidate, Fail, "names Burlington, VT (United States) and nothing says remote"},
+		{"city with state code, fully remote", "San Carlos, CA", remoteDesc, fieldCandidate, Pass, "fully remote"},
+		{"two-word city, fully remote", "Redwood City, CA", remoteDesc, fieldCandidate, Pass, "fully remote"},
+		{"city, state, country, fully remote", "Saint Paul, Minnesota, United States", remoteDesc, fieldCandidate, Pass, "fully remote"},
+		{"short state code, fully remote", "Burlington, VT", remoteDesc, fieldCandidate, Pass, "fully remote"},
+		{"city in allowed country", "Bucharest", english, fieldCandidate, Pass, ""},
+		{"city and allowed country", "Cluj-Napoca, Romania", english, fieldCandidate, Pass, ""},
+		{"region holding allowed country", "Europe", english, fieldCandidate, Pass, ""},
+		{"allowed city", "Exampleville", english, fieldCandidate, Pass, ""},
+		{"unrecognised field", "Somewhere", english, fieldCandidate, Pass, ""},
+		{"unrecognised city alone", "Burlington", english, fieldCandidate, Pass, ""},
+		{"not remote only", "San Carlos, CA", english, openToOffice, Pass, ""},
+		{"no country limit, city", "San Carlos, CA", english, noLimit, Fail, "nothing says remote"},
+		{"no country limit, region only", "Europe", english, noLimit, Pass, ""},
+		{"remote label", "San Carlos, CA (Remote)", english, fieldCandidate, Pass, ""},
+		{"on-site label", "San Carlos, CA (On-site)", english, fieldCandidate, Fail, "on-site in San Carlos"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := Evaluate(Observation{Title: "Backend Engineer", Location: tc.location, Description: tc.description}, tc.c, nil)
+			snip := ""
+			if tc.want == Fail {
+				snip = squash(tc.location)
+			}
+			checkResult(t, one(t, rs, GateWorkplace), tc.want, tc.reasonHas, snip)
+		})
+	}
+}
+
+// TestLocationFieldBarePlaceLosesToText: a failing office-days phrase in the description
+// gives the reason over a bare location field.
+func TestLocationFieldBarePlaceLosesToText(t *testing.T) {
+	rs := Evaluate(Observation{Title: "Backend Engineer", Location: "San Carlos, CA", Description: english + "We work 2 days a week in our Lisbon office."}, fieldCandidate, nil)
+	checkResult(t, one(t, rs, GateWorkplace), Fail, "Lisbon", "2 days a week in our Lisbon office")
+}
+
+// TestLocationFieldBareListedRemote: a source that lists remote jobs only (LinkedIn's
+// remote-filtered search) gives a location field with no workplace label; the bare-field
+// rule never reads it as an office, so the verdicts stay what they were before the rule.
+func TestLocationFieldBareListedRemote(t *testing.T) {
+	cases := []struct {
+		name, title, location, description string
+		wantLoc, wantWP                    string
+	}{
+		{"city, region, country", "Backend Engineer", "Berlin, Berlin, Germany", english, Pass, Pass},
+		{"city with state code", "Backend Engineer", "San Carlos, CA", english, Pass, Pass},
+		{"region outside allowed", "Backend Engineer", "APAC", english, Pass, Pass},
+		{"remote word in title", "Backend Engineer (Remote, EU)", "Berlin, Germany", english, Pass, Pass},
+		{"office days still fail", "Backend Engineer", "Berlin, Germany", english + "We work 2 days a week in our Lisbon office.", Pass, Fail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obs := Observation{Title: tc.title, Location: tc.location, Description: tc.description, ListedRemote: true}
+			rs := Evaluate(obs, fieldCandidate, nil)
+			loc, wp := one(t, rs, GateLocation), one(t, rs, GateWorkplace)
+			if loc.Verdict != tc.wantLoc {
+				t.Errorf("location = %s (%q), want %s", loc.Verdict, loc.Reason, tc.wantLoc)
+			}
+			if wp.Verdict != tc.wantWP {
+				t.Errorf("workplace = %s (%q), want %s", wp.Verdict, wp.Reason, tc.wantWP)
+			}
+			if strings.Contains(wp.Reason, "location field") {
+				t.Errorf("workplace reason %q reads the location field; a listed-remote source must not", wp.Reason)
+			}
+		})
+	}
+	// The same field from a source that lists every workplace is read as an office.
+	rs := Evaluate(Observation{Title: "Backend Engineer", Location: "Berlin, Berlin, Germany", Description: english}, fieldCandidate, nil)
+	checkResult(t, one(t, rs, GateWorkplace), Fail, "names Berlin (Germany)", "Berlin, Berlin, Germany")
+}
+
+// TestLocationFieldBareRemoteWord: a bare field outside the allowed places, with a plain
+// un-negated remote word in the title or description, flags rather than fails: the posting
+// says remote but not from where.
+func TestLocationFieldBareRemoteWord(t *testing.T) {
+	cases := []struct {
+		name, title, description string
+		want, reasonHas          string
+	}{
+		{"remote in title", "Backend Engineer (Remote, EU)", english, Flag, "the posting says remote but not where from"},
+		{"remote role in description", "Backend Engineer", english + "This is a remote role open to candidates across the EU.", Flag, "says remote but not where from"},
+		{"work remotely", "Backend Engineer", english + "You can work remotely from anywhere in Europe.", Flag, "says remote but not where from"},
+		{"negated remote", "Backend Engineer", english + "Please note this is not a remote role.", Fail, "nothing says remote"},
+		{"remote word inside another word", "Backend Engineer", english + "We build remoteness tooling.", Fail, "nothing says remote"},
+		// No pattern reads "anywhere" as remote; see the report's uncertainties.
+		{"work from anywhere", "Backend Engineer", english + "Work from anywhere.", Fail, "nothing says remote"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := Evaluate(Observation{Title: tc.title, Location: "Berlin, Germany", Description: tc.description}, fieldCandidate, nil)
+			checkResult(t, one(t, rs, GateWorkplace), tc.want, tc.reasonHas, "Berlin, Germany")
+		})
+	}
+}
+
+// TestLocationFieldBareNoCity: a bare field naming only countries or regions reads as
+// outside the allowed countries; with no country limit it gives none.
+func TestLocationFieldBareNoCity(t *testing.T) {
+	noLimit := CandidateGates{Languages: []string{"en"}, RemoteOnly: true}
+	cases := []struct {
+		name, location  string
+		c               CandidateGates
+		want, reasonHas string
+	}{
+		{"region", "APAC", fieldCandidate, Fail, "The location field names APAC, outside your allowed countries, and nothing says remote; you want remote only."},
+		{"country", "Germany", fieldCandidate, Fail, "names Germany, outside your allowed countries, and nothing says remote"},
+		{"no limit, country", "Germany", noLimit, Pass, ""},
+		{"no limit, region", "APAC", noLimit, Pass, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := Evaluate(Observation{Title: "Backend Engineer", Location: tc.location, Description: english}, tc.c, nil)
+			snip := ""
+			if tc.want == Fail {
+				snip = tc.location
+			}
+			checkResult(t, one(t, rs, GateWorkplace), tc.want, tc.reasonHas, snip)
+		})
+	}
+	// A city in the field keeps the city wording.
+	rs := Evaluate(Observation{Title: "Backend Engineer", Location: "Berlin, Germany", Description: english}, fieldCandidate, nil)
+	r := one(t, rs, GateWorkplace)
+	if strings.Contains(r.Reason, "outside your allowed countries") {
+		t.Errorf("reason = %q; a field naming a city keeps the city wording", r.Reason)
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/candidate"
+	"github.com/gremy/webbership-leadhound/internal/gates"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden output files")
@@ -205,6 +206,54 @@ func TestNullLabelsSkippedAndCounted(t *testing.T) {
 			if rw.nulls != 0 || rw.runs[0] != (tally{match: 5, labelled: 5}) {
 				t.Errorf("language row %+v", rw)
 			}
+		}
+	}
+}
+
+// TestPrepareReadsLinkedInAsListedRemote: eval's golden rows are LinkedIn pages, whose
+// search lists remote jobs only, so prepare tells the gates so, as the collector does: a
+// location field naming a place outside the allowed countries is not read as an office.
+func TestPrepareReadsLinkedInAsListedRemote(t *testing.T) {
+	// The English fixture, with its location moved outside the allowed places and its
+	// "fully remote" line taken out, so only ListedRemote keeps the field from failing.
+	page, err := os.ReadFile(filepath.Join("..", "linkedin", "testdata", "detail_offsite.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"Exampleville, Country", "Fully remote within the EU."} {
+		if !bytes.Contains(page, []byte(s)) {
+			t.Fatalf("fixture no longer carries %q; update this test", s)
+		}
+	}
+	dir := t.TempDir()
+	page = bytes.ReplaceAll(page, []byte("Exampleville, Country"), []byte("Berlin, Germany"))
+	page = bytes.ReplaceAll(page, []byte("Fully remote within the EU."), []byte("The team is spread across the EU."))
+	if err := os.WriteFile(filepath.Join(dir, "page.html"), page, 0o600); err != nil { //nolint:gosec // G703: a fixed name in the test's temp dir
+		t.Fatal(err)
+	}
+	prof := demoProfile(t)
+	prof.Candidate.AllowedCities = nil
+	opt := Options{Profile: prof, Now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+	p, gs, err := prepare(dir, Job{ID: "bare", Raw: "page.html"}, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Location != "Berlin, Germany" {
+		t.Fatalf("location = %q, want the substituted field", p.Location)
+	}
+	if len(gs) < 4 {
+		t.Fatalf("gates = %+v, want all four (an English page)", gs)
+	}
+	for _, g := range gs {
+		if strings.Contains(g.Reason, "location field") {
+			t.Errorf("gate %s = %s (%q); a LinkedIn field must not be read as an office", g.Gate, g.Verdict, g.Reason)
+		}
+	}
+	// The same page from a source that lists every workplace would fail: the test bites.
+	obs := gates.Observation{Title: p.Title, Company: p.Company, Location: p.Location, Description: p.Description}
+	for _, g := range gates.Evaluate(obs, opt.Profile.Gates(), nil) {
+		if g.Gate == gates.GateWorkplace && g.Verdict != gates.Fail {
+			t.Errorf("without ListedRemote the workplace gate = %s (%q), want fail", g.Verdict, g.Reason)
 		}
 	}
 }

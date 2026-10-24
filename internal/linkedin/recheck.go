@@ -172,30 +172,8 @@ func (r *Rechecker) check(ctx context.Context, q store.Queries, client *fetch.Cl
 	if !found {
 		return fmt.Errorf("recheck job %d: no fetch row recorded", t.JobID)
 	}
-	company := t.Company
-	if d.Company != "" {
-		company = d.Company
-	}
 	withdrawn := false
-	_, err = pipeline.Observe(ctx, r.Store, pipeline.Input{
-		JobID:           t.JobID,
-		FetchID:         fetchID,
-		DerivedBy:       DerivedBy,
-		Title:           d.Title,
-		Company:         company,
-		Location:        d.Location,
-		DescriptionHTML: d.Description,
-		Seniority:       d.Seniority,
-		EmploymentType:  d.EmploymentType,
-		Industries:      d.Industries,
-		ApplicantCount:  d.ApplicantCount,
-		ApplicantText:   d.ApplicantText,
-		PostedText:      d.PostedText,
-		PostedAtEst:     d.PostedAtEst,
-		ApplyType:       d.ApplyType,
-		Closed:          d.Closed,
-		Gates:           r.Gates,
-	}, func(tq store.Queries, _ pipeline.ObserveResult) error {
+	_, err = pipeline.Observe(ctx, r.Store, observeInput(t.JobID, fetchID, t.Company, d, r.Gates), func(tq store.Queries, _ pipeline.ObserveResult) error {
 		if !d.Closed {
 			return tq.SetListingStatus(ctx, t.JobID, store.ListingOpen)
 		}

@@ -230,6 +230,28 @@ func TestStoredLangIsTheGateBasis(t *testing.T) {
 	}
 }
 
+// TestObservePassesListedRemote: Input.ListedRemote reaches the gates as
+// gates.Observation.ListedRemote, and is false when the source leaves it unset.
+func TestObservePassesListedRemote(t *testing.T) {
+	s := openStore(t)
+	q := s.Q()
+	var got gates.Observation
+	evaluate = func(o gates.Observation, c gates.CandidateGates, r []gates.Rule) []gates.Result {
+		got = o
+		return gates.Evaluate(o, c, r)
+	}
+	t.Cleanup(func() { evaluate = gates.Evaluate })
+	for i, listed := range []bool{true, false} {
+		jobID, fetchID := seed(t, q, string(rune('1'+i)), "Initech")
+		in := input(jobID, fetchID, "Initech", englishHTML)
+		in.ListedRemote = listed
+		observe(t, s, in)
+		if got.ListedRemote != listed {
+			t.Errorf("gates saw ListedRemote %t, want %t", got.ListedRemote, listed)
+		}
+	}
+}
+
 // TestObserveStoresSnippets: each gate row keeps the snippet its gate quoted. A flag quotes
 // the words that raised it; a gate that matched nothing quotes the description's opening.
 func TestObserveStoresSnippets(t *testing.T) {

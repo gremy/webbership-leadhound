@@ -52,6 +52,11 @@ type Observation struct {
 	// title when the description is blank). When Lang is "", the gate detects it itself.
 	Lang           string
 	LangConfidence float64
+	// ListedRemote is set when the source lists remote jobs only (LinkedIn's guest search
+	// is filtered to remote), so a location field there names where the job is posted from,
+	// not an office. It is not read as a remote signal: it only stops a bare location field
+	// (places, no workplace) being read as an office's address.
+	ListedRemote bool
 }
 
 // CandidateGates is the part of the candidate profile the gates read.

@@ -20,7 +20,7 @@ import (
 var pageCandidate = gates.CandidateGates{Languages: []string{"en", "pt"}, AllowedCountries: []string{"Portugal"}}
 
 // observationFromPage parses a detail page and cleans its description as pipeline.Observe
-// does, so the gates see what they see in production.
+// does, so the gates see what they see in production: a LinkedIn page is ListedRemote.
 func observationFromPage(t testing.TB, path string) gates.Observation {
 	t.Helper()
 	body, err := os.ReadFile(path) //nolint:gosec // G304, G703: tests read fixture and probe pages by path
@@ -31,7 +31,7 @@ func observationFromPage(t testing.TB, path string) gates.Observation {
 	if err != nil {
 		t.Fatalf("parse page: %v", err)
 	}
-	return gates.Observation{Title: d.Title, Company: d.Company, Location: d.Location, Description: postingguard.Clean(d.Description, true).Visible}
+	return gates.Observation{Title: d.Title, Company: d.Company, Location: d.Location, Description: postingguard.Clean(d.Description, true).Visible, ListedRemote: true}
 }
 
 func pageByGate(rs []gates.Result) map[string][]gates.Result {
