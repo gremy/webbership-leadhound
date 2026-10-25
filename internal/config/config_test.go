@@ -43,6 +43,8 @@ func TestLoadDefaults(t *testing.T) {
 		ConsoleEmail:         "",
 		ConsolePasswordHash:  "",
 		ConsoleURL:           "",
+		DBMaxBytes:           8 << 30,
+		DiskMinFreePct:       15,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("Load(empty) = %#v\nwant %#v", cfg, want)
@@ -70,6 +72,8 @@ func TestLoadValues(t *testing.T) {
 		"LEADHOUND_CONSOLE_EMAIL":          "me@mail.example",
 		"LEADHOUND_CONSOLE_PASSWORD_HASH":  "hash-test",
 		"LEADHOUND_CONSOLE_URL":            "https://console.example",
+		"LEADHOUND_DB_MAX_BYTES":           "1073741824",
+		"LEADHOUND_DISK_MIN_FREE_PCT":      "20",
 	}))
 	if len(problems) != 0 {
 		t.Fatalf("problems = %v, want none", problems)
@@ -97,6 +101,8 @@ func TestLoadValues(t *testing.T) {
 		{"ConsoleEmail", cfg.ConsoleEmail.Reveal(), "me@mail.example"},
 		{"ConsolePasswordHash", cfg.ConsolePasswordHash.Reveal(), "hash-test"},
 		{"ConsoleURL", cfg.ConsoleURL, "https://console.example"},
+		{"DBMaxBytes", cfg.DBMaxBytes, int64(1 << 30)},
+		{"DiskMinFreePct", cfg.DiskMinFreePct, 20},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -141,6 +147,13 @@ func TestLoadParseErrors(t *testing.T) {
 		{"detail budget", map[string]string{"LEADHOUND_LINKEDIN_DETAIL_BUDGET": "x"}, "LEADHOUND_LINKEDIN_DETAIL_BUDGET"},
 		{"ats detail budget", map[string]string{"LEADHOUND_ATS_DETAIL_BUDGET": "-3"}, "LEADHOUND_ATS_DETAIL_BUDGET"},
 		{"ats detail budget text", map[string]string{"LEADHOUND_ATS_DETAIL_BUDGET": "many"}, "LEADHOUND_ATS_DETAIL_BUDGET"},
+		{"db max zero", map[string]string{"LEADHOUND_DB_MAX_BYTES": "0"}, "LEADHOUND_DB_MAX_BYTES"},
+		{"db max negative", map[string]string{"LEADHOUND_DB_MAX_BYTES": "-1"}, "LEADHOUND_DB_MAX_BYTES"},
+		{"db max with unit", map[string]string{"LEADHOUND_DB_MAX_BYTES": "8GB"}, "LEADHOUND_DB_MAX_BYTES"},
+		{"db max overflow", map[string]string{"LEADHOUND_DB_MAX_BYTES": "9223372036854775808"}, "LEADHOUND_DB_MAX_BYTES"},
+		{"disk pct zero", map[string]string{"LEADHOUND_DISK_MIN_FREE_PCT": "0"}, "LEADHOUND_DISK_MIN_FREE_PCT"},
+		{"disk pct 100", map[string]string{"LEADHOUND_DISK_MIN_FREE_PCT": "100"}, "LEADHOUND_DISK_MIN_FREE_PCT"},
+		{"disk pct fraction", map[string]string{"LEADHOUND_DISK_MIN_FREE_PCT": "12.5"}, "LEADHOUND_DISK_MIN_FREE_PCT"},
 		{"timezone", map[string]string{"LEADHOUND_TZ": "Mars/Olympus"}, "LEADHOUND_TZ"},
 		{"live", map[string]string{"LEADHOUND_LIVE": "yes"}, "LEADHOUND_LIVE"},
 	}
@@ -155,6 +168,27 @@ func TestLoadParseErrors(t *testing.T) {
 				t.Errorf("Live = %v after a bad value, want off", cfg.Live)
 			}
 		})
+	}
+}
+
+// TestLoadStorageBounds: the storage settings accept their whole range, edges included, and
+// a refused value keeps the default rather than a zero that would stop every collector.
+func TestLoadStorageBounds(t *testing.T) {
+	for v, want := range map[string]int{"1": 1, "15": 15, "99": 99} {
+		cfg, problems := Load(env(map[string]string{"LEADHOUND_DISK_MIN_FREE_PCT": v}))
+		if len(problems) != 0 || cfg.DiskMinFreePct != want {
+			t.Errorf("LEADHOUND_DISK_MIN_FREE_PCT=%q: %d, problems %q; want %d", v, cfg.DiskMinFreePct, problems, want)
+		}
+	}
+	for v, want := range map[string]int64{"1": 1, "9223372036854775807": 1<<63 - 1} {
+		cfg, problems := Load(env(map[string]string{"LEADHOUND_DB_MAX_BYTES": v}))
+		if len(problems) != 0 || cfg.DBMaxBytes != want {
+			t.Errorf("LEADHOUND_DB_MAX_BYTES=%q: %d, problems %q; want %d", v, cfg.DBMaxBytes, problems, want)
+		}
+	}
+	cfg, _ := Load(env(map[string]string{"LEADHOUND_DB_MAX_BYTES": "0", "LEADHOUND_DISK_MIN_FREE_PCT": "0"}))
+	if cfg.DBMaxBytes != DefaultDBMaxBytes || cfg.DiskMinFreePct != DefaultDiskMinFreePct {
+		t.Errorf("after refused values: %d bytes, %d%%; want the defaults", cfg.DBMaxBytes, cfg.DiskMinFreePct)
 	}
 }
 

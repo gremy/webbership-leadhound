@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/url"
 	"slices"
@@ -156,6 +157,8 @@ type Config struct {
 	ConsoleEmail         Secret        // LEADHOUND_CONSOLE_EMAIL: the operator's sign-in address
 	ConsolePasswordHash  Secret        // LEADHOUND_CONSOLE_PASSWORD_HASH: bcrypt hash of the operator's password
 	ConsoleURL           string        // LEADHOUND_CONSOLE_URL: the console's public https URL, for the brief's footer
+	DBMaxBytes           int64         // LEADHOUND_DB_MAX_BYTES: the database size at which collectors stop storing
+	DiskMinFreePct       int           // LEADHOUND_DISK_MIN_FREE_PCT: the free-disk floor, in percent, under which they stop
 }
 
 // Defaults for the variables that have one.
@@ -169,6 +172,8 @@ const (
 	DefaultATSInterval          = time.Second
 	DefaultATSDetailBudget      = 500
 	DefaultConsoleAddr          = "127.0.0.1:8090"
+	DefaultDBMaxBytes           = 8 << 30
+	DefaultDiskMinFreePct       = 15
 	// MinATSInterval is the shortest pause LEADHOUND_ATS_INTERVAL may set: below it, one
 	// ATS's API would see a burst from a large board list.
 	MinATSInterval = 200 * time.Millisecond
@@ -205,6 +210,8 @@ func Load(getenv func(string) string) (Config, []string) {
 	c.LinkedInSearchBudget = count(getenv, "LEADHOUND_LINKEDIN_SEARCH_BUDGET", DefaultLinkedInSearchBudget, report)
 	c.LinkedInDetailBudget = count(getenv, "LEADHOUND_LINKEDIN_DETAIL_BUDGET", DefaultLinkedInDetailBudget, report)
 	c.ATSDetailBudget = count(getenv, "LEADHOUND_ATS_DETAIL_BUDGET", DefaultATSDetailBudget, report)
+	c.DBMaxBytes = between(getenv, "LEADHOUND_DB_MAX_BYTES", DefaultDBMaxBytes, 1, math.MaxInt64, report)
+	c.DiskMinFreePct = int(between(getenv, "LEADHOUND_DISK_MIN_FREE_PCT", DefaultDiskMinFreePct, 1, 99, report))
 
 	c.LinkedInInterval = duration(getenv, "LEADHOUND_LINKEDIN_INTERVAL", DefaultLinkedInInterval, "4s", report)
 	c.ATSInterval = duration(getenv, "LEADHOUND_ATS_INTERVAL", DefaultATSInterval, "1s", report)
@@ -279,6 +286,25 @@ func count(getenv func(string) string, name string, def int, report func(string)
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
 		report(fmt.Sprintf("%s must be a whole number of 0 or more, not %q", name, v))
+		return def
+	}
+	return n
+}
+
+// between reads an integer variable that must lie from lo to hi, keeping def when it is unset
+// or out of range.
+func between(getenv func(string) string, name string, def, lo, hi int64, report func(string)) int64 {
+	v := getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < lo || n > hi {
+		if hi == math.MaxInt64 {
+			report(fmt.Sprintf("%s must be a whole number of %d or more, not %q", name, lo, v))
+		} else {
+			report(fmt.Sprintf("%s must be a whole number from %d to %d, not %q", name, lo, hi, v))
+		}
 		return def
 	}
 	return n

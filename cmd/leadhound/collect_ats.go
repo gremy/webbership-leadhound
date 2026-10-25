@@ -330,7 +330,8 @@ func runCollectATS(ctx context.Context, args []string) error {
 		return err
 	}
 
-	c := &ats.Collector{Store: s, NewClient: newClient, Loc: loc, Fixture: af.dryRun, Gates: cg, TitleScreen: screen}
+	c := &ats.Collector{Store: s, NewClient: newClient, Loc: loc, Fixture: af.dryRun, Gates: cg, TitleScreen: screen,
+		Storage: storageCheck(cfg, s.Q())}
 	res, runErr := c.Run(ctx, boards)
 	for _, a := range res.ATS {
 		if a.Paused {

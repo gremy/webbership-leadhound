@@ -7,8 +7,10 @@ import (
 	"cmp"
 	"fmt"
 	"html"
+	"math"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -85,7 +87,47 @@ type Input struct {
 	ConsoleURL string
 	// Leads is the leads block, shown after the jobs; nil shows no block.
 	Leads *leadbrief.Section
+	// Storage is the database size and free disk against their limits; nil shows no line.
+	Storage *StorageState
 }
+
+// StorageState is the database's size against its budget and the disk's free share
+// against its floor. A MaxBytes of 0 is no budget; FreeKnown is false where the free
+// share could not be read.
+type StorageState struct {
+	DBBytes, MaxBytes int64
+	FreePct           float64
+	FreeKnown         bool
+	MinFreePct        int
+}
+
+// OverBudget reports whether the database is past its size budget. Past it, or under the
+// free-disk floor (UnderFloor), the collectors stop storing; the brief's line and the
+// collectors' check both ask these two, so they never disagree.
+func (s StorageState) OverBudget() bool { return s.MaxBytes > 0 && s.DBBytes > s.MaxBytes }
+
+// UnderFloor reports whether the disk's free share, where known, is under its floor.
+func (s StorageState) UnderFloor() bool { return s.FreeKnown && s.FreePct < float64(s.MinFreePct) }
+
+// StopNote says in plain words which limit is passed ("database 8.2 GB over its 8 GB
+// budget", "disk 13% free, under the 15% floor", or both), or "" when neither is.
+func (s StorageState) StopNote() string {
+	var parts []string
+	if s.OverBudget() {
+		parts = append(parts, fmt.Sprintf("database %s over its %s budget", size(s.DBBytes), size(s.MaxBytes)))
+	}
+	if s.UnderFloor() {
+		parts = append(parts, fmt.Sprintf("disk %d%% free, under the %d%% floor", int(math.Floor(s.FreePct)), s.MinFreePct))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// Storage line thresholds: a line from storageNearShare of the database budget, or from
+// storageNearPoints above the free-disk floor.
+const (
+	storageNearShare  = 0.8
+	storageNearPoints = 5
+)
 
 // Job is one listed job.
 type Job struct {
@@ -584,7 +626,7 @@ func writeFooter(t, h *strings.Builder, consoleURL string) {
 func HealthLines(in Input) []string { return healthLines(in) }
 
 // healthLines is one "Health:" line per source, with the jobs left out as not seen on
-// their board, then scoring and recheck.
+// their board, then scoring and recheck, then storage when it is near or past a limit.
 func healthLines(in Input) []string {
 	var out []string
 	if len(in.Sources) == 0 {
@@ -619,7 +661,58 @@ func healthLines(in Input) []string {
 		}
 		out = append(out, "Health: "+l)
 	}
-	return append(out, scoringLine(in), recheckLine(in))
+	out = append(out, scoringLine(in), recheckLine(in))
+	if l := storageLine(in.Storage); l != "" {
+		out = append(out, l)
+	}
+	return out
+}
+
+// storageLine is the "Health:" line for storage, or "" when the database is under
+// storageNearShare of its budget and the disk more than storageNearPoints above its floor.
+// Past either limit the collectors stop storing, and the line leads with that.
+func storageLine(s *StorageState) string {
+	if s == nil {
+		return ""
+	}
+	budget := s.MaxBytes > 0
+	over := s.OverBudget()
+	near := budget && float64(s.DBBytes) >= storageNearShare*float64(s.MaxBytes)
+	floor := float64(s.MinFreePct)
+	under := s.UnderFloor()
+	low := s.FreeKnown && s.FreePct <= floor+storageNearPoints
+	if !near && !low {
+		return ""
+	}
+	var parts []string
+	switch {
+	case over:
+		parts = append(parts, fmt.Sprintf("storage %s, over its %s budget", size(s.DBBytes), size(s.MaxBytes)))
+	case budget:
+		parts = append(parts, fmt.Sprintf("storage %s of %s", size(s.DBBytes), size(s.MaxBytes)))
+	}
+	if s.FreeKnown {
+		// Whole points, rounded down, so a share under the floor never reads as on it.
+		l := fmt.Sprintf("disk %d%% free", int(math.Floor(s.FreePct)))
+		if under {
+			l += fmt.Sprintf(", under the %d%% floor", s.MinFreePct)
+		}
+		parts = append(parts, l)
+	}
+	l := "Health: "
+	if over || under {
+		l += "collectors stopped storing: "
+	}
+	return l + strings.Join(parts, " · ")
+}
+
+// size is a byte count in GB (2^30 bytes) to the nearest tenth, or in whole MB under 1 GB.
+func size(b int64) string {
+	if b < 1<<30 {
+		return fmt.Sprintf("%d MB", b>>20)
+	}
+	g := strconv.FormatFloat(float64(b)/(1<<30), 'f', 1, 64)
+	return strings.TrimSuffix(g, ".0") + " GB"
 }
 
 // scoringLine is the "Health:" line for scoring, with the jobs still waiting on it.
@@ -666,8 +759,19 @@ func recheckLine(in Input) string {
 	return "Health: " + l
 }
 
-// words turns an identifier such as work_rights into plain words.
-func words(s string) string { return strings.ReplaceAll(s, "_", " ") }
+// words turns an identifier such as work_rights into plain words; a stop reason that
+// reads badly that way has its own wording.
+func words(s string) string {
+	if w, ok := stopWords[s]; ok {
+		return w
+	}
+	return strings.ReplaceAll(s, "_", " ")
+}
+
+// stopWords word the stop reasons whose identifier alone would mislead.
+var stopWords = map[string]string{
+	"disk_budget": "storage budget reached",
+}
 
 func esc(s string) string { return html.EscapeString(s) }
 

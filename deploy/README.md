@@ -12,7 +12,7 @@ Every timer but the leads send and sync is persistent, so a run missed while the
 | Timer | When | Runs |
 | --- | --- | --- |
 | `leadhound-ats.timer` | 01:00 | `collect ats`, then `score --max-duration 2h` |
-| `leadhound-backup.timer` | 03:30 | `pg_dump -Fc` into `/var/backups/leadhound/`, newest 14 kept |
+| `leadhound-backup.timer` | 03:30 | `pg_dump -Fc` into `/var/backups/leadhound/`, newest 14 kept within 4 GiB together |
 | `leadhound-collect.timer` | 06:30 and 14:30 | `collect linkedin`, then `score --max-duration 45m` |
 | `leadhound-prebrief.timer` | 07:30 | `canary linkedin` (once a day; a second start the same day does nothing) |
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
@@ -245,6 +245,36 @@ Sign-in allows five tries a minute from one address, and stops everyone after 10
 To reset the password, run `make console-password` again, replace the `LEADHOUND_CONSOLE_PASSWORD_HASH` line on the server with the new hash, and restart the console: `systemctl restart leadhound-console.service`.
 A new password forgets every device that signed in with the old one.
 Its log is `journalctl -u leadhound-console.service`.
+
+## Backups and the storage budget
+
+The nightly dump keeps the newest `LEADHOUND_BACKUP_KEEP` dumps (14) whose sizes together stay within `LEADHOUND_BACKUP_MAX_BYTES` (4 GiB); both are set in `leadhound-backup.service`.
+Each night, after the new dump is written, the script walks the dumps from the newest: the first one that would make one too many or take the total over the budget is deleted, with every older one.
+The newest dump is always kept, even when it alone is over the budget; the journal then says so (`journalctl -u leadhound-backup.service`).
+A failed dump deletes nothing: the old dumps stay until a dump succeeds.
+
+The database has its own budget, `LEADHOUND_DB_MAX_BYTES` in `/etc/leadhound/env`, and the disk a floor, `LEADHOUND_DISK_MIN_FREE_PCT`.
+Once the database is over its budget or the disk's free space under the floor, every collector stops storing: its run ends with the stop reason `disk_budget`, and the brief and the console's dashboard say so in one line.
+Scoring, the brief and the console carry on with what is stored.
+
+Trimming old posting text frees space inside the tables for new rows to reuse, but never shrinks the files, so it does not bring the database back under its budget.
+To recover, do one of these:
+
+- Raise `LEADHOUND_DB_MAX_BYTES` in `/etc/leadhound/env`, when the disk has the room; the next run reads it.
+- Or shrink the large tables with `VACUUM FULL`, in a maintenance window with the timers stopped.
+  `VACUUM FULL` rewrites a table and its indexes under a lock that blocks every read and write of it, and needs free disk for the new copy while the old one still exists; if the disk is short, lower `LEADHOUND_BACKUP_KEEP` or delete the oldest dumps first.
+
+```sh
+systemctl list-timers 'leadhound-*'          # note which timers are active
+sudo systemctl stop 'leadhound-*.timer' leadhound-console.service
+systemctl list-units 'leadhound-*'           # wait until no leadhound service is running
+sudo -u postgres psql -d leadhound -c "SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM pg_class WHERE relkind = 'r' AND relnamespace = 'public'::regnamespace ORDER BY pg_total_relation_size(oid) DESC LIMIT 5"
+sudo -u postgres psql -d leadhound -c 'VACUUM (FULL, VERBOSE, ANALYZE) job_observation'
+sudo -u postgres psql -d leadhound -c 'VACUUM (FULL, VERBOSE, ANALYZE) gate_result'
+sudo systemctl start <the timers noted above> leadhound-console.service
+```
+
+Name the tables the size query lists at the top; `job_observation` (the posting text) and `gate_result` are usually the largest.
 
 ## Restore
 

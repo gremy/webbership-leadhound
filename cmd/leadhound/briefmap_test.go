@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"github.com/gremy/webbership-leadhound/internal/ats"
 	"reflect"
 	"slices"
@@ -245,5 +246,32 @@ func TestATSSources(t *testing.T) {
 				t.Errorf("no brief source for %s", src)
 			}
 		}
+	}
+}
+
+// TestFillStorage: with no storage reader wired the brief carries no storage state; a
+// wired reader's state lands on the input and its error stops the build.
+func TestFillStorage(t *testing.T) {
+	prev := readStorage
+	t.Cleanup(func() { readStorage = prev })
+	ctx := context.Background()
+
+	readStorage = nil
+	var in brief.Input
+	if err := fillStorage(ctx, store.Queries{}, &in); err != nil || in.Storage != nil {
+		t.Errorf("unwired: storage %+v, err %v", in.Storage, err)
+	}
+
+	want := &brief.StorageState{DBBytes: 7 << 30, MaxBytes: 8 << 30, FreePct: 40, FreeKnown: true, MinFreePct: 15}
+	readStorage = func(context.Context, store.Queries) (*brief.StorageState, error) { return want, nil }
+	if err := fillStorage(ctx, store.Queries{}, &in); err != nil || in.Storage != want {
+		t.Errorf("wired: storage %+v, err %v", in.Storage, err)
+	}
+
+	boom := errors.New("size unreadable")
+	readStorage = func(context.Context, store.Queries) (*brief.StorageState, error) { return nil, boom }
+	in = brief.Input{}
+	if err := fillStorage(ctx, store.Queries{}, &in); !errors.Is(err, boom) || in.Storage != nil {
+		t.Errorf("failing: storage %+v, err %v", in.Storage, err)
 	}
 }

@@ -1097,3 +1097,121 @@ func TestInstallLeadsTimers(t *testing.T) {
 		})
 	}
 }
+
+// TestBackupUnitBudget: the unit bounds the kept dumps by count and by total size.
+func TestBackupUnitBudget(t *testing.T) {
+	u := readUnit(t, "leadhound-backup.service")
+	env := map[string]string{}
+	for _, e := range u["Service"]["Environment"] {
+		k, v, _ := strings.Cut(e, "=")
+		env[k] = v
+	}
+	for k, want := range map[string]string{
+		"LEADHOUND_BACKUP_KEEP":      "14",
+		"LEADHOUND_BACKUP_MAX_BYTES": "4294967296",
+	} {
+		if env[k] != want {
+			t.Errorf("leadhound-backup.service %s = %q, want %q", k, env[k], want)
+		}
+	}
+}
+
+// TestBackupPrunes runs leadhound-backup.sh under sh against a temp dir of fake dumps, with
+// pg_dump replaced by a stub that writes a dump of a set size or fails, and checks which dumps
+// are left: the newest KEEP that fit the byte budget together, the newest always, and every
+// old one after a failed dump or a refused setting.
+func TestBackupPrunes(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	script, err := filepath.Abs("leadhound-backup.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	stub := `#!/bin/sh
+for a in "$@"; do
+	case $a in --file=*) f=${a#--file=} ;; esac
+done
+head -c "$STUB_DUMP_BYTES" /dev/zero >"$f"
+if [ -n "${STUB_DUMP_FAIL:-}" ]; then exit 1; fi
+`
+	if err := os.WriteFile(filepath.Join(bin, "pg_dump"), []byte(stub), 0o700); err != nil { // #nosec G306 -- an executable stub in a test temp dir
+		t.Fatal(err)
+	}
+	// Five old dumps of 10 bytes each, oldest first; the new one sorts after all of them.
+	old := []string{
+		"leadhound-20010101T033000Z.dump",
+		"leadhound-20010102T033000Z.dump",
+		"leadhound-20010103T033000Z.dump",
+		"leadhound-20010104T033000Z.dump",
+		"leadhound-20010105T033000Z.dump",
+	}
+	const newDump = "new"
+	for _, tc := range []struct {
+		name    string
+		env     []string
+		fail    bool // the run exits non-zero
+		want    []string
+		wantOut string
+	}{
+		{"by count", []string{"LEADHOUND_BACKUP_KEEP=3", "STUB_DUMP_BYTES=10"}, false, []string{old[3], old[4], newDump}, ""},
+		{"by size", []string{"LEADHOUND_BACKUP_MAX_BYTES=35", "STUB_DUMP_BYTES=10"}, false, []string{old[3], old[4], newDump}, ""},
+		{"by size, exactly at the budget", []string{"LEADHOUND_BACKUP_MAX_BYTES=30", "STUB_DUMP_BYTES=10"}, false, []string{old[3], old[4], newDump}, ""},
+		{"count and size, size binds", []string{"LEADHOUND_BACKUP_KEEP=4", "LEADHOUND_BACKUP_MAX_BYTES=45", "STUB_DUMP_BYTES=20"}, false, []string{old[3], old[4], newDump}, ""},
+		{"count and size, count binds", []string{"LEADHOUND_BACKUP_KEEP=2", "LEADHOUND_BACKUP_MAX_BYTES=1000", "STUB_DUMP_BYTES=10"}, false, []string{old[4], newDump}, ""},
+		{"the newest alone over the budget", []string{"LEADHOUND_BACKUP_MAX_BYTES=5", "STUB_DUMP_BYTES=10"}, false, []string{newDump}, "the newest dump alone is over"},
+		{"everything fits", []string{"STUB_DUMP_BYTES=10"}, false, append(slices.Clone(old), newDump), ""},
+		{"a failed dump", []string{"LEADHOUND_BACKUP_KEEP=1", "LEADHOUND_BACKUP_MAX_BYTES=1", "STUB_DUMP_BYTES=10", "STUB_DUMP_FAIL=1"}, true, old, ""},
+		{"budget not a number", []string{"LEADHOUND_BACKUP_KEEP=1", "LEADHOUND_BACKUP_MAX_BYTES=4G", "STUB_DUMP_BYTES=10"}, true, old, "LEADHOUND_BACKUP_MAX_BYTES must be"},
+		{"budget negative", []string{"LEADHOUND_BACKUP_KEEP=1", "LEADHOUND_BACKUP_MAX_BYTES=-1", "STUB_DUMP_BYTES=10"}, true, old, "LEADHOUND_BACKUP_MAX_BYTES must be"},
+		{"budget zero", []string{"LEADHOUND_BACKUP_KEEP=1", "LEADHOUND_BACKUP_MAX_BYTES=0", "STUB_DUMP_BYTES=10"}, true, old, "LEADHOUND_BACKUP_MAX_BYTES must be at least 1"},
+		{"budget too long", []string{"LEADHOUND_BACKUP_KEEP=1", "LEADHOUND_BACKUP_MAX_BYTES=9999999999999999999", "STUB_DUMP_BYTES=10"}, true, old, "LEADHOUND_BACKUP_MAX_BYTES must be"},
+		{"keep zero", []string{"LEADHOUND_BACKUP_KEEP=0", "STUB_DUMP_BYTES=10"}, true, old, "LEADHOUND_BACKUP_KEEP must be at least 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range old {
+				if err := os.WriteFile(filepath.Join(dir, name), make([]byte, 10), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command(sh, script) // #nosec G204 -- the test's own script
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"LEADHOUND_BACKUP_DIR="+dir,
+				"LEADHOUND_BACKUP_DB=leadhound_test",
+				"LEADHOUND_BACKUP_KEEP=",
+				"LEADHOUND_BACKUP_MAX_BYTES=",
+				"STUB_DUMP_FAIL=",
+			)
+			cmd.Env = append(cmd.Env, tc.env...)
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != tc.fail {
+				t.Fatalf("leadhound-backup: err = %v, want failure %t\n%s", err, tc.fail, out)
+			}
+			if !strings.Contains(string(out), tc.wantOut) {
+				t.Errorf("output lacks %q:\n%s", tc.wantOut, out)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range entries {
+				name := e.Name()
+				if !slices.Contains(old, name) && strings.HasPrefix(name, "leadhound-") && strings.HasSuffix(name, ".dump") {
+					name = newDump
+				}
+				got = append(got, name)
+			}
+			slices.Sort(got)
+			want := slices.Clone(tc.want)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("left %q, want %q\n%s", got, want, out)
+			}
+		})
+	}
+}

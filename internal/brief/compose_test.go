@@ -452,3 +452,64 @@ func TestNoAssistantName(t *testing.T) {
 		}
 	}
 }
+
+// TestStorageLine: one storage line at 80% of the database budget or within 5 points of
+// the free-disk floor, worded as the collectors stopping once either is passed, and none
+// when storage is comfortable or unread.
+func TestStorageLine(t *testing.T) {
+	const gb = int64(1) << 30
+	st := func(db int64, free float64, known bool) *StorageState {
+		return &StorageState{DBBytes: db, MaxBytes: 8 * gb, FreePct: free, FreeKnown: known, MinFreePct: 15}
+	}
+	for _, c := range []struct {
+		name string
+		s    *StorageState
+		want string
+	}{
+		{"not read", nil, ""},
+		{"comfortable", st(2*gb, 60, true), ""},
+		{"comfortable, free unknown", st(2*gb, 0, false), ""},
+		{"just under 80%", st(8*gb*8/10-1, 60, true), ""},
+		{"near the budget", st(66*gb/10, 60, true), "Health: storage 6.6 GB of 8 GB · disk 60% free"},
+		{"near the budget, free unknown", st(66*gb/10, 0, false), "Health: storage 6.6 GB of 8 GB"},
+		{"near the floor", st(2*gb, 18, true), "Health: storage 2 GB of 8 GB · disk 18% free"},
+		{"at the floor plus 5", st(2*gb, 20, true), "Health: storage 2 GB of 8 GB · disk 20% free"},
+		{"near both", st(66*gb/10, 18.7, true), "Health: storage 6.6 GB of 8 GB · disk 18% free"},
+		{"small database near the floor", st(300<<20, 17, true), "Health: storage 300 MB of 8 GB · disk 17% free"},
+		{"over the budget", st(82*gb/10, 60, true),
+			"Health: collectors stopped storing: storage 8.2 GB, over its 8 GB budget · disk 60% free"},
+		{"over the budget, free unknown", st(82*gb/10, 0, false),
+			"Health: collectors stopped storing: storage 8.2 GB, over its 8 GB budget"},
+		{"under the floor", st(2*gb, 13, true),
+			"Health: collectors stopped storing: storage 2 GB of 8 GB · disk 13% free, under the 15% floor"},
+		{"over both", st(82*gb/10, 14.9, true),
+			"Health: collectors stopped storing: storage 8.2 GB, over its 8 GB budget · disk 14% free, under the 15% floor"},
+		{"no budget, near the floor", &StorageState{DBBytes: 2 * gb, FreePct: 18, FreeKnown: true, MinFreePct: 15},
+			"Health: disk 18% free"},
+		{"no budget, comfortable", &StorageState{DBBytes: 2 * gb, FreePct: 60, FreeKnown: true, MinFreePct: 15}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			in := Input{Scoring: ScoringOK, Recheck: RecheckOK, Storage: c.s}
+			got := healthLines(in)[1:] // after "no source ran today"
+			want := []string{"Health: Scoring ok", "Health: recheck ok"}
+			if c.want != "" {
+				want = append(want, c.want)
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("%q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestDiskBudgetWords: a collector stopped on its storage budget reads in plain words on
+// its source line.
+func TestDiskBudgetWords(t *testing.T) {
+	got := healthLines(Input{Sources: []Source{{Name: "Greenhouse", State: "disk_budget", NoCanary: true}}})[0]
+	if want := "Health: Greenhouse did not finish (storage budget reached)"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+	if got := words("work_rights"); got != "work rights" {
+		t.Errorf("words(work_rights) = %q", got)
+	}
+}

@@ -230,7 +230,7 @@ func runCollect(ctx context.Context, args []string) error {
 	}
 	defer s.Close()
 
-	c := &linkedin.Collector{Store: s, NewClient: newClient, Loc: loc, Source: source, Gates: cg}
+	c := &linkedin.Collector{Store: s, NewClient: newClient, Loc: loc, Source: source, Gates: cg, Storage: storageCheck(cfg, s.Q())}
 	res, err := c.Run(ctx, m)
 	if err != nil {
 		return err

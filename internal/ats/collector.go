@@ -25,6 +25,14 @@ const CommandCollect = "collect"
 // stopReasonParserBroke is run.stop_reason when every board of an ATS lost its expected shape.
 const stopReasonParserBroke = "parser_broke"
 
+// StopDiskBudget is run.stop_reason when the storage check stopped the run: the database
+// past its size budget or the disk under its free floor.
+const StopDiskBudget = "disk_budget"
+
+// StorageCheckEvery is how many boards an ATS's run reads between two storage checks; it
+// checks before the first.
+const StorageCheckEvery = 50
+
 // applyTypeATS is job_observation.apply_type for a posting applied to on the employer's own
 // ATS page.
 const applyTypeATS = "ats"
@@ -50,8 +58,12 @@ type Collector struct {
 	TitleScreen func(title string) bool
 	// Gates is the candidate profile the gates read for every observation.
 	Gates gates.CandidateGates
-	Now   func() time.Time // nil: time.Now
-	Log   *slog.Logger     // nil: slog.Default()
+	// Storage reports whether storing must stop (the database past its size budget or the
+	// disk under its free floor) and why, in a plain note. Each ATS's run asks it before its
+	// first board and every StorageCheckEvery boards; an error fails that run. nil never stops.
+	Storage func(ctx context.Context) (over bool, why string, err error)
+	Now     func() time.Time // nil: time.Now
+	Log     *slog.Logger     // nil: slog.Default()
 }
 
 // Result is what one Run did: one entry per ATS that had boards, in run order.
@@ -106,6 +118,7 @@ type ATSResult struct {
 	Requests         int
 	Failures         int
 	StopReason       string
+	StorageNote      string // why the storage check stopped the run (StopReason disk_budget)
 	Note             string
 	// ScreenedByBoard is ScreenedOut per board ("<ats>/<board>"), for boards that dropped any.
 	ScreenedByBoard map[string]int
@@ -274,6 +287,9 @@ func (a *ATSResult) note() string {
 	}
 	if a.StopReason != "" && a.StopReason != stopReasonParserBroke {
 		s += "; stopped: " + a.StopReason
+		if a.StorageNote != "" {
+			s += " (" + a.StorageNote + ")"
+		}
 	}
 	if len(a.notFound) > 0 {
 		s += "; board not found: " + capList(a.notFound)
@@ -368,10 +384,22 @@ type listedPosting struct {
 	fetchID int64
 }
 
-// collect fetches each board once. It sets res.StopReason when the breaker opens, which
-// ends this ATS's run, and returns an error only when the run itself failed.
+// collect fetches each board once. It sets res.StopReason when the breaker opens or the
+// storage check says stop, either of which ends this ATS's run, and returns an error only when the run itself failed.
 func (r *atsRun) collect(ctx context.Context, boards []Board) error {
 	for i, b := range boards {
+		if r.c.Storage != nil && i%StorageCheckEvery == 0 {
+			over, why, err := r.c.Storage(ctx)
+			if err != nil {
+				return fmt.Errorf("storage check: %w", err)
+			}
+			if over {
+				// Nothing more is stored; the boards not read wait for the next run.
+				r.res.StopReason, r.res.StorageNote = StopDiskBudget, why
+				r.c.log().Warn("collect stopped: storage budget", "ats", r.res.ATS, "why", why)
+				return nil
+			}
+		}
 		stop, err := r.board(ctx, b)
 		if err != nil {
 			return err

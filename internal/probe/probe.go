@@ -40,6 +40,13 @@ const (
 // StopFailureRate is the run's stop reason under the network-down rule.
 const StopFailureRate = string(fetch.StopFailureRate)
 
+// StopDiskBudget is the run's stop reason when Deps.Stop reports the storage budget passed.
+const StopDiskBudget = "disk_budget"
+
+// StorageCheckEvery is how many sites Run hands out between two asks of Deps.Stop; it asks
+// before the first.
+const StorageCheckEvery = 200
+
 // The network-down rule: at least downMinSites sites done, and more than downThreshold of
 // the last downWindow ended in counted transport errors.
 const (
@@ -82,6 +89,10 @@ type Deps struct {
 	Recorder Recorder
 	// Save stores one site's Write; an error stops the run and is returned.
 	Save func(ctx context.Context, w Write) error
+	// Stop reports whether storing must stop (the database past its size budget or the disk
+	// under its free floor) and why, in a plain note. Run asks it before the first site and
+	// every StorageCheckEvery sites; an error stops the run and is returned. nil never stops.
+	Stop func(ctx context.Context) (stop bool, why string, err error)
 }
 
 // Options tune one run.
@@ -101,7 +112,8 @@ type Summary struct {
 	Interrupted int            // sites cut short by a stop or a cancel; nothing stored, still due
 	Requests    int            // HTTP requests sent, every request of a redirect chain included
 	Failures    int            // failed requests the clients counted
-	StopReason  string         // "failure_rate" under the network-down rule, else ""
+	StopReason  string         // "failure_rate" under the network-down rule, "disk_budget" when Deps.Stop stopped it, else ""
+	StopNote    string         // Deps.Stop's why, with StopReason "disk_budget"
 	Cancelled   bool           // ctx ended the run
 	Elapsed     time.Duration
 }
@@ -145,8 +157,9 @@ type siteResult struct {
 
 // Run probes sites with opts.Concurrency workers and stores each finished site through
 // d.Save. It returns when every site is done, the network-down rule stops the run
-// (StopReason "failure_rate"), ctx ends (Cancelled), or a recording or Save error stops it
-// (returned). A site cut short by a stop or a cancel stores nothing and stays due.
+// (StopReason "failure_rate"), d.Stop stops handing out sites (StopReason "disk_budget"; the
+// sites already handed out finish and are stored), ctx ends (Cancelled), or a recording,
+// Save or d.Stop error stops it (returned). A site cut short by a stop or a cancel stores nothing and stays due.
 func Run(ctx context.Context, d Deps, sites []leadstore.Site, opts Options) (Summary, error) {
 	start := time.Now()
 	n := max(opts.Concurrency, 1)
@@ -164,9 +177,25 @@ func Run(ctx context.Context, d Deps, sites []leadstore.Site, opts Options) (Sum
 			}
 		})
 	}
+	// The feeder's outcome, read only after results is closed, which follows its close(jobs).
+	var stopped bool
+	var stopNote string
+	var stopErr error
 	go func() {
 		defer close(jobs)
-		for _, s := range sites {
+		for i, s := range sites {
+			if d.Stop != nil && i%StorageCheckEvery == 0 {
+				stop, why, err := d.Stop(runCtx)
+				if err != nil {
+					stopErr = fmt.Errorf("probe: storage check: %w", err)
+					cancel()
+					return
+				}
+				if stop {
+					stopped, stopNote = true, why
+					return
+				}
+			}
 			select {
 			case jobs <- s:
 			case <-runCtx.Done():
@@ -207,6 +236,12 @@ func Run(ctx context.Context, d Deps, sites []leadstore.Site, opts Options) (Sum
 			sum.StopReason = StopFailureRate
 			cancel()
 		}
+	}
+	if firstErr == nil {
+		firstErr = stopErr
+	}
+	if stopped && sum.StopReason == "" {
+		sum.StopReason, sum.StopNote = StopDiskBudget, stopNote
 	}
 	sum.Cancelled = ctx.Err() != nil
 	sum.Elapsed = time.Since(start)

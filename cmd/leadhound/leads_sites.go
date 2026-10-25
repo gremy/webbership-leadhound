@@ -106,6 +106,11 @@ func runSitesImport(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	if over, why, err := storageCheck(cfg, s.Q())(ctx); err != nil {
+		return err
+	} else if over {
+		return fmt.Errorf("leads sites import %s: storage budget reached (%s); nothing imported", kind, why)
+	}
 	t, err := leadstore.NewQueries(s.Pool()).ImportSites(ctx, origin, rows)
 	if err != nil {
 		return err
@@ -233,8 +238,8 @@ func runSitesProbe(ctx context.Context, args []string) error {
 		return err
 	}
 	rec := store.NewFetchRecorder(q, runID, source).SizeOnly(fetch.KindSite, fetch.KindRobots)
-	sum, runErr := probe.Run(ctx, probe.Deps{NewClient: newClient, Recorder: rec, Save: probe.SaveTx(s.Pool(), runID)},
-		due, probe.Options{Concurrency: setup.env.ProbeConcurrency})
+	sum, runErr := probe.Run(ctx, probe.Deps{NewClient: newClient, Recorder: rec, Save: probe.SaveTx(s.Pool(), runID),
+		Stop: storageCheck(cfg, q)}, due, probe.Options{Concurrency: setup.env.ProbeConcurrency})
 	result := store.RunResult{
 		Requests: sum.Requests, Failures: sum.Failures, StopReason: sum.StopReason,
 		Note: fmt.Sprintf("%d sites probed, %d Drupal", sum.Sites, sum.Drupal),
@@ -244,6 +249,8 @@ func runSitesProbe(ctx context.Context, args []string) error {
 		result.Note += "; " + runErr.Error()
 	case sum.Cancelled:
 		result.Note += "; interrupted"
+	case sum.StopReason == probe.StopDiskBudget:
+		result.Note += "; stopped storing: " + sum.StopNote
 	}
 	if err := q.FinishRun(context.WithoutCancel(ctx), runID, result); err != nil {
 		return errors.Join(runErr, err)
@@ -304,6 +311,8 @@ func printProbeSummary(w io.Writer, runID int64, dryRun bool, sum probe.Summary,
 	switch {
 	case stop == probe.StopFailureRate:
 		stop += " (network down: over 80% of the last 100 sites unreachable)"
+	case stop == probe.StopDiskBudget:
+		stop += " (" + sum.StopNote + ")"
 	case sum.Cancelled:
 		stop = "interrupted"
 	case stop == "":

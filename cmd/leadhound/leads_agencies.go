@@ -181,6 +181,15 @@ func runAgenciesImport(ctx context.Context, args []string) error {
 	}
 	sum := agencySummary{Agencies: len(list), Skipped: skipped}
 	var runErr error
+	over, why, err := storageCheck(cfg, q)(ctx)
+	switch {
+	case err != nil:
+		runErr = fmt.Errorf("storage check: %w", err)
+		list = nil
+	case over:
+		sum.StopReason, sum.StopNote = stopDiskBudget, why
+		list = nil
+	}
 	for _, a := range list {
 		if ctx.Err() != nil {
 			break
@@ -191,7 +200,7 @@ func runAgenciesImport(ctx context.Context, args []string) error {
 		}
 	}
 	result := store.RunResult{
-		Requests: sum.Requests, Failures: sum.Failures,
+		Requests: sum.Requests, Failures: sum.Failures, StopReason: sum.StopReason,
 		Note: fmt.Sprintf("%d agencies, %d findings", sum.Agencies, sum.Findings),
 	}
 	switch {
@@ -199,6 +208,8 @@ func runAgenciesImport(ctx context.Context, args []string) error {
 		result.Note += "; " + runErr.Error()
 	case ctx.Err() != nil:
 		result.Note += "; interrupted"
+	case sum.StopReason != "":
+		result.Note += "; nothing imported: " + sum.StopNote
 	}
 	if err := q.FinishRun(context.WithoutCancel(ctx), runID, result); err != nil {
 		return errors.Join(runErr, err)
@@ -224,6 +235,8 @@ type agencySummary struct {
 	OffDomain      int // homepages whose final URL left the agency's domain
 	Requests       int
 	Failures       int
+	StopReason     string // disk_budget when the storage check stopped the import before it wrote
+	StopNote       string // why
 }
 
 // agencyImport holds what every agency's import shares.
@@ -376,4 +389,7 @@ func printAgencySummary(w io.Writer, runID int64, dryRun bool, sum agencySummary
 		"skipped without website %d · drupal.org pages skipped %d\n",
 		runID, mode, sum.Agencies, sum.Created, sum.Clashes, findings, sum.NoFinding, sum.Skipped, sum.DrupalOrgPages)
 	_, _ = fmt.Fprintf(w, "  robots-disallowed pages: %d · off-domain homepages: %d · %d requests\n", sum.RobotsSkipped, sum.OffDomain, sum.Requests)
+	if sum.StopReason != "" {
+		_, _ = fmt.Fprintf(w, "  stop %s (%s); nothing imported\n", sum.StopReason, sum.StopNote)
+	}
 }

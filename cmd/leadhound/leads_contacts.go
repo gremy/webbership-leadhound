@@ -44,6 +44,14 @@ const (
 // defaultContactsMax is how many orgs one route search takes without --max.
 const defaultContactsMax = 100
 
+// contactsStorageEvery is how many orgs a route search reads between two storage checks;
+// it checks before the first.
+const contactsStorageEvery = 20
+
+// stopDiskBudget is run.stop_reason when the storage check stopped a leads run: the
+// database past its size budget or the disk under its free floor.
+const stopDiskBudget = "disk_budget"
+
 // contactsResolver is the MX resolver of a live route search; tests replace it. A dry run
 // uses contactsDryResolver, which looks nothing up unless a test sets it.
 var (
@@ -130,10 +138,22 @@ func runLeadsContacts(ctx context.Context, args []string) error {
 		roles: setup.leads.RoleLocalParts, publicSuffixes: setup.leads.PublicBodySuffixes,
 	}
 	sum := contactSummary{NewOrgs: newOrgs, DrupalOrgs: drupalOrgs}
+	stopStoring := storageCheck(cfg, q)
 	var runErr error
-	for _, o := range orgs {
+	for i, o := range orgs {
 		if ctx.Err() != nil {
 			break
+		}
+		if i%contactsStorageEvery == 0 {
+			over, why, err := stopStoring(ctx)
+			if err != nil {
+				runErr = fmt.Errorf("storage check: %w", err)
+				break
+			}
+			if over {
+				sum.StopReason, sum.StopNote = stopDiskBudget, why
+				break
+			}
 		}
 		if err := cs.search(ctx, o, &sum); err != nil {
 			runErr = err
@@ -141,7 +161,7 @@ func runLeadsContacts(ctx context.Context, args []string) error {
 		}
 	}
 	result := store.RunResult{
-		Requests: sum.Requests, Failures: sum.Failures,
+		Requests: sum.Requests, Failures: sum.Failures, StopReason: sum.StopReason,
 		Note: fmt.Sprintf("%d orgs checked, %d routes", sum.Checked, sum.Emails+sum.Forms),
 	}
 	switch {
@@ -149,6 +169,8 @@ func runLeadsContacts(ctx context.Context, args []string) error {
 		result.Note += "; " + runErr.Error()
 	case ctx.Err() != nil:
 		result.Note += "; interrupted"
+	case sum.StopReason != "":
+		result.Note += "; stopped storing: " + sum.StopNote
 	}
 	if err := q.FinishRun(context.WithoutCancel(ctx), runID, result); err != nil {
 		return errors.Join(runErr, err)
@@ -242,6 +264,8 @@ type contactSummary struct {
 	CutShort      int // searches that did not complete: nothing recorded, still due
 	Requests      int
 	Failures      int
+	StopReason    string // disk_budget when the storage check stopped the search
+	StopNote      string // why
 }
 
 // contactSearch holds what every org's search shares.
@@ -557,6 +581,9 @@ func printContactSummary(w io.Writer, runID int64, dryRun bool, sum contactSumma
 	_, _ = fmt.Fprintf(w, "  off-domain pages: %d · drupal.org orgs skipped: %d · cut short (still due): %d\n",
 		sum.OffDomain, sum.DrupalOrgs, sum.CutShort)
 	_, _ = fmt.Fprintf(w, "  %d requests\n", sum.Requests)
+	if sum.StopReason != "" {
+		_, _ = fmt.Fprintf(w, "  stop %s (%s)\n", sum.StopReason, sum.StopNote)
+	}
 }
 
 // defaultExportLimit is how many orgs `leads export routes` writes without --limit.

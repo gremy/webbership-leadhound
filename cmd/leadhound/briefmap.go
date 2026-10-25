@@ -214,8 +214,26 @@ func hydrate(ctx context.Context, q store.Queries, r *scoring.Ranking, allowFake
 	return nil
 }
 
+// readStorage reads the database size and free disk against their limits for the brief's
+// storage line. The command wires it at startup; nil leaves the brief without the line.
+var readStorage func(ctx context.Context, q store.Queries) (*brief.StorageState, error)
+
+// fillStorage sets in.Storage from readStorage when one is wired.
+func fillStorage(ctx context.Context, q store.Queries, in *brief.Input) error {
+	if readStorage == nil {
+		return nil
+	}
+	st, err := readStorage(ctx, q)
+	if err != nil {
+		return err
+	}
+	in.Storage = st
+	return nil
+}
+
 // buildInput reads the store into the brief for day (a time on that calendar day in loc):
-// the ranking, today's skip counts, the source health, and the scoring and recheck state.
+// the ranking, today's skip counts, the source health, the scoring and recheck state, and
+// storage when readStorage is wired.
 func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake, recheckOff bool) (brief.Input, error) {
 	// The brief reads descriptions only where a description rule can change what it prints.
 	pass, err := rankPass(ctx, q, loc, day, allowFake, rankOptions{caps: briefCaps(prof), desc: store.DescWhereRanked, hydrate: true})
@@ -283,6 +301,9 @@ func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc
 		case !errors.Is(err, store.ErrNotFound):
 			return brief.Input{}, err
 		}
+	}
+	if err := fillStorage(ctx, q, &in); err != nil {
+		return brief.Input{}, err
 	}
 	return in, nil
 }

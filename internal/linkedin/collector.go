@@ -28,6 +28,10 @@ const (
 // stopReasonParserBroke is run.stop_reason when a page lost its expected markup.
 const stopReasonParserBroke = "parser_broke"
 
+// StopDiskBudget is run.stop_reason when the storage check stopped the run: the database
+// past its size budget or the disk under its free floor.
+const StopDiskBudget = "disk_budget"
+
 // Collector runs one LinkedIn collect: search pages, then details for the new jobs.
 type Collector struct {
 	Store *store.Store
@@ -43,6 +47,11 @@ type Collector struct {
 	Source string
 	// Gates is the candidate profile the gates read for every observation.
 	Gates gates.CandidateGates
+	// Storage reports whether storing must stop (the database past its size budget or the
+	// disk under its free floor) and why, in a plain note. The run asks it before each
+	// search page; over ends the run before its details, and an error fails it. nil never
+	// stops.
+	Storage func(ctx context.Context) (over bool, why string, err error)
 }
 
 // Result is what one Run did. It mirrors the run row it wrote.
@@ -89,7 +98,8 @@ func (c *Collector) log() *slog.Logger {
 	return slog.Default()
 }
 
-// Run collects m. A recorded stop (throttled, blocked, failure_rate, budget, parser_broke)
+// Run collects m. A recorded stop (throttled, blocked, failure_rate, budget, parser_broke,
+// disk_budget)
 // is a Result with StopReason set and a nil error; an error means the run itself failed.
 func (c *Collector) Run(ctx context.Context, m Matrix) (Result, error) {
 	q := c.Store.Q()
@@ -176,6 +186,7 @@ type collectRun struct {
 	pending map[string]bool   // new IDs already queued for a detail fetch
 	order   []string          // the queue, in the order first seen
 	broke   string            // the page the parser broke on, for the note
+	storage string            // why the storage check stopped the run, for the note
 }
 
 // collect runs the search phase, then the detail phase. It sets res.StopReason for a
@@ -200,6 +211,17 @@ func (r *collectRun) searchAll(ctx context.Context, m Matrix) (stopAll bool, err
 	for _, kw := range m.Keywords {
 		for _, loc := range m.Locations {
 			for page := 1; page <= maxPages; page++ {
+				if r.c.Storage != nil {
+					over, why, err := r.c.Storage(ctx)
+					if err != nil {
+						return true, fmt.Errorf("storage check: %w", err)
+					}
+					if over {
+						r.res.StopReason, r.storage = StopDiskBudget, why
+						r.c.log().Warn("collect stopped: storage budget", "why", why)
+						return true, nil
+					}
+				}
 				more, stop, err := r.searchPage(ctx, SearchURL(kw, loc, tpr, page), page)
 				if err != nil {
 					return true, err
@@ -375,6 +397,9 @@ func (r *collectRun) details(ctx context.Context) error {
 func (r *collectRun) note() string {
 	s := fmt.Sprintf("%d searches, %d cards, %d new, %d observed, %d detail missing",
 		r.res.Searches, r.res.Cards, r.res.NewIDs, r.res.Observations, r.res.DetailMissing)
+	if r.storage != "" {
+		s += "; stopped storing: " + r.storage
+	}
 	if r.broke != "" {
 		s += "; parser broke on " + r.broke
 		if waiting := r.res.NewIDs - r.res.Observations - r.res.DetailMissing; waiting > 0 {
