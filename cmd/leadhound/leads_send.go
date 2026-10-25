@@ -50,7 +50,11 @@ const (
 	noteAccount     = "smtp-account"
 	noteFollowup    = "followup"
 	noteStuck       = "stuck-sending"
+	notePaused      = "paused by the operator"
 )
+
+// errPaused stops a send run before a message is claimed: the operator paused sending.
+var errPaused = errors.New("leads send: paused by the operator")
 
 // selftestNotSent is the cancel reason of a selftest message that could not go in its run:
 // it is never left for a later ordinary send.
@@ -76,6 +80,8 @@ type sendReport struct {
 	held      map[outreach.HoldReason]int
 	overMax   int
 	notes     []string
+	// pausedAt is when the operator paused sending, when that stopped this run.
+	pausedAt *time.Time
 }
 
 func (r *sendReport) note(word string) {
@@ -157,6 +163,11 @@ func (r *sendReport) print(w io.Writer) {
 	if len(held) > 0 {
 		p("Held for a later run: %s.\n", strings.Join(held, " · "))
 	}
+	if r.pausedAt != nil {
+		p("Sending is paused by the operator (since %s); nothing more is sent until leadhound leads send resume.\n",
+			r.pausedAt.Format("2006-01-02 15:04"))
+		return
+	}
 	if len(r.sent)+len(r.refused)+len(r.maybe)+len(r.stuck)+r.retry+len(held) == 0 && r.cancelled == 0 {
 		p("Nothing due to send.\n")
 	}
@@ -170,8 +181,12 @@ func idList(ids []int64) string {
 	return strings.Join(out, ", ")
 }
 
-// runLeadsSend is `leads send [--max N]`.
+// runLeadsSend is `leads send [--max N]`, or `leads send pause [--reason TEXT]` and
+// `leads send resume`.
 func runLeadsSend(ctx context.Context, args []string) error {
+	if len(args) > 0 && (args[0] == "pause" || args[0] == "resume") {
+		return runLeadsSendPause(ctx, args[0] == "pause", args[1:])
+	}
 	fs := flag.NewFlagSet("leads send", flag.ContinueOnError)
 	maxN := fs.Int("max", 0, "send at most this many messages")
 	pos, err := parseArgs(fs, args)
@@ -179,9 +194,65 @@ func runLeadsSend(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(pos) != 0 || *maxN < 0 {
-		return usageError("usage: leadhound leads send [--max N]")
+		return usageError("%s", sendUsage)
 	}
 	return leadsSendRun(ctx, stdout, sendOptions{max: *maxN})
+}
+
+const sendUsage = "usage: leadhound leads send [--max N] | leads send pause [--reason TEXT] | leads send resume"
+
+// runLeadsSendPause is `leads send pause [--reason TEXT]` and `leads send resume`: the
+// operator's switch that every send run obeys before each message. Setting it to what it
+// already is writes nothing.
+func runLeadsSendPause(ctx context.Context, pause bool, args []string) error {
+	fs := flag.NewFlagSet("leads send pause", flag.ContinueOnError)
+	var reason *string
+	if pause {
+		reason = fs.String("reason", "", "why sending is paused (kept with the pause)")
+	}
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usageError("%s", sendUsage)
+	}
+	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
+	if err != nil {
+		return err
+	}
+	loc, err := time.LoadLocation(cfg.TZ)
+	if err != nil {
+		return usageError("LEADHOUND_TZ: %v", err)
+	}
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	why := ""
+	if reason != nil {
+		why = *reason
+	}
+	// The console's switch runs the same core (consolecore.go).
+	sw, err := setSendPause(ctx, leadstore.NewQueries(s.Pool()), pause, why)
+	if err != nil {
+		return err
+	}
+	switch {
+	case pause && !sw.Changed:
+		_, _ = fmt.Fprintf(stdout, "Sending is already paused (since %s).\n", sw.Since.In(loc).Format("2006-01-02 15:04"))
+		return nil
+	case !pause && !sw.Changed:
+		_, _ = fmt.Fprintln(stdout, "Sending is not paused.")
+		return nil
+	}
+	if pause {
+		_, _ = fmt.Fprintln(stdout, "Sending is paused: leads send sends nothing until leadhound leads send resume.")
+	} else {
+		_, _ = fmt.Fprintln(stdout, "Sending is resumed: the next leads send run sends what is due.")
+	}
+	return nil
 }
 
 // liveMissing names the variables a live send needs that are not set.
@@ -317,8 +388,34 @@ func (r *sendRun) printf(format string, a ...any) { _, _ = fmt.Fprintf(r.w, form
 
 // run is the fixed order after the lock and the run row.
 func (r *sendRun) run(ctx context.Context) error {
+	err := r.runOrder(ctx)
+	if errors.Is(err, errPaused) {
+		return nil
+	}
+	return err
+}
+
+// checkPaused returns errPaused, noted in the report, when the operator has paused sending.
+func (r *sendRun) checkPaused(ctx context.Context, lq leadstore.Queries) error {
+	paused, _, at, err := lq.SendPaused(ctx)
+	if err != nil || !paused {
+		return err
+	}
+	at = at.In(r.loc)
+	r.rep.pausedAt = &at
+	r.rep.note(notePaused)
+	return errPaused
+}
+
+// runOrder is run's body; it ends with errPaused when the operator's pause stops it.
+func (r *sendRun) runOrder(ctx context.Context) error {
 	env := r.setup.env
 	now := leadsNow()
+
+	// 0. The operator's pause, before anything else (and before every message, sendOne).
+	if err := r.checkPaused(ctx, r.lq); err != nil {
+		return err
+	}
 
 	// 1. The sending domain's DNS, passed today.
 	if domain, ok := sendingDomain(env); ok {
@@ -387,7 +484,18 @@ func (r *sendRun) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	capToday := outreach.CapToday(r.setup.leads, now, r.loc)
+	// The ramp's day 0: a fixed date, or with start_date first-send the first live send.
+	var firstSend *time.Time
+	if r.setup.leads.Caps.StartDate.IsFirstSend() {
+		if firstSend, err = r.lq.FirstLiveSend(ctx); err != nil {
+			return err
+		}
+		if firstSend != nil {
+			fs := firstSend.In(r.loc)
+			firstSend = &fs
+		}
+	}
+	capToday := outreach.CapOn(r.setup.leads, firstSend, now.In(r.loc))
 	var items, plan []outreach.PlanItem
 	for _, row := range rows {
 		self := row.LeadKind == leadstore.LeadSelftest
@@ -570,6 +678,10 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 	}
 	var claimed bool
 	err = leadsInTx(ctx, r.s.Pool(), func(tq leadstore.Queries) error {
+		// The pause is read in the claim's transaction, the last moment before SMTP.
+		if err := r.checkPaused(ctx, tq); err != nil {
+			return err
+		}
 		var err error
 		if claimed, err = tq.MarkSending(ctx, row.ID); err != nil || !claimed {
 			return err

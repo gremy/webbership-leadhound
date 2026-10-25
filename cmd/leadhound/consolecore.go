@@ -1,0 +1,993 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadbrief"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/outreach"
+	"github.com/gremy/webbership-leadhound/internal/scoring"
+	"github.com/gremy/webbership-leadhound/internal/store"
+)
+
+// The console's side of the jobs page, the rule forms and the leads pages: the backend reads
+// and writes through the cores the commands run (trackcore.go, leadscore.go) and words what
+// they did itself, never naming a command. leads.yaml is read on every leads request, so a
+// server without it serves the jobs pages as before.
+
+// The console's limits on what it lists and takes.
+const (
+	consoleListCap    = 200 // most manual items or emails to check the leads page lists
+	consoleHistoryCap = 50  // most status changes the job page lists
+	consoleQueue      = leadstore.NextUpPage
+	consolePreview    = 20 // leads the priorities page previews
+	consoleDeferDays  = 14 // the default push-back
+	consoleMaxText    = 500
+	consoleEvidence   = 3 // most evidence lines per criterion on the job page
+)
+
+// refused is the console's refusal with words, wrapped as one the operator can fix.
+func refused(format string, a ...any) error {
+	return fmt.Errorf("%w: %s", console.ErrUserFixable, fmt.Sprintf(format, a...))
+}
+
+// Job is one job's whole record: its facts and current observation, each criterion's
+// verdict with the keywords it matched and the lines that back it, what is unclear (flagged
+// gates with their snippets unless they look like a contact, as the brief shows them), and
+// its status history.
+func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
+	q := b.s.Q()
+	sum, err := q.JobSummaryByID(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return console.JobPage{}, console.ErrNotFound
+	}
+	if err != nil {
+		return console.JobPage{}, err
+	}
+	p := console.JobPage{JobID: id, Title: sum.Title, Company: sum.Company, URL: sum.URL, ListingStatus: sum.ListingStatus, Status: sum.Status}
+	if p.History, err = statusHistory(ctx, b.s.Pool(), id); err != nil {
+		return console.JobPage{}, err
+	}
+	obs, err := q.LatestObservation(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return p, nil
+	}
+	if err != nil {
+		return console.JobPage{}, err
+	}
+	gates, err := q.LatestGateResults(ctx, id)
+	if err != nil {
+		return console.JobPage{}, err
+	}
+	decisions, err := q.LatestDecisions(ctx, id)
+	if err != nil {
+		return console.JobPage{}, err
+	}
+	c := scoring.Candidate{JobID: id, Title: obs.Title, Company: sum.Company, Location: obs.LocationText, Description: obs.DescriptionClean,
+		ListingStatus: sum.ListingStatus, Status: sum.Status, Closed: obs.Closed, PostedAtEst: obs.PostedAtEst,
+		ApplicantCount: obs.ApplicantCount, ApplyType: obs.ApplyType}
+	for _, g := range gates {
+		c.Gates = append(c.Gates, scoring.GateVerdict{Gate: g.Gate, Verdict: g.Verdict, Reason: g.Reason, Snippet: g.Snippet})
+	}
+	for _, d := range decisions {
+		c.Criteria = append(c.Criteria, scoring.CriterionVerdict{Criterion: d.Criterion, Verdict: d.Verdict, Reason: d.Reason})
+	}
+	kws := b.prof.Candidate.EvidenceKeywords
+	j := briefJob(c, sum.URL, kws)
+	p.Title, p.Location, p.ApplyURL = cmpOr(obs.Title, sum.Title), obs.LocationText, obs.ApplyURL
+	p.ApplicantCount, p.PostedAt, p.ApplyType, p.Description = obs.ApplicantCount, obs.PostedAtEst, obs.ApplyType, obs.DescriptionClean
+	ev := scoring.Evidence{Title: c.Title, Description: c.Description, Gates: gates, Keywords: kws}
+	for _, cr := range j.Criteria {
+		jc := console.JobCriterion{Name: cr.Name, Verdict: cr.Verdict, Keywords: cr.Note}
+		for _, l := range scoring.EvidenceLines(cr.Name, ev) {
+			if len(jc.Evidence) == consoleEvidence {
+				break
+			}
+			if !contactLike.MatchString(l) && !slices.Contains(jc.Evidence, l) {
+				jc.Evidence = append(jc.Evidence, l)
+			}
+		}
+		p.Criteria = append(p.Criteria, jc)
+	}
+	for _, u := range j.Unclear {
+		p.Unclear = append(p.Unclear, console.JobPoint{Name: u.Name, Snippet: u.Snippet})
+	}
+	return p, nil
+}
+
+// statusHistory is the job's latest consoleHistoryCap status changes, newest first.
+func statusHistory(ctx context.Context, db store.DBTX, jobID int64) ([]console.StatusLine, error) {
+	rows, err := db.Query(ctx,
+		`SELECT status, reason, actor, at FROM status_event WHERE job_id = $1 ORDER BY at DESC, id DESC LIMIT $2`, jobID, consoleHistoryCap)
+	if err != nil {
+		return nil, fmt.Errorf("console: status history: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (console.StatusLine, error) {
+		var l console.StatusLine
+		err := r.Scan(&l.Status, &l.Reason, &l.Actor, &l.At)
+		return l, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("console: status history: %w", err)
+	}
+	return out, nil
+}
+
+// AddRule adds a rule through ruleAdd, with the same checks and words as `rules add`, and
+// starts the dashboard's rebuild, as a mark does.
+func (b *backend) AddRule(ctx context.Context, req console.RuleRequest) (string, error) {
+	if req.Kind == "" || req.Field == "" || req.Pattern == "" || strings.TrimSpace(req.Reason) == "" {
+		return "", refused("A rule needs a kind, a field, a pattern and a reason.")
+	}
+	if utf8.RuneCountInString(req.Pattern) > consoleMaxText || utf8.RuneCountInString(req.Reason) > consoleMaxText {
+		return "", refused("The pattern and the reason take at most %d characters each.", consoleMaxText)
+	}
+	id, err := ruleAdd(ctx, b.s, RuleAddRequest{Kind: req.Kind, Field: req.Field, Pattern: req.Pattern, Reason: req.Reason})
+	if r := asRefusal(err); r != nil {
+		return "", refused("%s", r.Detail)
+	}
+	if err != nil {
+		return "", err
+	}
+	b.marked()
+	return fmt.Sprintf("rule %d added", id), nil
+}
+
+// DisableRule disables rule id through ruleDisable, with the words of `rules disable`, and
+// starts the dashboard's rebuild.
+func (b *backend) DisableRule(ctx context.Context, id int64, reason string) (string, error) {
+	if strings.TrimSpace(reason) == "" {
+		return "", refused("Say why the rule is disabled.")
+	}
+	if utf8.RuneCountInString(reason) > consoleMaxText {
+		return "", refused("The reason takes at most %d characters.", consoleMaxText)
+	}
+	err := ruleDisable(ctx, b.s, id, reason)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseRuleNotFound:
+			return "", refused("rule %d does not exist", id)
+		case RefuseRuleDisabled:
+			return "", refused("rule %d is already disabled; add it again to undo", id)
+		default:
+			return "", refused("%s", r.Detail)
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	b.marked()
+	return fmt.Sprintf("rule %d disabled", id), nil
+}
+
+// leadsSetup reads leads.yaml and the outreach settings for one request. Any problem is
+// ErrLeadsNotSetUp: the problems stay out of the page and the log (check-config names them).
+func (b *backend) leadsSetup(load leadsLoad) (leadsSetup, error) {
+	setup, err := leadsEnv(b.cfg, load)
+	if err != nil {
+		return leadsSetup{}, console.ErrLeadsNotSetUp
+	}
+	return setup, nil
+}
+
+// lq is the leads queries over the pool.
+func (b *backend) lq() leadstore.Queries { return leadstore.NewQueries(b.s.Pool()) }
+
+// leadsSummary is the dashboard's leads card, nil when leads are not set up here or their
+// tables cannot be read; the jobs dashboard never fails for it.
+func (b *backend) leadsSummary(ctx context.Context, now time.Time) *console.LeadsSummary {
+	if _, err := b.leadsSetup(leadsForProbe); err != nil {
+		return nil
+	}
+	sec, err := leadbrief.Load(ctx, b.s.Pool(), now, b.loc)
+	if err != nil {
+		slog.Default().Warn("console leads summary", "err", err.Error())
+		return nil
+	}
+	sum := &console.LeadsSummary{Paused: sec.OperatorPaused, Stopped: sec.Paused, Replies: len(sec.Replies), ManualWaiting: sec.ManualWaiting,
+		CheckByHand: sec.CheckByHand, SentYesterday: sec.Sent, Bounced: sec.Bounced, OptedOut: sec.OptedOut}
+	if bt := sec.Batch; bt != nil {
+		sum.Batch = &console.WaitingBatch{ID: bt.ID, Shadow: bt.Shadow, Emails: bt.Emails, Forms: bt.Forms, LinkedIn: bt.LinkedIn}
+	}
+	return sum
+}
+
+// Leads is the leads overview: the brief's leads section, the sending state, every batch
+// waiting for approval, the manual items and the emails to check by hand, and the
+// suppression list with addresses masked as `leads suppress list` masks them.
+func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
+	setup, err := b.leadsSetup(leadsForProbe)
+	if err != nil {
+		return console.LeadsPage{}, err
+	}
+	now := b.now()
+	lq := b.lq()
+	sec, err := leadbrief.Load(ctx, b.s.Pool(), now, b.loc)
+	if err != nil {
+		return console.LeadsPage{}, err
+	}
+	shadow, _ := batchMode(setup.env)
+	p := console.LeadsPage{Day: startOfDay(now, b.loc), Replies: sec.Replies, Other: sec.Other}
+	if pr := sec.Probe; pr != nil {
+		p.Checked, p.Drupal = pr.Checked, pr.Drupal
+	}
+	sn := console.Sending{SetUp: !shadow, SentYesterday: sec.Sent, Bounced: sec.Bounced, OptedOut: sec.OptedOut, Stopped: sec.Paused}
+	if sn.Paused, sn.PauseReason, sn.PausedAt, err = lq.SendPaused(ctx); err != nil {
+		return console.LeadsPage{}, err
+	}
+	if sn.SentToday, err = lq.SentSince(ctx, startOfDay(now, b.loc)); err != nil {
+		return console.LeadsPage{}, err
+	}
+	if sn.CapToday, err = rampToday(ctx, lq, setup.leads, b.loc, now); err != nil {
+		return console.LeadsPage{}, err
+	}
+	if dom, ok := sendingDomain(setup.env); ok {
+		if sn.DNS, err = latestSenderCheck(ctx, b.s.Pool(), leadstore.SenderDomainSHA256(dom)); err != nil {
+			return console.LeadsPage{}, err
+		}
+	}
+	p.Sending = sn
+	if p.Batches, err = waitingBatches(ctx, b.s.Pool()); err != nil {
+		return console.LeadsPage{}, err
+	}
+	if p.Manual, err = manualItems(ctx, b.s.Pool()); err != nil {
+		return console.LeadsPage{}, err
+	}
+	if p.CheckByHand, err = checkItems(ctx, b.s.Pool()); err != nil {
+		return console.LeadsPage{}, err
+	}
+	counts, err := lq.SuppressionCounts(ctx)
+	if err != nil {
+		return console.LeadsPage{}, err
+	}
+	for _, c := range counts {
+		p.Suppressions.Counts = append(p.Suppressions.Counts, console.SuppressionCount{Kind: c.Kind, Reason: c.Reason, N: c.N})
+	}
+	set, err := lq.SuppressionSet(ctx)
+	if err != nil {
+		return console.LeadsPage{}, err
+	}
+	p.Suppressions.Domains = set.Domains
+	for _, a := range set.Addresses {
+		p.Suppressions.Addresses = append(p.Suppressions.Addresses, maskAddress(a))
+	}
+	return p, nil
+}
+
+// rampToday is today's send cap: the ramp's step for today, its day 0 the first live send
+// when the ramp starts at the first send (as leads send reads it).
+func rampToday(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, loc *time.Location, now time.Time) (int, error) {
+	var firstSend *time.Time
+	if cfg.Caps.StartDate.IsFirstSend() {
+		fs, err := lq.FirstLiveSend(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if fs != nil {
+			t := fs.In(loc)
+			firstSend = &t
+		}
+	}
+	return outreach.CapOn(cfg, firstSend, now.In(loc)), nil
+}
+
+// latestSenderCheck is the latest check of the sending domain whose hash is domainSHA, nil
+// when it was never checked.
+func latestSenderCheck(ctx context.Context, db store.DBTX, domainSHA []byte) (*console.SenderCheck, error) {
+	var c console.SenderCheck
+	err := db.QueryRow(ctx,
+		`SELECT checked_at, spf, dkim, dmarc FROM sender_check WHERE domain_sha256 = $1
+		 ORDER BY checked_at DESC, id DESC LIMIT 1`, domainSHA).Scan(&c.At, &c.SPF, &c.DKIM, &c.DMARC)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("console: sender check: %w", err)
+	}
+	return &c, nil
+}
+
+// waitingBatches is every batch neither approved nor discarded, newest first, with its
+// leads and items counted by channel (a follow-up is not an item).
+func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch, error) {
+	rows, err := db.Query(ctx,
+		`SELECT b.id, b.shadow, b.created_at, count(DISTINCT m.lead_id)::int,
+		   count(*) FILTER (WHERE m.channel = 'email' AND m.step = 0)::int,
+		   count(*) FILTER (WHERE m.channel = 'form')::int,
+		   count(*) FILTER (WHERE m.channel = 'linkedin')::int
+		 FROM outreach_batch b JOIN outreach_message m ON m.batch_id = b.id
+		 WHERE b.approved_at IS NULL AND b.discarded_at IS NULL
+		 GROUP BY b.id, b.shadow, b.created_at ORDER BY b.id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("console: waiting batches: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (console.WaitingBatch, error) {
+		var w console.WaitingBatch
+		err := r.Scan(&w.ID, &w.Shadow, &w.CreatedAt, &w.Leads, &w.Emails, &w.Forms, &w.LinkedIn)
+		return w, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("console: waiting batches: %w", err)
+	}
+	return out, nil
+}
+
+// manualItems is the approved contact forms and LinkedIn notes of live batches not yet
+// marked done, oldest first, with the form page for a contact form.
+func manualItems(ctx context.Context, db store.DBTX) ([]console.ManualItem, error) {
+	rows, err := db.Query(ctx,
+		`SELECT m.id, m.batch_id, o.domain, m.channel, CASE WHEN m.channel = 'form' THEN coalesce(r.value, '') ELSE '' END
+		 FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
+		 JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
+		 LEFT JOIN contact_route r ON r.id = l.route_id
+		 WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.state = 'approved' AND m.channel IN ('form', 'linkedin')
+		 ORDER BY m.id LIMIT $1`, consoleListCap)
+	if err != nil {
+		return nil, fmt.Errorf("console: manual items: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (console.ManualItem, error) {
+		var it console.ManualItem
+		err := r.Scan(&it.MessageID, &it.BatchID, &it.Domain, &it.Channel, &it.Route)
+		return it, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("console: manual items: %w", err)
+	}
+	return out, nil
+}
+
+// checkItems is the live emails that may have gone out (maybe_sent, or left sending),
+// oldest first, a selftest's left out (it is never checked by hand); Step counts from 1.
+func checkItems(ctx context.Context, db store.DBTX) ([]console.CheckItem, error) {
+	rows, err := db.Query(ctx,
+		`SELECT m.id, o.domain, m.step + 1, m.state, m.sent_at
+		 FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
+		 JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
+		 WHERE NOT b.shadow AND m.state IN ('maybe_sent', 'sending') AND l.kind <> 'selftest'
+		 ORDER BY m.id LIMIT $1`, consoleListCap)
+	if err != nil {
+		return nil, fmt.Errorf("console: check by hand: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (console.CheckItem, error) {
+		var it console.CheckItem
+		err := r.Scan(&it.MessageID, &it.Domain, &it.Step, &it.State, &it.At)
+		return it, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("console: check by hand: %w", err)
+	}
+	return out, nil
+}
+
+// LeadBatch is batch id in full through batchView, with the hash an approval names only
+// when the batch can be approved as recomputed for this read.
+func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, error) {
+	if _, err := b.leadsSetup(leadsForProbe); err != nil {
+		return console.LeadBatch{}, err
+	}
+	v, err := batchView(ctx, b.lq(), id)
+	if r := asRefusal(err); r != nil && r.Kind == RefuseBatchNotFound {
+		return console.LeadBatch{}, console.ErrNotFound
+	}
+	if err != nil {
+		return console.LeadBatch{}, err
+	}
+	out := console.LeadBatch{ID: v.Batch.ID, Shadow: v.Batch.Shadow, CreatedAt: v.Batch.CreatedAt, ApprovedAt: v.Batch.ApprovedAt,
+		DiscardedAt: v.Batch.DiscardedAt, Changed: v.Changed}
+	if v.Approvable() {
+		out.HashPrefix = v.HashPrefix()
+	}
+	for _, it := range v.Items {
+		li := console.LeadItem{N: it.N, LeadID: it.Lead.ID, Domain: it.Org.Domain, Kind: it.Lead.Kind, Channel: it.Lead.Channel, Route: it.Route,
+			Finding: findingLines(v.Evidence[it.Lead.ID])}
+		for _, m := range it.Msgs {
+			lm := console.LeadMessage{ID: m.ID, Label: consoleMessageLabel(m, len(it.Msgs)), Channel: m.Channel, To: m.ToAddress,
+				Subject: m.Subject, Body: strings.TrimRight(m.BodyText, "\n"), CancelReason: m.CancelReason}
+			if m.State != leadstore.MsgDraft {
+				lm.State = m.State
+			}
+			li.Messages = append(li.Messages, lm)
+		}
+		out.Items = append(out.Items, li)
+	}
+	return out, nil
+}
+
+// findingLines is the finding and its evidence as `batch show` prints them (printEvidence),
+// one line each.
+func findingLines(e leadstore.Evidence) []string {
+	var buf bytes.Buffer
+	printEvidence(&buf, e)
+	var out []string
+	for l := range strings.Lines(buf.String()) {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// consoleMessageLabel names a message in the console's words: which email of how many, or
+// the manual item it is, and its number.
+func consoleMessageLabel(m leadstore.Message, n int) string {
+	switch m.Channel {
+	case "email":
+		l := fmt.Sprintf("Email %d of %d · message %d", m.Step+1, n, m.ID)
+		if m.InReplyTo != "" {
+			l += " · a reply in the same thread"
+		}
+		return l
+	case "form":
+		return fmt.Sprintf("Contact form text · message %d", m.ID)
+	case "linkedin":
+		return fmt.Sprintf("LinkedIn note · message %d", m.ID)
+	}
+	return fmt.Sprintf("Message %d", m.ID)
+}
+
+// candidateOptions is what the queue is read with: the order a live batch drafts in.
+func (b *backend) candidateOptions(cfg leadconfig.Config, now time.Time) leadstore.CandidateOptions {
+	return leadstore.CandidateOptions{KindsPriority: cfg.KindsPriority, Profile: cfg.PriorityProfile(), Today: now.In(b.loc),
+		IncludeReserved: leadsMail.allowReserved}
+}
+
+// LeadsNext is the next consoleQueue leads, in the order the next live batch drafts them.
+func (b *backend) LeadsNext(ctx context.Context) (console.LeadsQueue, error) {
+	setup, err := b.leadsSetup(leadsForProbe)
+	if err != nil {
+		return console.LeadsQueue{}, err
+	}
+	now := b.now()
+	cands, err := b.lq().NextUp(ctx, b.candidateOptions(setup.leads, now), consoleQueue)
+	if err != nil {
+		return console.LeadsQueue{}, err
+	}
+	until := startOfDay(now, b.loc).AddDate(0, 0, consoleDeferDays)
+	return console.LeadsQueue{DeferUntil: until.Format(time.DateOnly), Leads: queueLeads(cands)}, nil
+}
+
+func queueLeads(cands []leadstore.Candidate) []console.QueueLead {
+	out := make([]console.QueueLead, 0, len(cands))
+	for _, c := range cands {
+		v := "agency page"
+		if c.ProbeID != nil {
+			v = "Drupal " + strconv.Itoa(c.Major)
+			if c.ExactVersion != "" {
+				v += " (" + c.ExactVersion + ")"
+			}
+		}
+		out = append(out, console.QueueLead{LeadID: c.LeadID, Domain: c.Domain, Kind: c.Kind, Version: v, Country: c.Country,
+			Channel: c.Channel, Score: c.Score, Why: c.Why, Pinned: c.Pinned})
+	}
+	return out
+}
+
+// LeadPriorities is the profile in use as a form, or edit, with the top consolePreview
+// leads under it. An edit is previewed by saving it inside a transaction that is rolled
+// back, so the queue is read by the same code a batch drafts with and nothing stays.
+func (b *backend) LeadPriorities(ctx context.Context, edit *console.PriorityForm) (console.PrioritiesPage, error) {
+	setup, err := b.leadsSetup(leadsForProbe)
+	if err != nil {
+		return console.PrioritiesPage{}, err
+	}
+	now := b.now()
+	opts := b.candidateOptions(setup.leads, now)
+	if edit == nil {
+		p, fromDB, err := b.lq().EffectiveProfile(ctx, setup.leads.PriorityProfile())
+		if err != nil {
+			return console.PrioritiesPage{}, err
+		}
+		cands, err := b.lq().NextUp(ctx, opts, consolePreview)
+		if err != nil {
+			return console.PrioritiesPage{}, err
+		}
+		return console.PrioritiesPage{FromDB: fromDB, Form: profileForm(p), Preview: queueLeads(cands)}, nil
+	}
+	p, problems := parseProfileForm(*edit)
+	page := console.PrioritiesPage{Edited: true, Form: normalForm(*edit), Problems: problems}
+	if len(problems) > 0 {
+		return page, nil
+	}
+	tx, err := b.s.Pool().Begin(ctx)
+	if err != nil {
+		return console.PrioritiesPage{}, fmt.Errorf("console: preview: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() // the edit never stays
+	tq := leadstore.NewQueries(tx)
+	if _, err := tq.SaveProfile(ctx, p); err != nil {
+		return console.PrioritiesPage{}, err
+	}
+	cands, err := tq.NextUp(ctx, opts, consolePreview)
+	if err != nil {
+		return console.PrioritiesPage{}, err
+	}
+	page.Preview = queueLeads(cands)
+	return page, nil
+}
+
+// The form's point groups, in the order the page shows them.
+func pointFields() []console.PointField {
+	var out []console.PointField
+	for _, k := range leadconfig.Kinds {
+		out = append(out, console.PointField{Key: "kind." + k, Group: "Kind", Label: strings.ReplaceAll(k, "_", " ")})
+	}
+	for m := leadconfig.MinPriorityMajor; m <= leadconfig.MaxPriorityMajor; m++ {
+		out = append(out, console.PointField{Key: "major." + strconv.Itoa(m), Group: "Drupal", Label: strconv.Itoa(m)})
+	}
+	for _, c := range leadconfig.PriorityChannels {
+		out = append(out, console.PointField{Key: "channel." + c, Group: "Channel", Label: c})
+	}
+	return out
+}
+
+// profileForm is p as the form shows it.
+func profileForm(p leadconfig.Profile) console.PriorityForm {
+	f := console.PriorityForm{Points: pointFields()}
+	for i, pf := range f.Points {
+		group, key, _ := strings.Cut(pf.Key, ".")
+		var v int
+		var ok bool
+		switch group {
+		case "kind":
+			v, ok = p.Kinds[key]
+		case "major":
+			m, _ := strconv.Atoi(key)
+			v, ok = p.Majors[m]
+		case "channel":
+			v, ok = p.Channels[key]
+		}
+		if ok {
+			f.Points[i].Value = strconv.Itoa(v)
+		}
+	}
+	if p.ExactVersion != 0 {
+		f.ExactVersion = strconv.Itoa(p.ExactVersion)
+	}
+	var countries []string
+	for _, c := range slices.Sorted(maps.Keys(p.Countries)) {
+		countries = append(countries, fmt.Sprintf("%s %d", c, p.Countries[c]))
+	}
+	f.Countries = strings.Join(countries, ", ")
+	var bands []string
+	for _, rb := range p.RankBands {
+		bands = append(bands, fmt.Sprintf("%d %d", rb.Under, rb.Points))
+	}
+	f.RankBands = strings.Join(bands, ", ")
+	f.Exclude = strings.Join(p.ExcludeCountries, ", ")
+	return f
+}
+
+// normalForm is edit with its points in the page's order and labels, keeping what was typed.
+func normalForm(edit console.PriorityForm) console.PriorityForm {
+	typed := map[string]string{}
+	for _, p := range edit.Points {
+		typed[p.Key] = p.Value
+	}
+	f := edit
+	f.Points = pointFields()
+	for i := range f.Points {
+		f.Points[i].Value = typed[f.Points[i].Key]
+	}
+	return f
+}
+
+// parseProfileForm reads the form into a profile and lists every problem: values that are
+// not whole numbers, pairs that do not read, and what Profile.Problems finds.
+func parseProfileForm(f console.PriorityForm) (leadconfig.Profile, []string) {
+	var p leadconfig.Profile
+	var problems []string
+	num := func(what, v string) (int, bool) {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("%s: %q is not a whole number", what, v))
+			return 0, false
+		}
+		return n, true
+	}
+	labels := map[string]string{}
+	for _, pf := range pointFields() {
+		labels[pf.Key] = pf.Group + " " + pf.Label
+	}
+	for _, pf := range f.Points {
+		if strings.TrimSpace(pf.Value) == "" {
+			continue
+		}
+		label, known := labels[pf.Key]
+		if !known {
+			problems = append(problems, fmt.Sprintf("%q is not a priority rule", pf.Key))
+			continue
+		}
+		n, ok := num(label, pf.Value)
+		if !ok {
+			continue
+		}
+		group, key, _ := strings.Cut(pf.Key, ".")
+		switch group {
+		case "kind":
+			if p.Kinds == nil {
+				p.Kinds = map[string]int{}
+			}
+			p.Kinds[key] = n
+		case "major":
+			if p.Majors == nil {
+				p.Majors = map[int]int{}
+			}
+			m, _ := strconv.Atoi(key)
+			p.Majors[m] = n
+		case "channel":
+			if p.Channels == nil {
+				p.Channels = map[string]int{}
+			}
+			p.Channels[key] = n
+		}
+	}
+	if v := strings.TrimSpace(f.ExactVersion); v != "" {
+		p.ExactVersion, _ = num("Exact version known", v)
+	}
+	pairs := func(what, s string, each func(a string, b int)) {
+		for part := range strings.SplitSeq(s, ",") {
+			if part = strings.TrimSpace(part); part == "" {
+				continue
+			}
+			fs := strings.Fields(part)
+			if len(fs) != 2 {
+				problems = append(problems, fmt.Sprintf("%s: %q is not two values", what, part))
+				continue
+			}
+			if n, ok := num(what, fs[1]); ok {
+				each(fs[0], n)
+			}
+		}
+	}
+	pairs("Countries", f.Countries, func(c string, n int) {
+		if p.Countries == nil {
+			p.Countries = map[string]int{}
+		}
+		p.Countries[strings.ToUpper(c)] = n
+	})
+	pairs("Site rank bands", f.RankBands, func(u string, n int) {
+		if under, ok := num("Site rank bands", u); ok {
+			p.RankBands = append(p.RankBands, leadconfig.RankBand{Under: under, Points: n})
+		}
+	})
+	for c := range strings.SplitSeq(f.Exclude, ",") {
+		if c = strings.ToUpper(strings.TrimSpace(c)); c != "" {
+			p.ExcludeCountries = append(p.ExcludeCountries, c)
+		}
+	}
+	return p, append(problems, p.Problems()...)
+}
+
+// LeadAct runs one write through its core and words what it did. Every refusal is
+// ErrUserFixable with the console's words; nothing here approves a batch on its own or
+// sends anything.
+func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
+	load := leadsForProbe
+	if a.Do == console.LeadNewBatch {
+		load = leadsForOutreach
+	}
+	setup, err := b.leadsSetup(load)
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	for _, s := range []string{a.Reason, a.Note, a.Value} {
+		if utf8.RuneCountInString(s) > consoleMaxText {
+			return console.LeadOutcome{}, refused("Each field takes at most %d characters; nothing was changed.", consoleMaxText)
+		}
+	}
+	switch a.Do {
+	case console.LeadApprove:
+		return b.approve(ctx, setup, a)
+	case console.LeadDiscard:
+		return b.discard(ctx, a.ID)
+	case console.LeadNewBatch:
+		return b.newBatch(ctx, setup)
+	case console.LeadResolve:
+		return b.resolve(ctx, setup, a)
+	case console.LeadDone:
+		return b.done(ctx, a.ID)
+	case console.LeadSuppress:
+		return b.suppress(ctx, a)
+	case console.LeadContacted:
+		return b.contacted(ctx, a)
+	case console.LeadPause, console.LeadResume:
+		return b.setSending(ctx, a.Do == console.LeadPause, a.Reason)
+	case console.LeadPin, console.LeadDefer, console.LeadSkip, console.LeadClear:
+		return b.steer(ctx, a)
+	case console.LeadSavePriority:
+		p, problems := parseProfileForm(a.Form)
+		if len(problems) > 0 {
+			return console.LeadOutcome{}, refused("Nothing was saved: %s.", strings.Join(problems, "; "))
+		}
+		id, err := b.lq().SaveProfile(ctx, p)
+		if err != nil {
+			return console.LeadOutcome{}, err
+		}
+		return console.LeadOutcome{Message: fmt.Sprintf("Priorities saved (version %d); the next batch drafts in this order.", id)}, nil
+	case console.LeadResetPrio:
+		if _, err := b.lq().ResetProfile(ctx); err != nil {
+			return console.LeadOutcome{}, err
+		}
+		return console.LeadOutcome{Message: "Priorities reset to the leads settings file's defaults."}, nil
+	}
+	return console.LeadOutcome{}, refused("That is not something the leads pages do.")
+}
+
+func (b *backend) approve(ctx context.Context, setup leadsSetup, a console.LeadAction) (console.LeadOutcome, error) {
+	out, err := approveBatch(ctx, b.s, setup.leads, b.now, ApproveRequest{ID: a.ID, HashPrefix: a.Hash, Skip: a.Skip})
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseBatchNotFound:
+			return console.LeadOutcome{}, refused("There is no batch %d.", a.ID)
+		case RefuseHashMismatch:
+			return console.LeadOutcome{}, refused("Batch %d is not the one you read; nothing was approved. Read it again below.", a.ID)
+		case RefuseBatchChanged:
+			return console.LeadOutcome{}, refused("Batch %d changed since it was drafted, so it cannot be approved; nothing was approved. Discard it and make a new one.", a.ID)
+		case RefuseBadSkip:
+			return console.LeadOutcome{}, refused("Batch %d has items 1 to %d; nothing was approved.", a.ID, r.Items)
+		case RefuseBatchDiscarded:
+			return console.LeadOutcome{}, refused("Batch %d was discarded; nothing was approved.", a.ID)
+		}
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	if out.Approval.Already {
+		return console.LeadOutcome{Message: fmt.Sprintf("Batch %d was already approved; nothing changed.", a.ID)}, nil
+	}
+	msg := fmt.Sprintf("Batch %d (%s) approved: %s approved, %s left out.", a.ID, batchKind(out.Shadow),
+		plural(out.Approval.Approved, "message", "messages"), plural(out.Approval.Skipped, "message", "messages"))
+	if !out.FirstDue.IsZero() {
+		msg += fmt.Sprintf(" First emails go from %s, each in its recipient's business hours.", out.FirstDue.In(b.loc).Format("Mon 2 Jan 15:04"))
+	}
+	if len(out.Manual) > 0 {
+		msg += " Its contact forms and LinkedIn notes wait for you on the leads page."
+	}
+	if out.Shadow {
+		msg += " A shadow batch: nothing is sent, and its leads stay new."
+	}
+	return console.LeadOutcome{Message: msg}, nil
+}
+
+func (b *backend) discard(ctx context.Context, id int64) (console.LeadOutcome, error) {
+	out, err := discardBatch(ctx, b.s, id)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseBatchNotFound:
+			return console.LeadOutcome{}, refused("There is no batch %d.", id)
+		case RefuseBatchApproved:
+			return console.LeadOutcome{}, refused("Batch %d is approved, so it is never discarded. Pause sending, or suppress a lead, to stop its emails.", id)
+		}
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	if out.Already {
+		return console.LeadOutcome{Message: fmt.Sprintf("Batch %d was already discarded; nothing changed.", id)}, nil
+	}
+	return console.LeadOutcome{Message: fmt.Sprintf("Batch %d (%s) discarded: %s cancelled, %s back in the queue.", id, batchKind(out.Shadow),
+		plural(int(out.Cancelled), "message", "messages"), plural(out.LeadsBack, "lead", "leads"))}, nil
+}
+
+// newBatch is makeBatch for a live batch only: the console never drafts a shadow batch.
+func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadOutcome, error) {
+	out, err := makeBatch(ctx, b.s, newBatchSetup(setup, b.loc), b.now(), NewBatchRequest{LiveOnly: true})
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseNotLive:
+			return console.LeadOutcome{}, refused("Sending isn't set up on this server yet.")
+		case RefuseBatchWaiting:
+			return console.LeadOutcome{}, refused("Batch %d still waits for approval; no new batch.", r.BatchID)
+		case RefuseNoRoom:
+			if r.Sizing.Waiting == 0 {
+				return console.LeadOutcome{}, refused("The warm-up ramp sends nothing over the next %d days; no new batch.", r.Sizing.Days)
+			}
+			return console.LeadOutcome{}, refused("Enough approved mail waits for the next days; no new batch. %s.", r.Sizing.Words())
+		}
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	var dropped []string
+	for _, d := range out.Dropped {
+		dropped = append(dropped, d.String())
+	}
+	if out.BatchID == 0 {
+		msg := "No batch: no candidate lead has a draft that passes the checks."
+		if len(dropped) > 0 {
+			msg += " Left out: " + strings.Join(dropped, "; ") + "."
+		}
+		return console.LeadOutcome{Message: msg}, nil
+	}
+	msg := fmt.Sprintf("Batch %d: %s. Read it and approve it below.", out.BatchID, out.Counts)
+	if out.Sizing != nil {
+		msg += " " + out.Sizing.Words() + "."
+	}
+	if len(dropped) > 0 {
+		msg += " Left out: " + strings.Join(dropped, "; ") + "."
+	}
+	return console.LeadOutcome{Message: msg, BatchID: out.BatchID}, nil
+}
+
+func (b *backend) resolve(ctx context.Context, setup leadsSetup, a console.LeadAction) (console.LeadOutcome, error) {
+	out, err := resolveMaybeSent(ctx, b.s, setup, b.loc, a.ID, a.Sent)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseSendRunning:
+			return console.LeadOutcome{}, refused("A send run is in progress; try again in a few minutes.")
+		case RefuseMessageNotFound:
+			return console.LeadOutcome{}, refused("There is no message %d.", a.ID)
+		case RefuseMessageState:
+			return console.LeadOutcome{}, refused("Message %d is not an email that may have gone out; nothing changed.", a.ID)
+		case RefuseSelftest:
+			return console.LeadOutcome{}, refused("Message %d belongs to a selftest; a selftest is never checked by hand.", a.ID)
+		}
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	if !out.Sent {
+		return console.LeadOutcome{Message: fmt.Sprintf("Message %d not sent: it is approved again and goes at the next send run in its recipient's hours.", a.ID)}, nil
+	}
+	lead := "its lead is now contacted"
+	if !out.LeadMoved {
+		lead = "its lead keeps its state"
+	}
+	return console.LeadOutcome{Message: fmt.Sprintf("Message %d sent %s; %s, and its follow-ups go on as after any send.", a.ID,
+		out.SentAt.In(b.loc).Format("Mon 2 Jan 15:04"), lead)}, nil
+}
+
+func (b *backend) done(ctx context.Context, id int64) (console.LeadOutcome, error) {
+	d, err := markDone(ctx, b.s, id)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseMessageNotFound:
+			return console.LeadOutcome{}, refused("There is no message %d.", id)
+		case RefuseNotManual:
+			return console.LeadOutcome{}, refused("Message %d is an email; sending handles emails.", id)
+		case RefuseMessageState:
+			return console.LeadOutcome{}, refused("Message %d is not an approved contact form or LinkedIn note.", id)
+		}
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	switch {
+	case d.Shadow:
+		return console.LeadOutcome{Message: fmt.Sprintf("Message %d done (a shadow batch: its lead stays %s).", id, d.LeadState)}, nil
+	case d.Moved:
+		return console.LeadOutcome{Message: fmt.Sprintf("Message %d done; its lead is now contacted.", id)}, nil
+	}
+	return console.LeadOutcome{Message: fmt.Sprintf("Message %d done; its lead stays %s.", id, d.LeadState)}, nil
+}
+
+func (b *backend) suppress(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
+	if a.Kind != leadstore.SuppressAddress && a.Kind != leadstore.SuppressDomain {
+		return console.LeadOutcome{}, refused("Choose whether it is an address or a domain.")
+	}
+	value := strings.ToLower(strings.TrimSpace(a.Value))
+	res, err := suppressAdd(ctx, b.s, a.Kind, value, a.Reason, suppressFromConsole)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseSuppressReason:
+			return console.LeadOutcome{}, refused("Choose a reason from the list.")
+		case RefuseNotRegistrable:
+			return console.LeadOutcome{}, refused("%s has no registrable domain (a bare public suffix cannot be suppressed).", value)
+		case RefuseBadValue:
+			return console.LeadOutcome{}, refused("%s is not a usable %s.", shown(a.Kind, value), a.Kind)
+		}
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	rec := "recorded"
+	if !res.Recorded {
+		rec = "already on file"
+	}
+	return console.LeadOutcome{Message: fmt.Sprintf("Suppressed %s %s (%s): %s · %s reached, %d moved to suppressed, %s cancelled.",
+		a.Kind, shown(a.Kind, value), a.Reason, rec, plural(res.Leads, "lead", "leads"), res.Moved,
+		plural(int(res.Cancelled), "pending message", "pending messages"))}, nil
+}
+
+func (b *backend) contacted(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
+	c, err := markContacted(ctx, b.s, a.Value, a.Note)
+	if r := asRefusal(err); r != nil && r.Kind == RefuseNotDomain {
+		return console.LeadOutcome{}, refused("%q is not a domain.", a.Value)
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	if c.Moved {
+		return console.LeadOutcome{Message: fmt.Sprintf("%s is now contacted by hand; %s cancelled. No batch drafts it again.", a.Value,
+			plural(int(c.Cancelled), "pending message", "pending messages"))}, nil
+	}
+	return console.LeadOutcome{Message: fmt.Sprintf("%s stays %s; nothing changed.", a.Value, c.State)}, nil
+}
+
+// SendSwitch is what setSendPause did.
+type SendSwitch struct {
+	Changed bool      // a row was written
+	Since   time.Time // when the switch was last set, for an unchanged pause
+}
+
+// setSendPause sets the operator's pause switch to pause, with reason, unless it already
+// is (leadstore.SetSendPause appends one row); every send run obeys it before each message.
+func setSendPause(ctx context.Context, lq leadstore.Queries, pause bool, reason string) (SendSwitch, error) {
+	paused, _, at, err := lq.SendPaused(ctx)
+	if err != nil {
+		return SendSwitch{}, err
+	}
+	if paused == pause {
+		return SendSwitch{Since: at}, nil
+	}
+	if err := lq.SetSendPause(ctx, pause, strings.TrimSpace(reason)); err != nil {
+		return SendSwitch{}, err
+	}
+	return SendSwitch{Changed: true}, nil
+}
+
+func (b *backend) setSending(ctx context.Context, pause bool, reason string) (console.LeadOutcome, error) {
+	sw, err := setSendPause(ctx, b.lq(), pause, reason)
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	switch {
+	case pause && !sw.Changed:
+		return console.LeadOutcome{Message: fmt.Sprintf("Sending is already paused (since %s).", sw.Since.In(b.loc).Format("Mon 2 Jan 15:04"))}, nil
+	case !pause && !sw.Changed:
+		return console.LeadOutcome{Message: "Sending is not paused."}, nil
+	case pause:
+		return console.LeadOutcome{Message: "Sending is paused: nothing is sent until you resume."}, nil
+	}
+	return console.LeadOutcome{Message: "Sending is resumed: the next send run sends what is due."}, nil
+}
+
+// steer pins, pushes back, skips or clears one lead of the queue.
+func (b *backend) steer(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
+	lq := b.lq()
+	var err error
+	msg := ""
+	switch a.Do {
+	case console.LeadPin:
+		err, msg = lq.PinLead(ctx, a.ID), fmt.Sprintf("Lead %d pinned: it comes first.", a.ID)
+	case console.LeadClear:
+		err, msg = lq.ClearLeadPriority(ctx, a.ID), fmt.Sprintf("Lead %d is back in its place by score.", a.ID)
+	case console.LeadDefer:
+		until, perr := time.ParseInLocation(time.DateOnly, a.Until, b.loc)
+		if perr != nil {
+			return console.LeadOutcome{}, refused("Pick the day to push the lead back to.")
+		}
+		if until.Before(startOfDay(b.now(), b.loc)) {
+			return console.LeadOutcome{}, refused("Pick a day from today on.")
+		}
+		err, msg = lq.DeferLead(ctx, a.ID, until), fmt.Sprintf("Lead %d pushed back: it comes back after %s.", a.ID, until.Format("Mon 2 Jan"))
+	case console.LeadSkip:
+		var moved bool
+		moved, err = lq.SkipLead(ctx, a.ID)
+		msg = fmt.Sprintf("Lead %d skipped for good.", a.ID)
+		if err == nil && !moved {
+			msg = fmt.Sprintf("Lead %d no longer waits in the queue (a batch may have taken it); nothing changed.", a.ID)
+		}
+	}
+	if errors.Is(err, leadstore.ErrLeadNotFound) {
+		return console.LeadOutcome{}, refused("There is no lead %d.", a.ID)
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	return console.LeadOutcome{Message: msg}, nil
+}

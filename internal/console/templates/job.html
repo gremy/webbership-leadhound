@@ -1,0 +1,94 @@
+{{define "content"}}
+{{$j := .Data.Job}}
+{{if $j.JobID}}
+<article class="record" id="job-{{$j.JobID}}">
+  <h1>{{$j.Title}}</h1>
+  <dl class="fields">
+    <div><dt>Job</dt><dd>job:{{$j.JobID}}</dd></div>
+    <div><dt>Company</dt><dd>{{$j.Company}}</dd></div>
+    <div><dt>Location</dt><dd>{{or $j.Location "not given"}}</dd></div>
+    <div><dt>Apply link</dt><dd>{{with or $j.ApplyURL $j.URL}}<a href="{{.}}" rel="noreferrer noopener" target="_blank">{{.}}</a>{{else}}none on file{{end}}</dd></div>
+    {{if and $j.ApplyURL (ne $j.ApplyURL $j.URL)}}<div><dt>Posting</dt><dd><a href="{{$j.URL}}" rel="noreferrer noopener" target="_blank">{{$j.URL}}</a></dd></div>{{end}}
+    {{with $j.ApplyType}}<div><dt>Apply type</dt><dd>{{.}}</dd></div>{{end}}
+    {{with $j.ApplicantCount}}<div><dt>Applicants</dt><dd>{{.}}</dd></div>{{end}}
+    {{with $j.PostedAt}}<div><dt>Posted</dt><dd>{{when .}}</dd></div>{{end}}
+    <div><dt>Listing</dt><dd>{{$j.ListingStatus}}</dd></div>
+    <div><dt>Status</dt><dd><span class="status status-{{$j.Status}}">{{$j.Status}}</span></dd></div>
+  </dl>
+
+  <section>
+    <h2>Mark this job</h2>
+    {{if .Data.Message}}<p class="notice{{if .Data.Error}} notice-error{{end}}" role="{{if .Data.Error}}alert{{else}}status{{end}}" id="outcome">{{.Data.Message}}</p>{{end}}
+    <div class="actions">
+      <form method="post" action="/jobs/{{$j.JobID}}/track">
+        <input type="hidden" name="action" value="applied">
+        <button type="submit" class="primary">Applied</button>
+      </form>
+      <details>
+        <summary>Maybe</summary>
+        <form method="post" action="/jobs/{{$j.JobID}}/track">
+          <input type="hidden" name="action" value="maybe">
+          <label for="maybe-reason">Note (optional)</label>
+          <input id="maybe-reason" name="reason" maxlength="500">
+          <button type="submit">Save maybe</button>
+        </form>
+      </details>
+      <details>
+        <summary>Skip</summary>
+        <form method="post" action="/jobs/{{$j.JobID}}/track">
+          <input type="hidden" name="action" value="skip">
+          <label for="skip-reason">Reason</label>
+          <input id="skip-reason" name="reason" maxlength="500">
+          <label for="skip-field">Also skip future jobs whose</label>
+          <select id="skip-field" name="rule_field">
+            <option value="">(no rule)</option>
+            {{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+          <label for="skip-pattern">matches (pattern)</label>
+          <input id="skip-pattern" name="rule_pattern" maxlength="500" aria-describedby="skip-pattern-hint">
+          <p id="skip-pattern-hint" class="hint">A regular expression; case is ignored.</p>
+          <button type="submit">Skip</button>
+        </form>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <h2>Criteria</h2>
+    {{if $j.Criteria}}
+    <dl class="criteria">
+      {{range $j.Criteria}}
+      <div>
+        <dt>{{.Name}}</dt>
+        <dd><span class="verdict verdict-{{.Verdict}}">{{.Verdict}}</span>{{if .Keywords}} · matched {{.Keywords}}{{end}}
+          {{if .Evidence}}<ul class="evidence">{{range .Evidence}}<li>{{.}}</li>{{end}}</ul>{{end}}</dd>
+      </div>
+      {{end}}
+    </dl>
+    {{else}}<p class="muted">Not scored yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Unclear</h2>
+    {{if $j.Unclear}}
+    <ul class="item-list">{{range $j.Unclear}}<li><span class="item-head">{{.Name}}</span>{{with .Snippet}}<span class="item-meta">{{.}}</span>{{end}}</li>{{end}}</ul>
+    {{else}}<p class="muted">Nothing is unclear.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Description</h2>
+    {{if $j.Description}}<div class="description">{{$j.Description}}</div>{{else}}<p class="muted">No description on file yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>History</h2>
+    {{if $j.History}}
+    <ul class="item-list">{{range $j.History}}<li><span class="item-head">{{.Status}}</span><span class="item-meta">{{when .At}} · {{.Actor}}{{if .Reason}} · {{.Reason}}{{end}}</span></li>{{end}}</ul>
+    {{else}}<p class="muted">No status yet.</p>{{end}}
+  </section>
+</article>
+{{else}}
+<h1>Job</h1>
+<p><a href="/jobs">Back to the jobs</a></p>
+{{end}}
+{{end}}

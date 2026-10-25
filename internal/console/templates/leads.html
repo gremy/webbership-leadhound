@@ -1,0 +1,160 @@
+{{define "content"}}
+{{$v := .Data}}{{$p := $v.Data}}{{$s := $p.Sending}}
+<div class="page-head">
+  <h1>Leads</h1>
+  <p><a href="/leads/next">Next leads</a> · <a href="/leads/priorities">Priorities</a></p>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+
+<div class="grid two">
+  <section class="card">
+    <h2>Sending</h2>
+    {{if $s.Paused}}
+    <p class="notice notice-error" role="status">Sending is paused (since {{when $s.PausedAt}}){{with $s.PauseReason}}: {{.}}{{end}}. Nothing is sent until you resume.</p>
+    {{else if not $s.SetUp}}
+    <p class="notice" role="status">Sending isn't set up on this server yet.</p>
+    {{else}}
+    <p>Sending is on.</p>
+    {{end}}
+    {{with $s.Stopped}}<p class="notice notice-error" role="status">The last send run stopped sending: {{.}}.</p>{{end}}
+    <dl class="stats">
+      <div><dt>Sent today</dt><dd>{{$s.SentToday}} of {{$s.CapToday}}</dd></div>
+      <div><dt>Sent yesterday</dt><dd>{{$s.SentYesterday}}</dd></div>
+      <div><dt>Bounces</dt><dd>{{$s.Bounced}}</dd></div>
+      <div><dt>Opt-outs</dt><dd>{{$s.OptedOut}}</dd></div>
+    </dl>
+    <p class="muted">Today's limit is the warm-up ramp's; bounces and opt-outs are yesterday's.</p>
+    {{with $s.DNS}}
+    <p>Sender records, checked {{when .At}}: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}</p>
+    {{else}}<p class="muted">The sender's records have not been checked yet.</p>{{end}}
+    {{if $s.Paused}}
+    <form method="post" action="/leads/sending">
+      <input type="hidden" name="do" value="resume">
+      <button type="submit" class="primary">Resume sending</button>
+    </form>
+    {{else}}
+    <form method="post" action="/leads/sending" class="stack">
+      <input type="hidden" name="do" value="pause">
+      <label for="pause-reason">Reason (optional)</label>
+      <input id="pause-reason" name="reason" maxlength="{{maxText}}">
+      <button type="submit">Pause sending</button>
+    </form>
+    {{end}}
+  </section>
+
+  <section class="card">
+    <h2>Batches waiting for approval</h2>
+    {{if $p.Batches}}
+    <ul class="item-list">
+      {{range $p.Batches}}
+      <li>
+        <span class="item-head"><a href="/leads/batches/{{.ID}}">Batch {{.ID}}</a>{{if .Shadow}} <span class="tag">shadow</span>{{end}}</span>
+        <span class="item-meta">{{plural .Leads "lead" "leads"}} · {{plural .Emails "email" "emails"}} · {{plural .Forms "contact form" "contact forms"}} · {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}} · made {{when .CreatedAt}}</span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="empty">No batch waits for approval.</p>{{end}}
+    <form method="post" action="/leads/batches/new">
+      <button type="submit"{{if not $p.Batches}} class="primary"{{end}}>Make the next batch now</button>
+    </form>
+    <p class="hint">Sized to what the warm-up ramp can send over the next days. You read and approve it before anything is sent.</p>
+  </section>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Replies since yesterday</h2>
+    {{if $p.Replies}}
+    <ul class="item-list">
+      {{range $p.Replies}}
+      <li class="split">
+        <span class="item-head">{{.}}</span>
+        <form method="post" action="/leads/suppress">
+          <input type="hidden" name="kind" value="domain">
+          <input type="hidden" name="value" value="{{.}}">
+          <input type="hidden" name="reason" value="replied_no">
+          <button type="submit">Suppress</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="empty">No replies since yesterday.</p>{{end}}
+    {{if $p.Other}}<p class="muted">{{plural $p.Other "other message" "other messages"}} in the mailbox since yesterday.</p>{{end}}
+  </section>
+
+  <section class="card">
+    <h2>Check by hand</h2>
+    {{if $p.CheckByHand}}
+    <p class="hint">These emails may have gone out. Look for each in the mailbox's Sent folder first.</p>
+    <ul class="item-list">
+      {{range $p.CheckByHand}}
+      <li>
+        <span class="item-head">Message {{.MessageID}} · {{.Domain}} · email {{.Step}} · {{.State}}</span>
+        <span class="item-meta">{{with .At}}tried {{when .}}{{end}}</span>
+        <span class="actions">
+          <form method="post" action="/leads/messages/{{.MessageID}}/resolve"><input type="hidden" name="sent" value="sent"><button type="submit">Sent</button></form>
+          <form method="post" action="/leads/messages/{{.MessageID}}/resolve"><input type="hidden" name="sent" value="not-sent"><button type="submit">Not sent</button></form>
+        </span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="empty">Nothing to check.</p>{{end}}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Contact forms and LinkedIn notes to use</h2>
+  {{if $p.Manual}}
+  <ul class="item-list">
+    {{range $p.Manual}}
+    <li class="split">
+      <span><span class="item-head">{{.Domain}} · {{if eq .Channel "form"}}contact form{{else}}LinkedIn note{{end}}</span>
+      <span class="item-meta">message {{.MessageID}} in <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Route}} · {{.}}{{end}}</span></span>
+      <form method="post" action="/leads/items/{{.MessageID}}/done"><button type="submit">Done</button></form>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}<p class="empty">None waiting.</p>{{end}}
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Mark a domain contacted</h2>
+    <form method="post" action="/leads/contacted" class="stack">
+      <label for="contacted-domain">Domain</label>
+      <input id="contacted-domain" name="domain" required maxlength="253">
+      <label for="contacted-note">Note (optional)</label>
+      <input id="contacted-note" name="note" maxlength="{{maxText}}">
+      <button type="submit">Mark contacted</button>
+    </form>
+    <p class="hint">No batch drafts a domain you reached by hand.</p>
+  </section>
+
+  <section class="card">
+    <h2>Suppressions</h2>
+    {{with $p.Suppressions}}
+    {{if .Counts}}<p>{{range $i, $c := .Counts}}{{if $i}} · {{end}}{{$c.Kind}} {{$c.Reason}} {{$c.N}}{{end}}</p>{{else}}<p class="empty">No suppressions.</p>{{end}}
+    <form method="post" action="/leads/suppress" class="stack">
+      <label for="suppress-kind">Kind</label>
+      <select id="suppress-kind" name="kind"><option value="domain">domain</option><option value="address">address</option></select>
+      <label for="suppress-value">Domain or address</label>
+      <input id="suppress-value" name="value" required maxlength="320">
+      <label for="suppress-reason">Reason</label>
+      <select id="suppress-reason" name="reason">
+        <option value="manual">manual</option><option value="opt_out">opt_out</option><option value="bounce">bounce</option><option value="replied_no">replied_no</option>
+      </select>
+      <button type="submit">Suppress</button>
+    </form>
+    <p class="hint">A suppression is never lifted: nothing is written to it again.</p>
+    {{if or .Domains .Addresses}}
+    <details>
+      <summary>The list ({{plural (len .Domains) "domain" "domains"}}, {{plural (len .Addresses) "address" "addresses"}})</summary>
+      <ul class="plain">{{range .Domains}}<li>domain {{.}}</li>{{end}}{{range .Addresses}}<li>address {{.}}</li>{{end}}</ul>
+    </details>
+    {{end}}
+    {{end}}
+  </section>
+</div>
+
+{{if $p.Checked}}<p class="muted">Sites checked yesterday: {{$p.Checked}}, of which {{$p.Drupal}} on Drupal.</p>{{end}}
+{{end}}

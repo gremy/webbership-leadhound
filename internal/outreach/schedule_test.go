@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"go.yaml.in/yaml/v3"
+
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
 
@@ -77,6 +79,53 @@ func TestCapToday(t *testing.T) {
 				t.Errorf("CapToday = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCapOn: with caps.start_date first-send, day 0 is the first live send's local date, or
+// the day asked about when nothing has gone yet; a fixed date keeps its meaning whatever
+// the first send.
+func TestCapOn(t *testing.T) {
+	london := scheduleZone(t, "Europe/London")
+	bucharest := scheduleZone(t, "Europe/Bucharest")
+	ramp := []leadconfig.Ramp{{FromDay: 0, PerDay: 4}, {FromDay: 7, PerDay: 12}, {FromDay: 14, PerDay: 20}}
+	firstSend := leadconfig.Config{Caps: leadconfig.Caps{Ramp: ramp}}
+	if err := yaml.Unmarshal([]byte("start_date: "+leadconfig.FirstSend+"\n"), &firstSend.Caps); err != nil {
+		t.Fatal(err)
+	}
+	firstSend.Caps.Ramp = ramp
+	fixed := scheduleCapConfig(ramp...)
+	at := func(s string, loc *time.Location) *time.Time {
+		v := scheduleAt(t, s).In(loc)
+		return &v
+	}
+	tests := []struct {
+		name  string
+		cfg   leadconfig.Config
+		first *time.Time
+		day   time.Time
+		want  int
+	}{
+		{"no send yet: day 0 today", firstSend, nil, *at("2026-12-01T10:00:00Z", london), 4},
+		{"no send yet, months on: still day 0", firstSend, nil, *at("2027-03-01T10:00:00Z", london), 4},
+		{"first send 8 days ago: week 2", firstSend, at("2026-12-01T15:00:00Z", london), *at("2026-12-09T09:00:00Z", london), 12},
+		{"first send 6 days ago: week 1", firstSend, at("2026-12-01T15:00:00Z", london), *at("2026-12-07T23:00:00Z", london), 4},
+		{"first send 15 days ago: week 3", firstSend, at("2026-12-01T15:00:00Z", london), *at("2026-12-16T09:00:00Z", london), 20},
+		// 22:30 UTC on 30 Nov is 1 Dec in Bucharest: the dates are read in the zone given.
+		{"first send's local date", firstSend, at("2026-11-30T22:30:00Z", bucharest), *at("2026-12-08T09:00:00Z", bucharest), 12},
+		{"day before the first send", firstSend, at("2026-12-01T15:00:00Z", london), *at("2026-11-30T09:00:00Z", london), 0},
+		{"fixed date ignores the first send", fixed, at("2026-12-20T10:00:00Z", london), *at("2026-11-24T10:00:00Z", london), 12},
+		{"fixed date before start", fixed, nil, *at("2026-11-15T10:00:00Z", london), 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CapOn(tc.cfg, tc.first, tc.day); got != tc.want {
+				t.Errorf("CapOn = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	if got := CapToday(firstSend, scheduleAt(t, "2027-03-01T10:00:00Z"), london); got != 4 {
+		t.Errorf("CapToday with first-send = %d, want day 0's 4", got)
 	}
 }
 

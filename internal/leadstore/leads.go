@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
 )
 
@@ -229,12 +231,24 @@ type Candidate struct {
 	SiteName     string `db:"site_name"`
 	Phrase       string `db:"phrase"`
 	FindingURL   string `db:"finding_url"`
+	// The priority: the score the profile gives, whether the operator pinned the lead, and
+	// the reasons ("pinned" first, then Score's).
+	Score  int      `db:"score"`
+	Pinned bool     `db:"pinned"`
+	Why    []string `db:"-"`
 }
 
 // CandidateOptions shapes CandidateLeads.
 type CandidateOptions struct {
 	Limit         int      // at most this many (<= 0: all of them)
 	KindsPriority []string // lead kinds in the order they come; kinds not listed come last
+	// Profile is the file's priority profile (leadconfig.Config.PriorityProfile). The
+	// operator's latest saved version replaces it; a zero Profile means kind points from
+	// KindsPriority alone (leadconfig.KindPoints), the order before priorities existed.
+	Profile leadconfig.Profile
+	// Today is the operator's date a defer is judged by (its year, month and day as given);
+	// zero is the database's current date.
+	Today time.Time
 	// IncludeReserved lets leads on ReservedTLDs through. Only shadow and dry-run callers
 	// (and tests) set it; a live batch never does (RA25).
 	IncludeReserved bool
@@ -244,55 +258,121 @@ type CandidateOptions struct {
 // none, no suppression on the route's address, the org's domain or the address's domain,
 // no other lead on one of those domains already reached (batched, contacted, replied,
 // bounced or opted out), not a selftest or hand lead, a site lead's probe still its site's
-// latest (else it waits for RefreshLead), and, unless o.IncludeReserved, not on
-// a reserved TLD (ReservedTLDs; RA25). They come by the position of their kind in
-// o.KindsPriority (kinds not listed last), then by their site's list rank (unranked last),
-// then by id.
+// latest (else it waits for RefreshLead), not deferred through o.Today, not in a country
+// the profile excludes, and, unless o.IncludeReserved, not on a reserved TLD (ReservedTLDs;
+// RA25). They come pinned first (the newest pin first), then by their score under the
+// profile (EffectiveProfile over o.Profile, computed in SQL so the limit stays in the
+// database), then by their site's list rank (unranked last), then by id.
 func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Candidate, error) {
 	var lim *int
 	if o.Limit > 0 {
 		lim = &o.Limit
 	}
-	kindsPriority := o.KindsPriority
-	if kindsPriority == nil {
-		kindsPriority = []string{}
+	fallback := o.Profile
+	if fallback.IsZero() {
+		fallback = leadconfig.Profile{Kinds: leadconfig.KindPoints(o.KindsPriority)}
 	}
-	rows, err := collect(ctx, q.db, pgx.RowToStructByName[Candidate],
-		`SELECT l.id AS lead_id, l.org_id, o.domain, o.name AS org_name, o.country, l.kind, l.channel,
-		   l.route_id, coalesce(r.kind, '') AS route_kind, coalesce(r.value, '') AS route,
-		   l.probe_id, l.agency_finding_id, s.list_rank,
-		   coalesce(p.major, 0) AS major, coalesce(p.exact_version, '') AS exact_version,
-		   coalesce(p.site_name, '') AS site_name,
-		   coalesce(af.phrase, '') AS phrase, coalesce(af.url, '') AS finding_url
-		 FROM lead l
-		 JOIN org o ON o.id = l.org_id
-		 LEFT JOIN contact_route r ON r.id = l.route_id
-		 LEFT JOIN site_probe p ON p.id = l.probe_id
-		 LEFT JOIN site s ON s.id = coalesce(p.site_id, o.site_id)
-		 LEFT JOIN agency_finding af ON af.id = l.agency_finding_id
-		 CROSS JOIN LATERAL (
-		   SELECT CASE WHEN r.kind = 'email' THEN r.value ELSE '' END AS addr
-		 ) a
-		 CROSS JOIN LATERAL (
-		   SELECT nullif(lower(split_part(a.addr, '@', 2)), '') AS adom
-		 ) ad
-		 WHERE l.state = 'new' AND l.channel <> 'none'
-		   AND (l.probe_id IS NULL OR p.id = s.last_probe_id)
-		   AND l.kind NOT IN ('selftest', 'hand') AND o.kind <> 'selftest'
-		   AND ($4 OR (o.domain !~ $3 AND coalesce(ad.adom, '') !~ $3))
-		   AND NOT `+suppressedSQL("o.domain", "a.addr")+`
-		   AND NOT EXISTS (
-		     SELECT 1 FROM lead l2
-		     JOIN org o2 ON o2.id = l2.org_id
-		     LEFT JOIN contact_route r2 ON r2.id = l2.route_id AND r2.kind = 'email'
-		     WHERE l2.id <> l.id
-		       AND l2.state IN ('batched', 'contacted', 'replied', 'bounced', 'opted_out')
-		       AND (o2.domain IN (o.domain, ad.adom)
-		         OR nullif(lower(split_part(coalesce(r2.value, ''), '@', 2)), '') IN (o.domain, ad.adom)))
-		 ORDER BY array_position($2::text[], l.kind) NULLS LAST, s.list_rank NULLS LAST, l.id
-		 LIMIT $1`, lim, kindsPriority, reservedDomainRE(), o.IncludeReserved)
+	profile, _, err := q.EffectiveProfile(ctx, fallback)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
+	}
+	pf, err := profileJSON(profile)
+	if err != nil {
+		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
+	}
+	var today *string
+	if !o.Today.IsZero() {
+		d := o.Today.Format(time.DateOnly)
+		today = &d
+	}
+	// The query is set-based: the candidates are read once (c) with their domains as plain
+	// columns, every lead blocked by a suppression or a reached domain is found by equality
+	// joins (blocked), and the candidates not blocked are ordered and limited. A correlated
+	// anti-join per candidate over the suppressions and the reached leads grew with their
+	// product. The checks are those of suppressedSQL and the reached-domain rule:
+	//   - an address suppression on the route's address, lowered;
+	//   - a domain suppression on the org's domain or the address's domain (both lowered),
+	//     or on a parent of either at a label boundary (keys: the domain itself and every
+	//     suffix after one of its dots);
+	//   - another lead in a reached state whose org domain, or whose email route's domain,
+	//     is the org's domain or the address's domain.
+	rows, err := collect(ctx, q.db, pgx.RowToStructByName[Candidate],
+		`WITH c AS MATERIALIZED (
+		   SELECT l.id AS lead_id, l.org_id, o.domain, o.name AS org_name, o.country, l.kind, l.channel,
+		     l.route_id, coalesce(r.kind, '') AS route_kind, coalesce(r.value, '') AS route,
+		     l.probe_id, l.agency_finding_id, s.list_rank,
+		     coalesce(p.major, 0) AS major, coalesce(p.exact_version, '') AS exact_version,
+		     coalesce(p.site_name, '') AS site_name,
+		     coalesce(af.phrase, '') AS phrase, coalesce(af.url, '') AS finding_url,
+		     sc.score, coalesce(pr.action = 'pin', false) AS pinned,
+		     CASE WHEN pr.action = 'pin' THEN pr.id END AS pin_id,
+		     lower(a.addr) AS laddr, lower(o.domain) AS ldom, lower(split_part(a.addr, '@', 2)) AS sdom, ad.adom
+		   FROM lead l
+		   CROSS JOIN (SELECT $2::jsonb AS pf) pf
+		   JOIN org o ON o.id = l.org_id
+		   LEFT JOIN contact_route r ON r.id = l.route_id
+		   LEFT JOIN site_probe p ON p.id = l.probe_id
+		   LEFT JOIN site s ON s.id = coalesce(p.site_id, o.site_id)
+		   LEFT JOIN agency_finding af ON af.id = l.agency_finding_id
+		   LEFT JOIN LATERAL (
+		     SELECT lp.id, lp.action, lp.until FROM lead_priority lp
+		     WHERE lp.lead_id = l.id ORDER BY lp.id DESC LIMIT 1
+		   ) pr ON true
+		   CROSS JOIN LATERAL (
+		     SELECT CASE WHEN r.kind = 'email' THEN r.value ELSE '' END AS addr
+		   ) a
+		   CROSS JOIN LATERAL (
+		     SELECT nullif(lower(split_part(a.addr, '@', 2)), '') AS adom
+		   ) ad
+		   CROSS JOIN LATERAL (SELECT `+scoreSQL+` AS score) sc
+		   WHERE l.state = 'new' AND l.channel <> 'none'
+		     AND (l.probe_id IS NULL OR p.id = s.last_probe_id)
+		     AND l.kind NOT IN ('selftest', 'hand') AND o.kind <> 'selftest'
+		     AND ($4 OR (o.domain !~ $3 AND coalesce(ad.adom, '') !~ $3))
+		     AND NOT coalesce(pr.action = 'defer' AND pr.until >= coalesce($5::date, current_date), false)
+		     AND NOT pf.pf->'exclude_countries' @> to_jsonb(o.country)
+		 ), reached AS MATERIALIZED (
+		   SELECT l2.id AS lead_id, o2.domain AS d FROM lead l2 JOIN org o2 ON o2.id = l2.org_id
+		   WHERE l2.state IN ('batched', 'contacted', 'replied', 'bounced', 'opted_out')
+		   UNION ALL
+		   SELECT l2.id, nullif(lower(split_part(r2.value, '@', 2)), '') FROM lead l2
+		   JOIN contact_route r2 ON r2.id = l2.route_id AND r2.kind = 'email'
+		   WHERE l2.state IN ('batched', 'contacted', 'replied', 'bounced', 'opted_out')
+		 ), domain_keys AS (
+		   SELECT c.lead_id, k.key FROM c
+		   CROSS JOIN LATERAL (
+		     SELECT c.ldom AS key UNION ALL SELECT c.sdom
+		     UNION ALL
+		     SELECT array_to_string(d.parts[i:], '.')
+		     FROM (SELECT string_to_array(c.ldom, '.') AS parts UNION ALL SELECT string_to_array(c.sdom, '.')) d
+		     CROSS JOIN LATERAL generate_subscripts(d.parts, 1) i
+		     WHERE i > 1
+		   ) k
+		 ), blocked AS (
+		   SELECT c.lead_id FROM c JOIN suppression x ON x.kind = 'address' AND x.value = c.laddr
+		   UNION
+		   SELECT k.lead_id FROM domain_keys k JOIN suppression x ON x.kind = 'domain' AND x.value = k.key
+		   UNION
+		   SELECT c.lead_id FROM c JOIN reached x ON x.d = c.domain AND x.lead_id <> c.lead_id
+		   UNION
+		   SELECT c.lead_id FROM c JOIN reached x ON x.d = c.adom AND x.lead_id <> c.lead_id
+		 )
+		 SELECT lead_id, org_id, domain, org_name, country, kind, channel, route_id, route_kind, route,
+		   probe_id, agency_finding_id, list_rank, major, exact_version, site_name, phrase, finding_url,
+		   score, pinned
+		 FROM c
+		 WHERE lead_id NOT IN (SELECT lead_id FROM blocked)
+		 ORDER BY pinned DESC, pin_id DESC NULLS LAST, score DESC, list_rank NULLS LAST, lead_id
+		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today)
+	if err != nil {
+		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
+	}
+	for i := range rows {
+		_, why := Score(profile, rows[i])
+		if rows[i].Pinned {
+			why = append([]string{"pinned"}, why...)
+		}
+		rows[i].Why = why
 	}
 	return rows, nil
 }

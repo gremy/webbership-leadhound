@@ -39,6 +39,20 @@ type fakeBackend struct {
 	out     TrackOutcome
 	err     error // returned by Track
 	readErr error // returned by every read
+
+	job      JobPage
+	ruleMsg  string
+	ruleErr  error // returned by AddRule and DisableRule
+	lastRule RuleRequest
+	leads    LeadsPage
+	batch    LeadBatch
+	queue    LeadsQueue
+	prios    PrioritiesPage
+	lastEdit *PriorityForm
+	leadOut  LeadOutcome
+	leadErr  error // returned by LeadAct
+	leadsErr error // returned by every leads read, after readErr
+	lastLead LeadAction
 }
 
 func (f *fakeBackend) count(name string) {
@@ -132,6 +146,14 @@ func richBackend(text string) *fakeBackend {
 			Job:  BriefJob{N: 1, JobID: 42, Title: "Go Engineer", Company: "Acme", Status: "applied", URL: "https://jobs.example/42"},
 			From: "shortlisted", To: "applied", Message: "shortlisted → applied",
 		},
+		job:     richJob(text),
+		ruleMsg: "rule 8 added",
+		leads:   richLeads(text),
+		batch:   richBatch(text),
+		queue:   LeadsQueue{DeferUntil: "2026-11-07", Leads: []QueueLead{{LeadID: 5, Domain: text, Kind: text, Version: text, Country: "GB", Channel: "email", Score: 55, Why: []string{text, "GB +20"}}}},
+		prios: PrioritiesPage{Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Group: "Kind", Label: text, Value: "20"}}, Countries: text},
+			Preview: []QueueLead{{LeadID: 5, Domain: text, Score: 55, Why: []string{text}}}},
+		leadOut: LeadOutcome{Message: text},
 	}
 }
 

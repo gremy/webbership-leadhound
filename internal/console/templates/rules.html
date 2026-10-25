@@ -1,17 +1,33 @@
 {{define "content"}}
 <h1>Rules</h1>
+<details class="card">
+  <summary>Add a rule</summary>
+  <form method="post" action="/rules" class="stack">
+    <label for="rule-kind">Kind</label>
+    <select id="rule-kind" name="kind"><option value="skip">skip: leave matching jobs out</option><option value="flag">flag: mark matching jobs unclear</option></select>
+    <label for="rule-field">Field</label>
+    <select id="rule-field" name="field">{{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+    <label for="rule-pattern">Pattern</label>
+    <input id="rule-pattern" name="pattern" required maxlength="500" aria-describedby="rule-pattern-hint">
+    <p id="rule-pattern-hint" class="hint">A regular expression; case is ignored.</p>
+    <label for="rule-reason">Reason</label>
+    <input id="rule-reason" name="reason" required maxlength="500">
+    <button type="submit" class="primary">Add the rule</button>
+  </form>
+</details>
 {{if .Data}}
 <ul class="item-list narrow-only">
   {{range .Data}}
   <li{{if .DisabledAt}} class="disabled"{{end}}>
     <span class="item-head">#{{.ID}} · {{.Kind}} · {{.Field}}: <code>{{.Pattern}}</code></span>
     <span class="item-meta">{{if .Reason}}{{.Reason}} · {{end}}{{with .FromJobID}}from job:{{.}} · {{end}}added {{when .CreatedAt}} · {{if .DisabledAt}}disabled {{when .DisabledAt}}{{else}}active{{end}}{{if .DisabledReason}} · {{.DisabledReason}}{{end}}</span>
+    {{if not .DisabledAt}}{{template "rule_disable" (ruleIn "n" .)}}{{end}}
   </li>
   {{end}}
 </ul>
 <div class="table-wrap wide-only">
 <table>
-  <thead><tr><th scope="col">#</th><th scope="col">Kind</th><th scope="col">Field</th><th scope="col">Pattern</th><th scope="col">Reason</th><th scope="col">From job</th><th scope="col">Added</th><th scope="col">State</th></tr></thead>
+  <thead><tr><th scope="col">#</th><th scope="col">Kind</th><th scope="col">Field</th><th scope="col">Pattern</th><th scope="col">Reason</th><th scope="col">From job</th><th scope="col">Added</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Disable</span></th></tr></thead>
   <tbody>
   {{range .Data}}
   <tr{{if .DisabledAt}} class="disabled"{{end}}>
@@ -23,6 +39,7 @@
     <td>{{with .FromJobID}}job:{{.}}{{end}}</td>
     <td>{{when .CreatedAt}}</td>
     <td>{{if .DisabledAt}}disabled {{when .DisabledAt}}{{else}}active{{end}}{{if .DisabledReason}} · {{.DisabledReason}}{{end}}</td>
+    <td>{{if not .DisabledAt}}{{template "rule_disable" (ruleIn "w" .)}}{{end}}</td>
   </tr>
   {{end}}
   </tbody>
@@ -31,4 +48,15 @@
 {{else}}
 <p class="empty">No rules yet.</p>
 {{end}}
+{{end}}
+
+{{define "rule_disable"}}
+<details class="inline">
+  <summary>Disable</summary>
+  <form method="post" action="/rules/{{.Rule.ID}}/disable">
+    <label for="disable-reason-{{.Where}}-{{.Rule.ID}}">Reason</label>
+    <input id="disable-reason-{{.Where}}-{{.Rule.ID}}" name="reason" required maxlength="500">
+    <button type="submit">Disable rule {{.Rule.ID}}</button>
+  </form>
+</details>
 {{end}}

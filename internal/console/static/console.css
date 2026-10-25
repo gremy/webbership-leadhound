@@ -750,3 +750,142 @@ select {
 .tracked .actions button {
   text-transform: capitalize;
 }
+
+/* The job page: one record of labelled fields, for reading before applying. */
+.record > section {
+  margin-top: 1.5rem;
+}
+.fields,
+.criteria {
+  display: grid;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1rem;
+}
+.fields > div,
+.criteria > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr);
+  gap: 1rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.fields dt,
+.criteria dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.fields dd,
+.criteria dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.verdict {
+  font-weight: 600;
+}
+.verdict-fail {
+  color: var(--bad);
+}
+.verdict-pass {
+  color: var(--good);
+}
+.evidence {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Text kept as written: a job's description, a drafted message. */
+.description,
+.message-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+.message {
+  margin-top: 1rem;
+}
+.message h3 {
+  font-size: 0.95rem;
+  margin-bottom: 0.35rem;
+}
+.message-head {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.skip-item {
+  margin: 1rem 0 0;
+}
+.skip-item input {
+  width: auto;
+  min-height: auto;
+  margin-right: 0.35rem;
+}
+
+/* Forms laid out one field under another. */
+.stack {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 32rem;
+}
+.stack button {
+  justify-self: start;
+  margin-top: 0.4rem;
+}
+.split {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+.plain {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.points {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.points > div {
+  display: grid;
+  align-content: end;
+}
+.ranked {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+.ranked li {
+  padding: 0.2rem 0;
+}
+details.inline summary {
+  font-size: 0.85rem;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 639px) {
+  .fields > div,
+  .criteria > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.1rem;
+  }
+}
+
+.queue .actions button {
+  text-transform: none;
+}

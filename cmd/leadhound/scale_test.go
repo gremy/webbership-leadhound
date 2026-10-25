@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"testing"
@@ -18,6 +19,9 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
@@ -262,5 +266,86 @@ func TestScaleConsoleDashboard(t *testing.T) {
 	clk.add(dashboardFreshFor)
 	if d := dash("updating", 500*time.Millisecond); !d.Updating || !d.AsOf.Equal(day) {
 		t.Errorf("old dashboard: updating %v, as of %v", d.Updating, d.AsOf)
+	}
+}
+
+// scaleLeadsConfig is the demo leads policy with the ramp starting at the first send, so a
+// batch's sizing reads the first live send from the store as the server's does.
+func scaleLeadsConfig(t *testing.T) leadconfig.Config {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.CopyFS(filepath.Join(dir, "leads-templates"), os.DirFS(filepath.Join(examplesDir, "leads-templates"))); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(examplesDir, leadconfig.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := regexp.MustCompile(`(?m)^  start_date: .*$`).ReplaceAll(raw, []byte("  start_date: "+leadconfig.FirstSend))
+	if err := os.WriteFile(filepath.Join(dir, leadconfig.FileName), out, 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+	cfg, err := leadconfig.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Caps.StartDate.IsFirstSend() {
+		t.Fatal("caps.start_date not rewritten")
+	}
+	return cfg
+}
+
+// TestScaleLeadsBuildAndBatch: the whole lead build and the whole live batch new on the
+// leads scale seed (leadstoretest.ScaleSeeded) as the app role, each in a transaction rolled
+// back after, so the reused seed stays as it was. The seed lives on reserved names, which
+// only a test lets through to a live batch.
+func TestScaleLeadsBuildAndBatch(t *testing.T) {
+	info := leadstoretest.ScaleSeeded(t)
+	ctx := context.Background()
+	s, err := store.Open(ctx, storetest.ScaleDSN())
+	if err != nil {
+		storetest.SkipOrFail(t, "skipping scale test: open app store: %v", err)
+	}
+	t.Cleanup(s.Close)
+	cfg := scaleLeadsConfig(t)
+	rolledBack := func(fn func(leadstore.Queries) error) error {
+		tx, err := s.Pool().Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		return fn(leadstore.NewQueries(tx))
+	}
+
+	var sum buildSummary
+	peak, took := measure(t, func() error {
+		return rolledBack(func(lq leadstore.Queries) error {
+			var err error
+			sum, err = buildLeads(ctx, lq, cfg)
+			return err
+		})
+	})
+	budgets(t, "leads build", peak, took, 30*time.Second)
+	if sum.Orgs != 9000 || sum.Leads == 0 || sum.Created == 0 {
+		t.Errorf("build: %d orgs, %d leads, %d created", sum.Orgs, sum.Leads, sum.Created)
+	}
+
+	saved := leadsMail
+	t.Cleanup(func() { leadsMail = saved })
+	leadsMail.allowReserved = true
+	bs := batchSetup{leads: cfg, idDomain: "sender.example", loc: info.Loc}
+	var out NewBatchOutcome
+	peak, took = measure(t, func() error {
+		return rolledBack(func(lq leadstore.Queries) error {
+			var err error
+			out, err = newBatch(ctx, lq, bs, info.Day.Add(10*time.Hour), NewBatchRequest{LiveOnly: true})
+			return err
+		})
+	})
+	budgets(t, "batch new", peak, took, 10*time.Second)
+	if out.BatchID == 0 || out.Leads == 0 || out.Sizing == nil {
+		t.Errorf("batch new: %+v", out)
+	} else {
+		t.Logf("batch new: %d leads, %s", out.Leads, out.Sizing.Words())
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 )
@@ -225,5 +226,33 @@ func TestLeadsHTMLEscaping(t *testing.T) {
 	}
 	if !strings.Contains(html, "leadhound leads done &lt;message&gt;") {
 		t.Errorf("html lacks the escaped done command:\n%s", html)
+	}
+}
+
+// TestLeadsOperatorPaused: the operator's own pause is a numbered item with when it was set
+// (the time alone on the brief's day, the date too from an earlier day), never "nothing to
+// do" and never on the health line.
+func TestLeadsOperatorPaused(t *testing.T) {
+	for _, c := range []struct {
+		at    time.Time
+		since string
+	}{
+		{time.Date(2026, 10, 23, 7, 5, 0, 0, time.UTC), "since 07:05"},
+		{time.Date(2026, 10, 22, 18, 5, 0, 0, time.UTC), "since Thu 22 Oct 18:05"},
+	} {
+		in := Input{Day: day, Sources: healthyLinkedIn(0), Scoring: ScoringOK, Leads: &leadbrief.Section{OperatorPaused: &c.at, Sent: 2}}
+		subject, text, _ := Compose(in)
+		want := "\nLeads\n1. Sending is paused (" + c.since + "): resume it in the console or with leadhound leads send resume\n"
+		if !strings.Contains(text, want) || strings.Contains(text, "nothing to do") {
+			t.Errorf("operator pause is not the leads item %q:\n%s", want, text)
+		}
+		if !strings.Contains(subject, "sending paused") {
+			t.Errorf("subject %q does not name the pause", subject)
+		}
+		for l := range strings.SplitSeq(text, "\n") {
+			if strings.HasPrefix(l, "Leads health:") && strings.Contains(l, "paused") {
+				t.Errorf("the pause is on the health line: %s", l)
+			}
+		}
 	}
 }

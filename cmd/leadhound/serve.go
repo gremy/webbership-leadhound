@@ -306,8 +306,8 @@ func (b *backend) wait() { b.builds.Wait() }
 
 // Dashboard is the brief's health lines and tiers and the day's funnel from the snapshot,
 // with whether it is being updated or its last update failed, and, read live, the day's
-// scoring spend, the board registry, the latest runs and the last sent brief with its own
-// stored health lines.
+// scoring spend, the board registry, the latest runs, the last sent brief with its own
+// stored health lines, and the leads card when leads are set up here.
 func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 	now := b.now()
 	v := b.current(ctx, now)
@@ -359,6 +359,7 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		}
 		d.LastBrief = stamp
 	}
+	d.Leads = b.leadsSummary(ctx, now)
 	return d, nil
 }
 

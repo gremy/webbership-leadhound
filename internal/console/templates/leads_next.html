@@ -1,0 +1,41 @@
+{{define "content"}}
+{{$v := .Data}}{{$q := $v.Data}}
+<div class="page-head">
+  <h1>Next leads</h1>
+  <p><a href="/leads">Back to leads</a> · <a href="/leads/priorities">Priorities</a></p>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+<p class="lede">The order the next batch drafts from: pinned leads first, then the highest score.</p>
+{{if $q.Leads}}
+<div class="jobs">
+  {{range $i, $l := $q.Leads}}
+  <article class="job tracked queue" id="lead-{{$l.LeadID}}">
+    <div class="job-main">
+      <h2 class="job-title">{{add $i 1}}. {{$l.Domain}}</h2>
+      <p class="job-company">{{$l.Kind}} · {{$l.Version}}{{with $l.Country}} · {{.}}{{end}} · {{$l.Channel}}</p>
+      <p class="job-meta">Score {{$l.Score}}{{if $l.Why}}: {{join $l.Why " · "}}{{end}}</p>
+    </div>
+    {{if $l.Pinned}}<span class="status status-shortlisted">pinned</span>{{end}}
+    <div class="actions">
+      {{if $l.Pinned}}
+      <form method="post" action="/leads/next/{{$l.LeadID}}/clear"><button type="submit">Unpin</button></form>
+      {{else}}
+      <form method="post" action="/leads/next/{{$l.LeadID}}/pin"><button type="submit">Pin</button></form>
+      {{end}}
+      <details>
+        <summary>Push back</summary>
+        <form method="post" action="/leads/next/{{$l.LeadID}}/defer">
+          <label for="until-{{$l.LeadID}}">Until</label>
+          <input id="until-{{$l.LeadID}}" name="until" type="date" value="{{$q.DeferUntil}}" required>
+          <button type="submit">Push back</button>
+        </form>
+      </details>
+      <form method="post" action="/leads/next/{{$l.LeadID}}/skip"><button type="submit">Skip for good</button></form>
+    </div>
+  </article>
+  {{end}}
+</div>
+{{else}}
+<p class="empty">No lead waits to be drafted.</p>
+{{end}}
+{{end}}

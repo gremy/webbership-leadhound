@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"strconv"
@@ -77,7 +76,6 @@ func runRules(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	q := s.Q()
 
 	switch sub {
 	case "add":
@@ -85,27 +83,32 @@ func runRules(ctx context.Context, args []string) error {
 		if fromJob > 0 {
 			from = &fromJob
 		}
-		newID, err := q.AddRule(ctx, kind, field, pattern, reason, from)
-		if errors.Is(err, store.ErrInvalidRule) {
-			return usageError("%v", err)
+		newID, err := ruleAdd(ctx, s, RuleAddRequest{Kind: kind, Field: field, Pattern: pattern, Reason: reason, FromJob: from})
+		if r := asRefusal(err); r != nil && r.Kind == RefuseRuleInvalid {
+			return usageError("%s", r.Detail)
 		}
 		if err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "rule %d added\n", newID)
 	case "disable":
-		err := q.DisableRule(ctx, id, reason)
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			return usageError("rule %d does not exist", id)
-		case errors.Is(err, store.ErrRuleDisabled):
-			return usageError("rule %d is already disabled; add it again to undo", id)
-		case err != nil:
+		err := ruleDisable(ctx, s, id, reason)
+		if r := asRefusal(err); r != nil {
+			switch r.Kind {
+			case RefuseRuleInvalid:
+				return usageError("%s", r.Detail)
+			case RefuseRuleNotFound:
+				return usageError("rule %d does not exist", id)
+			case RefuseRuleDisabled:
+				return usageError("rule %d is already disabled; add it again to undo", id)
+			}
+		}
+		if err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "rule %d disabled\n", id)
 	default:
-		rules, err := q.ListRules(ctx, all)
+		rules, err := s.Q().ListRules(ctx, all)
 		if err != nil {
 			return err
 		}

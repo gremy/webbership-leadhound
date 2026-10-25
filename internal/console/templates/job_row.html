@@ -4,6 +4,7 @@
   <div class="job-main">
     <h2 class="job-title">{{if .Job.URL}}<a href="{{.Job.URL}}" rel="noreferrer noopener" target="_blank">{{.Job.Title}}</a>{{else}}{{.Job.Title}}{{end}}</h2>
     <p class="job-company">{{.Job.Company}}{{if and .Job.ListingStatus (ne .Job.ListingStatus "open")}} <span class="tag">listing {{.Job.ListingStatus}}</span>{{end}}</p>
+    {{if .Job.Status}}<p class="job-meta"><a href="/jobs/{{.Job.JobID}}">Job page: description, verdicts and history</a></p>{{end}}
   </div>
   {{if .Job.Status}}<span class="status status-{{.Job.Status}}">{{.Job.Status}}</span>{{end}}
   {{if .Message}}<p class="row-note{{if .Error}} row-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}

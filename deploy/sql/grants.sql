@@ -61,7 +61,8 @@ BEGIN
     REVOKE UPDATE ON public.org FROM leadhound_app;
     GRANT UPDATE (site_id) ON public.org TO leadhound_app;
   END IF;
-  -- The outreach tables' state pointers: UPDATE on those columns only (00003 names them).
+  -- The outreach tables' state pointers: UPDATE on those columns only (00003 names them;
+  -- 00004 adds outreach_batch.discarded_at).
   -- mailbox_cursor keeps the blanket UPDATE: every column of it is a pointer.
   IF to_regclass('public.lead') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead FROM leadhound_app;
@@ -69,7 +70,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
-    GRANT UPDATE (approved_at, approved_hash) ON public.outreach_batch TO leadhound_app;
+    GRANT UPDATE (approved_at, approved_hash, discarded_at) ON public.outreach_batch TO leadhound_app;
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
@@ -86,6 +87,17 @@ BEGIN
   END IF;
   IF to_regclass('public.sender_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.sender_check FROM leadhound_app;
+  END IF;
+  -- send_pause (00004) and the priority tables (00005) are append-only too; a table not yet
+  -- made is skipped, and the next run after its migrate revokes it.
+  IF to_regclass('public.send_pause') IS NOT NULL THEN
+    REVOKE UPDATE ON public.send_pause FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.priority_profile') IS NOT NULL THEN
+    REVOKE UPDATE ON public.priority_profile FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_priority') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_priority FROM leadhound_app;
   END IF;
 END
 $$;

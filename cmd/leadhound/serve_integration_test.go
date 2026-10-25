@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,8 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -354,7 +357,10 @@ func TestDashboardCache(t *testing.T) {
 	sentBrief(t)
 	b := testBackend(t)
 	var mu sync.Mutex
-	now, builds := time.Now(), 0
+	// Noon of today: the clock moves on by minutes and must not cross into the next day,
+	// which would rightly start a rebuild of its own.
+	y, m, d := time.Now().In(b.loc).Date()
+	now, builds := time.Date(y, m, d, 12, 0, 0, 0, b.loc), 0
 	var hold chan struct{} // while non-nil, a build waits for it to close
 	b.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	at := func(d time.Duration) time.Time { mu.Lock(); defer mu.Unlock(); now = now.Add(d); return now }
@@ -761,5 +767,536 @@ func TestTrackReasonCapped(t *testing.T) {
 	}
 	if _, reason, _ := currentStatus(t, ids[0]); reason != strings.Repeat("é", 500) {
 		t.Errorf("reason kept as %d characters", len([]rune(reason)))
+	}
+}
+
+// leadsBackend is the console backend over a leads scene (leadsScene, then any prep), read
+// as serve reads its settings, on the leads clock.
+func leadsBackend(t *testing.T) *backend {
+	t.Helper()
+	cfg := mustConfig(t)
+	s, loc, err := openStoreAndZone(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	prof, err := loadProfileDir(examplesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(t.Context(), s, prof, loc, cfg)
+	b.now = func() time.Time { return leadsNow() }
+	b.waitFor = time.Minute
+	t.Cleanup(b.wait)
+	return b
+}
+
+// consoleContract is one write driven through its CLI and through the console backend with
+// the same inputs.
+type consoleContract struct {
+	name    string
+	prep    func(t *testing.T, dir string)
+	cli     func(t *testing.T) []string
+	exit    int
+	console func(t *testing.T, b *backend) error
+	refused bool // the console refuses it, and the CLI exits 2
+	source  bool // a suppression: the console records its own source
+}
+
+// TestConsoleLeadsContract: every leads write and rule write the console makes writes what its
+// CLI writes from the same start, refusals included (nothing), and nothing else.
+func TestConsoleLeadsContract(t *testing.T) {
+	ctx := context.Background()
+	newShadow := func(t *testing.T, _ string) { mustRun(t, "leads", "batch", "new") }
+	approved := func(t *testing.T, dir string) {
+		newShadow(t, dir)
+		mustRun(t, "leads", "batch", "approve", "1", "--hash", batchHash(t, 1))
+	}
+	live := func(t *testing.T, dir string) {
+		goLive(t)
+		setCaps(t, dir, "2026-10-01", "[{from_day: 0, per_day: 10}]")
+	}
+	formMsg := func(t *testing.T) int64 {
+		return int64(batchCount(t, `SELECT min(id)::int FROM outreach_message WHERE channel = 'form'`))
+	}
+	maybe := func(t *testing.T, dir string) { liveMaybeSent(t, dir, false) }
+	maybeMsg := func(t *testing.T) int64 {
+		return int64(batchCount(t, `SELECT min(id)::int FROM outreach_message WHERE state = 'maybe_sent'`))
+	}
+	act := func(a func(t *testing.T) console.LeadAction) func(t *testing.T, b *backend) error {
+		return func(t *testing.T, b *backend) error {
+			_, err := b.LeadAct(ctx, a(t))
+			return err
+		}
+	}
+	fixed := func(a console.LeadAction) func(*testing.T) console.LeadAction {
+		return func(*testing.T) console.LeadAction { return a }
+	}
+	cases := []consoleContract{
+		{name: "approve with a skip", prep: newShadow,
+			cli: func(t *testing.T) []string {
+				return []string{"leads", "batch", "approve", "1", "--hash", batchHash(t, 1), "--skip", "2"}
+			},
+			console: act(func(t *testing.T) console.LeadAction {
+				return console.LeadAction{Do: console.LeadApprove, ID: 1, Hash: batchHash(t, 1), Skip: []int{2}}
+			})},
+		{name: "approve wrong hash", prep: newShadow, exit: 2, refused: true,
+			cli:     func(*testing.T) []string { return []string{"leads", "batch", "approve", "1", "--hash", "0123456789ab"} },
+			console: act(fixed(console.LeadAction{Do: console.LeadApprove, ID: 1, Hash: "0123456789ab"}))},
+		{name: "approve no hash", prep: newShadow, exit: 2, refused: true,
+			cli:     func(*testing.T) []string { return []string{"leads", "batch", "approve", "1", "--hash", " "} },
+			console: act(fixed(console.LeadAction{Do: console.LeadApprove, ID: 1}))},
+		{name: "new batch live", prep: live, cli: func(*testing.T) []string { return []string{"leads", "batch", "new"} },
+			console: act(fixed(console.LeadAction{Do: console.LeadNewBatch}))},
+		{name: "new batch waits", prep: func(t *testing.T, dir string) { live(t, dir); mustRun(t, "leads", "batch", "new") }, refused: true,
+			cli: func(*testing.T) []string { return []string{"leads", "batch", "new"} }, console: act(fixed(console.LeadAction{Do: console.LeadNewBatch}))},
+		{name: "discard", prep: newShadow, cli: func(*testing.T) []string { return []string{"leads", "batch", "discard", "1"} },
+			console: act(fixed(console.LeadAction{Do: console.LeadDiscard, ID: 1}))},
+		{name: "discard approved", prep: approved, exit: 2, refused: true, cli: func(*testing.T) []string { return []string{"leads", "batch", "discard", "1"} },
+			console: act(fixed(console.LeadAction{Do: console.LeadDiscard, ID: 1}))},
+		{name: "done", prep: approved, cli: func(t *testing.T) []string { return []string{"leads", "done", fmt.Sprint(formMsg(t))} },
+			console: act(func(t *testing.T) console.LeadAction { return console.LeadAction{Do: console.LeadDone, ID: formMsg(t)} })},
+		{name: "suppress", source: true,
+			cli: func(*testing.T) []string {
+				return []string{"leads", "suppress", "add", "domain", "Litware.example", "--reason", "opt_out"}
+			},
+			console: act(fixed(console.LeadAction{Do: console.LeadSuppress, Kind: "domain", Value: "Litware.example", Reason: "opt_out"}))},
+		{name: "suppress bad reason", exit: 2, refused: true,
+			cli: func(*testing.T) []string {
+				return []string{"leads", "suppress", "add", "domain", "litware.example", "--reason", "annoyed"}
+			},
+			console: act(fixed(console.LeadAction{Do: console.LeadSuppress, Kind: "domain", Value: "litware.example", Reason: "annoyed"}))},
+		{name: "mark contacted", cli: func(*testing.T) []string {
+			return []string{"leads", "mark-contacted", "northwind.example", "--note", "called them"}
+		},
+			console: act(fixed(console.LeadAction{Do: console.LeadContacted, Value: "northwind.example", Note: "called them"}))},
+		{name: "resolve sent", prep: maybe, cli: func(t *testing.T) []string { return []string{"leads", "resolve", fmt.Sprint(maybeMsg(t)), "sent"} },
+			console: act(func(t *testing.T) console.LeadAction {
+				return console.LeadAction{Do: console.LeadResolve, ID: maybeMsg(t), Sent: true}
+			})},
+		{name: "resolve not sent", prep: maybe, cli: func(t *testing.T) []string { return []string{"leads", "resolve", fmt.Sprint(maybeMsg(t)), "not-sent"} },
+			console: act(func(t *testing.T) console.LeadAction {
+				return console.LeadAction{Do: console.LeadResolve, ID: maybeMsg(t)}
+			})},
+		{name: "rule add", cli: func(*testing.T) []string {
+			return []string{"rules", "add", "--kind", "flag", "--field", "title", "--pattern", "contract", "--reason", "contract roles"}
+		},
+			console: func(t *testing.T, b *backend) error {
+				_, err := b.AddRule(ctx, console.RuleRequest{Kind: "flag", Field: "title", Pattern: "contract", Reason: "contract roles"})
+				return err
+			}},
+		{name: "rule add bad pattern", exit: 2, refused: true, cli: func(*testing.T) []string {
+			return []string{"rules", "add", "--kind", "skip", "--field", "company", "--pattern", "acme(", "--reason", "x"}
+		},
+			console: func(t *testing.T, b *backend) error {
+				_, err := b.AddRule(ctx, console.RuleRequest{Kind: "skip", Field: "company", Pattern: "acme(", Reason: "x"})
+				return err
+			}},
+		{name: "rule disable", prep: func(t *testing.T, _ string) {
+			mustRun(t, "rules", "add", "--kind", "skip", "--field", "company", "--pattern", "acme", "--reason", "agency")
+		},
+			cli: func(*testing.T) []string { return []string{"rules", "disable", "1", "--reason", "fine"} },
+			console: func(t *testing.T, b *backend) error {
+				_, err := b.DisableRule(ctx, 1, "fine")
+				return err
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			run := func(viaCLI bool) (before, after []string) {
+				dir := leadsScene(t)
+				if c.prep != nil {
+					c.prep(t, dir)
+				}
+				before = leadsRows(t)
+				if viaCLI {
+					if code, out, errOut := leadsRun(t, c.cli(t)...); code != c.exit {
+						t.Fatalf("CLI exited %d, want %d: %s%s", code, c.exit, out, errOut)
+					}
+				} else {
+					err := c.console(t, leadsBackend(t))
+					if c.refused != errors.Is(err, console.ErrUserFixable) || (!c.refused && err != nil) {
+						t.Fatalf("console: err = %v, want refused %v", err, c.refused)
+					}
+				}
+				after = leadsRows(t)
+				if !viaCLI && c.source {
+					for i, r := range after {
+						r = strings.Replace(r, " "+suppressFromConsole, " "+suppressFromCLI, 1)
+						after[i] = strings.Replace(r, "("+suppressFromConsole+")", "("+suppressFromCLI+")", 1)
+					}
+				}
+				return before, after
+			}
+			b1, viaCLI := run(true)
+			b2, viaConsole := run(false)
+			if !slices.Equal(b1, b2) {
+				t.Fatalf("the two starts differ:\n%s", rowsDiff(b1, b2))
+			}
+			if !slices.Equal(viaCLI, viaConsole) {
+				t.Errorf("CLI and console wrote different rows:\n%s", rowsDiff(viaCLI, viaConsole))
+			}
+			wrote := !slices.Equal(b2, viaConsole)
+			if c.refused && wrote && c.name != "new batch waits" {
+				t.Errorf("a refusal wrote:\n%s", rowsDiff(b2, viaConsole))
+			}
+			if !c.refused && !wrote {
+				t.Error("the console wrote nothing")
+			}
+		})
+	}
+}
+
+// TestConsoleSendPause: the console's pause and resume write the rows leads send pause and
+// resume write, and setting the switch to what it is writes nothing.
+func TestConsoleSendPause(t *testing.T) {
+	ctx := context.Background()
+	rows := func(t *testing.T) []string {
+		t.Helper()
+		var out []string
+		r, err := storetest.OwnerConn(t).Query(ctx, `SELECT format('%s %s %s', paused, reason, actor) FROM send_pause ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for r.Next() {
+			var s string
+			if err := r.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+	leadsScene(t)
+	mustRun(t, "leads", "send", "pause", "--reason", "holiday")
+	mustRun(t, "leads", "send", "pause", "--reason", "again")
+	mustRun(t, "leads", "send", "resume")
+	viaCLI := rows(t)
+
+	leadsScene(t)
+	b := leadsBackend(t)
+	for _, a := range []console.LeadAction{{Do: console.LeadPause, Reason: "holiday"}, {Do: console.LeadPause, Reason: "again"}, {Do: console.LeadResume}} {
+		out, err := b.LeadAct(ctx, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Log(out.Message)
+	}
+	if got := rows(t); !slices.Equal(got, viaCLI) || len(got) != 2 {
+		t.Errorf("console wrote %q, CLI %q", got, viaCLI)
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadPause, Reason: "storm"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := b.Leads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Sending.Paused || p.Sending.PauseReason != "storm" {
+		t.Errorf("leads page sending %+v, want paused for storm", p.Sending)
+	}
+	d, err := b.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Leads == nil || d.Leads.Paused == nil {
+		t.Errorf("dashboard leads card %+v, want paused", d.Leads)
+	}
+}
+
+// TestConsoleBatchPage: the batch page through the real backend shows every message and the
+// hash batch new stored; a row changed since then removes the approve form, and an approval
+// from a page read before the change is refused with nothing approved.
+func TestConsoleBatchPage(t *testing.T) {
+	leadsScene(t)
+	mustRun(t, "leads", "batch", "new")
+	b := leadsBackend(t)
+	h, c := jobsHandler(t, b)
+	get := func(path string) (int, string) {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("Cookie", c)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	hash := batchHash(t, 1)
+	code, page := get("/leads/batches/1")
+	if code != http.StatusOK || !strings.Contains(page, `name="hash" value="`+hash+`"`) || !strings.Contains(page, `action="/leads/batches/1/approve"`) {
+		t.Fatalf("batch page %d without the approve form for %s:\n%s", code, hash, page)
+	}
+	msgs := batchCount(t, `SELECT count(*)::int FROM outreach_message WHERE batch_id = 1`)
+	if n := strings.Count(page, `<section class="message">`); n != msgs {
+		t.Errorf("%d messages shown, want %d", n, msgs)
+	}
+	if !strings.Contains(page, "Finding: ") {
+		t.Error("no finding shown")
+	}
+	if _, err := storetest.OwnerConn(t).Exec(context.Background(),
+		`UPDATE outreach_message SET body_text = body_text || ' ' WHERE id = (SELECT min(id) FROM outreach_message WHERE batch_id = 1)`); err != nil {
+		t.Fatal(err)
+	}
+	code, page = get("/leads/batches/1")
+	if code != http.StatusOK || strings.Contains(page, `action="/leads/batches/1/approve"`) || !strings.Contains(page, "changed since it was drafted") {
+		t.Errorf("changed batch page %d:\n%s", code, page)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/leads/batches/1/approve", strings.NewReader(url.Values{"hash": {hash}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Cookie", c)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "changed since it was drafted, so it cannot be approved") {
+		t.Errorf("approve of a changed batch: %d %s", w.Code, w.Body.String())
+	}
+	if n := batchCount(t, `SELECT count(*)::int FROM outreach_message WHERE state <> 'draft'`); n != 0 {
+		t.Errorf("%d messages left draft", n)
+	}
+	if code, _ := get("/leads/batches/99"); code != http.StatusNotFound {
+		t.Errorf("no such batch: %d", code)
+	}
+}
+
+// TestConsoleLeadsPagesRead: the leads pages render from the real backend, the queue in the
+// order a batch drafts, and the not-set-up line without a leads file.
+func TestConsoleLeadsPagesRead(t *testing.T) {
+	ctx := context.Background()
+	dir := leadsScene(t)
+	goLive(t)
+	b := leadsBackend(t)
+	q, err := b.LeadsNext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands, err := leadstoretest.Q(t).NextUp(ctx, b.candidateOptions(mustLeads(t), leadsNow()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Leads) == 0 || len(q.Leads) != len(cands) {
+		t.Fatalf("queue %d leads, NextUp %d", len(q.Leads), len(cands))
+	}
+	for i, c := range cands {
+		if q.Leads[i].LeadID != c.LeadID || q.Leads[i].Score != c.Score {
+			t.Errorf("queue %d is lead %d score %d, want %d score %d", i, q.Leads[i].LeadID, q.Leads[i].Score, c.LeadID, c.Score)
+		}
+	}
+	if q.DeferUntil != "2026-11-10" {
+		t.Errorf("default push-back %s", q.DeferUntil)
+	}
+	h, c := jobsHandler(t, b)
+	for _, p := range []string{"/leads", "/leads/next", "/leads/priorities", "/"} {
+		r := httptest.NewRequest(http.MethodGet, p, nil)
+		r.Header.Set("Cookie", c)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "not set up") {
+			t.Errorf("%s: %d %s", p, w.Code, w.Body.String())
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, "leads.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Leads(ctx); !errors.Is(err, console.ErrLeadsNotSetUp) {
+		t.Errorf("without leads.yaml: %v", err)
+	}
+	d, err := b.Dashboard(ctx)
+	if err != nil || d.Leads != nil {
+		t.Errorf("dashboard without leads.yaml: %v %+v", err, d.Leads)
+	}
+}
+
+func mustLeads(t *testing.T) leadconfig.Config {
+	t.Helper()
+	setup, err := leadsEnv(mustConfig(t), leadsForProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return setup.leads
+}
+
+// TestConsoleQueueSteering: pin, push back, clear and skip from the queue write the priority
+// rows the queue reads; a preview of an edited profile writes nothing; save and reset add
+// versions.
+func TestConsoleQueueSteering(t *testing.T) {
+	ctx := context.Background()
+	leadsScene(t)
+	goLive(t)
+	b := leadsBackend(t)
+	q, err := b.LeadsNext(ctx)
+	if err != nil || len(q.Leads) < 2 {
+		t.Fatalf("queue %v %v", q.Leads, err)
+	}
+	last := q.Leads[len(q.Leads)-1].LeadID
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadPin, ID: last}); err != nil {
+		t.Fatal(err)
+	}
+	if q, _ = b.LeadsNext(ctx); q.Leads[0].LeadID != last || !q.Leads[0].Pinned {
+		t.Errorf("pinned lead %d is not first: %+v", last, q.Leads[0])
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadDefer, ID: last, Until: "2026-10-20"}); !errors.Is(err, console.ErrUserFixable) {
+		t.Errorf("a past day: %v", err)
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadDefer, ID: last, Until: "2026-11-10"}); err != nil {
+		t.Fatal(err)
+	}
+	q, _ = b.LeadsNext(ctx)
+	for _, l := range q.Leads {
+		if l.LeadID == last {
+			t.Error("a pushed-back lead is still in the queue")
+		}
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadClear, ID: last}); err != nil {
+		t.Fatal(err)
+	}
+	first := q.Leads[0].LeadID
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSkip, ID: first}); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT state FROM lead WHERE id = $1`, first).Scan(&state); err != nil || state != "skipped" {
+		t.Errorf("skipped lead is %q (%v)", state, err)
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadPin, ID: 999}); !errors.Is(err, console.ErrUserFixable) {
+		t.Errorf("no such lead: %v", err)
+	}
+
+	versions := func() int { return batchCount(t, `SELECT count(*)::int FROM priority_profile`) }
+	page, err := b.LeadPriorities(ctx, nil)
+	if err != nil || page.FromDB || len(page.Preview) == 0 {
+		t.Fatalf("priorities %+v %v", page, err)
+	}
+	edit := page.Form
+	edit.Countries = "gb 90"
+	prev, err := b.LeadPriorities(ctx, &edit)
+	if err != nil || len(prev.Problems) != 0 || !prev.Edited {
+		t.Fatalf("preview %+v %v", prev, err)
+	}
+	if versions() != 0 {
+		t.Error("a preview saved a version")
+	}
+	bad := page.Form
+	bad.RankBands = "ten 5"
+	if prev, _ := b.LeadPriorities(ctx, &bad); len(prev.Problems) == 0 || prev.Preview != nil {
+		t.Errorf("a bad edit previewed: %+v", prev)
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSavePriority, Form: bad}); !errors.Is(err, console.ErrUserFixable) {
+		t.Errorf("a bad save: %v", err)
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSavePriority, Form: edit}); err != nil {
+		t.Fatal(err)
+	}
+	if page, _ = b.LeadPriorities(ctx, nil); !page.FromDB || page.Form.Countries != "GB 90" {
+		t.Errorf("after save %+v", page.Form)
+	}
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadResetPrio}); err != nil {
+		t.Fatal(err)
+	}
+	if page, _ = b.LeadPriorities(ctx, nil); page.FromDB || versions() != 2 {
+		t.Errorf("after reset FromDB %v, %d versions", page.FromDB, versions())
+	}
+}
+
+// TestConsoleNewBatchNeverShadow: the console refuses to draft while sending is not set up,
+// and a live batch it makes waits for approval.
+func TestConsoleNewBatchNeverShadow(t *testing.T) {
+	ctx := context.Background()
+	dir := leadsScene(t)
+	b := leadsBackend(t)
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadNewBatch}); !errors.Is(err, console.ErrUserFixable) ||
+		!strings.Contains(err.Error(), "Sending isn't set up on this server yet.") {
+		t.Fatalf("shadow mode: %v", err)
+	}
+	if n := batchCount(t, `SELECT count(*)::int FROM outreach_batch`); n != 0 {
+		t.Fatalf("%d batches", n)
+	}
+	goLive(t)
+	setCaps(t, dir, "first-send", "[{from_day: 0, per_day: 4}]")
+	out, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadNewBatch})
+	if err != nil || out.BatchID != 1 {
+		t.Fatalf("live: %+v %v", out, err)
+	}
+	t.Log(out.Message)
+	if n := batchCount(t, `SELECT count(*)::int FROM outreach_batch WHERE NOT shadow AND approved_at IS NULL`); n != 1 {
+		t.Errorf("%d live batches waiting", n)
+	}
+	if n := batchCount(t, `SELECT count(*)::int FROM outreach_message WHERE state <> 'draft'`); n != 0 {
+		t.Errorf("%d messages past draft", n)
+	}
+}
+
+// TestConsoleJobPage: the job page through the real backend shows the job's description,
+// its verdicts and its history, and a mark from it writes what track writes.
+func TestConsoleJobPage(t *testing.T) {
+	ids := sentBrief(t)
+	b := testBackend(t)
+	ctx := context.Background()
+	j, err := b.Job(ctx, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Description == "" || len(j.Criteria) == 0 || len(j.History) == 0 || j.Company == "" {
+		t.Fatalf("job page %+v", j)
+	}
+	for _, cr := range j.Criteria {
+		if cr.Verdict == "" {
+			t.Errorf("criterion %s has no verdict", cr.Name)
+		}
+	}
+	if _, err := b.Job(ctx, 999999); !errors.Is(err, console.ErrNotFound) {
+		t.Errorf("no such job: %v", err)
+	}
+	h, c := jobsHandler(t, b)
+	path := fmt.Sprintf("/jobs/%d", ids[0])
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set("Cookie", c)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	page := w.Body.String()
+	firstLine, _, _ := strings.Cut(j.Description, "\n")
+	for _, want := range []string{fmt.Sprintf(`<article class="record" id="job-%d">`, ids[0]), "<dt>Apply link</dt>", "<dt>Status</dt>",
+		template.HTMLEscapeString(firstLine)} {
+		if !strings.Contains(page, want) {
+			t.Errorf("job page lacks %q", want)
+		}
+	}
+	r = httptest.NewRequest(http.MethodPost, path+"/track", strings.NewReader(url.Values{"action": {"applied"}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Cookie", c)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="outcome">`) {
+		t.Fatalf("mark: %d %s", w.Code, w.Body.String())
+	}
+	if got := readTrackRows(t, ids[0]); got.status != "applied" || got.actor != "gremy" {
+		t.Errorf("mark wrote %+v", got)
+	}
+	if !strings.Contains(w.Body.String(), `<span class="status status-applied">applied</span>`) {
+		t.Error("the page after the mark does not show the new status")
+	}
+}
+
+// TestConsoleRuleMarksStale: a rule added or disabled from the console makes the dashboard's
+// numbers stale and starts their rebuild, as a mark does.
+func TestConsoleRuleMarksStale(t *testing.T) {
+	leadsScene(t)
+	b := leadsBackend(t)
+	ctx := context.Background()
+	if _, err := b.AddRule(ctx, console.RuleRequest{Kind: "skip", Field: "company", Pattern: "acme", Reason: "agency"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.DisableRule(ctx, 1, "fine"); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	marks := b.marks
+	b.mu.Unlock()
+	if marks != 2 {
+		t.Errorf("%d marks, want 2", marks)
+	}
+	if _, err := b.DisableRule(ctx, 1, "again"); !errors.Is(err, console.ErrUserFixable) {
+		t.Errorf("disabled twice: %v", err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.marks != 2 {
+		t.Error("a refusal marked the snapshot stale")
 	}
 }

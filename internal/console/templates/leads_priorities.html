@@ -1,0 +1,51 @@
+{{define "content"}}
+{{$v := .Data}}{{$p := $v.Data}}
+<div class="page-head">
+  <h1>Lead priorities</h1>
+  <p><a href="/leads">Back to leads</a> · <a href="/leads/next">Next leads</a></p>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+<p class="lede">{{if $p.Edited}}Your edit, not saved yet.{{else if $p.FromDB}}Your saved priorities.{{else}}The defaults from the leads settings file.{{end}}
+  A lead scores the sum of the points below; points run from -100 to 100, and a blank box is no rule.</p>
+{{if $p.Problems}}
+<div class="notice notice-error" role="alert"><p>Fix these before saving:</p><ul>{{range $p.Problems}}<li>{{.}}</li>{{end}}</ul></div>
+{{end}}
+
+<form method="post" action="/leads/priorities" class="card">
+  <div class="points">
+  {{range $p.Form.Points}}
+    <div>
+      <label for="pt-{{.Key}}">{{.Group}} {{.Label}}</label>
+      <input id="pt-{{.Key}}" name="{{.Key}}" value="{{.Value}}" inputmode="numeric" maxlength="4">
+    </div>
+  {{end}}
+    <div>
+      <label for="exact-version">Exact version known</label>
+      <input id="exact-version" name="exact_version" value="{{$p.Form.ExactVersion}}" inputmode="numeric" maxlength="4">
+    </div>
+  </div>
+  <label for="rank-bands">Site rank bands (rank under, points)</label>
+  <input id="rank-bands" name="rank_bands" value="{{$p.Form.RankBands}}" maxlength="{{maxText}}" aria-describedby="rank-hint">
+  <p id="rank-hint" class="hint">For example 10000 15, 100000 8. A site earns the first band its rank is under.</p>
+  <label for="countries">Countries (code, points)</label>
+  <input id="countries" name="countries" value="{{$p.Form.Countries}}" maxlength="{{maxText}}" aria-describedby="countries-hint">
+  <p id="countries-hint" class="hint">For example GB 20, DE 10. A country not listed scores 0.</p>
+  <label for="exclude">Never offer these countries</label>
+  <input id="exclude" name="exclude_countries" value="{{$p.Form.Exclude}}" maxlength="{{maxText}}" aria-describedby="exclude-hint">
+  <p id="exclude-hint" class="hint">For example FR, IT.</p>
+  <div class="actions">
+    <button type="submit" name="do" value="preview">Preview</button>
+    <button type="submit" name="do" value="save" class="primary">Save</button>
+    <button type="submit" name="do" value="reset" class="quiet">Reset to the file's defaults</button>
+  </div>
+</form>
+
+<section class="card">
+  <h2>The top 20 {{if $p.Edited}}under this edit{{else}}now{{end}}</h2>
+  {{if $p.Preview}}
+  <ol class="ranked">
+    {{range $p.Preview}}<li><span class="item-head">{{.Domain}}</span> <span class="item-meta">score {{.Score}}{{if .Why}}: {{join .Why " · "}}{{end}}</span></li>{{end}}
+  </ol>
+  {{else if not $p.Problems}}<p class="empty">No lead waits to be drafted.</p>{{end}}
+</section>
+{{end}}

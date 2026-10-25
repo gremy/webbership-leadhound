@@ -80,7 +80,25 @@ var routes = []route{
 	{"POST /jobs/track", "/jobs/track", false, (*server).track},
 	{"GET /tracked", "/tracked", false, (*server).tracked},
 	{"GET /runs", "/runs", false, (*server).runs},
+	{"GET /jobs/{id}", "/jobs/42", false, (*server).job},
+	{"POST /jobs/{id}/track", "/jobs/42/track", false, (*server).trackJob},
 	{"GET /rules", "/rules", false, (*server).rules},
+	{"POST /rules", "/rules", false, (*server).addRule},
+	{"POST /rules/{id}/disable", "/rules/7/disable", false, (*server).disableRule},
+	{"GET /leads", "/leads", false, (*server).leads},
+	{"GET /leads/next", "/leads/next", false, (*server).leadsNext},
+	{"GET /leads/priorities", "/leads/priorities", false, (*server).leadPriorities},
+	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
+	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
+	{"POST /leads/batches/{id}/approve", "/leads/batches/3/approve", false, (*server).approveBatch},
+	{"POST /leads/batches/{id}/discard", "/leads/batches/3/discard", false, (*server).discardBatch},
+	{"POST /leads/messages/{id}/resolve", "/leads/messages/9/resolve", false, (*server).resolveMessage},
+	{"POST /leads/items/{id}/done", "/leads/items/9/done", false, (*server).itemDone},
+	{"POST /leads/suppress", "/leads/suppress", false, (*server).suppress},
+	{"POST /leads/contacted", "/leads/contacted", false, (*server).contacted},
+	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
+	{"POST /leads/next/{lead}/{action}", "/leads/next/5/pin", false, (*server).steerLead},
+	{"POST /leads/priorities", "/leads/priorities", false, (*server).savePriorities},
 	{"GET /static/", "/static/console.css", true, (*server).static},
 	{"GET /robots.txt", "/robots.txt", true, (*server).robots},
 	{"GET /favicon.ico", "/favicon.ico", true, (*server).favicon},
@@ -97,6 +115,7 @@ var nav = []navItem{
 	{"Tracked", "/tracked"},
 	{"Runs", "/runs"},
 	{"Rules", "/rules"},
+	{"Leads", "/leads"},
 }
 
 // trackedFilters are the Tracked page's status filters: "" is every job no
@@ -125,6 +144,7 @@ type server struct {
 	device string // the trusted-device cookie's name
 	pages  map[string]*template.Template
 	next   map[string]bool // the pages a sign-in may return to
+	nextAt []string        // the patterns of signed-in pages with an id in their path
 }
 
 // page is what the layout renders.
@@ -157,6 +177,13 @@ type trackedView struct {
 	Total   int
 	Message string
 	Error   bool
+}
+
+// ruleSpot is a rule as one of the Rules page's two layouts shows it: Where keeps the
+// ids of its form apart from the other layout's.
+type ruleSpot struct {
+	Where string
+	Rule  RuleRow
 }
 
 // loginView is the sign-in form.
@@ -197,7 +224,10 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 			continue
 		}
 		mux.Handle(rt.pattern, s.requireSession(h))
-		if strings.HasPrefix(rt.pattern, "GET ") {
+		switch {
+		case strings.HasPrefix(rt.pattern, "GET ") && strings.Contains(rt.pattern, "{"):
+			s.nextAt = append(s.nextAt, strings.TrimPrefix(rt.pattern, "GET "))
+		case strings.HasPrefix(rt.pattern, "GET "):
 			s.next[rt.sample] = true
 		}
 	}
@@ -211,7 +241,8 @@ func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html"))
 	pages := make(map[string]*template.Template)
-	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules"} {
+	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
+		"leads", "leads_off", "lead_batch", "leads_next", "leads_priorities"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
@@ -248,14 +279,25 @@ func (s *server) funcs() template.FuncMap {
 			}
 			return t.Format("Monday 2 January")
 		},
-		"thousands":  thousands,
-		"health":     func(l string) string { return strings.TrimPrefix(l, "Health: ") },
-		"took":       took,
-		"sources":    sources,
-		"costLine":   costLine,
-		"row":        func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
-		"ruleFields": func() []string { return ruleFields },
-		"cssVersion": func() string { return cssVersion },
+		"thousands":    thousands,
+		"health":       func(l string) string { return strings.TrimPrefix(l, "Health: ") },
+		"took":         took,
+		"sources":      sources,
+		"costLine":     costLine,
+		"row":          func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
+		"ruleFields":   func() []string { return ruleFields },
+		"cssVersion":   func() string { return cssVersion },
+		"approveWords": approveWords,
+		"maxText":      func() int { return maxLeadsText },
+		"add":          func(a, b int) int { return a + b },
+		"join":         strings.Join,
+		"plural": func(n int, one, many string) string {
+			if n == 1 {
+				return "1 " + one
+			}
+			return strconv.Itoa(n) + " " + many
+		},
+		"ruleIn": func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
 		"laterThan": func(status string) []string {
 			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })
 		},
@@ -408,13 +450,38 @@ func (s *server) safeNext(next string) string {
 	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil {
 		return "/"
 	}
-	if !s.next[u.Path] || path.Clean(u.Path) != u.Path {
+	if !s.next[u.Path] && !s.nextWithID(u.Path) || path.Clean(u.Path) != u.Path {
 		return "/"
 	}
 	if u.RawQuery != "" {
 		return u.Path + "?" + u.RawQuery
 	}
 	return u.Path
+}
+
+// nextWithID reports whether p is the path of a signed-in page with ids in it: each
+// {name} segment of its pattern a positive whole number.
+func (s *server) nextWithID(p string) bool {
+	got := strings.Split(p, "/")
+	for _, pattern := range s.nextAt {
+		want := strings.Split(pattern, "/")
+		if len(want) != len(got) {
+			continue
+		}
+		ok := true
+		for i, w := range want {
+			if strings.HasPrefix(w, "{") {
+				n, err := strconv.ParseInt(got[i], 10, 64)
+				ok = ok && err == nil && n > 0 && strconv.FormatInt(n, 10) == got[i]
+			} else {
+				ok = ok && w == got[i]
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 // render writes the named page inside the layout with status code.
@@ -701,12 +768,16 @@ func (s *server) runs(w http.ResponseWriter, r *http.Request) {
 
 // rules is GET /rules: every rule, disabled ones included.
 func (s *server) rules(w http.ResponseWriter, r *http.Request) {
+	s.renderRules(w, r, http.StatusOK, s.takeFlash(w, r), false)
+}
+
+func (s *server) renderRules(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
 	rows, err := s.b.Rules(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, "rules", page{Title: "Rules", Active: "/rules", SignedIn: true, Data: rows})
+	s.render(w, r, code, "rules", page{Title: "Rules", Active: "/rules", SignedIn: true, Message: msg, Error: isErr, Data: rows})
 }
 
 // static serves the embedded files under /static/, cached for a day.

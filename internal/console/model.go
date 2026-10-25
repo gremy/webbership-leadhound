@@ -19,11 +19,18 @@ type Backend interface {
 	Runs(ctx context.Context, limit int) ([]RunRow, error)
 	Rules(ctx context.Context) ([]RuleRow, error) // every rule, disabled included
 	Track(ctx context.Context, req TrackRequest) (TrackOutcome, error)
+	Job(ctx context.Context, id int64) (JobPage, error) // ErrNotFound for no such job
+	AddRule(ctx context.Context, req RuleRequest) (string, error)
+	DisableRule(ctx context.Context, id int64, reason string) (string, error)
+	LeadsBackend
 }
 
 // ErrUserFixable wraps every refusal the operator can fix; the outcome's
 // Message is shown.
 var ErrUserFixable = errors.New("console: fix the request")
+
+// ErrNotFound is what a read returns for a job, batch or lead that does not exist.
+var ErrNotFound = errors.New("console: not found")
 
 // Options configures the handler New returns.
 type Options struct {
@@ -48,9 +55,10 @@ type Dashboard struct {
 	AICalls, AIInputTokens                       int
 	AICostUSD                                    float64
 	CallCap                                      int
-	Boards                                       []BoardCount // ats, state, n
-	LastRuns                                     []RunRow     // the latest 8
-	LastBrief                                    *BriefStamp  // day, sent at, listed count; nil when none sent
+	Boards                                       []BoardCount  // ats, state, n
+	LastRuns                                     []RunRow      // the latest 8
+	LastBrief                                    *BriefStamp   // day, sent at, listed count; nil when none sent
+	Leads                                        *LeadsSummary // nil when leads are not set up on this server
 }
 
 // Funnel counts the day's jobs at each step, as store.Funnel does.
@@ -135,4 +143,41 @@ type TrackOutcome struct {
 	RuleID      int64
 	NoOp, Noted bool
 	Message     string
+}
+
+// RuleRequest adds one rule: skip or flag the jobs whose Field matches Pattern.
+type RuleRequest struct {
+	Kind, Field, Pattern, Reason string
+}
+
+// JobPage is one job's whole record, for reading before applying: its facts, the full
+// current description, each criterion's verdict with the keywords it matched and the
+// lines that back it, what is unclear, and its status history, newest first.
+type JobPage struct {
+	JobID                            int64
+	Title, Company, Location         string
+	URL, ApplyURL                    string // the posting and, when it has its own, the apply link
+	ApplicantCount                   *int
+	PostedAt                         *time.Time
+	ApplyType, ListingStatus, Status string
+	Description                      string // "" when the job has no observation yet
+	Criteria                         []JobCriterion
+	Unclear                          []JobPoint
+	History                          []StatusLine
+}
+
+// JobCriterion is one criterion's verdict, the keywords it matched and the lines that
+// back it.
+type JobCriterion struct {
+	Name, Verdict, Keywords string
+	Evidence                []string
+}
+
+// JobPoint is one flagged gate or unclear criterion, with its snippet when it has one.
+type JobPoint struct{ Name, Snippet string }
+
+// StatusLine is one entry of a job's status history.
+type StatusLine struct {
+	Status, Reason, Actor string
+	At                    time.Time
 }

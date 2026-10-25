@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,13 +16,13 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
-	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
 func init() {
 	leadsCommands["batch"] = runLeadsBatch
 	leadsCommands["done"] = runLeadsDone
 	leadsCommands["mark-contacted"] = runLeadsMarkContacted
+	leadsCommands["resolve"] = runLeadsResolve
 }
 
 // leadsNow is the clock the batch commands schedule by; tests replace it.
@@ -43,7 +40,7 @@ const (
 	evidenceSpan = 50 // leads whose evidence one query reads
 )
 
-const leadsBatchUsage = "usage: leadhound leads batch new [--size N] | show N [--item K] | approve N --hash H [--skip 3,5]"
+const leadsBatchUsage = "usage: leadhound leads batch new [--size N] | show N [--item K] | approve N --hash H [--skip 3,5] | discard N"
 
 func runLeadsBatch(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -56,6 +53,8 @@ func runLeadsBatch(ctx context.Context, args []string) error {
 		return runBatchShow(ctx, args[1:])
 	case "approve":
 		return runBatchApprove(ctx, args[1:])
+	case "discard":
+		return runBatchDiscard(ctx, args[1:])
 	}
 	return usageError("unknown batch subcommand %q; %s", args[0], leadsBatchUsage)
 }
@@ -68,9 +67,10 @@ func batchMode(env leadconfig.Env) (shadow bool, idDomain string) {
 	return !env.Live() || idDomain == outreach.ShadowDomain, idDomain
 }
 
-// runBatchNew is `leads batch new [--size N]`: it drafts the whole sequence for the top N
-// candidate leads (kinds_priority, then list rank), drops a lead whose draft fails Check
-// and writes the batch.
+// runBatchNew is `leads batch new [--size N]`: newBatch, which drafts the whole sequence
+// for the top candidate leads (kinds_priority, then list rank), a live batch sized to what
+// the ramp can send, drops a lead whose draft fails Check and writes the batch; never while
+// another batch of its kind waits for approval.
 func runBatchNew(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads batch new", flag.ContinueOnError)
 	size := fs.Int("size", 0, "most leads in the batch (default caps.batch_size)")
@@ -86,84 +86,45 @@ func runBatchNew(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	cfg := setup.leads
-	n := *size
-	if n == 0 {
-		n = cfg.Caps.BatchSize
-	}
-	shadow, idDomain := batchMode(setup.env)
-	if setup.env.Live() && shadow {
-		_, _ = fmt.Fprintln(stdout, "LEADHOUND_OUTREACH is live but LEADHOUND_OUTREACH_USER names no mailbox: this batch is shadow.")
-	}
-	q := s.Q()
-	runID, err := q.StartRun(ctx, commandLeadsBatch, sourceLeads)
+	loc, err := leadsZone()
 	if err != nil {
 		return err
 	}
-	lq := leadstore.NewQueries(s.Pool())
-	var (
-		drafts  []leadstore.DraftRow
-		dropped []string
-		batchID int64
-	)
-	runErr := func() error {
-		cands, err := lq.CandidateLeads(ctx, leadstore.CandidateOptions{KindsPriority: cfg.KindsPriority, IncludeReserved: shadow})
-		if err != nil {
-			return err
-		}
-		taken := 0
-		for start := 0; start < len(cands) && taken < n; start += evidenceSpan {
-			span := cands[start:min(start+evidenceSpan, len(cands))]
-			ids := make([]int64, len(span))
-			for i, c := range span {
-				ids[i] = c.LeadID
+	bs := newBatchSetup(setup, loc)
+	if setup.env.Live() && bs.shadow {
+		_, _ = fmt.Fprintln(stdout, "LEADHOUND_OUTREACH is live but LEADHOUND_OUTREACH_USER names no mailbox: this batch is shadow.")
+	}
+	out, err := makeBatch(ctx, s, bs, leadsNow(), NewBatchRequest{Size: *size})
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseBatchWaiting:
+			_, _ = fmt.Fprintf(stdout, "Batch %d still waits for approval; no new batch.\n", r.BatchID)
+			return nil
+		case RefuseNoRoom:
+			if r.Sizing.Waiting == 0 {
+				_, _ = fmt.Fprintf(stdout, "The warm-up ramp sends nothing over the next %d days; no new batch.\n", r.Sizing.Days)
+			} else {
+				_, _ = fmt.Fprintln(stdout, "Enough approved mail waits for the next days; no new batch.")
 			}
-			ev, err := lq.LeadEvidence(ctx, ids)
-			if err != nil {
-				return err
-			}
-			for _, c := range span {
-				if taken >= n {
-					break
-				}
-				ds, err := draftLead(c, ev[c.LeadID], cfg, idDomain, rand.Reader)
-				if err != nil {
-					dropped = append(dropped, fmt.Sprintf("%s (%s, %s): %v", c.Domain, c.Kind, c.Channel, err))
-					continue
-				}
-				drafts = append(drafts, ds...)
-				taken++
-			}
-		}
-		if len(drafts) == 0 {
+			_, _ = fmt.Fprintf(stdout, "Sizing: %s.\n", r.Sizing.Words())
 			return nil
 		}
-		tsha, _ := hex.DecodeString(cfg.Templates.SHA256)
-		return leadsInTx(ctx, s.Pool(), func(tq leadstore.Queries) error {
-			var err error
-			batchID, _, err = tq.CreateBatch(ctx, shadow, drafts, tsha)
-			return err
-		})
-	}()
-	result := store.RunResult{Note: fmt.Sprintf("batch %d, %d messages, %d dropped", batchID, len(drafts), len(dropped))}
-	if runErr != nil {
-		result.Note = runErr.Error()
 	}
-	if err := q.FinishRun(context.WithoutCancel(ctx), runID, result); err != nil && runErr == nil {
+	if err != nil {
 		return err
 	}
-	if runErr != nil {
-		return runErr
-	}
-	for _, d := range dropped {
+	for _, d := range out.Dropped {
 		_, _ = fmt.Fprintf(stdout, "dropped %s\n", d)
 	}
-	if batchID == 0 {
+	if out.BatchID == 0 {
 		_, _ = fmt.Fprintln(stdout, "No batch: no candidate lead has a draft that passes the checks.")
 		return nil
 	}
 	_, _ = fmt.Fprintf(stdout, "Batch %d (%s): %s. Read: leadhound leads batch show %d\n",
-		batchID, batchKind(shadow), batchCounts(drafts), batchID)
+		out.BatchID, batchKind(out.Shadow), out.Counts, out.BatchID)
+	if out.Sizing != nil {
+		_, _ = fmt.Fprintf(stdout, "Sizing: %s.\n", out.Sizing.Words())
+	}
 	return nil
 }
 
@@ -176,21 +137,7 @@ func batchKind(shadow bool) string {
 
 // batchCounts says "8 emails, 2 contact forms, 1 LinkedIn note": email leads, form texts
 // and LinkedIn notes.
-func batchCounts(drafts []leadstore.DraftRow) string {
-	var emails, forms, notes int
-	for _, d := range drafts {
-		switch {
-		case d.Channel == "email" && d.Step == 0:
-			emails++
-		case d.Channel == "form":
-			forms++
-		case d.Channel == "linkedin":
-			notes++
-		}
-	}
-	return fmt.Sprintf("%s, %s, %s", plural(emails, "email", "emails"),
-		plural(forms, "contact form", "contact forms"), plural(notes, "LinkedIn note", "LinkedIn notes"))
-}
+func batchCounts(drafts []leadstore.DraftRow) string { return countDrafts(drafts).String() }
 
 func plural(n int, one, many string) string {
 	if n == 1 {
@@ -394,20 +341,20 @@ func slotsJSON(s outreach.Slots) (json.RawMessage, error) {
 	return b, nil
 }
 
-// batchItem is one lead of a batch and its messages, numbered as ApproveBatch's skip list.
-type batchItem struct {
-	n     int
-	lead  leadstore.Lead
-	org   leadstore.Org
-	route string // the lead's route value (an address or a form page)
-	msgs  []leadstore.Message
+// BatchItem is one lead of a batch and its messages, numbered as ApproveBatch's skip list.
+type BatchItem struct {
+	N     int
+	Lead  leadstore.Lead
+	Org   leadstore.Org
+	Route string // the lead's route value (an address or a form page)
+	Msgs  []leadstore.Message
 }
 
 // batchItems groups a batch's messages by lead, in BatchMessages order, numbered from 1.
-func batchItems(ctx context.Context, lq leadstore.Queries, msgs []leadstore.Message) ([]batchItem, error) {
-	var items []batchItem
+func batchItems(ctx context.Context, lq leadstore.Queries, msgs []leadstore.Message) ([]BatchItem, error) {
+	var items []BatchItem
 	for _, m := range msgs {
-		if len(items) == 0 || items[len(items)-1].lead.ID != m.LeadID {
+		if len(items) == 0 || items[len(items)-1].Lead.ID != m.LeadID {
 			l, err := lq.LeadByID(ctx, m.LeadID)
 			if err != nil {
 				return nil, err
@@ -416,7 +363,7 @@ func batchItems(ctx context.Context, lq leadstore.Queries, msgs []leadstore.Mess
 			if err != nil {
 				return nil, err
 			}
-			it := batchItem{n: len(items) + 1, lead: l, org: o}
+			it := BatchItem{N: len(items) + 1, Lead: l, Org: o}
 			if l.RouteID != nil {
 				routes, err := lq.RoutesFor(ctx, o.ID)
 				if err != nil {
@@ -424,13 +371,13 @@ func batchItems(ctx context.Context, lq leadstore.Queries, msgs []leadstore.Mess
 				}
 				for _, r := range routes {
 					if r.ID == *l.RouteID {
-						it.route = r.Value
+						it.Route = r.Value
 					}
 				}
 			}
 			items = append(items, it)
 		}
-		items[len(items)-1].msgs = append(items[len(items)-1].msgs, m)
+		items[len(items)-1].Msgs = append(items[len(items)-1].Msgs, m)
 	}
 	return items, nil
 }
@@ -466,50 +413,33 @@ func runBatchShow(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	lq := leadstore.NewQueries(s.Pool())
-	b, err := lq.BatchByID(ctx, id)
-	if errors.Is(err, leadstore.ErrBatchNotFound) {
+	v, err := batchView(ctx, leadstore.NewQueries(s.Pool()), id)
+	if r := asRefusal(err); r != nil && r.Kind == RefuseBatchNotFound {
 		return usageError("no batch %d", id)
 	}
 	if err != nil {
 		return err
 	}
-	msgs, err := lq.BatchMessages(ctx, id)
-	if err != nil {
-		return err
+	if *item < 0 || *item > len(v.Items) {
+		return usageError("batch %d has items 1 to %d", id, len(v.Items))
 	}
-	items, err := batchItems(ctx, lq, msgs)
-	if err != nil {
-		return err
-	}
-	if *item < 0 || *item > len(items) {
-		return usageError("batch %d has items 1 to %d", id, len(items))
-	}
-	leadIDs := make([]int64, len(items))
-	for i, it := range items {
-		leadIDs[i] = it.lead.ID
-	}
-	ev, err := lq.LeadEvidence(ctx, leadIDs)
-	if err != nil {
-		return err
-	}
-	sum, err := lq.BatchContentSHA256(ctx, id)
-	if err != nil {
-		return err
-	}
-	printBatch(stdout, b, items, ev, *item, !bytes.Equal(sum, b.ContentSHA256))
+	printBatch(stdout, v, *item)
 	return nil
 }
 
 const showDate = "2 Jan 2006"
 
-// printBatch writes the batch for reading. changed means its rows no longer hash to the
-// content hash batch new stored, so no approve line is printed.
-func printBatch(w io.Writer, b leadstore.Batch, items []batchItem, ev map[int64]leadstore.Evidence, only int, changed bool) {
+// printBatch writes the batch for reading. A batch whose rows no longer hash to the content
+// hash batch new stored gets no approve line, nor does an approved or discarded one.
+func printBatch(w io.Writer, v BatchView, only int) {
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
+	b, items, ev := v.Batch, v.Items, v.Evidence
 	status := "awaiting your approval"
-	if b.ApprovedAt != nil {
+	switch {
+	case b.ApprovedAt != nil:
 		status = "approved " + b.ApprovedAt.UTC().Format(showDate)
+	case b.DiscardedAt != nil:
+		status = "discarded " + b.DiscardedAt.UTC().Format(showDate)
 	}
 	p("Batch %d (%s) · %s · %s · created %s\n", b.ID, batchKind(b.Shadow), plural(len(items), "lead", "leads"), status, b.CreatedAt.UTC().Format(showDate))
 	p("Decide: read each item's finding and drafts; approve the batch, leaving out any item by its number.\n")
@@ -517,18 +447,18 @@ func printBatch(w io.Writer, b leadstore.Batch, items []batchItem, ev map[int64]
 		p("Shadow batch: nothing is sent and its leads stay new.\n")
 	}
 	for _, it := range items {
-		if only != 0 && it.n != only {
+		if only != 0 && it.N != only {
 			continue
 		}
-		p("\n%d. %s · %s · %s\n", it.n, it.org.Domain, it.lead.Kind, it.lead.Channel)
-		printEvidence(w, ev[it.lead.ID])
-		for _, m := range it.msgs {
-			p("\n   -- %s --\n", messageLabel(m, len(it.msgs)))
+		p("\n%d. %s · %s · %s\n", it.N, it.Org.Domain, it.Lead.Kind, it.Lead.Channel)
+		printEvidence(w, ev[it.Lead.ID])
+		for _, m := range it.Msgs {
+			p("\n   -- %s --\n", messageLabel(m, len(it.Msgs)))
 			switch {
 			case m.ToAddress != "":
 				p("   To: %s\n", m.ToAddress)
-			case m.Channel == "form" && it.route != "":
-				p("   Form page (the lead's current route): %s\n", it.route)
+			case m.Channel == "form" && it.Route != "":
+				p("   Form page (the lead's current route): %s\n", it.Route)
 			}
 			if m.Subject != "" {
 				p("   Subject: %s\n\n", m.Subject)
@@ -544,14 +474,16 @@ func printBatch(w io.Writer, b leadstore.Batch, items []batchItem, ev map[int64]
 	}
 	p("\n")
 	switch {
-	case changed:
+	case v.Changed:
 		p("Batch changed since it was drafted: its messages no longer match what batch new wrote, so it cannot be approved. Draft a new one: leadhound leads batch new\n")
 	case b.ApprovedAt != nil:
 		p("Approved %s; nothing to approve.\n", b.ApprovedAt.UTC().Format(showDate))
+	case b.DiscardedAt != nil:
+		p("Discarded %s; nothing to approve. Draft a new one: leadhound leads batch new\n", b.DiscardedAt.UTC().Format(showDate))
 	case only != 0:
 		p("To approve, read the whole batch: leadhound leads batch show %d\n", b.ID)
 	default:
-		p("Approve: leadhound leads batch approve %d --hash %s\n", b.ID, hex.EncodeToString(b.ContentSHA256)[:leadstore.MinHashPrefix])
+		p("Approve: leadhound leads batch approve %d --hash %s\n", b.ID, v.HashPrefix())
 	}
 }
 
@@ -624,9 +556,10 @@ func parseSkip(v string) ([]int, error) {
 	return out, nil
 }
 
-// runBatchApprove is `leads batch approve N --hash H [--skip 3,5]`: it approves what batch
-// show printed (the hash binds it, RA2). Each first email is due at the next business slot
-// in its recipient's time zone; follow-ups and the manual items have no due time.
+// runBatchApprove is `leads batch approve N --hash H [--skip 3,5]`: approveBatch, which
+// approves what batch show printed (the hash binds it, RA2). Each first email is due at the
+// next business slot in its recipient's time zone; follow-ups and the manual items have no
+// due time.
 func runBatchApprove(ctx context.Context, args []string) error {
 	const usage = "usage: leadhound leads batch approve N --hash H [--skip 3,5]"
 	fs := flag.NewFlagSet("leads batch approve", flag.ContinueOnError)
@@ -652,81 +585,83 @@ func runBatchApprove(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	lq := leadstore.NewQueries(s.Pool())
-	b, err := lq.BatchByID(ctx, id)
-	if errors.Is(err, leadstore.ErrBatchNotFound) {
-		return usageError("no batch %d", id)
+	out, err := approveBatch(ctx, s, setup.leads, leadsNow, ApproveRequest{ID: id, HashPrefix: *hash, Skip: skip})
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseBatchNotFound:
+			return usageError("no batch %d", id)
+		case RefuseHashMismatch:
+			return usageError("batch %d: the hash does not match what batch show printed; nothing was approved. Read it again: leadhound leads batch show %d", id, id)
+		case RefuseBatchChanged:
+			return usageError("batch %d changed since it was drafted (its messages no longer match its hash); nothing was approved. Draft a new one: leadhound leads batch new", id)
+		case RefuseBadSkip:
+			return usageError("batch %d has items 1 to %d; nothing was approved", id, r.Items)
+		case RefuseBatchDiscarded:
+			return usageError("batch %d was discarded; nothing was approved. Draft a new one: leadhound leads batch new", id)
+		}
 	}
 	if err != nil {
 		return err
 	}
-	msgs, err := lq.BatchMessages(ctx, id)
-	if err != nil {
-		return err
-	}
-	items, err := batchItems(ctx, lq, msgs)
-	if err != nil {
-		return err
-	}
-	locs := map[int64]*time.Location{}
-	for _, it := range items {
-		locs[it.lead.ID] = setup.leads.Policy(it.org.Country).Location()
-	}
-	now := leadsNow()
-	var (
-		firstDue time.Time
-		manual   []int64
-	)
-	due := func(m leadstore.Message) time.Time {
-		if m.Channel != "email" {
-			manual = append(manual, m.ID)
-			return time.Time{}
-		}
-		if m.Step != 0 {
-			return time.Time{}
-		}
-		t := outreach.NextSlot(locs[m.LeadID], setup.leads.Schedule.BusinessHours, now)
-		if !t.IsZero() && (firstDue.IsZero() || t.Before(firstDue)) {
-			firstDue = t
-		}
-		return t
-	}
-	var a leadstore.Approval
-	err = leadsInTx(ctx, s.Pool(), func(tq leadstore.Queries) error {
-		var err error
-		a, err = tq.ApproveBatch(ctx, id, *hash, skip, due)
-		return err
-	})
-	switch {
-	case errors.Is(err, leadstore.ErrHashMismatch), errors.Is(err, leadstore.ErrHashTooShort):
-		return usageError("batch %d: the hash does not match what batch show printed; nothing was approved. Read it again: leadhound leads batch show %d", id, id)
-	case errors.Is(err, leadstore.ErrBatchTampered):
-		return usageError("batch %d changed since it was drafted (its messages no longer match its hash); nothing was approved. Draft a new one: leadhound leads batch new", id)
-	case errors.Is(err, leadstore.ErrBadSkip):
-		return usageError("batch %d has items 1 to %d; nothing was approved", id, len(items))
-	case err != nil:
-		return err
-	}
-	if a.Already {
+	if out.Approval.Already {
 		_, _ = fmt.Fprintf(stdout, "Batch %d was already approved; nothing changed.\n", id)
 		return nil
 	}
-	_, _ = fmt.Fprintf(stdout, "Batch %d (%s) approved: %s approved, %s skipped.\n", id, batchKind(b.Shadow),
-		plural(a.Approved, "message", "messages"), plural(a.Skipped, "message", "messages"))
-	if !firstDue.IsZero() {
+	_, _ = fmt.Fprintf(stdout, "Batch %d (%s) approved: %s approved, %s skipped.\n", id, batchKind(out.Shadow),
+		plural(out.Approval.Approved, "message", "messages"), plural(out.Approval.Skipped, "message", "messages"))
+	if !out.FirstDue.IsZero() {
 		_, _ = fmt.Fprintf(stdout, "First emails are due from %s, each in its recipient's business hours. Follow-ups get their time when send runs.\n",
-			firstDue.UTC().Format("Mon 2 Jan 15:04 MST"))
+			out.FirstDue.UTC().Format("Mon 2 Jan 15:04 MST"))
 	}
-	if len(manual) > 0 {
-		ids := make([]string, len(manual))
-		for i, m := range manual {
+	if len(out.Manual) > 0 {
+		ids := make([]string, len(out.Manual))
+		for i, m := range out.Manual {
 			ids[i] = strconv.FormatInt(m, 10)
 		}
 		_, _ = fmt.Fprintf(stdout, "Contact forms and LinkedIn notes wait for you (messages %s): after using one, run leadhound leads done <message>.\n", strings.Join(ids, ", "))
 	}
-	if b.Shadow {
+	if out.Shadow {
 		_, _ = fmt.Fprintln(stdout, "Shadow batch: send writes these to the outbox only, and the leads stay new.")
 	}
+	return nil
+}
+
+// runBatchDiscard is `leads batch discard N`: discardBatch, which throws an unapproved batch
+// away so its leads can be drafted again.
+func runBatchDiscard(ctx context.Context, args []string) error {
+	const usage = "usage: leadhound leads batch discard N"
+	fs := flag.NewFlagSet("leads batch discard", flag.ContinueOnError)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	id, err := parseBatchID(pos, usage)
+	if err != nil {
+		return err
+	}
+	s, _, err := leadsOpen(ctx, leadsForProbe)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	out, err := discardBatch(ctx, s, id)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseBatchNotFound:
+			return usageError("no batch %d", id)
+		case RefuseBatchApproved:
+			return usageError("batch %d is approved; an approved batch is never discarded (pause sending, or suppress a lead, to stop its emails)", id)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if out.Already {
+		_, _ = fmt.Fprintf(stdout, "Batch %d was already discarded; nothing changed.\n", id)
+		return nil
+	}
+	_, _ = fmt.Fprintf(stdout, "Batch %d (%s) discarded: %s cancelled, %s back to new.\n", id, batchKind(out.Shadow),
+		plural(int(out.Cancelled), "message", "messages"), plural(out.LeadsBack, "lead", "leads"))
 	return nil
 }
 
@@ -750,20 +685,18 @@ func runLeadsDone(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	var d leadstore.Done
-	err = leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
-		var err error
-		d, err = lq.MarkDone(ctx, id, leadstore.ActorGremy)
-		return err
-	})
-	switch {
-	case errors.Is(err, leadstore.ErrMessageNotFound):
-		return usageError("no message %d", id)
-	case errors.Is(err, leadstore.ErrNotManual):
-		return usageError("message %d is an email; send handles emails", id)
-	case errors.Is(err, leadstore.ErrMessageState):
-		return usageError("message %d is not an approved contact-form or LinkedIn item; approve its batch first", id)
-	case err != nil:
+	d, err := markDone(ctx, s, id)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseMessageNotFound:
+			return usageError("no message %d", id)
+		case RefuseNotManual:
+			return usageError("message %d is an email; send handles emails", id)
+		case RefuseMessageState:
+			return usageError("message %d is not an approved contact-form or LinkedIn item; approve its batch first", id)
+		}
+	}
+	if err != nil {
 		return err
 	}
 	switch {
@@ -795,13 +728,8 @@ func runLeadsMarkContacted(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	var c leadstore.Contacted
-	err = leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
-		var err error
-		c, err = lq.MarkContacted(ctx, pos[0], *note)
-		return err
-	})
-	if errors.Is(err, leadstore.ErrNoDomain) {
+	c, err := markContacted(ctx, s, pos[0], *note)
+	if r := asRefusal(err); r != nil && r.Kind == RefuseNotDomain {
 		return usageError("%q is not a domain; %s", pos[0], usage)
 	}
 	if err != nil {
@@ -818,6 +746,61 @@ func runLeadsMarkContacted(ctx context.Context, args []string) error {
 	default:
 		_, _ = fmt.Fprintf(stdout, "Lead %d (%s, %s) stays %s; nothing changed.\n", c.LeadID, c.LeadKind, org, c.State)
 	}
+	return nil
+}
+
+// runLeadsResolve is `leads resolve K sent|not-sent`: the operator checked email K (maybe
+// sent, or left sending by a broken run) in the mailbox's Sent folder. resolveMaybeSent
+// records it under the send lock.
+func runLeadsResolve(ctx context.Context, args []string) error {
+	const usage = "usage: leadhound leads resolve MESSAGE sent|not-sent (after checking the mailbox's Sent folder)"
+	fs := flag.NewFlagSet("leads resolve", flag.ContinueOnError)
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 || (pos[1] != "sent" && pos[1] != "not-sent") {
+		return usageError("%s", usage)
+	}
+	id, err := strconv.ParseInt(pos[0], 10, 64)
+	if err != nil || id < 1 {
+		return usageError("%q is not a message number; %s", pos[0], usage)
+	}
+	s, setup, err := leadsOpen(ctx, leadsForProbe)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	loc, err := leadsZone()
+	if err != nil {
+		return err
+	}
+	out, err := resolveMaybeSent(ctx, s, setup, loc, id, pos[1] == "sent")
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseSendRunning:
+			return usageError("A send run is in progress; try again in a few minutes.")
+		case RefuseMessageNotFound:
+			return usageError("no message %d", id)
+		case RefuseMessageState:
+			return usageError("message %d is not a live email that may have gone out (maybe sent, or left sending); nothing changed", id)
+		case RefuseSelftest:
+			return usageError("message %d is a selftest's; a selftest is never checked by hand, run a new one: leadhound leads selftest", id)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if !out.Sent {
+		_, _ = fmt.Fprintf(stdout, "Message %d not sent: it is approved again and goes at the next send run in its recipient's hours.\n", id)
+		return nil
+	}
+	lead := fmt.Sprintf("lead %d is now contacted", out.LeadID)
+	if !out.LeadMoved {
+		lead = fmt.Sprintf("lead %d keeps its state", out.LeadID)
+	}
+	_, _ = fmt.Fprintf(stdout, "Message %d sent %s; %s, and its follow-ups go on as after any send.\n", id,
+		out.SentAt.UTC().Format("Mon 2 Jan 15:04 MST"), lead)
 	return nil
 }
 

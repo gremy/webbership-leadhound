@@ -17,7 +17,7 @@
     {{range .Rows}}
     <article class="job tracked" id="tracked-{{.JobID}}">
       <div class="job-main">
-        <h2 class="job-title">{{.Title}}</h2>
+        <h2 class="job-title"><a href="/jobs/{{.JobID}}">{{.Title}}</a></h2>
         <p class="job-company">{{.Company}}</p>
         <p class="job-meta">Since {{when .Since}}{{if .Reason}} · {{.Reason}}{{end}}</p>
       </div>

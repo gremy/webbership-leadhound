@@ -36,15 +36,17 @@ endif
 endif
 # remote runs read-only commands freely; anything else writes or reaches the network
 # (collect, canary, brief, score, migrate, recheck, probe, track <n>, rules add ...), so it
-# needs CONFIRM=1 too. REMOTE_VERB is ARGS' first two words joined by _, e.g. track_list.
+# needs CONFIRM=1 too. REMOTE_VERB is ARGS' first two words joined by _, e.g. track_list;
+# REMOTE_VERB3 is the first three, for the leads commands whose third word is the verb.
 empty               :=
 space               := $(empty) $(empty)
-REMOTE_READONLY     := track_list rules_list boards_list
+REMOTE_READONLY     := track_list rules_list boards_list leads_suppress_list leads_suppress_check leads_batch_show
 REMOTE_VERB         := $(subst $(space),_,$(strip $(wordlist 1,2,$(ARGS))))
+REMOTE_VERB3        := $(subst $(space),_,$(strip $(wordlist 1,3,$(ARGS))))
 ifneq ($(filter remote,$(MAKECMDGOALS)),)
-ifeq ($(filter $(REMOTE_VERB),$(REMOTE_READONLY)),)
+ifeq ($(filter $(REMOTE_VERB) $(REMOTE_VERB3),$(REMOTE_READONLY)),)
 ifneq ($(CONFIRM),1)
-$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list))
+$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list, leads suppress list|check, leads batch show))
 endif
 endif
 endif
@@ -56,6 +58,9 @@ REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/
 endif
 ifneq ($(filter score score_%,$(REMOTE_VERB)),)
 REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.score.lock
+endif
+ifneq ($(filter leads_sites leads_contacts leads_agencies leads_transfer,$(REMOTE_VERB)),)
+REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock
 endif
 ifneq ($(filter $(ARCH),arm64 amd64),$(ARCH))
 $(error ARCH must be arm64 or amd64, not $(ARCH))
@@ -162,16 +167,26 @@ deploy: check test-scale build-linux
 	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/sql/limits.sql deploy/leadhound-*.service deploy/leadhound-*.timer $(HOST):$$stage/ && \
 	$(SSH) -t $(HOST) sudo sh $$stage/install.sh $$stage
 
-## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile, then copy
-## leadhound.yaml and ats-boards.yaml from LEADHOUND_PRIVATE_DIR to the server (nothing else)
+## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile and the leads config, then copy
+## leadhound.yaml, ats-boards.yaml, leads.yaml, agencies.yaml and the leads-templates/ tree from
+## LEADHOUND_PRIVATE_DIR to the server (nothing else); a template file no longer in the private tree is removed
 deploy-data:
-	@for f in leadhound.yaml ats-boards.yaml; do \
-		test -f "$(LEADHOUND_PRIVATE_DIR)/$$f" || { echo "deploy-data: $$f not found in LEADHOUND_PRIVATE_DIR"; exit 1; }; \
+	@for f in leadhound.yaml ats-boards.yaml leads.yaml agencies.yaml leads-templates; do \
+		test -e "$(LEADHOUND_PRIVATE_DIR)/$$f" || { echo "deploy-data: $$f not found in LEADHOUND_PRIVATE_DIR"; exit 1; }; \
 	done
 	LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' go run $(CMD) score --check-config
+	LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' go run $(CMD) leads check-config
 	@stage=$$($(SSH) $(HOST) mktemp -d) && \
-	$(SCP) '$(LEADHOUND_PRIVATE_DIR)/leadhound.yaml' '$(LEADHOUND_PRIVATE_DIR)/ats-boards.yaml' $(HOST):$$stage/ && \
-	$(SSH) -t $(HOST) "sudo install -o root -g leadhound -m 0640 $$stage/leadhound.yaml $$stage/ats-boards.yaml /opt/leadhound/data/ && rm -rf $$stage"
+	$(SCP) '$(LEADHOUND_PRIVATE_DIR)/leadhound.yaml' '$(LEADHOUND_PRIVATE_DIR)/ats-boards.yaml' \
+		'$(LEADHOUND_PRIVATE_DIR)/leads.yaml' '$(LEADHOUND_PRIVATE_DIR)/agencies.yaml' $(HOST):$$stage/ && \
+	$(SCP) -r '$(LEADHOUND_PRIVATE_DIR)/leads-templates' $(HOST):$$stage/ && \
+	$(SSH) -t $(HOST) "sudo sh -c 'set -e; cd $$stage; \
+		install -o root -g leadhound -m 0640 leadhound.yaml ats-boards.yaml leads.yaml agencies.yaml /opt/leadhound/data/; \
+		find leads-templates -type d -exec install -d -o root -g leadhound -m 0750 /opt/leadhound/data/{} \\; ; \
+		find leads-templates -type f -exec install -o root -g leadhound -m 0640 {} /opt/leadhound/data/{} \\; ; \
+		cd /opt/leadhound/data; \
+		find leads-templates -type f | while read -r f; do test -e $$stage/\$$f || rm -f \$$f; done; \
+		rm -rf $$stage'"
 
 ## remote: make remote HOST=<ssh host> ARGS='track list' [CONFIRM=1]: run one leadhound
 ## command on the server as the leadhound user, with the units' environment. ARGS is split

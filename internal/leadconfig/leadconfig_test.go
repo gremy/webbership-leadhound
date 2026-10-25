@@ -490,3 +490,31 @@ func TestOptOutLine(t *testing.T) {
 		t.Error("OptOutLine(ro) found a line the demo does not have")
 	}
 }
+
+// TestStartDateFirstSend: caps.start_date takes the word first-send besides a date; no other
+// date field does.
+func TestStartDateFirstSend(t *testing.T) {
+	dir := demoDir(t)
+	replaceIn(t, dir, FileName, "start_date: 2026-11-16", "start_date: "+FirstSend)
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("first-send refused: %v", err)
+	}
+	if !cfg.Caps.StartDate.IsFirstSend() || !cfg.Caps.StartDate.IsZero() {
+		t.Errorf("start_date = %+v, want first-send", cfg.Caps.StartDate)
+	}
+	demo, err := Load(examplesDir)
+	if err != nil || demo.Caps.StartDate.IsFirstSend() {
+		t.Errorf("a fixed date read as first-send (%v)", err)
+	}
+
+	dir = demoDir(t)
+	replaceIn(t, dir, FileName, "d7_eol: 2025-01-05", "d7_eol: "+FirstSend)
+	_, err = Load(dir)
+	wantProblem(t, err, "facts.d7_eol")
+
+	dir = demoDir(t)
+	replaceIn(t, dir, FileName, "start_date: 2026-11-16", "start_date: first-sent")
+	_, err = Load(dir)
+	wantProblem(t, err, "caps.start_date", "first-send")
+}

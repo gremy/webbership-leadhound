@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
 
 var (
@@ -536,5 +539,36 @@ func TestDashboardSnapshotShutdown(t *testing.T) {
 	}
 	if b.marked(); running(b) {
 		t.Errorf("a mark started a build after shutdown")
+	}
+}
+
+// TestPriorityFormRoundTrip: a profile shown as the priorities form reads back as the same
+// profile, and a form with problems names each of them.
+func TestPriorityFormRoundTrip(t *testing.T) {
+	p := leadconfig.Profile{
+		Kinds: map[string]int{"unsupported": 20, "d10": 10}, Majors: map[int]int{7: 30, 10: -5}, Channels: map[string]int{"email": 10, "form": 0},
+		Countries: map[string]int{"GB": 20, "DE": 10}, RankBands: []leadconfig.RankBand{{Under: 10000, Points: 15}, {Under: 100000, Points: 8}},
+		ExactVersion: 5, ExcludeCountries: []string{"FR", "IT"},
+	}
+	f := profileForm(p)
+	if f.Countries != "DE 10, GB 20" || f.RankBands != "10000 15, 100000 8" || f.Exclude != "FR, IT" || f.ExactVersion != "5" {
+		t.Errorf("form %+v", f)
+	}
+	got, problems := parseProfileForm(f)
+	if len(problems) != 0 || !reflect.DeepEqual(got, p) {
+		t.Errorf("read back %+v (%v), want %+v", got, problems, p)
+	}
+	bad := f
+	bad.Points = append(slices.Clone(f.Points), console.PointField{Key: "major.12", Value: "5"}, console.PointField{Key: "kind.hand", Value: "x"})
+	bad.Countries, bad.RankBands, bad.ExactVersion = "gb", "ten 5", "200"
+	_, problems = parseProfileForm(bad)
+	for _, want := range []string{`"kind.hand" is not a priority rule`, `"major.12" is not a priority rule`, `Countries: "gb" is not two values`,
+		`Site rank bands: "ten" is not a whole number`, "priority.exact_version: 200 points is outside -100 to 100"} {
+		if !slices.Contains(problems, want) {
+			t.Errorf("problems %q lack %q", problems, want)
+		}
+	}
+	if n := normalForm(console.PriorityForm{Points: []console.PointField{{Key: "major.7", Value: "x"}}}); len(n.Points) != len(pointFields()) || n.Points[slices.IndexFunc(n.Points, func(p console.PointField) bool { return p.Key == "major.7" })].Value != "x" {
+		t.Errorf("normal form %+v", n)
 	}
 }

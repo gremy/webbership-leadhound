@@ -81,6 +81,7 @@ type Config struct {
 	Facts                Facts              `yaml:"facts"`
 	TemplatesDir         string             `yaml:"templates_dir"` // relative to the data dir
 	KindsPriority        []string           `yaml:"kinds_priority"`
+	Priority             *Profile           `yaml:"priority"` // nil: kinds_priority alone orders the leads
 	Copy                 Copy               `yaml:"copy"`
 	Schedule             Schedule           `yaml:"schedule"`
 	Caps                 Caps               `yaml:"caps"`
@@ -191,6 +192,10 @@ type Caps struct {
 	BatchSize int    `yaml:"batch_size"`
 }
 
+// FirstSend is the caps.start_date word that makes day 0 of the ramp the day of the first
+// live send, whenever that is, instead of a fixed date.
+const FirstSend = "first-send"
+
 // Ramp is the daily cap from FromDay days after StartDate onwards.
 type Ramp struct {
 	FromDay int `yaml:"from_day"`
@@ -212,6 +217,10 @@ func (d *Date) UnmarshalYAML(n *yaml.Node) error {
 	}
 	return nil
 }
+
+// IsFirstSend reports whether the date is the word FirstSend (only caps.start_date accepts
+// it); its Time is then zero.
+func (d Date) IsFirstSend() bool { return d.raw == FirstSend }
 
 // Load reads FileName from dataDir and checks all of it, templates included.
 func Load(dataDir string) (Config, error) {
@@ -407,6 +416,9 @@ func (cfg *Config) checkRest() []string {
 			p = append(p, fmt.Sprintf("kinds_priority: %q appears twice", k))
 		}
 	}
+	if cfg.Priority != nil {
+		p = append(p, cfg.Priority.Problems()...)
+	}
 	for _, code := range sortedKeys(cfg.Countries) {
 		c := cfg.Countries[code]
 		if c.Channel == ChannelEmail && langCode.MatchString(c.Lang) {
@@ -453,7 +465,9 @@ func (cfg *Config) checkRest() []string {
 	}
 	p = append(p, pair("schedule.spacing_minutes", cfg.Schedule.SpacingMinutes, 0)...)
 
-	p = append(p, cfg.Caps.StartDate.check("caps.start_date")...)
+	if !cfg.Caps.StartDate.IsFirstSend() {
+		p = append(p, cfg.Caps.StartDate.check("caps.start_date", " or "+FirstSend)...)
+	}
 	if len(cfg.Caps.Ramp) == 0 {
 		p = append(p, "caps.ramp is empty")
 	}
@@ -474,12 +488,13 @@ func (cfg *Config) checkRest() []string {
 	return p
 }
 
-func (d Date) check(field string) []string {
+// check reports a missing or unparsed date; or names what else the field accepts.
+func (d Date) check(field string, or ...string) []string {
 	switch {
 	case d.raw == "":
 		return []string{field + " is missing"}
 	case d.IsZero():
-		return []string{fmt.Sprintf("%s: %q is not a date like 2026-01-31", field, d.raw)}
+		return []string{fmt.Sprintf("%s: %q is not a date like 2026-01-31%s", field, d.raw, strings.Join(or, ""))}
 	}
 	return nil
 }

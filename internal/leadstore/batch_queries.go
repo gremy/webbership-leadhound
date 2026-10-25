@@ -238,3 +238,112 @@ func (q Queries) SuppressionCounts(ctx context.Context) ([]SuppressionCount, err
 	}
 	return rows, nil
 }
+
+// batchNewLockKey is the transaction-level advisory lock one batch new holds from its guard
+// to its CreateBatch, so two at once never both pass the guard.
+const batchNewLockKey int64 = 0x4c48_4241_5443 // "LHBATC"
+
+// LockBatchNew waits for the batch-new lock and holds it until the transaction ends. Run it
+// in a transaction, first.
+func (q Queries) LockBatchNew(ctx context.Context) error {
+	if _, err := q.db.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, batchNewLockKey); err != nil {
+		return fmt.Errorf("leadstore: lock batch new: %w", err)
+	}
+	return nil
+}
+
+// UnapprovedBatch returns the oldest batch of the given kind (shadow or live) that is
+// neither approved nor discarded: the one a new batch waits for. ok is false when none waits.
+func (q Queries) UnapprovedBatch(ctx context.Context, shadow bool) (id int64, ok bool, err error) {
+	err = q.db.QueryRow(ctx,
+		`SELECT id FROM outreach_batch WHERE shadow = $1 AND approved_at IS NULL AND discarded_at IS NULL
+		 ORDER BY id LIMIT 1`, shadow).Scan(&id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, fmt.Errorf("leadstore: unapproved batch: %w", err)
+	}
+	return id, true, nil
+}
+
+// WaitingEmails counts the live emails that may still go, follow-ups included (with a due
+// time or not): approved, and toCheck, those maybe sent or left sending, which go again if
+// the operator finds them not sent. Selftests never count. A new batch's emails come after
+// these. A toCheck row attempted today also counts in today's sends (SentSince), so the
+// two together err on the side of drafting less.
+func (q Queries) WaitingEmails(ctx context.Context) (approved, toCheck int, err error) {
+	if err := q.db.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE m.state = 'approved'), count(*) FILTER (WHERE m.state IN ('sending', 'maybe_sent'))
+		 FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id JOIN lead l ON l.id = m.lead_id
+		 WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.channel = 'email' AND l.kind <> 'selftest'
+		   AND m.state IN ('approved', 'sending', 'maybe_sent')`).Scan(&approved, &toCheck); err != nil {
+		return 0, 0, fmt.Errorf("leadstore: waiting emails: %w", err)
+	}
+	return approved, toCheck, nil
+}
+
+// CancelDiscarded is the cancel_reason of a discarded batch's messages.
+const CancelDiscarded = "batch discarded"
+
+// Discard is what DiscardBatch did.
+type Discard struct {
+	Already   bool  // the batch was discarded before; nothing changed
+	Shadow    bool  // a shadow batch: its leads never left new
+	Cancelled int64 // the batch's pending messages cancelled
+	LeadsBack int   // leads moved from batched back to new
+}
+
+// DiscardBatch throws away batch id before approval: with the batch row locked (as
+// ApproveBatch locks it), its own draft and approved messages are cancelled (CancelDiscarded),
+// its leads go from batched back to new, so the next batch may draft them, and discarded_at
+// is set. An approved batch is ErrBatchApproved, a missing one ErrBatchNotFound; nothing
+// changes then. Run it in a transaction.
+func (q Queries) DiscardBatch(ctx context.Context, id int64) (Discard, error) {
+	var (
+		d         Discard
+		approved  bool
+		discarded bool
+	)
+	err := q.db.QueryRow(ctx,
+		`SELECT shadow, approved_at IS NOT NULL, discarded_at IS NOT NULL FROM outreach_batch WHERE id = $1 FOR UPDATE`, id).
+		Scan(&d.Shadow, &approved, &discarded)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return Discard{}, fmt.Errorf("leadstore: discard batch %d: %w", id, ErrBatchNotFound)
+	case err != nil:
+		return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
+	case approved:
+		return Discard{}, fmt.Errorf("leadstore: discard batch %d: %w", id, ErrBatchApproved)
+	case discarded:
+		return Discard{Already: true, Shadow: d.Shadow}, nil
+	}
+	leadIDs, err := collect(ctx, q.db, pgx.RowTo[int64],
+		`SELECT DISTINCT lead_id FROM outreach_message WHERE batch_id = $1 ORDER BY lead_id`, id)
+	if err != nil {
+		return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
+	}
+	tag, err := q.db.Exec(ctx,
+		`UPDATE outreach_message SET state = 'cancelled', cancel_reason = $2
+		 WHERE batch_id = $1 AND state IN ('draft', 'approved')`, id, CancelDiscarded)
+	if err != nil {
+		return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
+	}
+	d.Cancelled = tag.RowsAffected()
+	if !d.Shadow {
+		reason := fmt.Sprintf("batch %d discarded", id)
+		for _, l := range leadIDs {
+			moved, err := q.setLeadStateFrom(ctx, l, []string{LeadBatched}, LeadNew, reason, ActorGremy)
+			if err != nil {
+				return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
+			}
+			if moved {
+				d.LeadsBack++
+			}
+		}
+	}
+	if _, err := q.db.Exec(ctx, `UPDATE outreach_batch SET discarded_at = now() WHERE id = $1`, id); err != nil {
+		return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
+	}
+	return d, nil
+}

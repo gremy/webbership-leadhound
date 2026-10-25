@@ -12,17 +12,36 @@ import (
 // weekday, so a week always holds one, and the margin covers a calendar oddity.
 const scheduleSearchDays = 15
 
-// CapToday is today's send cap for the one mailbox: the ramp step for the whole local days
-// since caps.start_date, counted in loc (the operator's LEADHOUND_TZ, never the recipient's),
-// and never above leadconfig.HardDailyCeiling. Before the start date it is 0.
+// CapToday is today's send cap for the one mailbox, counted in loc (the operator's
+// LEADHOUND_TZ, never the recipient's): CapOn for today with no first send on record.
 func CapToday(cfg leadconfig.Config, now time.Time, loc *time.Location) int {
-	sd := cfg.Caps.StartDate.Time
-	if sd.IsZero() {
-		return 0
+	return CapOn(cfg, nil, now.In(loc))
+}
+
+// CapOn is the send cap for the one mailbox on day's calendar date: the ramp step for the
+// whole days since the ramp's day 0, never above leadconfig.HardDailyCeiling, and 0 before
+// day 0. Day 0 is caps.start_date, or with start_date first-send the date of firstSend (the
+// first live send; nil when none has gone, which makes day itself day 0). day and firstSend
+// are read as dates in their own location, so the caller passes both in the operator's zone;
+// a caller looking at a later day with no send yet passes today as firstSend.
+func CapOn(cfg leadconfig.Config, firstSend *time.Time, day time.Time) int {
+	date := func(t time.Time) time.Time {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	}
-	start := time.Date(sd.Year(), sd.Month(), sd.Day(), 0, 0, 0, 0, time.UTC)
-	t := now.In(loc)
-	today := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	var start time.Time
+	switch {
+	case !cfg.Caps.StartDate.IsFirstSend():
+		if cfg.Caps.StartDate.IsZero() {
+			return 0
+		}
+		start = date(cfg.Caps.StartDate.Time)
+	case firstSend != nil:
+		start = date(*firstSend)
+	default:
+		start = date(day)
+	}
+	today := date(day)
 	if today.Before(start) {
 		return 0
 	}

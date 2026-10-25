@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"strings"
@@ -64,20 +63,18 @@ func runSuppressAdd(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	var res leadstore.Suppressed
-	err = leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
-		var err error
-		res, err = lq.Suppress(ctx, kind, value, *reason, "cli")
-		return err
-	})
-	switch {
-	case errors.Is(err, leadstore.ErrUnknownSuppression):
-		return usageError("--reason %q is not one of manual, opt_out, bounce, replied_no", *reason)
-	case errors.Is(err, leadstore.ErrSuppressNotRegistrable):
-		return usageError("%s has no registrable domain (a bare public suffix cannot be suppressed)", value)
-	case errors.Is(err, leadstore.ErrBadSuppressValue):
-		return usageError("%s is not a usable %s", shown(kind, value), kind)
-	case err != nil:
+	res, err := suppressAdd(ctx, s, kind, value, *reason, suppressFromCLI)
+	if r := asRefusal(err); r != nil {
+		switch r.Kind {
+		case RefuseSuppressReason:
+			return usageError("--reason %q is not one of manual, opt_out, bounce, replied_no", *reason)
+		case RefuseNotRegistrable:
+			return usageError("%s has no registrable domain (a bare public suffix cannot be suppressed)", value)
+		case RefuseBadValue:
+			return usageError("%s is not a usable %s", shown(kind, value), kind)
+		}
+	}
+	if err != nil {
 		return err
 	}
 	rec := "recorded"

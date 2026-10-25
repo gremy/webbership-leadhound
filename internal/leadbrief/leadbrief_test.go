@@ -3,6 +3,7 @@ package leadbrief
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNoteWords(t *testing.T) {
@@ -47,12 +48,13 @@ func TestTodo(t *testing.T) {
 		t.Error("health alone is something to do")
 	}
 	for name, s := range map[string]Section{
-		"replies": {Replies: []string{"alpha.example"}},
-		"batch":   {Batch: &BatchReady{ID: 1, Emails: 1}},
-		"manual":  {ManualWaiting: 1},
-		"check":   {CheckByHand: 1},
-		"other":   {Other: 1},
-		"paused":  {Paused: PausedSync},
+		"replies":         {Replies: []string{"alpha.example"}},
+		"batch":           {Batch: &BatchReady{ID: 1, Emails: 1}},
+		"manual":          {ManualWaiting: 1},
+		"check":           {CheckByHand: 1},
+		"other":           {Other: 1},
+		"paused":          {Paused: PausedSync},
+		"operator paused": {OperatorPaused: &time.Time{}},
 	} {
 		if !s.Todo() {
 			t.Errorf("%s is not something to do", name)

@@ -37,6 +37,9 @@ type Section struct {
 	Sent, ShadowSent, Bounced, OptedOut int
 	// Paused says why sending stopped on the latest send run since yesterday, or "".
 	Paused string
+	// OperatorPaused is when the operator paused sending, in the brief's location, nil while
+	// sending is not paused. The pause's reason stays out: it is free text.
+	OperatorPaused *time.Time
 	// CheckByHand counts every live email that may have gone out, whatever its date:
 	// maybe_sent, and those left in sending by a run that broke off. Nothing resolves
 	// them yet, so the count never lapses.
@@ -63,7 +66,8 @@ type ProbeLine struct {
 // Todo reports whether the section has anything for the member to act on; when it has
 // not, the brief shows only its health line.
 func (s Section) Todo() bool {
-	return len(s.Replies) > 0 || s.Other > 0 || s.Paused != "" || s.Batch != nil || s.ManualWaiting > 0 || s.CheckByHand > 0
+	return len(s.Replies) > 0 || s.Other > 0 || s.Paused != "" || s.OperatorPaused != nil || s.Batch != nil ||
+		s.ManualWaiting > 0 || s.CheckByHand > 0
 }
 
 // The Paused values.
@@ -110,6 +114,7 @@ func loadExcluding(ctx context.Context, q store.DBTX, day time.Time, loc *time.L
 		func() error { return s.loadBatch(ctx, q, re) },
 		func() error { return s.loadOutreach(ctx, q, re, yesterday, today) },
 		func() error { return s.loadPaused(ctx, q, yesterday) },
+		func() error { return s.loadOperatorPaused(ctx, q, loc) },
 		func() error { return s.loadProbe(ctx, q, re, yesterday, today) },
 	}
 	for _, step := range steps {
@@ -233,6 +238,19 @@ func (s *Section) loadPaused(ctx context.Context, q store.DBTX, from time.Time) 
 	return nil
 }
 
+// loadOperatorPaused reads the operator's pause switch (leadstore.SendPaused).
+func (s *Section) loadOperatorPaused(ctx context.Context, q store.DBTX, loc *time.Location) error {
+	paused, _, at, err := leadstore.NewQueries(q).SendPaused(ctx)
+	if err != nil {
+		return fmt.Errorf("send pause: %w", err)
+	}
+	if paused {
+		at = at.In(loc)
+		s.OperatorPaused = &at
+	}
+	return nil
+}
+
 // NoteWords are the words of a send run note's "notes a, b" part.
 func NoteWords(note string) map[string]bool {
 	out := map[string]bool{}
@@ -268,10 +286,17 @@ func DNSPaused(spf, dkim, dmarc bool) string {
 	return "dns: " + strings.Join(missing, ", ") + " missing"
 }
 
+// loadProbe reads the day's probes first (site_probe's created_at index) and only then
+// joins their sites by key for the reserved-name test. OFFSET 0 keeps the planner from
+// flattening the subquery back into the join: flattened, it scans every site with the regex
+// (about 1 s on a million sites).
 func (s *Section) loadProbe(ctx context.Context, q store.DBTX, re string, from, to time.Time) error {
 	rows, err := q.Query(ctx,
-		`SELECT p.is_drupal, p.major, count(*)::int FROM site_probe p JOIN site si ON si.id = p.site_id
-		 WHERE p.created_at >= $2 AND p.created_at < $3 AND si.domain !~ $1
+		`SELECT p.is_drupal, p.major, count(*)::int
+		 FROM (SELECT site_id, is_drupal, major FROM site_probe
+		       WHERE created_at >= $2 AND created_at < $3 OFFSET 0) p
+		 JOIN site si ON si.id = p.site_id
+		 WHERE si.domain !~ $1
 		 GROUP BY p.is_drupal, p.major`, re, from, to)
 	if err != nil {
 		return fmt.Errorf("probes: %w", err)

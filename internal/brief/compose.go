@@ -195,7 +195,7 @@ func Compose(in Input) (subject, text, htmlBody string) {
 		fmt.Fprintf(&h, "<p>%s</p>\n", esc(line))
 	}
 	if in.Leads != nil {
-		writeLeads(&t, &h, n, *in.Leads)
+		writeLeads(&t, &h, n, *in.Leads, in.Day)
 	}
 
 	var tail []string
@@ -244,7 +244,7 @@ func composeSubject(in Input) string {
 		return head + strings.Join(parts, ", ")
 	case in.Leads != nil && in.Leads.Todo():
 		// No job to show: the subject names the first leads action instead.
-		_, first := leadsItems(*in.Leads)
+		_, first := leadsItems(*in.Leads, in.Day)
 		return head + first
 	case in.healthy():
 		return head + "nothing new"
@@ -305,7 +305,7 @@ func writeJob(t, h *strings.Builder, n int, j Job, day time.Time, yourCall bool)
 
 // writeLeads writes the leads block decision-first, numbered on from the jobs (leadsItems),
 // then one health line. With nothing to act on it is the health line alone.
-func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section) {
+func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section, day time.Time) {
 	health := leadsHealth(s)
 	if !s.Todo() {
 		line := "Leads: nothing to do · " + health
@@ -313,7 +313,7 @@ func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section) {
 		fmt.Fprintf(h, "<p>%s</p>\n", esc(line))
 		return
 	}
-	items, _ := leadsItems(s)
+	items, _ := leadsItems(s, day)
 	t.WriteString("Leads\n")
 	fmt.Fprintf(h, "<h2>Leads</h2>\n<ol start=\"%d\">\n", n)
 	for i, it := range items {
@@ -328,8 +328,8 @@ func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section) {
 
 // leadsItems are the leads actions in decision order: replies to read, other messages to
 // read, a sending pause to fix, the batch to approve, the manual items, the emails to check
-// by hand. first is the first one in a few words, for the subject.
-func leadsItems(s leadbrief.Section) (items []string, first string) {
+// by hand. first is the first one in a few words, for the subject. day is the brief's day.
+func leadsItems(s leadbrief.Section, day time.Time) (items []string, first string) {
 	add := func(item, short string) {
 		if first == "" {
 			first = short
@@ -346,6 +346,16 @@ func leadsItems(s leadbrief.Section) (items []string, first string) {
 	}
 	if s.Paused != "" {
 		add(fmt.Sprintf("Sending is paused (%s): fix it, then run leadhound leads senders check", s.Paused), "sending paused")
+	}
+	if s.OperatorPaused != nil {
+		// The time alone on the brief's own day; from an earlier day, its date too.
+		at := s.OperatorPaused.In(day.Location())
+		since := at.Format("15:04")
+		if at.Format(time.DateOnly) != day.Format(time.DateOnly) {
+			since = at.Format("Mon 2 Jan 15:04")
+		}
+		add(fmt.Sprintf("Sending is paused (since %s): resume it in the console or with leadhound leads send resume", since),
+			"sending paused")
 	}
 	if b := s.Batch; b != nil {
 		var parts []string

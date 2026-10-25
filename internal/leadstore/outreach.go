@@ -65,6 +65,11 @@ var (
 	// ErrMessageState is returned by the Mark* calls when the message is not in a state
 	// (or batch kind) the move starts from; nothing changed.
 	ErrMessageState = errors.New("leadstore: message not in a state for this move")
+	// ErrBatchDiscarded is returned by ApproveBatch for a batch the operator discarded.
+	ErrBatchDiscarded = errors.New("leadstore: batch was discarded")
+	// ErrBatchApproved is returned by DiscardBatch for an approved batch: what was approved
+	// stays, and send decides each message.
+	ErrBatchApproved = errors.New("leadstore: batch is approved")
 )
 
 // DraftRow is one drafted message for CreateBatch. Its JSON form is what the batch's
@@ -276,12 +281,13 @@ type Batch struct {
 	ApprovedAt      *time.Time `db:"approved_at"`
 	ApprovedHash    []byte     `db:"approved_hash"`
 	TemplatesSHA256 []byte     `db:"templates_sha256"`
+	DiscardedAt     *time.Time `db:"discarded_at"`
 }
 
 // BatchByID returns batch id, or ErrBatchNotFound.
 func (q Queries) BatchByID(ctx context.Context, id int64) (Batch, error) {
 	b, err := collect(ctx, q.db, pgx.RowToStructByName[Batch],
-		`SELECT id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256
+		`SELECT id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256, discarded_at
 		 FROM outreach_batch WHERE id = $1`, id)
 	if err != nil {
 		return Batch{}, fmt.Errorf("leadstore: batch by id: %w", err)
@@ -345,7 +351,8 @@ type Approval struct {
 // other item is re-checked (suppression's second point): a suppressed lead, or one no
 // longer batched (live) or new (shadow), has its messages skipped. The rest are approved
 // with due_at = due(message) (zero: NULL) and approved_sha256 = MessageSHA256 of the row.
-// Run it in a transaction.
+// A discarded batch is ErrBatchDiscarded; the row lock it takes is the one DiscardBatch
+// takes, so the two never interleave. Run it in a transaction.
 func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, skip []int, due func(Message) time.Time) (Approval, error) {
 	prefix := strings.ToLower(strings.TrimSpace(hashPrefix))
 	if _, err := hex.DecodeString(prefix + strings.Repeat("0", len(prefix)%2)); err != nil || len(prefix) < MinHashPrefix {
@@ -355,15 +362,19 @@ func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, 
 		shadow     bool
 		content    []byte
 		approvedAt *time.Time
+		discarded  bool
 	)
 	err := q.db.QueryRow(ctx,
-		`SELECT shadow, content_sha256, approved_at FROM outreach_batch WHERE id = $1 FOR UPDATE`, id).
-		Scan(&shadow, &content, &approvedAt)
+		`SELECT shadow, content_sha256, approved_at, discarded_at IS NOT NULL FROM outreach_batch WHERE id = $1 FOR UPDATE`, id).
+		Scan(&shadow, &content, &approvedAt, &discarded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, fmt.Errorf("leadstore: approve batch %d: %w", id, ErrBatchNotFound)
 	}
 	if err != nil {
 		return Approval{}, fmt.Errorf("leadstore: approve batch: %w", err)
+	}
+	if discarded {
+		return Approval{}, fmt.Errorf("leadstore: approve batch %d: %w", id, ErrBatchDiscarded)
 	}
 	if !strings.HasPrefix(hex.EncodeToString(content), prefix) {
 		return Approval{}, fmt.Errorf("leadstore: approve batch %d: %w", id, ErrHashMismatch)

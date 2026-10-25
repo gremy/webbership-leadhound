@@ -14,6 +14,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/leadbrief"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -240,6 +241,118 @@ func TestLoadPaused(t *testing.T) {
 	f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $1, 'live · sent 2 · notes sync running')`, at(16))
 	if p := paused(); p != "" {
 		t.Errorf("a clean run left the pause: %q", p)
+	}
+}
+
+// TestLoadOperatorPaused: the operator's pause switch is in the section, with its time in
+// the brief's zone, until a resume; no row is not paused. Its reason never reaches the brief.
+func TestLoadOperatorPaused(t *testing.T) {
+	newFixture(t)
+	ctx := context.Background()
+	q := storetest.AppConn(t)
+	load := func() leadbrief.Section {
+		t.Helper()
+		s, err := leadbrief.Load(ctx, q, day, loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := load(); s.OperatorPaused != nil {
+		t.Fatalf("cold start paused at %v", s.OperatorPaused)
+	}
+	lq := leadstoretest.Q(t)
+	if err := lq.SetSendPause(ctx, true, "Ilinca"+" asked to wait"); err != nil {
+		t.Fatal(err)
+	}
+	s := load()
+	if s.OperatorPaused == nil || s.OperatorPaused.Location() != loc || !s.Todo() {
+		t.Fatalf("paused: %v, todo %v", s.OperatorPaused, s.Todo())
+	}
+	if strings.Contains(show(s), "Ilinca") {
+		t.Error("the pause reason reached the section")
+	}
+	if err := lq.SetSendPause(ctx, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := load(); s.OperatorPaused != nil {
+		t.Errorf("resumed but paused at %v", s.OperatorPaused)
+	}
+}
+
+// oldProbeSQL is loadProbe's query before it read the day's probes first: the oracle for
+// TestLoadProbeOracle.
+const oldProbeSQL = `SELECT p.is_drupal, p.major, count(*)::int FROM site_probe p JOIN site si ON si.id = p.site_id
+	 WHERE p.created_at >= $2 AND p.created_at < $3 AND si.domain !~ $1
+	 GROUP BY p.is_drupal, p.major`
+
+// TestLoadProbeOracle: the probe line equals the old query's on reserved and other domains,
+// Drupal and not, several majors, a site probed twice, and probes on, inside and outside the
+// day's bounds.
+func TestLoadProbeOracle(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	site := func(domain string) int64 {
+		return f.id(`INSERT INTO site (domain, origin) VALUES ($1, 'manual')`, domain)
+	}
+	probe := func(site int64, drupal bool, major int, when time.Time) {
+		f.id(`INSERT INTO site_probe (site_id, run_id, outcome, is_drupal, major, fetch_ids, derived_by, created_at)
+		      VALUES ($1, $2, 'ok', $3, $4, '{}', 'drupal@1', $5)`, site, f.run, drupal, major, when)
+	}
+	twice, other, reserved, local := site("twice.example"), site("other.example"), site("res.invalid"), site("box.localhost")
+	probe(twice, true, 7, at(1))
+	probe(twice, true, 10, at(20))
+	probe(other, false, 0, at(0))                      // on the day's first instant: in
+	probe(other, true, 0, at(5))                       // Drupal, major unknown
+	probe(other, true, 9, at(24))                      // on the next day's first instant: out
+	probe(other, true, 8, at(0).Add(-time.Nanosecond)) // a moment before the day: out
+	probe(reserved, true, 7, at(3))
+	probe(local, true, 11, at(4))
+	probe(local, false, 0, at(-1))
+
+	oracle := func(reserved []string) *leadbrief.ProbeLine {
+		t.Helper()
+		if len(reserved) == 0 {
+			reserved = leadstore.ReservedTLDs
+		}
+		re := `\.(` + strings.Join(reserved, "|") + `)$`
+		rows, err := f.owner.Query(ctx, oldProbeSQL, re, yesterday, yesterday.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := leadbrief.ProbeLine{ByMajor: map[int]int{}}
+		var (
+			drupal   bool
+			major, n int
+		)
+		if _, err := pgx.ForEachRow(rows, []any{&drupal, &major, &n}, func() error {
+			p.Checked += n
+			if drupal {
+				p.Drupal += n
+				p.ByMajor[major] += n
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if p.Checked == 0 {
+			return nil
+		}
+		return &p
+	}
+	for _, reserved := range [][]string{{"invalid"}, nil} {
+		got, err := leadbrief.LoadExcluding(ctx, storetest.AppConn(t), day, loc, reserved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := oracle(reserved)
+		// The full list leaves .example out too, so only the narrowed one sees rows.
+		if reserved != nil && (want == nil || want.Checked < 3) {
+			t.Fatalf("reserved %v: the oracle saw too little: %+v", reserved, want)
+		}
+		if !reflect.DeepEqual(got.Probe, want) {
+			t.Errorf("reserved %v: probe %+v, want the old query's %+v", reserved, got.Probe, want)
+		}
 	}
 }
 
