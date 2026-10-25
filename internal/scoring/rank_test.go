@@ -63,8 +63,13 @@ func ids(rs []Ranked) []int64 {
 
 var noCaps = Caps{Apply: 100, YourCall: 100}
 
-func TestRankTieBreaks(t *testing.T) {
-	for _, tc := range []struct {
+// tieBreakCases are the order cases, each with the Apply order it must give.
+func tieBreakCases() []struct {
+	name  string
+	cands []Candidate
+	want  []int64
+} {
+	return []struct {
 		name  string
 		cands []Candidate
 		want  []int64
@@ -94,7 +99,11 @@ func TestRankTieBreaks(t *testing.T) {
 			with(cand(5), func(c *Candidate) { c.ApplyType = "ats" }),
 		}, []int64{4, 5, 3, 1, 2}},
 		{"job id last", []Candidate{cand(9), cand(3), cand(5)}, []int64{3, 5, 9}},
-	} {
+	}
+}
+
+func TestRankTieBreaks(t *testing.T) {
+	for _, tc := range tieBreakCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ids(Rank(tc.cands, time.UTC, noCaps).Apply)
 			if !slices.Equal(got, tc.want) {
@@ -104,16 +113,23 @@ func TestRankTieBreaks(t *testing.T) {
 	}
 }
 
-// TestRankDayInZone: the day bucket is the local day, so two postings an hour apart
-// across local midnight fall on different days.
-func TestRankDayInZone(t *testing.T) {
-	loc := time.FixedZone("UTC+3", 3*3600)
+var zoneUTC3 = time.FixedZone("UTC+3", 3*3600)
+
+// dayInZoneCands are two postings an hour apart across local midnight in zoneUTC3.
+func dayInZoneCands() []Candidate {
 	early := time.Date(2026, 3, 1, 20, 30, 0, 0, time.UTC) // 23:30 local, 1 March
 	late := time.Date(2026, 3, 1, 21, 30, 0, 0, time.UTC)  // 00:30 local, 2 March
-	cs := []Candidate{
+	return []Candidate{
 		with(cand(1), func(c *Candidate) { c.PostedAtEst = &early; c.ApplicantCount = ptr(1) }),
 		with(cand(2), func(c *Candidate) { c.PostedAtEst = &late; c.ApplicantCount = ptr(100) }),
 	}
+}
+
+// TestRankDayInZone: the day bucket is the local day, so two postings an hour apart
+// across local midnight fall on different days.
+func TestRankDayInZone(t *testing.T) {
+	loc := zoneUTC3
+	cs := dayInZoneCands()
 	if got := ids(Rank(cs, loc, noCaps).Apply); !slices.Equal(got, []int64{2, 1}) {
 		t.Errorf("in zone: %v", got)
 	}
@@ -122,8 +138,9 @@ func TestRankDayInZone(t *testing.T) {
 	}
 }
 
-func TestRankTiersAndExclusions(t *testing.T) {
-	cs := []Candidate{
+// tiersCands holds one job per tier and per skip reason, and some with several reasons.
+func tiersCands() []Candidate {
+	return []Candidate{
 		cand(1), // apply
 		with(cand(2), setGate("workplace", "flag", "hybrid, 2 days in Exampleville")), // your call
 		with(cand(3), setCrit("seniority", Unclear)),                                  // your call
@@ -150,7 +167,10 @@ func TestRankTiersAndExclusions(t *testing.T) {
 		// The posting said closed: closed, whatever the recheck could reach.
 		with(cand(19), func(c *Candidate) { c.ListingStatus = "unreachable"; c.Closed = true }),
 	}
-	r := Rank(cs, time.UTC, noCaps)
+}
+
+func TestRankTiersAndExclusions(t *testing.T) {
+	r := Rank(tiersCands(), time.UTC, noCaps)
 	if got := ids(r.Apply); !slices.Equal(got, []int64{1, 13}) {
 		t.Errorf("apply %v", got)
 	}
@@ -178,8 +198,9 @@ func TestRankTiersAndExclusions(t *testing.T) {
 	}
 }
 
-func TestRunnerUp(t *testing.T) {
-	cs := []Candidate{
+// runnerUpCands holds two runner-up candidates and three that never are.
+func runnerUpCands() []Candidate {
+	return []Candidate{
 		cand(1),
 		// Excluded by one criterion: candidates for runner-up; 3 was posted later.
 		with(cand(2), func(c *Candidate) { setCrit("stack", Fail)(c); c.PostedAtEst = &day1 }),
@@ -201,7 +222,10 @@ func TestRunnerUp(t *testing.T) {
 			c.PostedAtEst = ptr(day2.AddDate(0, 0, 1))
 		}),
 	}
-	r := Rank(cs, time.UTC, noCaps)
+}
+
+func TestRunnerUp(t *testing.T) {
+	r := Rank(runnerUpCands(), time.UTC, noCaps)
 	if r.RunnerUp == nil || r.RunnerUp.JobID != 3 || r.RunnerUp.FailedCriterion != "seniority" {
 		t.Fatalf("runner-up %+v", r.RunnerUp)
 	}
@@ -210,11 +234,17 @@ func TestRunnerUp(t *testing.T) {
 	}
 }
 
-func TestRankCaps(t *testing.T) {
+// capsCands are seven jobs per tier.
+func capsCands() []Candidate {
 	var cs []Candidate
 	for i := int64(1); i <= 7; i++ {
 		cs = append(cs, cand(i), with(cand(100+i), setCrit("stack", Unclear)))
 	}
+	return cs
+}
+
+func TestRankCaps(t *testing.T) {
+	cs := capsCands()
 	r := Rank(cs, time.UTC, Caps{Apply: 5, YourCall: 3})
 	if got := ids(r.Apply); !slices.Equal(got, []int64{1, 2, 3, 4, 5}) {
 		t.Errorf("apply %v", got)
@@ -280,15 +310,20 @@ func TestCandidatesFromMatchesNewSkipRules(t *testing.T) {
 	}
 }
 
-// TestIncompleteCriteriaAreUnscored: a job missing any criterion's decision is never
-// listed, Apply least of all; it counts as unscored and is no runner-up.
-func TestIncompleteCriteriaAreUnscored(t *testing.T) {
+// incompleteCands are three jobs missing decisions and one complete job.
+func incompleteCands() []Candidate {
 	missing := with(cand(1), func(c *Candidate) { c.Criteria = c.Criteria[:4] })
 	none := with(cand(2), func(c *Candidate) { c.Criteria = nil })
 	failedAndMissing := with(cand(3), func(c *Candidate) {
 		c.Criteria = []CriterionVerdict{{Criterion: "title", Verdict: Fail}}
 	})
-	r := Rank([]Candidate{missing, none, failedAndMissing, cand(4)}, time.UTC, noCaps)
+	return []Candidate{missing, none, failedAndMissing, cand(4)}
+}
+
+// TestIncompleteCriteriaAreUnscored: a job missing any criterion's decision is never
+// listed, Apply least of all; it counts as unscored and is no runner-up.
+func TestIncompleteCriteriaAreUnscored(t *testing.T) {
+	r := Rank(incompleteCands(), time.UTC, noCaps)
 	if got := ids(r.Apply); !slices.Equal(got, []int64{4}) || len(r.YourCall) != 0 {
 		t.Fatalf("apply %v, your call %v; want only the complete job 4", got, ids(r.YourCall))
 	}
@@ -300,12 +335,10 @@ func TestIncompleteCriteriaAreUnscored(t *testing.T) {
 	}
 }
 
-// TestSkippedOn: only the jobs seen on the brief's day count, by their day in loc, and a
-// job seen again that day counts again.
-func TestSkippedOn(t *testing.T) {
-	loc := time.FixedZone("UTC+3", 3*3600)
+// skippedOnCands are jobs seen on day 1, 2 and 3 in zoneUTC3.
+func skippedOnCands() []Candidate {
 	seen := func(at time.Time) func(*Candidate) { return func(c *Candidate) { c.SeenAt = at } }
-	cs := []Candidate{
+	return []Candidate{
 		with(cand(1), seen(day2)), // listed: not counted
 		with(with(cand(2), setGate("language", "fail", "")), seen(day2)),
 		with(with(cand(3), setGate("language", "fail", "")), seen(day1)),                                          // yesterday
@@ -313,6 +346,13 @@ func TestSkippedOn(t *testing.T) {
 		with(with(cand(5), func(c *Candidate) { c.Criteria = nil }), seen(day2)),
 		with(with(cand(6), func(c *Candidate) { c.Status = "applied" }), seen(day2.Add(15*time.Hour))), // day 3 in loc
 	}
+}
+
+// TestSkippedOn: only the jobs seen on the brief's day count, by their day in loc, and a
+// job seen again that day counts again.
+func TestSkippedOn(t *testing.T) {
+	loc := zoneUTC3
+	cs := skippedOnCands()
 	got := SkippedOn(cs, loc, day2)
 	want := map[string]int{"language": 1, "unreachable": 1, "unscored": 1}
 	if len(got) != len(want) {

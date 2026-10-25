@@ -90,10 +90,11 @@ test-integration:
 	TEST_DB_REQUIRED=1 TEST_DB_DSN='$(TEST_DB_DSN)' TEST_MIGRATE_DSN='$(TEST_MIGRATE_DSN)' \
 		go test -tags integration -p 1 ./... -race
 
-## test-scale: time and memory budgets on the production-sized leadhound_scale database (seeded once, then reused)
+## test-scale: time and memory budgets on the production-sized leadhound_scale database (seeded once, then reused;
+## -count=1 so every run measures the database, never a cached result)
 test-scale:
 	TEST_DB_REQUIRED=1 TEST_SCALE_DSN='$(TEST_SCALE_DSN)' TEST_SCALE_MIGRATE_DSN='$(TEST_SCALE_MIGRATE_DSN)' \
-		go test -tags 'integration scale' -run 'Scale' -p 1 -timeout 45m ./...
+		go test -tags 'integration scale' -run 'Scale' -p 1 -count=1 -timeout 45m ./...
 
 ## check: everything a commit must pass
 check: fmt-check vet lint-if-present test privacy-tree

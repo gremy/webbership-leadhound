@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,8 +298,10 @@ func (q Queries) gateResultsFor(ctx context.Context, obsIDs []int64) (map[int64]
 	return m, nil
 }
 
-// RankInput is one job as the ranking reads it: the current observation's facts and
-// gate results, the current status, and the latest decision per criterion.
+// RankInput is one job with everything the ranking reads: the current observation's facts
+// and gate results, the current status, and the latest decision per criterion. The ranking
+// itself streams RankRows; RankInput is what the test oracle (storetest.OracleRankInputs)
+// and scoring.CandidatesFrom read.
 type RankInput struct {
 	JobID          int64
 	ListingStatus  string
@@ -320,62 +323,25 @@ type RankInput struct {
 	Decisions []Decision // the latest per criterion, regardless of observation
 }
 
-// RankOptions choose what RankInputs reads.
-type RankOptions struct {
-	// AllowFake reads the fake decider's decisions too. Off, they are ignored, so a job
-	// only the fake decided has no decisions and ranks as unscored, never as Apply.
-	AllowFake bool
-}
-
-// RankInputs returns every job that has an observation, ordered by job id, for the pure
-// ranking to sort and exclude. No job is filtered here, so the brief can count what was
-// skipped and why; only the fake decider's decisions are, unless opt.AllowFake.
-func (q Queries) RankInputs(ctx context.Context, opt RankOptions) ([]RankInput, error) {
-	rows, err := q.db.Query(ctx,
-		`SELECT j.id, j.listing_status, coalesce(s.status, 'new'), c.name, o.title, o.location_text,
-		        o.description_clean, o.closed, o.posted_at_est, o.applicant_count, o.apply_type,
-		        greatest(j.first_seen_at, o.observed_at), o.id
-		 FROM job j
-		 JOIN company c ON c.id = j.company_id
-		 JOIN LATERAL (SELECT * FROM job_observation WHERE job_id = j.id
-		               ORDER BY observed_at DESC, id DESC LIMIT 1) o ON true
-		 LEFT JOIN LATERAL (SELECT status FROM status_event WHERE job_id = j.id
-		                    ORDER BY at DESC, id DESC LIMIT 1) s ON true
-		 ORDER BY j.id`)
-	if err != nil {
-		return nil, fmt.Errorf("store: rank inputs: %w", err)
-	}
-	var obsIDs []int64
-	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (RankInput, error) {
-		var in RankInput
-		var obsID int64
-		err := r.Scan(&in.JobID, &in.ListingStatus, &in.Status, &in.Company, &in.Title, &in.Location,
-			&in.Description, &in.Closed, &in.PostedAtEst, &in.ApplicantCount, &in.ApplyType, &in.SeenAt, &obsID)
-		obsIDs = append(obsIDs, obsID)
-		return in, err
+// ForEachRankRow is (*Store).ForEachRankRow over q, for a caller that holds only queries:
+// the pass runs in a transaction of its own (nothing is written in it) with a 10-minute
+// statement timeout set for that transaction alone, so the timeout never outlives the pass
+// on a pooled connection. fn's error stops the pass and is returned as it is.
+func (q Queries) ForEachRankRow(ctx context.Context, opt RankStreamOptions, fn func(RankRow) error) error {
+	b, ok := q.db.(interface {
+		Begin(context.Context) (pgx.Tx, error)
 	})
+	if !ok {
+		return fmt.Errorf("store: rank rows: %T cannot begin a transaction", q.db)
+	}
+	tx, err := b.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store: rank inputs: %w", err)
+		return fmt.Errorf("store: rank rows: begin: %w", err)
 	}
-	gates, err := q.gateResultsFor(ctx, obsIDs)
-	if err != nil {
-		return nil, fmt.Errorf("store: rank inputs: %w", err)
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// SET takes no bind parameters; the value is an integer of milliseconds.
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = "+strconv.FormatInt(rankPassTimeout.Milliseconds(), 10)); err != nil {
+		return fmt.Errorf("store: rank rows: set statement_timeout: %w", err)
 	}
-	jobIDs := make([]int64, len(out))
-	for i := range out {
-		out[i].Gates = gates[obsIDs[i]]
-		jobIDs[i] = out[i].JobID
-	}
-	decisions, err := q.latestDecisions(ctx, jobIDs, opt.AllowFake)
-	if err != nil {
-		return nil, fmt.Errorf("store: rank inputs: %w", err)
-	}
-	byJob := make(map[int64][]Decision, len(out))
-	for _, d := range decisions {
-		byJob[d.JobID] = append(byJob[d.JobID], d)
-	}
-	for i := range out {
-		out[i].Decisions = byJob[out[i].JobID]
-	}
-	return out, nil
+	return Queries{db: tx}.forEachRankRow(ctx, opt, fn)
 }

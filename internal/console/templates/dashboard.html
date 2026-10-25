@@ -16,13 +16,21 @@
   </section>
   <section class="card">
     <h2>Now</h2>
-    <p class="muted">as of {{clock $d.AsOf}}</p>
+    {{if not $d.AsOf.IsZero}}
+    <p class="muted">as of {{clock $d.AsOf}}{{if $d.Updating}} · updating…{{end}}</p>
+    {{with $d.LastBuildFailedAt}}<p class="notice notice-error" role="alert">The last update failed at {{clock .}}; showing {{clock $d.AsOf}}'s numbers.</p>{{end}}
     {{if $d.Health}}<ul class="health">{{range $d.Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">Nothing to report yet.</p>{{end}}
+    {{else if and $d.LastBuildFailedAt (not $d.Building)}}
+    <p class="notice notice-error" role="alert">The day's numbers could not be worked out at {{clock $d.LastBuildFailedAt}}; refresh in a few minutes.</p>
+    {{else}}
+    <p class="notice" role="status">The day's numbers are being worked out; refresh in a minute.</p>
+    {{end}}
   </section>
 </div>
 
 <section class="card">
   <h2>Today's jobs</h2>
+  {{if not $d.AsOf.IsZero}}
   <dl class="stats">
     <div><dt>Apply</dt><dd>{{thousands $d.ApplyNow}}</dd></div>
     <div><dt>Your call</dt><dd>{{thousands $d.YourCallNow}}</dd></div>
@@ -41,6 +49,7 @@
     <div><dt>Gate failed</dt><dd>{{thousands $d.Funnel.GateFailed}}</dd></div>
     <div><dt>Scored</dt><dd>{{thousands $d.Funnel.Scored}}</dd></div>
   </dl>
+  {{else}}<p class="muted">Shown once the day's numbers are worked out.</p>{{end}}
   <h3>Scoring</h3>
   <p class="cost">{{costLine $d}}</p>
 </section>

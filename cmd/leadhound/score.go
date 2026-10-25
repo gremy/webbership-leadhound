@@ -80,19 +80,28 @@ func pickDecider(cfg config.Config, name, command string) (ai.Decider, error) {
 	return nil, usageError("--decider must be jev or fake, not %q", name)
 }
 
-// runScore is `leadhound score [--decider jev|fake] [--check-config]`. A run stopped by the
-// daily cap or an unavailable provider is recorded and exits 0. The ranking summary reads
-// the fake decider's decisions only when this run used the fake.
+// runScore is `leadhound score [--decider jev|fake] [--max-duration D] [--check-config]`. A
+// run stopped by the daily cap, an unavailable provider or its time budget is recorded and
+// exits 0; with another score run in progress nothing is recorded and it exits 0 too. The
+// ranking summary reads the fake decider's decisions only when this run used the fake.
 func runScore(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("score", flag.ContinueOnError)
 	deciderName := fs.String("decider", "", "jev or fake (default jev, which needs TYPESAFE_API_KEY)")
 	checkConfig := fs.Bool("check-config", false, "load the profile, print its counts and exit")
+	maxDuration := fs.Duration("max-duration", 0, "stop before the next job once this long has passed (0: no limit)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) > 0 {
-		return usageError("usage: leadhound score [--decider jev|fake] [--check-config]")
+		return usageError("usage: leadhound score [--decider jev|fake] [--max-duration D] [--check-config]")
+	}
+	if *maxDuration < 0 {
+		return usageError("--max-duration must not be negative, not %v", *maxDuration)
+	}
+	var deadline time.Time
+	if *maxDuration > 0 {
+		deadline = time.Now().Add(*maxDuration)
 	}
 	if *checkConfig {
 		cfg, err := loadConfig("LEADHOUND_DATA_DIR")
@@ -125,8 +134,11 @@ func runScore(ctx context.Context, args []string) error {
 	}
 	defer s.Close()
 
-	q := s.Q()
-	runID, res, awaiting, err := scoreRunCounted(ctx, s, cfg, prof, decider, loc)
+	runID, res, awaiting, err := scoreRunCounted(ctx, s, cfg, prof, decider, loc, deadline)
+	if errors.Is(err, errScoreBusy) {
+		_, _ = fmt.Fprintln(stdout, "score: another score run is in progress; skipped")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -137,16 +149,10 @@ func runScore(ctx context.Context, args []string) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "score: run %d · decider %s · %s · stop %s\n", runID, decider.Name(), note, stop)
 
-	ins, err := q.RankInputs(ctx, store.RankOptions{AllowFake: decider.Name() == ai.FakeName})
+	r, err := scoreSummary(ctx, s, prof, loc, decider.Name() == ai.FakeName)
 	if err != nil {
 		return err
 	}
-	rules, err := q.ActiveRules(ctx)
-	if err != nil {
-		return err
-	}
-	r := scoring.Rank(scoring.CandidatesFrom(ins, rules), loc,
-		scoring.Caps{Apply: prof.Brief.MaxApply, YourCall: prof.Brief.MaxYourCall})
 	_, _ = fmt.Fprintf(stdout, "  ranked: apply %d · your call %d · skipped %s\n", r.ApplyTotal, r.YourCallTotal, skippedSummary(r.Skipped))
 	if r.RunnerUp != nil {
 		_, _ = fmt.Fprintf(stdout, "  runner-up: job %d (failed %s)\n", r.RunnerUp.JobID, r.RunnerUp.FailedCriterion)
@@ -154,11 +160,57 @@ func runScore(ctx context.Context, args []string) error {
 	return nil
 }
 
-// scoreRun scores every job worth scoring as one recorded score run, behind the daily cap.
-// A run stopped by the cap or an unavailable provider is a result, not an error.
-func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location) (int64, scoring.Result, error) {
-	runID, res, _, err := scoreRunCounted(ctx, s, cfg, prof, decider, loc)
+// scoreSummary ranks the whole store for the score run's summary lines, in one streamed
+// pass over every job (none set apart as not seen on its board) that reads every
+// description while a description rule is active, so the skip split it prints is exact.
+func scoreSummary(ctx context.Context, s *store.Store, prof candidate.Config, loc *time.Location, allowFake bool) (scoring.Ranking, error) {
+	pass, err := rankPass(ctx, s.Q(), loc, time.Now(), allowFake, rankOptions{caps: briefCaps(prof), desc: store.DescAll, keepNotSeen: true})
+	return pass.ranking, err
+}
+
+// scoreRun scores every job worth scoring as one recorded score run, behind the daily cap,
+// until deadline (zero: none). A run stopped by the cap, an unavailable provider or the
+// deadline is a result, not an error; with another score run in progress it records nothing
+// and returns errScoreBusy.
+func scoreRun(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location, deadline time.Time) (int64, scoring.Result, error) {
+	runID, res, _, err := scoreRunCounted(ctx, s, cfg, prof, decider, loc, deadline)
 	return runID, res, err
+}
+
+// scoreLockKey is the session advisory lock a score run holds for its length, so only one
+// scorer runs at a time across processes (the score timer and the brief's rescore).
+const scoreLockKey int64 = 7311041902
+
+// errScoreBusy: another score run holds the lock.
+var errScoreBusy = errors.New("another score run is in progress")
+
+// withScoreLock runs fn holding the score lock on a connection acquired for it alone, and
+// returns errScoreBusy without running fn when another process holds it. The lock is
+// released on that connection; a connection that cannot release it is closed, which
+// releases it too, and never goes back to the pool.
+func withScoreLock(ctx context.Context, s *store.Store, fn func() error) (err error) {
+	conn, err := s.Pool().Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("score lock: acquire: %w", err)
+	}
+	var got bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, scoreLockKey).Scan(&got); err != nil {
+		conn.Release()
+		return fmt.Errorf("score lock: %w", err)
+	}
+	if !got {
+		conn.Release()
+		return errScoreBusy
+	}
+	defer func() {
+		uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if _, uerr := conn.Exec(uctx, `SELECT pg_advisory_unlock($1)`, scoreLockKey); uerr != nil {
+			_ = conn.Conn().Close(uctx)
+		}
+		conn.Release()
+	}()
+	return fn()
 }
 
 // scoreNote is the score run's summary: the scorer's note and the jobs held back until
@@ -183,7 +235,17 @@ func (c *queueCounter) ScoreQueue(ctx context.Context) (store.ScoreQueue, error)
 
 // scoreRunCounted is scoreRun, also returning how many jobs were held back until their
 // detail arrives (also in the run's note).
-func scoreRunCounted(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location) (int64, scoring.Result, int, error) {
+func scoreRunCounted(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location, deadline time.Time) (runID int64, res scoring.Result, awaiting int, err error) {
+	err = withScoreLock(ctx, s, func() error {
+		var rerr error
+		runID, res, awaiting, rerr = scoreRunLocked(ctx, s, cfg, prof, decider, loc, deadline)
+		return rerr
+	})
+	return runID, res, awaiting, err
+}
+
+// scoreRunLocked is scoreRunCounted with the score lock held.
+func scoreRunLocked(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, decider ai.Decider, loc *time.Location, deadline time.Time) (int64, scoring.Result, int, error) {
 	q := s.Q()
 	remaining, err := remainingCalls(ctx, q, decider, cfg.JevDailyCallCap, loc)
 	if err != nil {
@@ -202,6 +264,7 @@ func scoreRunCounted(ctx context.Context, s *store.Store, cfg config.Config, pro
 		Threshold:        prof.ConfidenceThreshold,
 		TitleCheck:       prof.TitleCheck(),
 		Batch:            scoring.BatchFor(remaining),
+		Deadline:         deadline,
 	}
 	res, runErr := sc.Run(ctx)
 	note := scoreNote(res, qc.awaitingDetail)

@@ -420,3 +420,34 @@ func TestUsageStoreFailureStopsTheRun(t *testing.T) {
 		t.Fatalf("calls %d, written %d, result %+v; want 1 call and nothing written", fake.Calls(), len(m.written), res)
 	}
 }
+
+// TestDeadlineStopsWithBudget: once the deadline has passed, Run stops before the next job
+// with StopBudget, not an error, and the jobs it did not reach are its backlog. A zero
+// deadline is no budget.
+func TestDeadlineStopsWithBudget(t *testing.T) {
+	inputs := []store.ScoreInput{job(1, "Rust.", "pass"), job(2, "Rust.", "pass"), job(3, "Rust.", "pass")}
+	t0 := time.Date(2026, 3, 10, 6, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		deadline        time.Time
+		scored, backlog int
+		stop            string
+	}{
+		{time.Time{}, 3, 0, ""},
+		{t0.Add(90 * time.Second), 2, 1, StopBudget}, // the clock reads a minute later per job
+		{t0, 0, 3, StopBudget},
+	} {
+		m := &memStore{inputs: inputs}
+		fake := &ai.Fake{Answers: allPass()}
+		s := scorer(m, fake)
+		s.Deadline = c.deadline
+		ticks := 0
+		s.now = func() time.Time { ticks++; return t0.Add(time.Duration(ticks-1) * time.Minute) }
+		res, err := s.Run(context.Background())
+		if err != nil {
+			t.Fatalf("deadline %v: %v", c.deadline, err)
+		}
+		if res.Scored != c.scored || res.Backlog != c.backlog || res.StopReason != c.stop || fake.Calls() != c.scored {
+			t.Errorf("deadline %v: %+v, calls %d; want scored %d, backlog %d, stop %q", c.deadline, res, fake.Calls(), c.scored, c.backlog, c.stop)
+		}
+	}
+}

@@ -187,3 +187,72 @@ func TestScoreHoldsJobsAwaitingDetail(t *testing.T) {
 		t.Errorf("score run notes naming the held jobs = %d, want 1", got)
 	}
 }
+
+// holdScoreLock takes the score lock on a connection of its own, as another score run
+// would, until release is called (or the test ends).
+func holdScoreLock(t *testing.T) (release func()) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, storetest.AppDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, scoreLockKey); err != nil {
+		t.Fatal(err)
+	}
+	done := false
+	release = func() {
+		if !done {
+			done = true
+			_ = conn.Close(ctx) // closing the session releases the lock
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// TestScoreOneAtATime: while another score run holds the lock, score records nothing, says
+// it skipped and exits 0; once the lock is free it runs, and releases the lock after.
+func TestScoreOneAtATime(t *testing.T) {
+	collectFixtures(t)
+	release := holdScoreLock(t)
+	code, out := runCmd(t, "score", "--decider", "fake")
+	if code != 0 || strings.TrimSpace(out) != "score: another score run is in progress; skipped" {
+		t.Fatalf("busy: exit %d, stdout %q", code, out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'score'`) + dbCount(t, `SELECT count(*) FROM decision`); got != 0 {
+		t.Fatalf("a skipped run wrote %d rows", got)
+	}
+	release()
+	if code, out := runCmd(t, "score", "--decider", "fake"); code != 0 || !strings.Contains(out, "stop none") {
+		t.Fatalf("free: exit %d, stdout %q", code, out)
+	}
+	// The run let go of the lock: another session can take it at once.
+	var got bool
+	if err := storetest.OwnerConn(t).QueryRow(context.Background(), `SELECT pg_try_advisory_lock($1)`, scoreLockKey).Scan(&got); err != nil || !got {
+		t.Fatalf("lock after the run: %v, %v", got, err)
+	}
+	if _, err := storetest.OwnerConn(t).Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, scoreLockKey); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestScoreMaxDuration: a run past its time budget stops before the next job, is recorded
+// with stop reason budget and exits 0; the jobs it did not reach are its backlog. A negative
+// budget is a usage error.
+func TestScoreMaxDuration(t *testing.T) {
+	collectFixtures(t)
+	code, out := runCmd(t, "score", "--decider", "fake", "--max-duration", "1ns")
+	if code != 0 || !strings.Contains(out, "stop budget") || !strings.Contains(out, "scored 0 ·") || strings.Contains(out, "backlog 0 ") {
+		t.Fatalf("exit %d, stdout %q", code, out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'score' AND stop_reason = 'budget' AND finished_at IS NOT NULL`); got != 1 {
+		t.Errorf("budget runs = %d, want 1", got)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM decision`); got != 0 {
+		t.Errorf("decisions = %d, want 0", got)
+	}
+	if code, _ := runCmd(t, "score", "--decider", "fake", "--max-duration", "-1s"); code != 2 {
+		t.Errorf("negative budget: exit %d, want 2", code)
+	}
+}

@@ -148,11 +148,13 @@ type rowView struct {
 	Error   bool
 }
 
-// trackedView is the Tracked page's list.
+// trackedView is the Tracked page's list. Total is how many jobs match, more
+// than len(Rows) when the list is capped.
 type trackedView struct {
 	Status  string
 	Filters []navItem
 	Rows    []Tracked
+	Total   int
 	Message string
 	Error   bool
 }
@@ -573,12 +575,12 @@ func trackedStatus(status string) string {
 }
 
 func (s *server) renderTracked(w http.ResponseWriter, r *http.Request, code int, status, msg string, isErr, fragment bool) {
-	rows, err := s.b.Tracked(r.Context(), status)
+	l, err := s.b.Tracked(r.Context(), status)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	v := trackedView{Status: status, Filters: trackedFilters, Rows: rows, Message: msg, Error: isErr}
+	v := trackedView{Status: status, Filters: trackedFilters, Rows: l.Rows, Total: l.Total, Message: msg, Error: isErr}
 	if fragment {
 		s.write(w, r, code, s.pages["tracked"], "tracked_list", v)
 		return

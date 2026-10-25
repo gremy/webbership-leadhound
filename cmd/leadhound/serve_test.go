@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/console"
 )
 
@@ -190,5 +193,348 @@ func TestBriefLogHealth(t *testing.T) {
 	}
 	if storedHealth("") != nil {
 		t.Error("an empty body has health lines")
+	}
+}
+
+// testClock is a clock the test moves and the builds read.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) add(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// fakeBuild is a dashboard build that counts its calls, returns a snapshot whose Unscored
+// is its call number, fails while fail is set, and, while hold is set, waits for a value on
+// release (or its context's end) before it returns.
+type fakeBuild struct {
+	mu      sync.Mutex
+	calls   int
+	fail    bool
+	hold    bool
+	release chan struct{}
+	ended   chan error // each build's end, its context's error when that ended it
+}
+
+func newFakeBuild() *fakeBuild {
+	return &fakeBuild{release: make(chan struct{}), ended: make(chan error, 16)}
+}
+
+func (f *fakeBuild) build(ctx context.Context, _ time.Time) (snapshot, error) {
+	f.mu.Lock()
+	f.calls++
+	n, fail, hold := f.calls, f.fail, f.hold
+	f.mu.Unlock()
+	if hold {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			f.ended <- ctx.Err()
+			return snapshot{}, ctx.Err()
+		}
+	}
+	f.ended <- nil
+	if fail {
+		return snapshot{}, errors.New("build failed")
+	}
+	return snapshot{in: brief.Input{Unscored: n}}, nil
+}
+
+func (f *fakeBuild) n() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeBuild) set(fail, hold bool) {
+	f.mu.Lock()
+	f.fail, f.hold = fail, hold
+	f.mu.Unlock()
+}
+
+// waitEnded waits for one build to end and returns its context's error, if that ended it.
+func (f *fakeBuild) waitEnded(t *testing.T) error {
+	t.Helper()
+	select {
+	case err := <-f.ended:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("no build ended")
+		return nil
+	}
+}
+
+// started waits until n builds have started.
+func (f *fakeBuild) started(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.n() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d builds started, want %d", f.n(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// endedOK waits for one build to end on its own.
+func (f *fakeBuild) endedOK(t *testing.T) {
+	t.Helper()
+	if err := f.waitEnded(t); err != nil {
+		t.Fatalf("a build ended with %v", err)
+	}
+}
+
+// snapBackend is a backend with only its snapshot part: the fake build, the test clock at
+// 09:00 UTC, and a base context the test ends when it is done, waiting for every build.
+func snapBackend(t *testing.T, f *fakeBuild) (*backend, *testClock, context.CancelFunc) {
+	t.Helper()
+	clk := &testClock{t: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
+	base, cancel := context.WithCancel(context.Background())
+	b := &backend{loc: time.UTC, now: clk.now, base: base, build: f.build, waitFor: dashboardWaitFor}
+	t.Cleanup(func() { cancel(); b.wait() })
+	return b, clk, cancel
+}
+
+// running is whether a build runs.
+func running(b *backend) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.building != nil
+}
+
+// settle waits until no build runs.
+func settle(t *testing.T, b *backend) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b.mu.Lock()
+		running := b.building != nil
+		b.mu.Unlock()
+		if !running {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a build is still running")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestDashboardSnapshotColdStart: the first request, with a slow build running, answers
+// within 600 ms that it is building, with nothing to show; a second request during that
+// build starts none; once it lands it is served as it is, with no new build.
+func TestDashboardSnapshotColdStart(t *testing.T) {
+	f := newFakeBuild()
+	f.set(false, true)
+	b, clk, _ := snapBackend(t, f)
+	start := time.Now()
+	v := b.current(context.Background(), clk.now())
+	if took := time.Since(start); took > 600*time.Millisecond {
+		t.Errorf("cold start took %v", took)
+	}
+	if !v.updating || !v.at.IsZero() || v.failedAt != nil {
+		t.Errorf("cold start = %+v, want building with nothing", v)
+	}
+	if v := b.current(context.Background(), clk.now()); !v.updating || !v.at.IsZero() || f.n() != 1 {
+		t.Errorf("second request = %+v, builds %d; want still building, one build", v, f.n())
+	}
+	f.release <- struct{}{}
+	f.endedOK(t)
+	settle(t, b)
+	clk.add(time.Minute)
+	v = b.current(context.Background(), clk.now())
+	if v.updating || v.snap.in.Unscored != 1 || !v.at.Equal(time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)) || f.n() != 1 {
+		t.Errorf("after the build = %+v, builds %d", v, f.n())
+	}
+}
+
+// TestDashboardSnapshotQuickBuild: a build that ends within the wait is served by the
+// request that started it.
+func TestDashboardSnapshotQuickBuild(t *testing.T) {
+	f := newFakeBuild()
+	b, clk, _ := snapBackend(t, f)
+	if v := b.current(context.Background(), clk.now()); v.updating || v.at.IsZero() || v.snap.in.Unscored != 1 {
+		t.Errorf("quick build = %+v", v)
+	}
+}
+
+// TestDashboardSnapshotFreshness: a snapshot is served until it is dashboardFreshFor old
+// or the local day changes; then the old one is served at once, marked updating, while the
+// new one builds.
+func TestDashboardSnapshotFreshness(t *testing.T) {
+	f := newFakeBuild()
+	b, clk, _ := snapBackend(t, f)
+	b.current(context.Background(), clk.now())
+	clk.add(dashboardFreshFor - time.Second)
+	if b.current(context.Background(), clk.now()); f.n() != 1 {
+		t.Fatalf("within %v: %d builds", dashboardFreshFor, f.n())
+	}
+	f.set(false, true)
+	clk.add(time.Second)
+	start := time.Now()
+	v := b.current(context.Background(), clk.now())
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Errorf("the old snapshot took %v to serve", took)
+	}
+	if f.started(t, 2); f.n() != 2 || !v.updating || v.snap.in.Unscored != 1 {
+		t.Errorf("at %v: %+v, builds %d; want the old one, updating", dashboardFreshFor, v, f.n())
+	}
+	f.release <- struct{}{}
+	f.endedOK(t)
+	f.endedOK(t)
+	settle(t, b)
+
+	// 23:59 to 00:01 is another day, two minutes on.
+	f.set(false, false)
+	clk.add(14*time.Hour + 49*time.Minute + 59*time.Second)
+	b.current(context.Background(), clk.now())
+	settle(t, b)
+	n := f.n()
+	clk.add(2 * time.Minute)
+	b.current(context.Background(), clk.now())
+	settle(t, b)
+	if v := b.current(context.Background(), clk.now()); f.n() != n+1 || v.at.Day() != 25 {
+		t.Errorf("the next day: %+v, builds %d; want a new build", v, f.n()-n)
+	}
+}
+
+// TestDashboardSnapshotRequestEnds: a request that ends while it waits leaves the build
+// running, and the build lands.
+func TestDashboardSnapshotRequestEnds(t *testing.T) {
+	f := newFakeBuild()
+	f.set(false, true)
+	b, clk, _ := snapBackend(t, f)
+	b.waitFor = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan snapshotView)
+	go func() { got <- b.current(ctx, clk.now()) }()
+	cancel()
+	if v := <-got; !v.updating {
+		t.Errorf("the request saw %+v", v)
+	}
+	f.release <- struct{}{}
+	if err := f.waitEnded(t); err != nil {
+		t.Errorf("the build ended with %v", err)
+	}
+	settle(t, b)
+	if v := b.current(context.Background(), clk.now()); v.at.IsZero() || f.n() != 1 {
+		t.Errorf("after the build: %+v, builds %d", v, f.n())
+	}
+}
+
+// TestDashboardSnapshotBackoff: a failed build keeps the old snapshot and says when it
+// failed; no build starts for dashboardRetryAfter; then one does, and its success clears
+// the failure.
+func TestDashboardSnapshotBackoff(t *testing.T) {
+	f := newFakeBuild()
+	b, clk, _ := snapBackend(t, f)
+	b.current(context.Background(), clk.now())
+	f.set(true, false)
+	clk.add(dashboardFreshFor)
+	failedAt := clk.now()
+	if v := b.current(context.Background(), clk.now()); !v.updating || v.failedAt != nil || v.snap.in.Unscored != 1 {
+		t.Fatalf("an old snapshot is not served at once: %+v", v)
+	}
+	settle(t, b)
+	v := b.current(context.Background(), clk.now())
+	if f.n() != 2 || v.failedAt == nil || !v.failedAt.Equal(failedAt) || v.snap.in.Unscored != 1 || v.updating {
+		t.Fatalf("after a failure: %+v, builds %d", v, f.n())
+	}
+	for range 3 {
+		clk.add(dashboardRetryAfter/3 - time.Second)
+		if v := b.current(context.Background(), clk.now()); f.n() != 2 || v.failedAt == nil || v.snap.in.Unscored != 1 {
+			t.Fatalf("backing off: %+v, builds %d", v, f.n())
+		}
+	}
+	if b.marked(); running(b) {
+		t.Errorf("a mark started a build while backing off")
+	}
+	clk.add(3 * time.Second)
+	f.set(false, false)
+	b.current(context.Background(), clk.now())
+	settle(t, b)
+	if v := b.current(context.Background(), clk.now()); f.n() != 3 || v.failedAt != nil || v.snap.in.Unscored != 3 {
+		t.Errorf("after %v: %+v, builds %d", dashboardRetryAfter, v, f.n())
+	}
+
+	// With no snapshot yet, a failure is all there is.
+	f2 := newFakeBuild()
+	f2.set(true, false)
+	b2, clk2, _ := snapBackend(t, f2)
+	if v := b2.current(context.Background(), clk2.now()); !v.at.IsZero() || v.failedAt == nil || v.updating {
+		t.Errorf("first build failed: %+v", v)
+	}
+	if b2.current(context.Background(), clk2.now()); f2.n() != 1 {
+		t.Errorf("first failure: %d builds, want 1", f2.n())
+	}
+}
+
+// TestDashboardSnapshotMark: a mark makes the snapshot stale and starts a rebuild at once,
+// the old numbers shown as updating until it lands; a mark during a build starts another
+// once that one lands, since what it read is from before the mark; a mark during it does
+// not start a second at the same time.
+func TestDashboardSnapshotMark(t *testing.T) {
+	f := newFakeBuild()
+	b, clk, _ := snapBackend(t, f)
+	b.current(context.Background(), clk.now())
+	f.set(false, true)
+	clk.add(time.Second)
+	if b.marked(); !running(b) {
+		t.Fatal("a mark started no build")
+	}
+	f.started(t, 2)
+	if v := b.current(context.Background(), clk.now()); !v.updating || v.snap.in.Unscored != 1 {
+		t.Errorf("after the mark: %+v, builds %d", v, f.n())
+	}
+	b.marked() // during the build: the build running is still the one the first mark started
+	b.mu.Lock()
+	if b.marks != 2 {
+		t.Errorf("marks = %d", b.marks)
+	}
+	b.mu.Unlock()
+	f.set(false, false)
+	f.release <- struct{}{}
+	f.endedOK(t)
+	f.endedOK(t) // the rebuild for the second mark
+	settle(t, b)
+	if v := b.current(context.Background(), clk.now()); v.updating || v.snap.in.Unscored != 3 || f.n() != 3 {
+		t.Errorf("after both marks: %+v, builds %d", v, f.n())
+	}
+}
+
+// TestDashboardSnapshotShutdown: ending base cancels a running build, wait returns once it
+// has ended, and no build starts after.
+func TestDashboardSnapshotShutdown(t *testing.T) {
+	f := newFakeBuild()
+	f.set(false, true)
+	b, clk, cancel := snapBackend(t, f)
+	b.current(context.Background(), clk.now())
+	cancel()
+	if err := f.waitEnded(t); !errors.Is(err, context.Canceled) {
+		t.Errorf("the build ended with %v, want its context cancelled", err)
+	}
+	done := make(chan struct{})
+	go func() { b.wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait did not return")
+	}
+	clk.add(dashboardRetryAfter + dashboardFreshFor)
+	if b.current(context.Background(), clk.now()); f.n() != 1 {
+		t.Errorf("a build started after shutdown")
+	}
+	if b.marked(); running(b) {
+		t.Errorf("a mark started a build after shutdown")
 	}
 }

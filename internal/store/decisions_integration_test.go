@@ -195,7 +195,24 @@ func TestScoreQueue(t *testing.T) {
 	}
 }
 
-func TestRankInputs(t *testing.T) {
+// queryRankRows collects the streamed pass's rows as a caller holding only queries reads
+// them (Queries.ForEachRankRow), for a small fixture only.
+func queryRankRows(t *testing.T, q store.Queries, opt store.RankStreamOptions) []store.RankRow {
+	t.Helper()
+	var out []store.RankRow
+	if err := q.ForEachRankRow(context.Background(), opt, func(r store.RankRow) error {
+		out = append(out, r)
+		return nil
+	}); err != nil {
+		t.Fatalf("ForEachRankRow: %v", err)
+	}
+	return out
+}
+
+// TestRankRowQueries: the pass over queries reads every job with an observation, its
+// current observation's gates and its latest decisions, and leaves the connection's
+// statement timeout as it was.
+func TestRankRowQueries(t *testing.T) {
 	ctx := context.Background()
 	s := appStore(t)
 	q := s.Q()
@@ -213,10 +230,7 @@ func TestRankInputs(t *testing.T) {
 	}
 	seedJob(t, q, "1000000003") // no observation: not ranked
 
-	got, err := q.RankInputs(ctx, store.RankOptions{AllowFake: true})
-	if err != nil {
-		t.Fatalf("RankInputs: %v", err)
-	}
+	got := queryRankRows(t, q, store.RankStreamOptions{AllowFake: true, DescriptionFor: store.DescAll})
 	if len(got) != 2 {
 		t.Fatalf("%d inputs, want 2", len(got))
 	}
@@ -228,11 +242,33 @@ func TestRankInputs(t *testing.T) {
 	if rb.JobID != b || rb.Status != "skipped" || !rb.Closed || len(rb.Gates) != 1 || len(rb.Decisions) != 0 {
 		t.Errorf("job b: %+v", rb)
 	}
+	if ra.Description != "We write Go." {
+		t.Errorf("job a description = %q", ra.Description)
+	}
+
+	// Inside a transaction (a savepoint) the pass works too, and its timeout ends with it.
+	if err := s.InTx(ctx, func(tq store.Queries) error {
+		if n := len(queryRankRows(t, tq, store.RankStreamOptions{})); n != 2 {
+			t.Errorf("in a transaction: %d rows, want 2", n)
+		}
+		v, err := tq.Setting(ctx, "statement_timeout")
+		if err != nil || v == "10min" {
+			t.Errorf("statement_timeout after the pass = %q, %v", v, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// fn's error stops the pass and comes back as it is.
+	stop := errors.New("stop")
+	if err := q.ForEachRankRow(ctx, store.RankStreamOptions{}, func(store.RankRow) error { return stop }); !errors.Is(err, stop) {
+		t.Errorf("ForEachRankRow = %v, want fn's error", err)
+	}
 }
 
-// TestRankInputsIgnoresFakeDecisions: the fake decider's decisions are read only on an
+// TestRankRowIgnoresFakeDecisions: the fake decider's decisions are read only on an
 // explicit AllowFake; otherwise the latest real decision per criterion is returned, or none.
-func TestRankInputsIgnoresFakeDecisions(t *testing.T) {
+func TestRankRowIgnoresFakeDecisions(t *testing.T) {
 	ctx := context.Background()
 	s := appStore(t)
 	q := s.Q()
@@ -241,19 +277,19 @@ func TestRankInputsIgnoresFakeDecisions(t *testing.T) {
 	if err := s.InsertDecisions(ctx, decisions(a, obsA, "pass", "h")); err != nil { // decider fake
 		t.Fatal(err)
 	}
-	read := func(allow bool) []store.Decision {
+	read := func(allow bool) []store.DecisionVerdictRow {
 		t.Helper()
-		got, err := q.RankInputs(ctx, store.RankOptions{AllowFake: allow})
-		if err != nil || len(got) != 1 {
-			t.Fatalf("RankInputs: %d, %v", len(got), err)
+		got := queryRankRows(t, q, store.RankStreamOptions{AllowFake: allow})
+		if len(got) != 1 {
+			t.Fatalf("ForEachRankRow: %d rows", len(got))
 		}
 		return got[0].Decisions
 	}
 	if got := read(false); len(got) != 0 {
 		t.Fatalf("fake decisions read without AllowFake: %d", len(got))
 	}
-	if got := read(true); len(got) != 5 || got[0].Decider != "fake" {
-		t.Fatalf("AllowFake: %d decisions", len(got))
+	if got := read(true); len(got) != 5 || got[0].Verdict != "pass" {
+		t.Fatalf("AllowFake: %+v", got)
 	}
 
 	// A real decision, then a newer fake one: without AllowFake the real one stands.
@@ -267,20 +303,18 @@ func TestRankInputsIgnoresFakeDecisions(t *testing.T) {
 	if err := s.InsertDecisions(ctx, decisions(a, obsA, "pass", "h3")); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(false); len(got) != 5 || got[0].Decider != "jev-1.13.0" || got[0].Verdict != "fail" {
+	if got := read(false); len(got) != 5 || got[0].Verdict != "fail" {
 		t.Fatalf("without AllowFake: %+v", got)
 	}
-	if got := read(true); len(got) != 5 || got[0].Decider != "fake" {
+	if got := read(true); len(got) != 5 || got[0].Verdict != "pass" {
 		t.Fatalf("with AllowFake: %+v", got)
 	}
 }
 
-// TestRankInputsSeenAt: SeenAt is when the job was last seen, first seen or observed
+// TestRankRowSeenAt: SeenAt is when the job was last seen, first seen or observed
 // again, so a job seen yesterday and observed again today reads as today's.
-func TestRankInputsSeenAt(t *testing.T) {
-	ctx := context.Background()
-	s := appStore(t)
-	q := s.Q()
+func TestRankRowSeenAt(t *testing.T) {
+	q := appStore(t).Q()
 	yesterday := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
 	a, f1 := seedJob(t, q, "1000000001")
 	observeFor(t, q, a, f1, "Go Engineer", false, "language", "fail")
@@ -294,9 +328,9 @@ func TestRankInputsSeenAt(t *testing.T) {
 		t.Fatal("no second observation")
 	}
 
-	got, err := q.RankInputs(ctx, store.RankOptions{})
-	if err != nil || len(got) != 2 {
-		t.Fatalf("RankInputs: %d, %v", len(got), err)
+	got := queryRankRows(t, q, store.RankStreamOptions{})
+	if len(got) != 2 {
+		t.Fatalf("ForEachRankRow: %d rows", len(got))
 	}
 	if !got[0].SeenAt.Equal(yesterday) {
 		t.Errorf("job a seen at %v, want %v", got[0].SeenAt, yesterday)

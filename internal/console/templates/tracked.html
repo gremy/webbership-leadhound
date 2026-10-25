@@ -12,6 +12,7 @@
   </nav>
   {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
   {{if .Rows}}
+  {{if gt .Total (len .Rows)}}<p class="muted">Showing {{thousands (len .Rows)}} of {{thousands .Total}}, the latest changes first.</p>{{end}}
   <div class="jobs">
     {{range .Rows}}
     <article class="job tracked" id="tracked-{{.JobID}}">

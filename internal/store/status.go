@@ -249,35 +249,3 @@ func (q Queries) CountJobsFirstSeen(ctx context.Context, source string, loc *tim
 	}
 	return n, nil
 }
-
-// OpenJobsNotSeenSince returns the open jobs from any of sources whose last_seen_at is
-// before before, as job id → source. Their listing_status is not changed: a board that
-// stops answering may come back.
-func (q Queries) OpenJobsNotSeenSince(ctx context.Context, sources []string, before time.Time) (map[int64]string, error) {
-	out := map[int64]string{}
-	if len(sources) == 0 {
-		return out, nil
-	}
-	rows, err := q.db.Query(ctx,
-		`SELECT id, source FROM job
-		 WHERE source = ANY($1) AND listing_status = 'open' AND last_seen_at < $2`, sources, before)
-	if err != nil {
-		return nil, fmt.Errorf("store: open jobs not seen since: %w", err)
-	}
-	type row struct {
-		id     int64
-		source string
-	}
-	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
-		var x row
-		err := r.Scan(&x.id, &x.source)
-		return x, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("store: open jobs not seen since: %w", err)
-	}
-	for _, x := range list {
-		out[x.id] = x.source
-	}
-	return out, nil
-}

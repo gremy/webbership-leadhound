@@ -33,10 +33,11 @@ RestartPreventExitStatus=2
 # requests.
 TimeoutStartSec=1h
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
-# neighbour. A collect has peaked near 530 MB; past MemoryHigh the unit is slowed and reclaimed,
-# past MemoryMax it is killed.
-MemoryHigh=900M
-MemoryMax=1200M
+# neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit
+# throttled there hangs instead of failing. GOMEMLIMIT makes Go collect garbage harder
+# well before the ceiling.
+MemoryMax=600M
+Environment=GOMEMLIMIT=450MiB
 # Hardening. The whole file system is read-only to leadhound except the data directory
 # (LEADHOUND_DATA_DIR), where a brief that is not sent goes to its outbox and the score lock
 # lives. It needs the network (job sources, the scoring API, mail, Postgres) and nothing else.

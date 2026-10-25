@@ -22,9 +22,11 @@ TimeoutStartSec=30s
 # A stop lets requests in flight finish.
 TimeoutStopSec=20s
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
-# neighbour. Past MemoryHigh the unit is slowed and reclaimed, past MemoryMax it is killed.
-MemoryHigh=900M
-MemoryMax=1200M
+# neighbour. Past MemoryMax the console is killed and restarts five seconds later; there is no
+# MemoryHigh, because a console throttled there hangs every request instead of failing.
+# GOMEMLIMIT makes Go collect garbage harder well before the ceiling.
+MemoryMax=300M
+Environment=GOMEMLIMIT=200MiB
 # A ceiling on CPU too: every sign-in check is a bcrypt, so a burst of them takes half a core
 # at most.
 CPUQuota=50%

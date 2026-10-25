@@ -30,6 +30,7 @@ const (
 	ScoringOK        = "ok"
 	ScoringSpendCap  = "spend_cap" // stopped at the daily Jev cap
 	ScoringThrottled = "throttled" // the AI provider stayed rate-limited or overloaded
+	ScoringBudget    = "budget"    // stopped at the run's time budget; the rest waits for the next run
 	ScoringFailed    = "failed"    // ended in an error or never finished
 	ScoringNotRun    = "not_run"   // no score run today
 )
@@ -621,6 +622,8 @@ func scoringLine(in Input) string {
 		l = "Scoring paused: daily Jev cap reached"
 	case ScoringThrottled:
 		l = "Scoring paused: the AI provider was busy (throttled)"
+	case ScoringBudget:
+		l = "Scoring paused: time budget reached; jobs it did not reach are scored on the next run"
 	case ScoringFailed:
 		l = "Scoring failed: jobs it did not reach are scored on the next run"
 	default:

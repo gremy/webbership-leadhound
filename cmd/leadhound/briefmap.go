@@ -58,57 +58,171 @@ func atsSources() []string {
 	return out
 }
 
-// briefCandidates reads the store into what the brief ranks for day (a time on that
-// calendar day in loc). An open ATS job whose board has not listed it since
-// brief.BoardStaleDays before the day's start is set apart in notSeen, with its source in
-// notSeenSrc: the board may be failing or gone, so the job is not listed, but its listing
-// stays open, since the board may come back (A14, the ATS twin of leaveOutStale).
-func briefCandidates(ctx context.Context, q store.Queries, loc *time.Location, day time.Time, allowFake bool) (cands, notSeen []scoring.Candidate, notSeenSrc map[int64]string, err error) {
-	ins, err := q.RankInputs(ctx, store.RankOptions{AllowFake: allowFake})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	rules, err := q.ActiveRules(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	y, m, d := day.In(loc).Date()
-	cutoff := time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -brief.BoardStaleDays)
-	notSeenSrc, err = q.OpenJobsNotSeenSince(ctx, atsSources(), cutoff)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	for _, c := range scoring.CandidatesFrom(ins, rules) {
-		if _, ok := notSeenSrc[c.JobID]; ok {
-			notSeen = append(notSeen, c)
-		} else {
-			cands = append(cands, c)
-		}
-	}
-	return cands, notSeen, notSeenSrc, nil
+// rankOptions choose what one rankPass keeps and reads.
+type rankOptions struct {
+	caps scoring.Caps
+	// unreachableAsOpen ranks an unreachable listing as if it were open (recheckIDs).
+	unreachableAsOpen bool
+	// desc is which rows carry their description while a description rule is active; with
+	// none active no description is read at all.
+	desc store.DescMode
+	// keepNotSeen ranks every job, setting none apart as not seen on its board (the score
+	// summary, which ranks the whole store).
+	keepNotSeen bool
+	// hydrate fills the kept jobs (both tiers and the runner-up) with their description,
+	// full gate results and decision reasons, for a caller that shows them.
+	hydrate bool
 }
 
-// notSeenBySource counts, per source, the jobs set apart as not seen on their board that
-// would otherwise be listed: those the ranking would put in either tier.
-func notSeenBySource(notSeen []scoring.Candidate, src map[int64]string, loc *time.Location) map[string]int {
-	all := len(notSeen)
-	r := scoring.Rank(notSeen, loc, scoring.Caps{Apply: all, YourCall: all})
-	out := map[string]int{}
-	for _, rk := range append(r.Apply, r.YourCall...) {
-		out[src[rk.JobID]]++
+// rankResult is what one rankPass kept: the ranking (only the capped tiers and the
+// runner-up hold jobs), the day's skip counts, and per source the jobs set apart as not
+// seen on their board that the ranking would otherwise list.
+type rankResult struct {
+	ranking   scoring.Ranking
+	skippedOn map[string]int
+	notSeen   map[string]int
+}
+
+// rankPass streams the store once and ranks it as the brief for day (a time on that
+// calendar day in loc) does, keeping only what opt's caps keep, so memory follows the caps,
+// not the store. An open ATS job whose board has not listed it since brief.BoardStaleDays
+// before the day's start is set apart: the board may be failing or gone, so the job is not
+// ranked, but its listing stays open, since the board may come back (A14, the ATS twin of
+// leaveOutStale); only a count of those the ranking would list is kept, per source.
+func rankPass(ctx context.Context, q store.Queries, loc *time.Location, day time.Time, allowFake bool, opt rankOptions) (rankResult, error) {
+	rules, err := q.ActiveRules(ctx)
+	if err != nil {
+		return rankResult{}, err
 	}
-	return out
+	y, m, d := day.In(loc).Date()
+	start := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	acc := newRankAcc(loc, start, opt, scoring.CompileRules(rules))
+	so := store.RankStreamOptions{AllowFake: allowFake, DayStart: start, DayEnd: start.AddDate(0, 0, 1)}
+	if acc.rules.NeedsDescription() {
+		so.DescriptionFor = opt.desc
+	}
+	if err := q.ForEachRankRow(ctx, so, func(r store.RankRow) error {
+		acc.add(r)
+		return nil
+	}); err != nil {
+		return rankResult{}, err
+	}
+	res := rankResult{ranking: acc.ranker.Ranking(), skippedOn: acc.ranker.SkippedOn(), notSeen: acc.notSeen}
+	if opt.hydrate {
+		if err := hydrate(ctx, q, &res.ranking, allowFake); err != nil {
+			return rankResult{}, err
+		}
+	}
+	return res, nil
+}
+
+// rankAcc is rankPass's state: the Ranker and the not-seen counts.
+type rankAcc struct {
+	ranker      *scoring.Ranker
+	rules       scoring.CompiledRules
+	ats         map[string]bool
+	keepNotSeen bool
+	cutoff      time.Time
+	notSeen     map[string]int
+}
+
+// newRankAcc ranks for the day starting at dayStart in loc.
+func newRankAcc(loc *time.Location, dayStart time.Time, opt rankOptions, rules scoring.CompiledRules) *rankAcc {
+	ats := map[string]bool{}
+	for _, src := range atsSources() {
+		ats[src] = true
+	}
+	return &rankAcc{
+		ranker:      scoring.NewRanker(scoring.RankerOptions{Loc: loc, Caps: opt.caps, Day: dayStart, UnreachableAsOpen: opt.unreachableAsOpen}),
+		rules:       rules,
+		ats:         ats,
+		keepNotSeen: opt.keepNotSeen,
+		cutoff:      dayStart.AddDate(0, 0, -brief.BoardStaleDays),
+		notSeen:     map[string]int{},
+	}
+}
+
+// add ranks one row, or counts it as not seen on its board.
+func (a *rankAcc) add(r store.RankRow) {
+	c := candidateOf(r, a.rules)
+	if !a.keepNotSeen && a.ats[r.Source] && r.ListingStatus == store.ListingOpen && r.LastSeenAt.Before(a.cutoff) {
+		if scoring.Listed(c) {
+			a.notSeen[r.Source]++
+		}
+		return
+	}
+	a.ranker.Add(c)
+}
+
+// candidateOf is a streamed row as the ranking sees it, matching every active skip rule
+// against the current text, so a rule added since the last observation already applies.
+// Its gates and criteria carry verdicts only; hydrate fills the rest for the jobs kept.
+func candidateOf(r store.RankRow, rules scoring.CompiledRules) scoring.Candidate {
+	c := scoring.Candidate{
+		JobID: r.JobID, Title: r.Title, Company: r.Company, Location: r.Location, Description: r.Description,
+		ListingStatus: r.ListingStatus, Status: r.Status, Closed: r.Closed, PostedAtEst: r.PostedAtEst,
+		ApplicantCount: r.ApplicantCount, ApplyType: r.ApplyType, SeenAt: r.SeenAt,
+	}
+	for _, g := range r.Gates {
+		c.Gates = append(c.Gates, scoring.GateVerdict{Gate: g.Gate, Verdict: g.Verdict})
+	}
+	for _, d := range r.Decisions {
+		c.Criteria = append(c.Criteria, scoring.CriterionVerdict{Criterion: d.Criterion, Verdict: d.Verdict})
+	}
+	c.SkipRuleID = rules.Match(c)
+	return c
+}
+
+// hydrate fills the ranking's kept jobs with their description, full gate results and
+// decisions with reasons, read for those jobs only, and recomputes what is unclear about
+// each listed one from the full gates.
+func hydrate(ctx context.Context, q store.Queries, r *scoring.Ranking, allowFake bool) error {
+	var ids []int64
+	for _, rk := range append(append([]scoring.Ranked{}, r.Apply...), r.YourCall...) {
+		ids = append(ids, rk.JobID)
+	}
+	if r.RunnerUp != nil {
+		ids = append(ids, r.RunnerUp.JobID)
+	}
+	det, err := q.RankDetails(ctx, ids, allowFake)
+	if err != nil {
+		return err
+	}
+	fill := func(rk *scoring.Ranked) {
+		d, ok := det[rk.JobID]
+		if !ok {
+			return
+		}
+		rk.Description = d.Description
+		rk.Gates, rk.Criteria = nil, nil
+		for _, g := range d.Gates {
+			rk.Gates = append(rk.Gates, scoring.GateVerdict{Gate: g.Gate, Verdict: g.Verdict, Reason: g.Reason, Snippet: g.Snippet})
+		}
+		for _, dc := range d.Decisions {
+			rk.Criteria = append(rk.Criteria, scoring.CriterionVerdict{Criterion: dc.Criterion, Verdict: dc.Verdict, Reason: dc.Reason})
+		}
+	}
+	for _, tier := range [][]scoring.Ranked{r.Apply, r.YourCall} {
+		for i := range tier {
+			fill(&tier[i])
+			tier[i].Unclear = scoring.UnclearOf(tier[i].Candidate)
+		}
+	}
+	if r.RunnerUp != nil {
+		fill(r.RunnerUp) // Rank names nothing unclear on the runner-up
+	}
+	return nil
 }
 
 // buildInput reads the store into the brief for day (a time on that calendar day in loc):
 // the ranking, today's skip counts, the source health, and the scoring and recheck state.
 func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake, recheckOff bool) (brief.Input, error) {
-	cands, notSeen, notSeenSrc, err := briefCandidates(ctx, q, loc, day, allowFake)
+	// The brief reads descriptions only where a description rule can change what it prints.
+	pass, err := rankPass(ctx, q, loc, day, allowFake, rankOptions{caps: briefCaps(prof), desc: store.DescWhereRanked, hydrate: true})
 	if err != nil {
 		return brief.Input{}, err
 	}
-	notSeenN := notSeenBySource(notSeen, notSeenSrc, loc)
-	r := scoring.Rank(cands, loc, briefCaps(prof))
+	r, notSeenN := pass.ranking, pass.notSeen
 	var ids []int64
 	for _, rk := range append(append([]scoring.Ranked{}, r.Apply...), r.YourCall...) {
 		ids = append(ids, rk.JobID)
@@ -128,7 +242,7 @@ func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc
 		Unreachable: r.Skipped[scoring.SkipUnreachable],
 		Unscored:    r.Skipped[scoring.SkipUnscored],
 	}
-	in.Skipped = scoring.SkippedOn(cands, loc, in.Day)
+	in.Skipped = pass.skippedOn
 	for _, rk := range r.Apply {
 		in.Apply = append(in.Apply, briefJob(rk.Candidate, sums[rk.JobID].URL, kws))
 	}
@@ -176,9 +290,9 @@ func buildInput(ctx context.Context, q store.Queries, prof candidate.Config, loc
 // scoreErrorSuffix ends the note of a score run that returned an error (see scoreRun).
 const scoreErrorSuffix = " · error"
 
-// scoringState reads a score run: a clean finish is ok, the cap and a busy provider name
-// themselves, and a run that ended in an error, has not finished or stopped for any other
-// reason failed.
+// scoringState reads a score run: a clean finish is ok, the cap, a busy provider and the
+// time budget name themselves, and a run that ended in an error, has not finished or
+// stopped for any other reason failed.
 func scoringState(r store.Run) string {
 	switch {
 	case r.FinishedAt == nil, strings.HasSuffix(r.Note, scoreErrorSuffix):
@@ -189,6 +303,8 @@ func scoringState(r store.Run) string {
 		return brief.ScoringSpendCap
 	case r.StopReason == scoring.StopThrottled:
 		return brief.ScoringThrottled
+	case r.StopReason == scoring.StopBudget:
+		return brief.ScoringBudget
 	}
 	return brief.ScoringFailed
 }

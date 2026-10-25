@@ -19,6 +19,10 @@ import (
 
 func init() { commands["recheck"] = runRecheck }
 
+// recheckScoreBudget is the time budget of the rescore after the recheck: the brief waits
+// for it.
+const recheckScoreBudget = 10 * time.Minute
+
 // recheckSlack is how many jobs past each tier's cap the recheck also looks at, so a
 // listed job that turns out closed has a checked one to take its place.
 const recheckSlack = 1 // times the cap
@@ -66,13 +70,10 @@ func (o recheckOutcome) summary() string {
 	return s
 }
 
-// rankNow reads the store and ranks it as the brief for day would.
+// rankNow reads the store and ranks it as the brief for day would, in one streamed pass.
 func rankNow(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake bool) (scoring.Ranking, error) {
-	cands, _, _, err := briefCandidates(ctx, q, loc, day, allowFake)
-	if err != nil {
-		return scoring.Ranking{}, err
-	}
-	return scoring.Rank(cands, loc, briefCaps(prof)), nil
+	pass, err := rankPass(ctx, q, loc, day, allowFake, rankOptions{caps: briefCaps(prof), desc: store.DescWhereRanked})
+	return pass.ranking, err
 }
 
 func briefCaps(prof candidate.Config) scoring.Caps {
@@ -84,17 +85,16 @@ func briefCaps(prof candidate.Config) scoring.Caps {
 // were open, so the job left out last time is tried again. An ATS job the brief for day
 // leaves out as not seen on its board takes no place.
 func recheckIDs(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake bool) ([]int64, error) {
-	cands, _, _, err := briefCandidates(ctx, q, loc, day, allowFake)
+	caps := briefCaps(prof)
+	pass, err := rankPass(ctx, q, loc, day, allowFake, rankOptions{
+		caps:              scoring.Caps{Apply: caps.Apply * (1 + recheckSlack), YourCall: caps.YourCall * (1 + recheckSlack)},
+		unreachableAsOpen: true,
+		desc:              store.DescWhereRanked,
+	})
 	if err != nil {
 		return nil, err
 	}
-	for i := range cands {
-		if cands[i].ListingStatus == store.ListingUnreachable {
-			cands[i].ListingStatus = store.ListingOpen
-		}
-	}
-	caps := briefCaps(prof)
-	r := scoring.Rank(cands, loc, scoring.Caps{Apply: caps.Apply * (1 + recheckSlack), YourCall: caps.YourCall * (1 + recheckSlack)})
+	r := pass.ranking
 	var ids []int64
 	for _, rk := range append(r.Apply, r.YourCall...) {
 		ids = append(ids, rk.JobID)
@@ -156,7 +156,11 @@ func recheckAndScore(ctx context.Context, s *store.Store, cfg config.Config, pro
 		out.ScoreNote = "not rescored: TYPESAFE_API_KEY is not set"
 		return out, nil
 	}
-	_, sr, err := scoreRun(ctx, s, cfg, prof, decider, loc)
+	_, sr, err := scoreRun(ctx, s, cfg, prof, decider, loc, time.Now().Add(recheckScoreBudget))
+	if errors.Is(err, errScoreBusy) {
+		out.ScoreNote = "not rescored: another score run is in progress"
+		return out, nil
+	}
 	if err != nil {
 		return out, err
 	}
@@ -171,7 +175,8 @@ func recheckAndScore(ctx context.Context, s *store.Store, cfg config.Config, pro
 // requests nothing and returns how many it marked. Live only: with live off nothing is
 // rechecked and the brief says so instead. An ATS job is never marked: the brief for day
 // leaves one out while its board has not listed it for brief.BoardStaleDays (see
-// briefCandidates), and ranks without it here too.
+// rankPass), and ranks without it here too. Each round is one streamed pass: a job marked
+// leaves room for one below the caps, which the last pass did not keep.
 func leaveOutStale(ctx context.Context, q store.Queries, prof candidate.Config, loc *time.Location, day time.Time, allowFake bool, source string) (int, error) {
 	marked := 0
 	for {

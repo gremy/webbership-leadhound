@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
@@ -45,7 +46,12 @@ const (
 const (
 	StopSpendCap  = "spend_cap"
 	StopThrottled = "throttled" // the provider stayed rate-limited or overloaded
+	StopBudget    = "budget"    // the run reached its Deadline; the rest waits for the next run
 )
+
+// queueTimeout bounds the queue's read: it looks at every open job, so on a
+// production-sized store it may run past the app role's default statement timeout.
+const queueTimeout = 10 * time.Minute
 
 // Posting is the part of an observation the state is built from.
 type Posting struct {
@@ -157,9 +163,13 @@ type DecisionStore interface {
 // StoreAdapter is a DecisionStore over the database.
 type StoreAdapter struct{ S *store.Store }
 
-// ScoreQueue reads from the pool.
-func (a StoreAdapter) ScoreQueue(ctx context.Context) (store.ScoreQueue, error) {
-	return a.S.Q().ScoreQueue(ctx)
+// ScoreQueue reads from the pool, with a 10-minute statement timeout.
+func (a StoreAdapter) ScoreQueue(ctx context.Context) (q store.ScoreQueue, err error) {
+	err = a.S.WithStatementTimeout(ctx, queueTimeout, func(qs store.Queries) error {
+		q, err = qs.ScoreQueue(ctx)
+		return err
+	})
+	return q, err
 }
 
 // ScoreInputsFor reads from the pool.
@@ -201,6 +211,23 @@ type Scorer struct {
 	// Batch is how many full inputs are loaded at once (BatchFor the cap's remaining
 	// calls); DefaultBatch when 0 or less.
 	Batch int
+	// Deadline is the run's time budget: once it has passed, Run stops before the next job
+	// with StopBudget. Zero is no budget.
+	Deadline time.Time
+
+	now func() time.Time // the clock the deadline is read with; time.Now when nil
+}
+
+// pastDeadline reports whether the run's Deadline has passed.
+func (s *Scorer) pastDeadline() bool {
+	if s.Deadline.IsZero() {
+		return false
+	}
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	return !now().Before(s.Deadline)
 }
 
 // Result is what one Run did.
@@ -263,7 +290,8 @@ func Order(es []store.QueueEntry, check func(string) candidate.TitleVerdict) {
 // title-only question, and a fail there records one title decision and skips full
 // scoring; a dropped title (which the collector never stores) records the same fail
 // without a call. The daily cap stops the run with StopSpendCap and an exhausted provider
-// with StopThrottled; neither is an error, and no further batch is loaded. A request the
+// with StopThrottled, and a passed Deadline stops it before the next job with StopBudget;
+// none is an error, and no further batch is loaded. A request the
 // model finds too long is retried once with the description cut to RetryDescription. Only
 // a store failure (the cap's usage store included) or a cancelled context is an error.
 func (s *Scorer) Run(ctx context.Context) (res Result, _ error) { // named, so the deferred backlog count lands
@@ -305,6 +333,10 @@ func (s *Scorer) Run(ctx context.Context) (res Result, _ error) { // named, so t
 		for _, in := range inputs {
 			if err := ctx.Err(); err != nil {
 				return res, err
+			}
+			if s.pastDeadline() {
+				res.StopReason = StopBudget
+				return res, nil
 			}
 			wrote, stop, err := j.score(ctx, &res, in)
 			if wrote {

@@ -89,8 +89,8 @@ var schedule = map[string]struct {
 	"leadhound-ats": {
 		[]string{"*-*-* 01:00:00 Europe/Bucharest"},
 		[]string{
-			"-/usr/bin/timeout --kill-after=5m 5h /opt/leadhound/bin/leadhound collect ats",
-			"/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /opt/leadhound/bin/leadhound score",
+			"-/usr/bin/timeout --kill-after=5m 4h /opt/leadhound/bin/leadhound collect ats",
+			scoreLock + "/usr/bin/timeout --kill-after=2m 2h20m /opt/leadhound/bin/leadhound score --max-duration 2h",
 		},
 	},
 	"leadhound-collect": {
@@ -98,7 +98,7 @@ var schedule = map[string]struct {
 		[]string{
 			"-" + linkedinLock + "1800 --conflict-exit-code 75 " + linkedinLockPath +
 				" /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound collect linkedin",
-			"/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /opt/leadhound/bin/leadhound score",
+			scoreLock + "/usr/bin/timeout --kill-after=2m 1h /opt/leadhound/bin/leadhound score --max-duration 45m",
 		},
 	},
 	"leadhound-prebrief": {
@@ -133,10 +133,12 @@ var hardening = map[string]string{
 }
 
 // linkedinLockPath is the one lock every LinkedIn step on the server holds, and
-// linkedinLock is the flock call up to its wait in seconds.
+// linkedinLock is the flock call up to its wait in seconds. scoreLock is the flock call every
+// score step starts with, up to the command it runs.
 const (
 	linkedinLockPath = "/opt/leadhound/data/.linkedin.lock"
 	linkedinLock     = "/usr/bin/flock --wait "
+	scoreLock        = "/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock "
 )
 
 func base(path string) string {
@@ -700,24 +702,123 @@ func TestTimeoutsCoverWaits(t *testing.T) {
 	}
 }
 
+// memory is each leadhound service's ceiling and its Go heap target: MemoryMax in systemd's
+// units (M and G are 1024-based) and GOMEMLIMIT in Go's.
+var memory = map[string]struct{ max, goLimit string }{
+	"leadhound-console":  {"300M", "200MiB"},
+	"leadhound-brief":    {"600M", "450MiB"},
+	"leadhound-prebrief": {"600M", "450MiB"},
+	"leadhound-collect":  {"1G", "850MiB"},
+	"leadhound-ats":      {"1200M", "900MiB"},
+}
+
 // TestMemoryCeiling: the server is shared, so every leadhound unit but the backup has a
-// memory ceiling, and the long collects take half the CPU share.
+// memory ceiling that kills (MemoryMax) and never one that throttles (MemoryHigh, which
+// hangs a unit instead of failing it), a GOMEMLIMIT below that ceiling so Go collects before
+// the kill, and the long collects take half the CPU share.
 func TestMemoryCeiling(t *testing.T) {
-	for path, u := range units(t, "*.service") {
+	services := units(t, "*.service")
+	if len(services) != len(memory)+1 {
+		t.Errorf("%d services, want %d with a memory ceiling and the backup", len(services), len(memory))
+	}
+	for path, u := range services {
 		name := base(path)
+		for section, keys := range u {
+			if _, ok := keys["MemoryHigh"]; ok {
+				t.Errorf("%s: [%s] MemoryHigh is set; a throttled unit hangs, use MemoryMax alone", path, section)
+			}
+		}
 		if name == "leadhound-backup" {
 			continue
 		}
-		if got := u.one(t, path, "Service", "MemoryMax"); got != "1200M" {
-			t.Errorf("%s: MemoryMax = %s, want 1200M", path, got)
+		want, ok := memory[name]
+		if !ok {
+			t.Errorf("%s: no memory ceiling in the test's table", path)
+			continue
 		}
-		if got := u.one(t, path, "Service", "MemoryHigh"); got != "900M" {
-			t.Errorf("%s: MemoryHigh = %s, want 900M", path, got)
+		maxV := u.one(t, path, "Service", "MemoryMax")
+		if maxV != want.max {
+			t.Errorf("%s: MemoryMax = %s, want %s", path, maxV, want.max)
+		}
+		var limits []string
+		for _, e := range u["Service"]["Environment"] {
+			if v, ok := strings.CutPrefix(e, "GOMEMLIMIT="); ok {
+				limits = append(limits, v)
+			}
+		}
+		if len(limits) != 1 {
+			t.Errorf("%s: GOMEMLIMIT = %q, want exactly one Environment=GOMEMLIMIT=", path, limits)
+			continue
+		}
+		if limits[0] != want.goLimit {
+			t.Errorf("%s: GOMEMLIMIT = %s, want %s", path, limits[0], want.goLimit)
+		}
+		ceiling, err := memoryBytes(maxV, map[string]int64{"K": 1 << 10, "M": 1 << 20, "G": 1 << 30})
+		if err != nil {
+			t.Errorf("%s: MemoryMax %q: %v", path, maxV, err)
+			continue
+		}
+		heap, err := memoryBytes(limits[0], map[string]int64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30})
+		if err != nil {
+			t.Errorf("%s: GOMEMLIMIT %q: %v", path, limits[0], err)
+			continue
+		}
+		if heap >= ceiling {
+			t.Errorf("%s: GOMEMLIMIT %s is not below MemoryMax %s", path, limits[0], maxV)
 		}
 		if name == "leadhound-ats" || name == "leadhound-collect" {
 			if got := u.one(t, path, "Service", "CPUWeight"); got != "50" {
 				t.Errorf("%s: CPUWeight = %s, want 50", path, got)
 			}
 		}
+	}
+}
+
+// memoryBytes reads a size as a whole number followed by one of units' suffixes.
+func memoryBytes(v string, units map[string]int64) (int64, error) {
+	for suffix, mult := range units {
+		if n, ok := strings.CutSuffix(v, suffix); ok {
+			i, err := strconv.ParseInt(n, 10, 64)
+			if err != nil || i <= 0 {
+				return 0, fmt.Errorf("not a positive whole number of %s", suffix)
+			}
+			return i * mult, nil
+		}
+	}
+	return 0, fmt.Errorf("no unit suffix")
+}
+
+// TestScoreHasBudget: every score step stops itself at a --max-duration budget and runs
+// under a /usr/bin/timeout longer than that budget, which ends a score that hangs.
+// TestTimeoutsCoverWaits counts the timeout and never the budget, so the budget being below
+// the timeout means it is never counted twice.
+func TestScoreHasBudget(t *testing.T) {
+	score := regexp.MustCompile(`/usr/bin/timeout (?:--kill-after=\S+ )?(\S+) /opt/leadhound/bin/leadhound score --max-duration (\S+)$`)
+	seen := 0
+	for path, u := range units(t, "*.service") {
+		for _, e := range u["Service"]["ExecStart"] {
+			if !strings.Contains(e, "leadhound score") {
+				continue
+			}
+			seen++
+			m := score.FindStringSubmatch(e)
+			if m == nil {
+				t.Errorf("%s: %q: a score step runs as /usr/bin/timeout <D> ... leadhound score --max-duration <budget>", path, e)
+				continue
+			}
+			timeout, terr := time.ParseDuration(m[1])
+			budget, berr := time.ParseDuration(m[2])
+			switch {
+			case terr != nil || berr != nil:
+				t.Errorf("%s: %q: timeout %v, budget %v", path, e, terr, berr)
+			case budget <= 0:
+				t.Errorf("%s: score --max-duration %s, want a budget above zero", path, m[2])
+			case budget >= timeout:
+				t.Errorf("%s: score --max-duration %s is not below its /usr/bin/timeout %s", path, m[2], m[1])
+			}
+		}
+	}
+	if seen != 2 {
+		t.Errorf("%d score steps, want 2 (ats, collect)", seen)
 	}
 }

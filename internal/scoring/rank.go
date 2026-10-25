@@ -3,7 +3,6 @@ package scoring
 import (
 	"cmp"
 	"fmt"
-	"regexp"
 	"slices"
 	"time"
 
@@ -92,6 +91,7 @@ type Ranking struct {
 // CandidatesFrom converts the store's rows, matching every active skip rule against the
 // current text, so a rule added since the last observation already applies.
 func CandidatesFrom(ins []store.RankInput, rules []store.Rule) []Candidate {
+	compiled := CompileRules(rules)
 	out := make([]Candidate, len(ins))
 	for i, in := range ins {
 		c := Candidate{
@@ -106,41 +106,10 @@ func CandidatesFrom(ins []store.RankInput, rules []store.Rule) []Candidate {
 		for _, d := range in.Decisions {
 			c.Criteria = append(c.Criteria, CriterionVerdict{Criterion: d.Criterion, Verdict: d.Verdict, Reason: d.Reason})
 		}
-		c.SkipRuleID = matchSkipRule(c, rules)
+		c.SkipRuleID = compiled.Match(c)
 		out[i] = c
 	}
 	return out
-}
-
-// matchSkipRule returns the id of the first skip rule matching the candidate's text, as
-// the rule gate reads it (RE2, case-insensitive). A pattern that does not compile is
-// ignored here; the rule gate already flags it.
-func matchSkipRule(c Candidate, rules []store.Rule) *int64 {
-	for _, r := range rules {
-		if r.Kind != gates.KindSkip || r.DisabledAt != nil {
-			continue
-		}
-		var text string
-		switch r.Field {
-		case "company":
-			text = c.Company
-		case "title":
-			text = c.Title
-		case "description":
-			text = c.Description
-		case "location":
-			text = c.Location
-		default:
-			continue
-		}
-		re, err := regexp.Compile("(?i)" + r.Pattern)
-		if err != nil || !re.MatchString(text) {
-			continue
-		}
-		id := r.ID
-		return &id
-	}
-	return nil
 }
 
 // TierOf is the tier the gates and criteria alone give: skip on any fail, apply when all
@@ -222,53 +191,21 @@ func skipReason(c Candidate) (reason string, failedCriteria int) {
 // Rank applies the ranking: it leaves out what cannot be applied for, splits the rest
 // into Apply and Your call, sorts each tier, caps it, and picks the runner-up.
 func Rank(cands []Candidate, loc *time.Location, caps Caps) Ranking {
-	r := Ranking{Skipped: map[string]int{}}
-	var apply, yourCall, runnerUps []Ranked
+	r := NewRanker(RankerOptions{Loc: loc, Caps: caps})
 	for _, c := range cands {
-		reason, failed := skipReason(c)
-		if reason != "" {
-			r.Skipped[reason]++
-			// The runner-up failed one criterion and nothing else: every other one is decided.
-			if reason == SkipCriterion && failed == 1 && complete(c.Criteria) {
-				runnerUps = append(runnerUps, Ranked{Candidate: c, Tier: TierSkip, FailedCriterion: failedCriterion(c)})
-			}
-			continue
-		}
-		rk := Ranked{Candidate: c, Tier: TierOf(c.Gates, c.Criteria), Unclear: unclear(c)}
-		if rk.Tier == TierApply {
-			apply = append(apply, rk)
-		} else {
-			yourCall = append(yourCall, rk)
-		}
+		r.Add(c)
 	}
-	order := func(a, b Ranked) int { return compareCandidates(a.Candidate, b.Candidate, loc) }
-	slices.SortFunc(apply, order)
-	slices.SortFunc(yourCall, order)
-	slices.SortFunc(runnerUps, order)
-	r.ApplyTotal, r.YourCallTotal = len(apply), len(yourCall)
-	r.Apply = apply[:min(len(apply), max(caps.Apply, 0))]
-	r.YourCall = yourCall[:min(len(yourCall), max(caps.YourCall, 0))]
-	if len(runnerUps) > 0 {
-		ru := runnerUps[0]
-		r.RunnerUp = &ru
-	}
-	return r
+	return r.Ranking()
 }
 
 // SkippedOn counts the candidates left out by their top reason, as Rank does, but only
 // those seen on the calendar day of day in loc: first seen or observed again that day.
 func SkippedOn(cands []Candidate, loc *time.Location, day time.Time) map[string]int {
-	y, m, d := day.In(loc).Date()
-	out := map[string]int{}
+	r := newRanker(RankerOptions{Loc: loc, Day: day}, true)
 	for _, c := range cands {
-		if sy, sm, sd := c.SeenAt.In(loc).Date(); sy != y || sm != m || sd != d {
-			continue
-		}
-		if reason, _ := skipReason(c); reason != "" {
-			out[reason]++
-		}
+		r.Add(c)
 	}
-	return out
+	return r.SkippedOn()
 }
 
 func failedCriterion(c Candidate) string {

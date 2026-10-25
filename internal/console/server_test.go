@@ -33,6 +33,7 @@ type fakeBackend struct {
 	dash    Dashboard
 	brief   BriefJobs
 	tracked []Tracked
+	matched int // TrackedList.Total; len(tracked) when 0
 	runs    []RunRow
 	rules   []RuleRow
 	out     TrackOutcome
@@ -78,9 +79,9 @@ func (f *fakeBackend) BriefJobs(_ context.Context, day string) (BriefJobs, error
 	return f.brief, f.readErr
 }
 
-func (f *fakeBackend) Tracked(context.Context, string) ([]Tracked, error) {
+func (f *fakeBackend) Tracked(context.Context, string) (TrackedList, error) {
 	f.count("Tracked")
-	return f.tracked, f.readErr
+	return TrackedList{Rows: f.tracked, Total: max(f.matched, len(f.tracked))}, f.readErr
 }
 
 func (f *fakeBackend) Runs(context.Context, int) ([]RunRow, error) {
@@ -1201,6 +1202,79 @@ func TestTrackedFilters(t *testing.T) {
 	}
 	if !strings.Contains(body, `name="ref" value="job:42"`) || !strings.Contains(body, `name="status" value="applied"`) {
 		t.Error("the row's forms lack ref or the filter")
+	}
+}
+
+// TestTrackedCapped: a capped list says how many it shows of how many match; a whole
+// one says nothing.
+func TestTrackedCapped(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	if body := h.do(get("/tracked?status=all", c)).Body.String(); strings.Contains(body, "Showing ") {
+		t.Error("a whole list says it is capped")
+	}
+	b.matched = 432_306
+	body := h.do(get("/tracked?status=all", c)).Body.String()
+	if !strings.Contains(body, "Showing 1 of 432,306, the latest changes first.") {
+		t.Errorf("a capped list does not say so: %s", body)
+	}
+	b.tracked = nil
+	if body := h.do(get("/tracked?status=all", c)).Body.String(); strings.Contains(body, "Showing ") {
+		t.Error("an empty list says it is capped")
+	}
+}
+
+// TestDashboardSnapshotStates: the Now card and the day's numbers in each state of the
+// snapshot: fresh, updating, failed with older numbers, the first build running, and the
+// first build failed.
+func TestDashboardSnapshotStates(t *testing.T) {
+	asOf := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	failed := time.Date(2026, 10, 24, 9, 12, 0, 0, time.UTC)
+	const (
+		building  = "The day's numbers are being worked out; refresh in a minute."
+		later     = "Shown once the day's numbers are worked out."
+		failedOld = "The last update failed at 09:12; showing 09:00's numbers."
+		failedNew = "The day's numbers could not be worked out at 09:12; refresh in a few minutes."
+	)
+	for _, c := range []struct {
+		name     string
+		set      func(*Dashboard)
+		want     []string
+		dontWant []string
+	}{
+		{"fresh", func(d *Dashboard) {}, []string{"as of 09:00</p>", "Apply", "Gate failed"},
+			[]string{"updating", building, later, failedOld, failedNew}},
+		{"updating", func(d *Dashboard) { d.Updating = true }, []string{"as of 09:00 · updating…", "Apply", "Gate failed"},
+			[]string{building, later, failedOld, failedNew}},
+		{"failed", func(d *Dashboard) { d.LastBuildFailedAt = &failed }, []string{"as of 09:00</p>", failedOld, "Apply"},
+			[]string{"updating", building, failedNew}},
+		{"failed retrying", func(d *Dashboard) { d.LastBuildFailedAt, d.Updating = &failed, true },
+			[]string{"as of 09:00 · updating…", failedOld}, []string{building}},
+		{"building", func(d *Dashboard) { *d = Dashboard{Building: true, CallCap: 10} }, []string{building, later, "0 of 10 calls"},
+			[]string{"as of", "Apply", "Gate failed", "Nothing to report yet."}},
+		{"first failed", func(d *Dashboard) { *d = Dashboard{LastBuildFailedAt: &failed} }, []string{failedNew, later},
+			[]string{"as of", building, "Apply"}},
+		{"first failed retrying", func(d *Dashboard) { *d = Dashboard{LastBuildFailedAt: &failed, Building: true} },
+			[]string{building}, []string{failedNew, "as of"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := richBackend("x")
+			b.dash.AsOf = asOf
+			c.set(&b.dash)
+			h := newHarness(t, b, false)
+			body := h.do(get("/", h.session(t))).Body.String()
+			for _, w := range c.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("lacks %q", w)
+				}
+			}
+			for _, w := range c.dontWant {
+				if strings.Contains(body, w) {
+					t.Errorf("shows %q", w)
+				}
+			}
+		})
 	}
 }
 

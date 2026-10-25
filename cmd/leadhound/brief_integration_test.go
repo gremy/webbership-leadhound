@@ -366,6 +366,24 @@ func TestRecheckCommand(t *testing.T) {
 	}
 }
 
+// TestRecheckRescoreWaitsForScoreLock: while another score run holds the lock, the
+// recheck's rescore records no score run and says why; the recheck itself still runs.
+func TestRecheckRescoreWaitsForScoreLock(t *testing.T) {
+	dir := scoredFixtures(t)
+	if _, err := storetest.OwnerConn(t).Exec(context.Background(), `UPDATE http_fetch SET fetched_at = now() - interval '2 days'`); err != nil {
+		t.Fatal(err)
+	}
+	runs := dbCount(t, `SELECT count(*) FROM run WHERE command = 'score'`)
+	holdScoreLock(t)
+	code, out, stderr := runCmdErr(t, "recheck", "--allow-fake", "--dry-run", "--fixtures", dir)
+	if code != 0 || !strings.Contains(out, "4 due") || !strings.Contains(out, "not rescored: another score run is in progress") {
+		t.Fatalf("exit %d, stderr %q\n%s", code, stderr, out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM run WHERE command = 'score'`); got != runs {
+		t.Errorf("score runs = %d, want %d", got, runs)
+	}
+}
+
 // TestBriefRecordedStopsExitZero: a source that broke and a scorer stopped by the cap are
 // reported in the brief, which exits 0, never "nothing new".
 func TestBriefRecordedStopsExitZero(t *testing.T) {
@@ -602,7 +620,7 @@ func TestBriefLeavesOutStaleJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	full := scoring.Rank(mustCandidates(t, st.Q()), loc, scoring.Caps{Apply: 10, YourCall: 10})
+	full := scoring.Rank(mustCandidates(t, st), loc, scoring.Caps{Apply: 10, YourCall: 10})
 	if len(full.Apply) != 4 {
 		t.Fatalf("apply tier = %d, want 4", len(full.Apply))
 	}
@@ -636,13 +654,15 @@ func TestBriefLeavesOutStaleJobs(t *testing.T) {
 	}
 }
 
-func mustCandidates(t *testing.T, q store.Queries) []scoring.Candidate {
+// mustCandidates reads every job as the ranking sees it, through the test oracle (the old,
+// read-everything ranking read).
+func mustCandidates(t *testing.T, s *store.Store) []scoring.Candidate {
 	t.Helper()
-	ins, err := q.RankInputs(context.Background(), store.RankOptions{AllowFake: true})
+	ins, err := storetest.OracleRankInputs(context.Background(), s, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules, err := q.ActiveRules(context.Background())
+	rules, err := s.Q().ActiveRules(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

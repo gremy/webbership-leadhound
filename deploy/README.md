@@ -10,9 +10,9 @@ Each timer adds a random delay of up to 10 minutes and is persistent, so a run m
 
 | Timer | When | Runs |
 | --- | --- | --- |
-| `leadhound-ats.timer` | 01:00 | `collect ats`, then `score` |
+| `leadhound-ats.timer` | 01:00 | `collect ats`, then `score --max-duration 2h` |
 | `leadhound-backup.timer` | 03:30 | `pg_dump -Fc` into `/var/backups/leadhound/`, newest 14 kept |
-| `leadhound-collect.timer` | 06:30 and 14:30 | `collect linkedin`, then `score` |
+| `leadhound-collect.timer` | 06:30 and 14:30 | `collect linkedin`, then `score --max-duration 45m` |
 | `leadhound-prebrief.timer` | 07:30 | `canary linkedin` (once a day; a second start the same day does nothing) |
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
 
@@ -34,9 +34,23 @@ Every step that reaches LinkedIn (`collect linkedin`, `canary linkedin` and `bri
 
 The lock timeout exits 75 rather than flock's default 1 so it is never confused with the program's own codes, and in particular never with 2, which `RestartPreventExitStatus=2` keeps for bad config.
 The brief is ordered `After=` the collect and the canary, and the canary `After=` the collect, so a persistent catch-up after downtime runs them in that order.
-`collect ats` runs under `timeout 5h` and `collect linkedin` under `timeout 2h`, so a hang never stops the `score` after it; each unit's `TimeoutStartSec` is longer than its lock waits and timeouts together.
+`collect ats` runs under `timeout 4h` and `collect linkedin` under `timeout 2h`, so a hang never stops the `score` after it.
+Each `score` stops itself cleanly at its `--max-duration` budget, and runs under a `timeout` that ends a score that hangs (`2h20m` for the night's 2h, `1h` for the 45 minutes).
+The timeout sits 20 and 15 minutes over the budget because a stopped score still finishes its in-flight job, records the run and makes its summary pass over every stored job, which reads every description when a description rule is active.
+Each unit's `TimeoutStartSec` is longer than its lock waits and timeouts together: 8h15min for the ATS unit (4h05 + 1h30 + 2h22 = 7h57) and 5h30min for the LinkedIn one (30 minutes + 2h05 + 1h30 + 1h02 = 5h07).
 
-The server is shared with other services, so every unit but the backup has `MemoryHigh=900M` and `MemoryMax=1200M`: past the ceiling the kernel stops leadhound, never a neighbour.
+The server is shared with other services, so every unit but the backup has a `MemoryMax`: past it the kernel kills leadhound, never a neighbour.
+No unit has `MemoryHigh`, because a unit throttled there does not fail but hangs, every request of the console included; a killed one shows in the journal, and the console restarts five seconds later.
+Each one also sets `GOMEMLIMIT` below its ceiling, so Go collects garbage harder before the kill:
+
+| Service | `MemoryMax` | `GOMEMLIMIT` |
+| --- | --- | --- |
+| `leadhound-console` | 300M | 200MiB |
+| `leadhound-brief`, `leadhound-prebrief` | 600M | 450MiB |
+| `leadhound-collect` | 1G | 850MiB |
+| `leadhound-ats` | 1200M | 900MiB |
+
+A LinkedIn collect has peaked near 530 MB and is not streamed, and the ATS run's peak has not been measured, so those two keep the highest ceilings.
 The two collect units also run at `CPUWeight=50`.
 
 ## Layout on the server

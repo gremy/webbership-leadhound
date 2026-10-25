@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +27,9 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
-// testBackend is the console backend over the test database, as serve builds it.
+// testBackend is the console backend over the test database, as serve builds it, with the
+// real build behind a request that waits for it, so a dashboard read shows the full data.
+// Its builds end with the test.
 func testBackend(t *testing.T) *backend {
 	t.Helper()
 	ctx := context.Background()
@@ -44,7 +47,10 @@ func testBackend(t *testing.T) *backend {
 		t.Fatal(err)
 	}
 	cfg, _ := config.Load(func(string) string { return "" })
-	return newBackend(s, prof, loc, cfg)
+	b := newBackend(t.Context(), s, prof, loc, cfg)
+	b.waitFor = time.Minute
+	t.Cleanup(b.wait)
+	return b
 }
 
 // trackRows is what one status change wrote: the job's latest status event and every rule.
@@ -340,35 +346,71 @@ func TestDashboardLastBrief(t *testing.T) {
 	}
 }
 
-// TestDashboardCache: the dashboard's brief input is kept for a minute on the same local
-// day, and a mark through Track clears it.
+// TestDashboardCache: the dashboard serves its snapshot, built once, until it is
+// dashboardFreshFor old; then it serves the old one as updating while the new one builds.
+// A mark starts a rebuild at once, and until it lands the dashboard shows the old numbers
+// as updating.
 func TestDashboardCache(t *testing.T) {
 	sentBrief(t)
 	b := testBackend(t)
-	now := time.Now()
-	b.now = func() time.Time { return now }
+	var mu sync.Mutex
+	now, builds := time.Now(), 0
+	var hold chan struct{} // while non-nil, a build waits for it to close
+	b.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	at := func(d time.Duration) time.Time { mu.Lock(); defer mu.Unlock(); now = now.Add(d); return now }
+	realBuild := b.build
+	b.build = func(ctx context.Context, when time.Time) (snapshot, error) {
+		mu.Lock()
+		builds++
+		h := hold
+		mu.Unlock()
+		if h != nil {
+			<-h
+		}
+		return realBuild(ctx, when)
+	}
+	nBuilds := func() int { mu.Lock(); defer mu.Unlock(); return builds }
 	ctx := context.Background()
 	first, err := b.Dashboard(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(30 * time.Second)
-	second, _ := b.Dashboard(ctx)
-	if !second.AsOf.Equal(first.AsOf) {
-		t.Errorf("within a minute: as of %v, then %v", first.AsOf, second.AsOf)
+	if !first.AsOf.Equal(b.now()) || first.Updating || first.Building || len(first.Health) == 0 || nBuilds() != 1 {
+		t.Fatalf("first = %+v, builds %d", first, nBuilds())
 	}
-	now = now.Add(31 * time.Second)
-	third, _ := b.Dashboard(ctx)
-	if !third.AsOf.Equal(now) {
-		t.Errorf("after a minute: as of %v, want %v", third.AsOf, now)
+	at(dashboardFreshFor - time.Second)
+	if second, _ := b.Dashboard(ctx); !second.AsOf.Equal(first.AsOf) || nBuilds() != 1 {
+		t.Errorf("within %v: as of %v, builds %d", dashboardFreshFor, second.AsOf, nBuilds())
 	}
-	now = now.Add(time.Second)
-	if _, err := b.Track(ctx, console.TrackRequest{Ref: "1", Action: "applied"}); err != nil {
-		t.Fatal(err)
+	later := at(time.Second)
+	if third, _ := b.Dashboard(ctx); !third.AsOf.Equal(first.AsOf) || !third.Updating {
+		t.Errorf("after %v: as of %v, updating %v, builds %d; want the old one", dashboardFreshFor, third.AsOf, third.Updating, nBuilds())
 	}
-	fourth, _ := b.Dashboard(ctx)
-	if !fourth.AsOf.Equal(now) {
-		t.Errorf("after a mark: as of %v, want %v", fourth.AsOf, now)
+	b.wait()
+	if fourth, _ := b.Dashboard(ctx); !fourth.AsOf.Equal(later) || fourth.Updating || nBuilds() != 2 {
+		t.Errorf("after the build: as of %v, updating %v, builds %d; want %v", fourth.AsOf, fourth.Updating, nBuilds(), later)
+	}
+
+	mu.Lock()
+	hold = make(chan struct{})
+	mu.Unlock()
+	marked := at(time.Second)
+	out, err := b.Track(ctx, console.TrackRequest{Ref: "1", Action: "applied"})
+	if err != nil || out.To != "applied" {
+		t.Fatalf("mark = %+v, %v", out, err)
+	}
+	during, _ := b.Dashboard(ctx)
+	if !during.Updating || !during.AsOf.Equal(later) || during.ApplyNow != first.ApplyNow || nBuilds() != 3 {
+		t.Errorf("while the rebuild runs: updating %v, as of %v, builds %d; want the old numbers updating", during.Updating, during.AsOf, nBuilds())
+	}
+	mu.Lock()
+	close(hold)
+	hold = nil
+	mu.Unlock()
+	b.wait()
+	after, _ := b.Dashboard(ctx)
+	if after.Updating || !after.AsOf.Equal(marked) || nBuilds() != 3 {
+		t.Errorf("after the rebuild: updating %v, as of %v, builds %d; want %v", after.Updating, after.AsOf, nBuilds(), marked)
 	}
 }
 
@@ -403,7 +445,7 @@ func TestConsoleColdStart(t *testing.T) {
 	if err != nil || len(jobs.Jobs) != 0 || jobs.SentAt != nil {
 		t.Errorf("cold brief jobs = %+v, %v", jobs, err)
 	}
-	if tr, err := b.Tracked(ctx, ""); err != nil || len(tr) != 0 {
+	if tr, err := b.Tracked(ctx, ""); err != nil || len(tr.Rows) != 0 || tr.Total != 0 {
 		t.Errorf("cold tracked = %v, %v", tr, err)
 	}
 	if rs, err := b.Rules(ctx); err != nil || len(rs) != 0 {
@@ -422,13 +464,14 @@ func TestConsoleListsReadTheStore(t *testing.T) {
 	}
 	b := testBackend(t)
 	ctx := context.Background()
-	tr, err := b.Tracked(ctx, "skipped")
-	if err != nil || len(tr) != 1 || tr[0].JobID != ids[2] || tr[0].Reason != "agency" || tr[0].Since.IsZero() {
-		t.Errorf("tracked skipped = %+v, %v", tr, err)
+	l, err := b.Tracked(ctx, "skipped")
+	tr := l.Rows
+	if err != nil || len(tr) != 1 || l.Total != 1 || tr[0].JobID != ids[2] || tr[0].Reason != "agency" || tr[0].Since.IsZero() {
+		t.Errorf("tracked skipped = %+v, %v", l, err)
 	}
 	all, err := b.Tracked(ctx, "all")
-	if want := dbCount(t, `SELECT count(DISTINCT job_id) FROM status_event`); err != nil || len(all) != want {
-		t.Errorf("tracked all = %d, %v; want %d", len(all), err, want)
+	if want := dbCount(t, `SELECT count(DISTINCT job_id) FROM status_event`); err != nil || len(all.Rows) != want || all.Total != want {
+		t.Errorf("tracked all = %d of %d, %v; want %d", len(all.Rows), all.Total, err, want)
 	}
 	rs, err := b.Rules(ctx)
 	if err != nil || len(rs) != 1 || rs[0].Field != "company" || rs[0].FromJobID == nil || *rs[0].FromJobID != ids[2] {

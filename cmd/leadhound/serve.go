@@ -37,9 +37,17 @@ const (
 	serveShutdownTimeout   = 10 * time.Second
 )
 
-// dashboardCacheFor is how long the dashboard keeps the brief input it built, on one local
-// day: building it reads every rank input.
-const dashboardCacheFor = time.Minute
+// The dashboard's snapshot: the brief input and the day's funnel, built in the background
+// and served until it is older than dashboardFreshFor, from another local day, or stale
+// after a mark. A request with no snapshot yet waits dashboardWaitFor for the build; a
+// build ends at dashboardBuildTimeout; a failed build is not retried for
+// dashboardRetryAfter.
+const (
+	dashboardFreshFor     = 10 * time.Minute
+	dashboardBuildTimeout = 4 * time.Minute
+	dashboardWaitFor      = 500 * time.Millisecond
+	dashboardRetryAfter   = 5 * time.Minute
+)
 
 // dashboardRuns is how many runs the dashboard lists.
 const dashboardRuns = 8
@@ -91,6 +99,11 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	// The dashboard's builds end with serve: cancelled, then waited for before the store
+	// closes.
+	bctx, stopBuilds := context.WithCancel(ctx)
+	b := newBackend(bctx, s, prof, loc, cfg)
+	defer func() { stopBuilds(); b.wait() }()
 
 	logger := slog.Default()
 	if *dev {
@@ -98,7 +111,7 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	srv := &http.Server{
 		Addr:              cfg.ConsoleAddr,
-		Handler:           console.New(newBackend(s, prof, loc, cfg), auth, console.Options{Dev: *dev, Location: loc, Logger: logger}),
+		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger}),
 		ReadHeaderTimeout: serveReadHeaderTimeout,
 		ReadTimeout:       serveReadTimeout,
 		WriteTimeout:      serveWriteTimeout,
@@ -141,75 +154,179 @@ type backend struct {
 	cfg  config.Config
 	now  func() time.Time
 
-	mu    sync.Mutex
-	cache dashboardInput
+	// base ends every build: serve cancels it at shutdown. A request's own context
+	// never does.
+	base    context.Context
+	build   func(ctx context.Context, now time.Time) (snapshot, error)
+	waitFor time.Duration // how long a request with no snapshot waits for the build
+
+	mu        sync.Mutex
+	snap      *snapshot     // the latest built; nil before the first build lands
+	snapAt    time.Time     // the time snap was built for
+	building  chan struct{} // non-nil while a build runs; closed when it ends
+	stale     bool          // a mark changed what snap shows
+	marks     int           // marks so far, so a build that began before one lands stale
+	lastErr   error         // the last build's failure; nil once one succeeds
+	lastErrAt time.Time
+	builds    sync.WaitGroup
 }
 
-// dashboardInput is the brief input the dashboard last built, for one local day.
-type dashboardInput struct {
-	day string // YYYY-MM-DD in loc; "" when nothing is kept
-	at  time.Time
-	in  brief.Input
+// snapshot is the dashboard's costly part, built away from requests: the brief input and
+// the day's funnel.
+type snapshot struct {
+	in     brief.Input
+	funnel store.Funnel
+}
+
+// snapshotView is the snapshot one request sees: the latest built (none when at is zero),
+// whether a build runs, and when the last one failed if it did.
+type snapshotView struct {
+	snap     snapshot
+	at       time.Time
+	updating bool
+	failedAt *time.Time
 }
 
 var _ console.Backend = (*backend)(nil)
 
-func newBackend(s *store.Store, prof candidate.Config, loc *time.Location, cfg config.Config) *backend {
-	return &backend{s: s, prof: prof, loc: loc, cfg: cfg, now: time.Now}
+func newBackend(base context.Context, s *store.Store, prof candidate.Config, loc *time.Location, cfg config.Config) *backend {
+	b := &backend{s: s, prof: prof, loc: loc, cfg: cfg, now: time.Now, base: base, waitFor: dashboardWaitFor}
+	b.build = b.buildSnapshot
+	return b
 }
 
-// briefInput is buildInput for now, kept for a minute on the same local day. The console
-// never rechecks, so the recheck is off unless LEADHOUND_LIVE allows LinkedIn, the same
-// test linkedinClients makes for the brief.
-func (b *backend) briefInput(ctx context.Context, now time.Time) (brief.Input, time.Time, error) {
-	day := now.In(b.loc).Format(time.DateOnly)
+// buildSnapshot is buildInput and the funnel for now. The console never rechecks, so the
+// recheck is off unless LEADHOUND_LIVE allows LinkedIn, the same test linkedinClients makes
+// for the brief.
+func (b *backend) buildSnapshot(ctx context.Context, now time.Time) (snapshot, error) {
+	local := now.In(b.loc)
+	recheckOff := !b.cfg.Live.Allows(linkedinHost)
+	in, err := buildInput(ctx, b.s.Q(), b.prof, b.loc, local, false, recheckOff)
+	if err != nil {
+		return snapshot{}, err
+	}
+	f, err := b.s.Q().FunnelOn(ctx, b.loc, local)
+	if err != nil {
+		return snapshot{}, err
+	}
+	return snapshot{in: in, funnel: f}, nil
+}
+
+// current is the snapshot for a request at now. A fresh one (same local day, younger than
+// dashboardFreshFor, no mark since) is served as it is. Otherwise a build starts unless one
+// runs, one failed less than dashboardRetryAfter ago, or serve is stopping; an old snapshot
+// is served at once, marked updating, and with none the request waits up to waitFor for
+// the running build before it takes what there is.
+func (b *backend) current(ctx context.Context, now time.Time) snapshotView {
+	b.mu.Lock()
+	done := b.building
+	if !b.freshLocked(now) && done == nil {
+		done = b.startLocked(now)
+	}
+	if b.snap != nil || done == nil {
+		v := b.viewLocked()
+		b.mu.Unlock()
+		return v
+	}
+	b.mu.Unlock()
+	t := time.NewTimer(b.waitFor)
+	select {
+	case <-done:
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	t.Stop()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if c := b.cache; c.day == day && now.Sub(c.at) < dashboardCacheFor && !now.Before(c.at) {
-		return c.in, c.at, nil
-	}
-	recheckOff := !b.cfg.Live.Allows(linkedinHost)
-	in, err := buildInput(ctx, b.s.Q(), b.prof, b.loc, now.In(b.loc), false, recheckOff)
-	if err != nil {
-		return brief.Input{}, time.Time{}, err
-	}
-	b.cache = dashboardInput{day: day, at: now, in: in}
-	return in, now, nil
+	return b.viewLocked()
 }
 
-// forgetInput drops the kept brief input, after a mark changed what it would show.
-func (b *backend) forgetInput() {
+func (b *backend) freshLocked(now time.Time) bool {
+	return b.snap != nil && !b.stale && b.snapAt.In(b.loc).Format(time.DateOnly) == now.In(b.loc).Format(time.DateOnly) &&
+		!now.Before(b.snapAt) && now.Sub(b.snapAt) < dashboardFreshFor
+}
+
+func (b *backend) viewLocked() snapshotView {
+	v := snapshotView{at: b.snapAt, updating: b.building != nil}
+	if b.snap != nil {
+		v.snap = *b.snap
+	}
+	if b.lastErr != nil {
+		at := b.lastErrAt
+		v.failedAt = &at
+	}
+	return v
+}
+
+// startLocked starts a build for now in its own goroutine and returns the channel closed
+// when it ends; nil when a build already runs, the last one failed less than
+// dashboardRetryAfter ago, or base has ended. b.mu is held; the build never holds it.
+func (b *backend) startLocked(now time.Time) chan struct{} {
+	if b.building != nil || b.base.Err() != nil ||
+		b.lastErr != nil && b.now().Sub(b.lastErrAt) < dashboardRetryAfter {
+		return nil
+	}
+	done := make(chan struct{})
+	b.building = done
+	marks := b.marks
+	b.builds.Add(1)
+	go func() {
+		defer b.builds.Done()
+		ctx, cancel := context.WithTimeout(b.base, dashboardBuildTimeout)
+		snap, err := b.build(ctx, now)
+		cancel()
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.building = nil
+		close(done)
+		if err != nil {
+			b.lastErr, b.lastErrAt = err, b.now()
+			return
+		}
+		b.snap, b.snapAt, b.lastErr = &snap, now, nil
+		// A mark made while this build read the store is not in it: build again.
+		if b.stale = marks != b.marks; b.stale {
+			b.startLocked(b.now())
+		}
+	}()
+	return done
+}
+
+// marked makes the snapshot stale after a mark and starts a rebuild at once.
+func (b *backend) marked() {
 	b.mu.Lock()
-	b.cache = dashboardInput{}
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+	b.marks++
+	b.stale = true
+	b.startLocked(b.now())
 }
 
-// Dashboard is the live state: the brief's health lines and tiers as the brief would build
-// them now, today's funnel and scoring spend, the board registry, the latest runs and the
-// last sent brief with its own stored health lines.
+// wait returns once no build runs; serve calls it after cancelling base.
+func (b *backend) wait() { b.builds.Wait() }
+
+// Dashboard is the brief's health lines and tiers and the day's funnel from the snapshot,
+// with whether it is being updated or its last update failed, and, read live, the day's
+// scoring spend, the board registry, the latest runs and the last sent brief with its own
+// stored health lines.
 func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 	now := b.now()
-	in, asOf, err := b.briefInput(ctx, now)
-	if err != nil {
-		return console.Dashboard{}, err
-	}
+	v := b.current(ctx, now)
 	d := console.Dashboard{
-		AsOf:        asOf,
-		Day:         in.Day,
-		Health:      brief.HealthLines(in),
-		ApplyNow:    len(in.Apply),
-		YourCallNow: len(in.YourCall),
-		Unscored:    in.Unscored,
-		Unreachable: in.Unreachable,
-		CallCap:     b.cfg.JevDailyCallCap,
+		AsOf:              v.at,
+		Updating:          v.updating && !v.at.IsZero(),
+		Building:          v.updating && v.at.IsZero(),
+		LastBuildFailedAt: v.failedAt,
+		CallCap:           b.cfg.JevDailyCallCap,
+	}
+	if !v.at.IsZero() {
+		in, f := v.snap.in, v.snap.funnel
+		d.Day = in.Day
+		d.Health = brief.HealthLines(in)
+		d.ApplyNow, d.YourCallNow, d.Unscored, d.Unreachable = len(in.Apply), len(in.YourCall), in.Unscored, in.Unreachable
+		d.Funnel = console.Funnel{NewBySource: f.NewBySource, Gated: f.Gated, GateFailed: f.GateFailed, Scored: f.Scored}
 	}
 	q := b.s.Q()
 	local := now.In(b.loc)
-	f, err := q.FunnelOn(ctx, b.loc, local)
-	if err != nil {
-		return console.Dashboard{}, err
-	}
-	d.Funnel = console.Funnel{NewBySource: f.NewBySource, Gated: f.Gated, GateFailed: f.GateFailed, Scored: f.Scored}
 	u, err := q.AIUsageOn(ctx, local)
 	if err != nil {
 		return console.Dashboard{}, err
@@ -310,18 +427,18 @@ func briefJobOf(n int, s store.JobSummary) console.BriefJob {
 const trackedCap = 500
 
 // Tracked is the tracker, as `leadhound track list --status` shows it, the latest trackedCap
-// changes at most.
-func (b *backend) Tracked(ctx context.Context, status string) ([]console.Tracked, error) {
+// changes at most, with how many jobs match.
+func (b *backend) Tracked(ctx context.Context, status string) (console.TrackedList, error) {
 	if status != "" && status != "all" && !slices.Contains(store.JobStatuses, status) {
-		return nil, fmt.Errorf("%w: status must be all or one of %s", console.ErrUserFixable, strings.Join(store.JobStatuses, ", "))
+		return console.TrackedList{}, fmt.Errorf("%w: status must be all or one of %s", console.ErrUserFixable, strings.Join(store.JobStatuses, ", "))
 	}
-	rows, _, err := b.s.Q().TrackList(ctx, status, trackedCap)
+	rows, total, err := b.s.Q().TrackList(ctx, status, trackedCap)
 	if err != nil {
-		return nil, err
+		return console.TrackedList{}, err
 	}
-	out := make([]console.Tracked, 0, len(rows))
+	out := console.TrackedList{Rows: make([]console.Tracked, 0, len(rows)), Total: total}
 	for _, r := range rows {
-		out = append(out, console.Tracked{JobID: r.JobID, Title: r.Title, Company: r.Company, Status: r.Status, Reason: r.Reason, Since: r.Since})
+		out.Rows = append(out.Rows, console.Tracked{JobID: r.JobID, Title: r.Title, Company: r.Company, Status: r.Status, Reason: r.Reason, Since: r.Since})
 	}
 	return out, nil
 }
@@ -390,7 +507,7 @@ func (b *backend) Track(ctx context.Context, req console.TrackRequest) (console.
 		return console.TrackOutcome{}, userFixable(trackRefusal(err, jobID, res))
 	}
 	if !res.NoOp {
-		b.forgetInput()
+		b.marked()
 	}
 	n := 0
 	if !strings.HasPrefix(req.Ref, "job:") {

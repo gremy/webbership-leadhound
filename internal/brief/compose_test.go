@@ -262,6 +262,7 @@ func TestFailedSourceNeverSaysNothingNew(t *testing.T) {
 		"scoring not run":    clean(func(in *Input) { in.Scoring = "" }),
 		"scoring failed":     clean(func(in *Input) { in.Scoring = ScoringFailed }),
 		"scoring throttled":  clean(func(in *Input) { in.Scoring = ScoringThrottled }),
+		"scoring budget":     clean(func(in *Input) { in.Scoring = ScoringBudget }),
 		"recheck failed":     clean(func(in *Input) { in.Recheck = RecheckFailed }),
 		"recheck stopped":    clean(func(in *Input) { in.Recheck = StateParserBroke }),
 		"recheck budget":     clean(func(in *Input) { in.Recheck = "budget" }),
@@ -301,6 +302,8 @@ func TestHealthLines(t *testing.T) {
 		{Input{Scoring: ScoringFailed, RecheckOff: true}, []string{"Health: Scoring failed: jobs it did not reach are scored on the next run", "Health: recheck off (not live)"}},
 		{Input{Scoring: ScoringThrottled, Recheck: RecheckFailed}, []string{"Health: Scoring paused: the AI provider was busy (throttled)", "Health: recheck failed"}},
 		{Input{Scoring: ScoringSpendCap}, []string{"Health: Scoring paused: daily Jev cap reached", "Health: recheck not run"}},
+		{Input{Scoring: ScoringBudget, Recheck: RecheckOK, Unscored: 40},
+			[]string{"Health: Scoring paused: time budget reached; jobs it did not reach are scored on the next run · 40 not scored yet", "Health: recheck ok"}},
 	} {
 		got := healthLines(c.in)[1:] // after "no source ran today"
 		if !slices.Equal(got, c.want) {

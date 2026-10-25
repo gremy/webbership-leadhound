@@ -147,6 +147,8 @@ func TestScoringAndRecheckState(t *testing.T) {
 		{store.Run{FinishedAt: &done, Note: "3 scored"}, brief.ScoringOK},
 		{store.Run{FinishedAt: &done, StopReason: scoring.StopSpendCap}, brief.ScoringSpendCap},
 		{store.Run{FinishedAt: &done, StopReason: scoring.StopThrottled}, brief.ScoringThrottled},
+		{store.Run{FinishedAt: &done, StopReason: scoring.StopBudget, Note: "120 scored"}, brief.ScoringBudget},
+		{store.Run{FinishedAt: &done, StopReason: scoring.StopBudget, Note: "1 scored · error"}, brief.ScoringFailed},
 		{store.Run{FinishedAt: &done, Note: "1 scored · error"}, brief.ScoringFailed},
 		{store.Run{FinishedAt: &done, StopReason: "other"}, brief.ScoringFailed},
 		{store.Run{}, brief.ScoringFailed},
@@ -195,24 +197,38 @@ func TestBriefAndTrackUsage(t *testing.T) {
 	}
 }
 
-// TestNotSeenBySource counts only the jobs set apart that the ranking would list.
-func TestNotSeenBySource(t *testing.T) {
-	passAll := func() []scoring.CriterionVerdict {
-		var out []scoring.CriterionVerdict
+// TestRankAccNotSeen: an open ATS job its board has not listed since the cutoff is set
+// apart and counted per source only when the ranking would list it; a LinkedIn job, a
+// closed listing or one seen since the cutoff is ranked.
+func TestRankAccNotSeen(t *testing.T) {
+	day := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
+	old, recent := day.AddDate(0, 0, -brief.BoardStaleDays-1), day.AddDate(0, 0, -1)
+	row := func(id int64, src string, lastSeen time.Time) store.RankRow {
+		r := store.RankRow{JobID: id, Source: src, Status: "new", ListingStatus: store.ListingOpen, LastSeenAt: lastSeen}
 		for _, n := range candidate.CriterionNames {
-			out = append(out, scoring.CriterionVerdict{Criterion: n, Verdict: scoring.Pass})
+			r.Decisions = append(r.Decisions, store.DecisionVerdictRow{Criterion: n, Verdict: scoring.Pass})
 		}
-		return out
+		return r
 	}
-	listed := func(id int64) scoring.Candidate {
-		return scoring.Candidate{JobID: id, Status: "new", ListingStatus: store.ListingOpen, Criteria: passAll()}
+	failed := row(4, "lever", old)
+	failed.Gates = []store.GateVerdictRow{{Gate: gates.GateLanguage, Verdict: gates.Fail}}
+	expired := row(6, "greenhouse", old)
+	expired.ListingStatus = "expired"
+	a := newRankAcc(time.UTC, day, rankOptions{caps: scoring.Caps{Apply: 10, YourCall: 10}}, scoring.CompiledRules{})
+	for _, r := range []store.RankRow{row(1, "greenhouse", old), row(2, "greenhouse", old), row(3, "ashby-fixture", old),
+		failed, row(5, "linkedin", old), expired, row(7, "lever", recent)} {
+		a.add(r)
 	}
-	failed := listed(4)
-	failed.Gates = []scoring.GateVerdict{{Gate: gates.GateLanguage, Verdict: gates.Fail}}
-	got := notSeenBySource([]scoring.Candidate{listed(1), listed(2), listed(3), failed},
-		map[int64]string{1: "greenhouse", 2: "greenhouse", 3: "ashby-fixture", 4: "lever"}, time.UTC)
-	if want := map[string]int{"greenhouse": 2, "ashby-fixture": 1}; !reflect.DeepEqual(got, want) {
-		t.Errorf("notSeenBySource = %v, want %v", got, want)
+	if want := map[string]int{"greenhouse": 2, "ashby-fixture": 1}; !reflect.DeepEqual(a.notSeen, want) {
+		t.Errorf("not seen = %v, want %v", a.notSeen, want)
+	}
+	r := a.ranker.Ranking()
+	var listed []int64
+	for _, rk := range r.Apply {
+		listed = append(listed, rk.JobID)
+	}
+	if want := []int64{5, 7}; !slices.Equal(listed, want) || r.Skipped[scoring.SkipClosed] != 1 {
+		t.Errorf("ranked %v, skipped %v; want %v listed and the expired one skipped", listed, r.Skipped, want)
 	}
 }
 

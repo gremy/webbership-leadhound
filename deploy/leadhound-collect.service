@@ -21,16 +21,21 @@ EnvironmentFile=/etc/leadhound/env
 ExecStart=-/usr/bin/flock --wait 1800 --conflict-exit-code 75 /opt/leadhound/data/.linkedin.lock /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound collect linkedin
 # Two units may score at once (a long night collect running into the morning one), so
 # score waits for the other on a lock in the data directory instead of running beside it.
-ExecStart=/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /opt/leadhound/bin/leadhound score
-# Longer than the LinkedIn lock wait, the collect's timeout and the score's lock wait
-# together, so systemd never cuts the score short.
-TimeoutStartSec=5h
+# The score stops itself cleanly at its 45-minute budget; timeout ends one that hangs. The
+# timeout leaves 15 minutes over the budget because a stopped score still finishes its
+# in-flight job, records the run and makes its summary pass over every stored job.
+ExecStart=/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /usr/bin/timeout --kill-after=2m 1h /opt/leadhound/bin/leadhound score --max-duration 45m
+# Longer than the LinkedIn lock wait, the collect's timeout, the score's lock wait and the
+# score's timeout together (5h07), so systemd never cuts the score short.
+TimeoutStartSec=5h30min
 Nice=5
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
-# neighbour. A collect has peaked near 530 MB; past MemoryHigh the unit is slowed and reclaimed,
-# past MemoryMax it is killed.
-MemoryHigh=900M
-MemoryMax=1200M
+# neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit
+# throttled there hangs instead of failing. GOMEMLIMIT makes Go collect garbage harder
+# well before the ceiling.
+# A LinkedIn collect has peaked near 530 MB and is not streamed.
+MemoryMax=1G
+Environment=GOMEMLIMIT=850MiB
 # Half the default CPU share, so a long collect yields to the server's other services.
 CPUWeight=50
 # Hardening. The whole file system is read-only to leadhound except the data directory

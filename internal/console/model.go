@@ -14,8 +14,8 @@ import (
 // store itself.
 type Backend interface {
 	Dashboard(ctx context.Context) (Dashboard, error)
-	BriefJobs(ctx context.Context, day string) (BriefJobs, error)  // day's sent brief (YYYY-MM-DD), or the latest when "", numbered
-	Tracked(ctx context.Context, status string) ([]Tracked, error) // status "" | "all" | one of store.JobStatuses
+	BriefJobs(ctx context.Context, day string) (BriefJobs, error)    // day's sent brief (YYYY-MM-DD), or the latest when "", numbered
+	Tracked(ctx context.Context, status string) (TrackedList, error) // status "" | "all" | one of store.JobStatuses
 	Runs(ctx context.Context, limit int) ([]RunRow, error)
 	Rules(ctx context.Context) ([]RuleRow, error) // every rule, disabled included
 	Track(ctx context.Context, req TrackRequest) (TrackOutcome, error)
@@ -32,9 +32,15 @@ type Options struct {
 	Logger   *slog.Logger
 }
 
-// Dashboard is the live state the dashboard page shows.
+// Dashboard is the state the dashboard page shows. The health lines, the tiers
+// and the funnel come from a snapshot built in the background: AsOf is when it
+// was built, zero when none has been yet; Updating is a newer one being built,
+// Building the first one; LastBuildFailedAt is when the last build failed, nil
+// once one succeeds. The rest is read live.
 type Dashboard struct {
 	AsOf                                         time.Time
+	Updating, Building                           bool
+	LastBuildFailedAt                            *time.Time
 	Day                                          time.Time
 	Health                                       []string // brief.HealthLines, verbatim
 	ApplyNow, YourCallNow, Unscored, Unreachable int
@@ -80,6 +86,12 @@ type BriefJob struct {
 	N                                          int
 	JobID                                      int64
 	Title, Company, Status, ListingStatus, URL string
+}
+
+// TrackedList is the Tracked page's jobs, capped, and how many match in all.
+type TrackedList struct {
+	Rows  []Tracked
+	Total int
 }
 
 // Tracked is one job with a tracking status.
