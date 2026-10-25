@@ -120,6 +120,11 @@ var schedule = map[string]struct {
 		true,
 		[]string{"/opt/leadhound/bin/leadhound-backup"},
 	},
+	"leadhound-trim": {
+		[]string{"*-*-* 15:00:00 Europe/Bucharest"},
+		true,
+		[]string{"/usr/bin/timeout --kill-after=2m 50m /opt/leadhound/bin/leadhound trim --max-duration 45m"},
+	},
 	"leadhound-leads-probe": {
 		[]string{"*-*-* 13:00:00 Europe/Bucharest"},
 		true,
@@ -788,6 +793,7 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-prebrief":       {"600M", "450MiB"},
 	"leadhound-collect":        {"1G", "850MiB"},
 	"leadhound-ats":            {"1200M", "900MiB"},
+	"leadhound-trim":           {"300M", "200MiB"},
 	"leadhound-leads-probe":    {"600M", "450MiB"},
 	"leadhound-leads-contacts": {"600M", "450MiB"},
 	"leadhound-leads-batch":    {"600M", "450MiB"},
@@ -903,6 +909,68 @@ func TestScoreHasBudget(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Errorf("%d score steps, want 2 (ats, collect)", seen)
+	}
+}
+
+// TestBudgetBelowTimeout: every step that stops itself at a --max-duration budget (the scores
+// and the trim) runs under a /usr/bin/timeout longer than that budget, which ends a step that
+// hangs; TestTimeoutsCoverWaits then counts the timeout, which covers the budget.
+func TestBudgetBelowTimeout(t *testing.T) {
+	budgeted := regexp.MustCompile(`^-?(?:/usr/bin/flock .* )?/usr/bin/timeout (?:--kill-after=\S+ )?(\S+) /opt/leadhound/bin/leadhound [a-z ]+ --max-duration (\S+)$`)
+	seen := 0
+	for path, u := range units(t, "*.service") {
+		for _, e := range u["Service"]["ExecStart"] {
+			if !strings.Contains(e, "--max-duration") {
+				continue
+			}
+			seen++
+			m := budgeted.FindStringSubmatch(e)
+			if m == nil {
+				t.Errorf("%s: %q: a budgeted step runs as /usr/bin/timeout <D> ... leadhound <cmd> --max-duration <budget>", path, e)
+				continue
+			}
+			timeout, terr := time.ParseDuration(m[1])
+			budget, berr := time.ParseDuration(m[2])
+			switch {
+			case terr != nil || berr != nil:
+				t.Errorf("%s: %q: timeout %v, budget %v", path, e, terr, berr)
+			case budget <= 0:
+				t.Errorf("%s: --max-duration %s, want a budget above zero", path, m[2])
+			case budget >= timeout:
+				t.Errorf("%s: --max-duration %s is not below its /usr/bin/timeout %s", path, m[2], m[1])
+			}
+		}
+	}
+	if seen != 3 {
+		t.Errorf("%d budgeted steps, want 3 (ats score, collect score, trim)", seen)
+	}
+}
+
+// TestTrimUnit: the trim runs in the daytime beside the server's other services, so it yields
+// to everything (the lowest priority, idle I/O, a fifth of the CPU share), carries no
+// environment of its own beyond GOMEMLIMIT, holds no lock, and is the only unit that runs it.
+func TestTrimUnit(t *testing.T) {
+	const path = "leadhound-trim.service"
+	u := readUnit(t, path)
+	for key, want := range map[string]string{"Nice": "19", "IOSchedulingClass": "idle", "CPUWeight": "20", "TimeoutStartSec": "1h"} {
+		if got := u.one(t, path, "Service", key); got != want {
+			t.Errorf("%s: %s = %s, want %s", path, key, got, want)
+		}
+	}
+	for _, e := range u["Service"]["Environment"] {
+		if !strings.HasPrefix(e, "GOMEMLIMIT=") {
+			t.Errorf("%s: Environment=%s; the trim sets only GOMEMLIMIT", path, e)
+		}
+	}
+	for p, s := range units(t, "*.service") {
+		for _, e := range s["Service"]["ExecStart"] {
+			if strings.Contains(e, "flock") && base(p) == "leadhound-trim" {
+				t.Errorf("%s: %q takes a lock; the trim waits on nothing", p, e)
+			}
+			if strings.Contains(e, "leadhound trim") != (base(p) == "leadhound-trim") {
+				t.Errorf("%s: %q: only leadhound-trim.service runs the trim", p, e)
+			}
+		}
 	}
 }
 

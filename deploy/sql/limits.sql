@@ -14,8 +14,10 @@
 -- parallel workers and no JIT, so one query takes one CPU; at most 512 MB of temp files per
 -- session; at most 32 connections, the pools of every leadhound process that can run at once,
 -- 4 each: the worst case is the console, the ATS run, the LinkedIn collect and the brief with,
--- at 10:00, the leads contact search, send and reply sync all at once (28). temp_file_limit
--- is superuser-only, hence the superuser.
+-- at 10:00, the leads contact search, send and reply sync all at once (28). At 15:00 the
+-- trim can overlap the console, the site probe, send, sync and the 14:30 LinkedIn collect
+-- with its score (24), under that worst case. temp_file_limit is superuser-only, hence the
+-- superuser.
 --
 -- leadhound_owner runs the migrations: no parallel workers and no JIT either, and no
 -- statement timeout, so an index build may take as long as it needs.

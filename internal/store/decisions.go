@@ -143,10 +143,12 @@ type ScoreInput struct {
 var DetailSources = []string{"smartrecruiters", "smartrecruiters-fixture"}
 
 // openForScoring is the condition a job must meet to be worth scoring once it has its
-// description: an open listing whose current observation (o) is not closed and whose
-// current status (s) is new or shortlisted (a job already applied for or skipped costs
-// nothing).
-const openForScoring = `j.listing_status = 'open' AND NOT o.closed AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`
+// description: an open listing whose current observation (o) is not closed and still has its
+// text (the nightly trim blanks old rejected and expired ones, and a job is never scored on
+// an empty description), and whose current status (s) is new or shortlisted (a job already
+// applied for or skipped costs nothing).
+const openForScoring = `j.listing_status = 'open' AND NOT o.closed AND o.description_trimmed_at IS NULL
+		   AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`
 
 // awaitingDetail is true for a job of a DetailSources source whose current observation (o)
 // was read from a board fetch: it has no description yet, and scoring it now would decide

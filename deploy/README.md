@@ -16,6 +16,7 @@ Every timer but the leads send and sync is persistent, so a run missed while the
 | `leadhound-collect.timer` | 06:30 and 14:30 | `collect linkedin`, then `score --max-duration 45m` |
 | `leadhound-prebrief.timer` | 07:30 | `canary linkedin` (once a day; a second start the same day does nothing) |
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
+| `leadhound-trim.timer` | 15:00 | `trim --max-duration 45m`, under `timeout 50m`: see [The trim](#the-trim) |
 
 The five leads timers are installed on every deploy but run only when `/etc/leadhound/env` switches them on: see [Leads on the server](#leads-on-the-server).
 
@@ -52,6 +53,7 @@ Each one also sets `GOMEMLIMIT` below its ceiling, so Go collects garbage harder
 | `leadhound-brief`, `leadhound-prebrief` | 600M | 450MiB |
 | `leadhound-collect` | 1G | 850MiB |
 | `leadhound-ats` | 1200M | 900MiB |
+| `leadhound-trim` | 300M | 200MiB |
 | `leadhound-leads-*` | 600M | 450MiB |
 
 A LinkedIn collect has peaked near 530 MB and is not streamed, and the ATS run's peak has not been measured, so those two keep the highest ceilings.
@@ -145,6 +147,7 @@ Run these on the server as root, in order.
   - Both roles run without JIT, which only adds compile time to the queries leadhound runs.
   - `leadhound_app` sessions may write at most 512 MB of temp files, so a runaway sort or hash cannot fill the disk.
   - `leadhound_app` may hold at most 32 connections: four per pool for every process that can run at once, at worst the console, the ATS run, the LinkedIn collect and the brief with the leads contact search, send and sync at 10:00 (28).
+    The 15:00 trim can overlap the afternoon collect, the leads probe, send and sync, and the console (24).
   - `leadhound_owner` has no statement timeout, so a migration's index build may take as long as it needs.
   Locally `make db-local` applies the same file, then lifts the connection limit so parallel test runs can share the role.
 - `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml` and `ats-boards.yaml` from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`) after checking the profile loads; run it after you edit either file.
@@ -275,6 +278,30 @@ sudo systemctl start <the timers noted above> leadhound-console.service
 ```
 
 Name the tables the size query lists at the top; `job_observation` (the posting text) and `gate_result` are usually the largest.
+
+## The trim
+
+`leadhound-trim.timer` runs `leadhound trim` every day at 15:00, as the app role, through a function the owner role defined (`leadhound_trim_batch`), so no timer holds the owner role.
+It blanks the description text of a posting rejected by a gate more than 7 days ago (`--rejected-after 168h`) and of a posting that expired more than 30 days ago (`--expired-after 720h`).
+Every row stays, with its verdicts, its status history and its ids; only the text goes, and a trimmed posting is never scored on its empty text.
+A protected job is never trimmed: one you set a status on, one applied to, interviewing or with an offer, and one listed in a brief.
+
+It works through the untrimmed postings in batches of 5,000 by id, each its own short transaction, with a pause between batches, and stops itself at its 45-minute budget; the next run carries on with what is left, so a large backlog takes more than one run.
+It prints `trim: rejected N · expired M · batches B · <duration>` and records a `run` row.
+
+Why 15:00: it stays clear of the night's ATS collect (01:00, which can run past 06:00), the 03:30 dump and the morning collect and brief.
+It runs in the daytime beside the server's other services, so it yields to all of them: `Nice=19`, idle I/O and `CPUWeight=20`, with `MemoryMax=300M` and `GOMEMLIMIT=200MiB`; the work Postgres does for it is bounded by its small batches.
+
+To run it by hand, now, with the unit's limits:
+
+```sh
+sudo systemctl start leadhound-trim.service
+journalctl -u leadhound-trim.service -f
+```
+
+`make remote HOST=… ARGS='trim' CONFIRM=1` also runs it, without the unit's hardening, ceiling and timeout; the flags (`--rejected-after`, `--expired-after`, `--batch`, `--max-duration`) can be given there.
+
+The space the trim frees inside the tables is reused by new rows, but never returned to the disk: the files do not shrink, so the trim does not bring the database back under `LEADHOUND_DB_MAX_BYTES` (see [Backups and the storage budget](#backups-and-the-storage-budget)).
 
 ## Restore
 

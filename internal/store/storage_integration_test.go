@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -195,7 +196,6 @@ func trimAll(t *testing.T, q store.Queries, opt store.TrimOptions) (rejected, ex
 // unprotected jobs only, in small keyset batches through the app role, keeps every row, and a
 // second pass trims nothing.
 func TestTrimBatchGrid(t *testing.T) {
-	ctx := context.Background()
 	s := appStore(t)
 	q := s.Q()
 	now := time.Now()
@@ -211,7 +211,20 @@ func TestTrimBatchGrid(t *testing.T) {
 	if want := (len(grid) + opt.Batch - 1) / opt.Batch; batches != want {
 		t.Errorf("batches = %d, want %d (every observation scanned once)", batches, want)
 	}
+	assertGridTrimmed(t, grid)
 
+	if r, e, _ := trimAll(t, q, opt); r != 0 || e != 0 {
+		t.Errorf("second pass trimmed rejected=%d expired=%d, want none", r, e)
+	}
+}
+
+// assertGridTrimmed checks every observation of the grid against its expected cell (text
+// blanked and marked, or whole and unmarked, the title kept either way), that every row is
+// still there, and the invariant sweep: no protected job's observation is trimmed, whatever
+// the shape.
+func assertGridTrimmed(t *testing.T, grid []trimFixture) {
+	t.Helper()
+	ctx := context.Background()
 	conn := storetest.AppConn(t)
 	for _, f := range grid {
 		var desc, title string
@@ -233,8 +246,6 @@ func TestTrimBatchGrid(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT count(*) FROM job_observation`).Scan(&rows); err != nil || rows != len(grid) {
 		t.Errorf("observations = %d, %v; want %d", rows, err, len(grid))
 	}
-
-	// Invariant sweep: no protected job's observation is trimmed, whatever the shape.
 	var bad int
 	if err := conn.QueryRow(ctx,
 		`SELECT count(*) FROM job_observation o
@@ -245,9 +256,242 @@ func TestTrimBatchGrid(t *testing.T) {
 		        OR EXISTS (SELECT 1 FROM brief_log b WHERE o.job_id = ANY (b.job_ids)))`).Scan(&bad); err != nil || bad != 0 {
 		t.Errorf("protected observations trimmed = %d, %v; want 0", bad, err)
 	}
+}
 
-	if r, e, _ := trimAll(t, q, opt); r != 0 || e != 0 {
-		t.Errorf("second pass trimmed rejected=%d expired=%d, want none", r, e)
+// gridOpt is the trim's production ages with a small batch, so the grid takes several.
+func gridOpt(now time.Time) store.TrimOptions {
+	return store.TrimOptions{RejectedAfter: 7 * 24 * time.Hour, ExpiredAfter: 30 * 24 * time.Hour, Batch: 3, Now: now}
+}
+
+// TestTrimDescriptionsGrid: the loop runs the batches from the first observation to the
+// last, pausing between them, trims exactly the grid's expected cells, and a second pass
+// trims nothing and still scans every observation (a protected or untouched one is never
+// marked, so it is scanned again; the partial index keeps that cheap).
+func TestTrimDescriptionsGrid(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	now := time.Now()
+	grid := seedTrimGrid(t, q, now)
+	opt := gridOpt(now)
+
+	pauses := 0
+	got, err := q.TrimDescriptions(ctx, opt, func() { pauses++ })
+	if err != nil {
+		t.Fatalf("TrimDescriptions: %v", err)
+	}
+	wantBatches := (len(grid) + opt.Batch - 1) / opt.Batch
+	if want := (store.TrimResult{Rejected: 4, Expired: 4, Batches: wantBatches}); got != want {
+		t.Errorf("TrimDescriptions = %+v, want %+v", got, want)
+	}
+	// One pause after every batch that scanned something, before the call that finds the end.
+	if pauses != wantBatches {
+		t.Errorf("pauses = %d, want %d", pauses, wantBatches)
+	}
+	assertGridTrimmed(t, grid)
+
+	again, err := q.TrimDescriptions(ctx, opt, nil)
+	if err != nil {
+		t.Fatalf("second TrimDescriptions: %v", err)
+	}
+	if again.Rejected != 0 || again.Expired != 0 {
+		t.Errorf("second pass = %+v, want nothing trimmed", again)
+	}
+	if want := (len(grid) - 8 + opt.Batch - 1) / opt.Batch; again.Batches != want {
+		t.Errorf("second pass batches = %d, want %d (the untrimmed observations only)", again.Batches, want)
+	}
+	assertGridTrimmed(t, grid)
+}
+
+// TestTrimDescriptionsColdStart: on an empty database the loop asks once, trims nothing,
+// never pauses and returns no error.
+func TestTrimDescriptionsColdStart(t *testing.T) {
+	q := appStore(t).Q()
+	pauses := 0
+	got, err := q.TrimDescriptions(context.Background(), gridOpt(time.Now()), func() { pauses++ })
+	if err != nil || got != (store.TrimResult{}) || pauses != 0 {
+		t.Errorf("TrimDescriptions on an empty database = %+v, %v, %d pauses; want nothing, no error, no pause", got, err, pauses)
+	}
+}
+
+// TestTrimDescriptionsStopsOnContext: a context ended between batches stops the loop before
+// the next one, returning what the batches so far did together with the context's error;
+// what they trimmed stays trimmed, and a later run carries on from there. A context ended
+// before the first batch trims nothing.
+func TestTrimDescriptionsStopsOnContext(t *testing.T) {
+	q := appStore(t).Q()
+	now := time.Now()
+	grid := seedTrimGrid(t, q, now)
+	opt := gridOpt(now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got, err := q.TrimDescriptions(ctx, opt, cancel)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TrimDescriptions cancelled in its pause = %+v, %v; want context.Canceled", got, err)
+	}
+	if got.Batches != 1 {
+		t.Errorf("batches before the stop = %d, want 1", got.Batches)
+	}
+	rest, err := q.TrimDescriptions(context.Background(), opt, nil)
+	if err != nil {
+		t.Fatalf("TrimDescriptions after the stop: %v", err)
+	}
+	if r, e := got.Rejected+rest.Rejected, got.Expired+rest.Expired; r != 4 || e != 4 {
+		t.Errorf("trimmed over both runs rejected=%d expired=%d, want 4 and 4", r, e)
+	}
+	assertGridTrimmed(t, grid)
+
+	done, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	if got, err := q.TrimDescriptions(done, opt, nil); !errors.Is(err, context.Canceled) || got != (store.TrimResult{}) {
+		t.Errorf("TrimDescriptions on an ended context = %+v, %v; want nothing and context.Canceled", got, err)
+	}
+}
+
+// TestTrimDescriptionsBadOptions: options TrimBatch refuses are refused by the loop too,
+// before anything is trimmed.
+func TestTrimDescriptionsBadOptions(t *testing.T) {
+	q := appStore(t).Q()
+	if _, err := q.TrimDescriptions(context.Background(), store.TrimOptions{RejectedAfter: time.Hour, ExpiredAfter: time.Hour}, nil); err == nil {
+		t.Error("TrimDescriptions with batch 0 = nil error, want refused")
+	}
+}
+
+// gridJob returns the grid fixture whose job was seeded as "state/shape".
+func gridJob(t *testing.T, q store.Queries, grid []trimFixture, sid string) trimFixture {
+	t.Helper()
+	j, err := q.JobBySourceID(context.Background(), "linkedin", sid)
+	if err != nil {
+		t.Fatalf("JobBySourceID %s: %v", sid, err)
+	}
+	for _, f := range grid {
+		if f.jobID == j.ID {
+			return f
+		}
+	}
+	t.Fatalf("job %s not in the grid", sid)
+	return trimFixture{}
+}
+
+// TestTrimLeavesScoreQueue: a job whose current observation was trimmed is never scored on
+// its empty text. A trimmed rejected job still open stops being counted among the gate
+// failures, and a trimmed expired job listed again (reopened before its board's new
+// observation is written) is neither queued nor handed to the scorer. Once observed afresh
+// it is queued again.
+func TestTrimLeavesScoreQueue(t *testing.T) {
+	ctx := context.Background()
+	s := appStore(t)
+	q := s.Q()
+	now := time.Now()
+	grid := seedTrimGrid(t, q, now)
+
+	before, err := q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	// Open and new or shortlisted: new, shortlisted and briefed; rejected 8 and 6 days ago
+	// fail a gate, open-passing is queued.
+	if before.GateFailed != 6 || len(before.Entries) != 3 {
+		t.Fatalf("queue before the trim: %d entries, %d gate failed; want 3 and 6", len(before.Entries), before.GateFailed)
+	}
+	if _, err := q.TrimDescriptions(ctx, gridOpt(now), nil); err != nil {
+		t.Fatalf("TrimDescriptions: %v", err)
+	}
+	after, err := q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	// new and shortlisted × rejected 8 days ago are trimmed and leave the count.
+	if after.GateFailed != 4 || !slices.Equal(entryIDs(after), entryIDs(before)) {
+		t.Errorf("queue after the trim: %v, %d gate failed; want %v and 4", entryIDs(after), after.GateFailed, entryIDs(before))
+	}
+
+	reopened := gridJob(t, q, grid, "new/expired-31d")
+	if !reopened.wantTrimmed {
+		t.Fatal("new/expired-31d is not a trimmed cell")
+	}
+	if n, err := q.Reopen(ctx, "linkedin", []string{"new/expired-31d"}); err != nil || n != 1 {
+		t.Fatalf("Reopen = %d, %v", n, err)
+	}
+	queue, err := q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	if slices.Contains(entryIDs(queue), reopened.jobID) || queue.GateFailed != 4 || queue.AwaitingDetail != 0 {
+		t.Errorf("reopened trimmed job queued: %v, %d gate failed, %d awaiting", entryIDs(queue), queue.GateFailed, queue.AwaitingDetail)
+	}
+	if in, err := q.ScoreInputsFor(ctx, []int64{reopened.jobID}); err != nil || len(in) != 0 {
+		t.Errorf("ScoreInputsFor(reopened trimmed job) = %d inputs, %v; want none", len(in), err)
+	}
+
+	// Observed afresh, the job has whole text on its current observation and is queued.
+	j, err := q.JobBySourceID(ctx, "linkedin", "new/expired-31d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, fetchID := seedJob(t, q, "fresh-fetch-holder")
+	if _, err := q.InsertObservation(ctx, store.ObservationInsert{
+		JobID: j.ID, FetchID: fetchID, DerivedBy: "test@1", Title: "Go Engineer", DescriptionClean: "posting text again",
+	}); err != nil {
+		t.Fatalf("InsertObservation: %v", err)
+	}
+	queue, err = q.ScoreQueue(ctx)
+	if err != nil {
+		t.Fatalf("ScoreQueue: %v", err)
+	}
+	if !slices.Contains(entryIDs(queue), reopened.jobID) {
+		t.Errorf("job observed afresh not queued: %v", entryIDs(queue))
+	}
+	if in, err := q.ScoreInputsFor(ctx, []int64{reopened.jobID}); err != nil || len(in) != 1 || in[0].Description != "posting text again" {
+		t.Errorf("ScoreInputsFor(job observed afresh) = %+v, %v; want its new text", in, err)
+	}
+}
+
+func entryIDs(q store.ScoreQueue) []int64 {
+	var ids []int64
+	for _, e := range q.Entries {
+		ids = append(ids, e.JobID)
+	}
+	return ids
+}
+
+// TestTrimJobsWithoutObservation: a trimmed posting still open and listed is not stored
+// again (the trim never re-creates the rows it emptied), while a trimmed expired one is
+// "without observation", so the board that lists it again observes it afresh before
+// reopening it (the ATS collector reads fresh before Reopen). Untrimmed jobs, open or
+// expired, keep their observation as before.
+func TestTrimJobsWithoutObservation(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	now := time.Now()
+	seedTrimGrid(t, q, now)
+	if _, err := q.TrimDescriptions(ctx, gridOpt(now), nil); err != nil {
+		t.Fatalf("TrimDescriptions: %v", err)
+	}
+	ids := []string{
+		"new/rejected-8d",              // trimmed, open
+		"skipped-system/expired-31d",   // trimmed, expired
+		"new/rejected-6d",              // untrimmed, open
+		"new/expired-29d",              // untrimmed, expired
+		"applied-operator/expired-31d", // protected, expired, untrimmed
+		"new/expired-31d",              // trimmed, expired
+		"never-seen",                   // no row at all
+	}
+	got, err := q.JobsWithoutObservation(ctx, "linkedin", ids)
+	if err != nil {
+		t.Fatalf("JobsWithoutObservation: %v", err)
+	}
+	if want := []string{"skipped-system/expired-31d", "new/expired-31d", "never-seen"}; !slices.Equal(got, want) {
+		t.Errorf("JobsWithoutObservation = %v, want %v", got, want)
+	}
+
+	// Reopened without a new observation (a title the screen now drops): open again, so it
+	// is not stored again either; it simply stays out of the score queue.
+	if _, err := q.Reopen(ctx, "linkedin", []string{"new/expired-31d"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = q.JobsWithoutObservation(ctx, "linkedin", []string{"new/expired-31d"})
+	if err != nil || len(got) != 0 {
+		t.Errorf("JobsWithoutObservation(reopened trimmed) = %v, %v; want none", got, err)
 	}
 }
 

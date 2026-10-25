@@ -1,0 +1,64 @@
+# The trim: blanks the text of postings rejected more than 7 days ago and of postings expired
+# more than 30 days ago, in small keyset batches through a function the owner role defined;
+# every row, verdict and id stays, and a protected job (one you applied to or set a status on,
+# interviewing, offer, or listed in a sent brief) is never touched. Started by
+# leadhound-trim.timer. No file lock: each batch is its own short transaction.
+[Unit]
+Description=leadhound trim of old posting text
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=leadhound
+Group=leadhound
+# root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example). The app
+# role only: the trim calls the owner's function, it never holds the owner role.
+EnvironmentFile=/etc/leadhound/env
+# The trim stops itself cleanly at its 45-minute budget, and the next run carries on with the
+# rows still untrimmed; timeout ends one that hangs.
+ExecStart=/usr/bin/timeout --kill-after=2m 50m /opt/leadhound/bin/leadhound trim --max-duration 45m
+# Longer than the trim's timeout and its kill grace together (52 minutes).
+TimeoutStartSec=1h
+# It runs in the daytime, so it yields to everything else on the server: the lowest priority,
+# idle I/O and a fifth of the default CPU share.
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20
+# The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
+# neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit
+# throttled there hangs instead of failing. GOMEMLIMIT makes Go collect garbage harder
+# well before the ceiling. The trim holds one batch's counts, never the text itself.
+MemoryMax=300M
+Environment=GOMEMLIMIT=200MiB
+# Hardening. The whole file system is read-only to leadhound except the data directory
+# (LEADHOUND_DATA_DIR), the same for every unit. It needs the network for Postgres and
+# nothing else.
+WorkingDirectory=/opt/leadhound
+ReadWritePaths=/opt/leadhound/data
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

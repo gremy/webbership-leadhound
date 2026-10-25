@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func within(t *testing.T, name string, budget time.Duration, fn func() error) {
 
 // TestScaleScoreQueue: the light first pass over every job worth scoring, run as the scorer
 // runs it, under a 10-minute statement timeout; every open, current, new or shortlisted job
-// is counted exactly once.
+// with its text is counted exactly once.
 func TestScaleScoreQueue(t *testing.T) {
 	s, _ := scaleStore(t)
 	ctx := context.Background()
@@ -67,11 +68,11 @@ func TestScaleScoreQueue(t *testing.T) {
 	var want int
 	if err := s.Pool().QueryRow(ctx,
 		`SELECT count(*) FROM job j
-		 JOIN LATERAL (SELECT closed FROM job_observation WHERE job_id = j.id
+		 JOIN LATERAL (SELECT closed, description_trimmed_at FROM job_observation WHERE job_id = j.id
 		               ORDER BY observed_at DESC, id DESC LIMIT 1) o ON true
 		 LEFT JOIN LATERAL (SELECT status FROM status_event WHERE job_id = j.id
 		                    ORDER BY at DESC, id DESC LIMIT 1) s ON true
-		 WHERE j.listing_status = 'open' AND NOT o.closed AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`).Scan(&want); err != nil {
+		 WHERE j.listing_status = 'open' AND NOT o.closed AND o.description_trimmed_at IS NULL AND coalesce(s.status, 'new') IN ('new', 'shortlisted')`).Scan(&want); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(q.Entries) + q.GateFailed + q.AwaitingDetail; got != want || len(q.Entries) == 0 {
@@ -259,5 +260,38 @@ func TestScaleCollectorLookups(t *testing.T) {
 	})
 	if expired != 1 {
 		t.Errorf("ExpireMissing on board %s expired %d, want 1", board, expired)
+	}
+}
+
+// TestScaleTrimBatch: one batch of the nightly trim, as the trim runs it (5,000 observations,
+// the production ages, as the app role through the owner's function), from the first
+// observation and from the middle of the id range, each rolled back.
+func TestScaleTrimBatch(t *testing.T) {
+	s, _ := scaleStore(t)
+	ctx := context.Background()
+	var mid int64
+	if err := s.Pool().QueryRow(ctx, `SELECT coalesce(max(id), 0) / 2 FROM job_observation`).Scan(&mid); err != nil {
+		t.Fatal(err)
+	}
+	opt := store.TrimOptions{RejectedAfter: 168 * time.Hour, ExpiredAfter: 720 * time.Hour, Batch: 5000}
+	for _, after := range []int64{0, mid} {
+		var r store.TrimBatchResult
+		within(t, fmt.Sprintf("TrimBatch(5000 after %d)", after), 5*time.Second, func() error {
+			err := s.InTx(ctx, func(q store.Queries) error {
+				var err error
+				if r, err = q.TrimBatch(ctx, opt, after); err != nil {
+					return err
+				}
+				return errRollback
+			})
+			if errors.Is(err, errRollback) {
+				return nil
+			}
+			return err
+		})
+		t.Logf("TrimBatch after %d: last id %d, rejected %d, expired %d", after, r.LastID, r.Rejected, r.Expired)
+		if r.Done || r.LastID <= after {
+			t.Errorf("TrimBatch after %d = %+v, want a full batch scanned", after, r)
+		}
 	}
 }

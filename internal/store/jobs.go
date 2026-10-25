@@ -67,7 +67,10 @@ func (q Queries) JobBySourceID(ctx context.Context, source, sourceJobID string) 
 }
 
 // JobsWithoutObservation returns the ids among sourceJobIDs that have no job_observation
-// yet for source, a job row or not: the new ones. They come back in input order, once each.
+// yet for source, a job row or not: the new ones. A job whose current observation was
+// trimmed counts as without one only while its listing is not open, so a board listing an
+// expired job again observes it afresh before reopening it, and a trimmed posting still
+// listed is never stored again. They come back in input order, once each.
 func (q Queries) JobsWithoutObservation(ctx context.Context, source string, sourceJobIDs []string) ([]string, error) {
 	if len(sourceJobIDs) == 0 {
 		return []string{}, nil
@@ -77,7 +80,10 @@ func (q Queries) JobsWithoutObservation(ctx context.Context, source string, sour
 		   SELECT id, min(ord) AS ord FROM unnest($2::text[]) WITH ORDINALITY AS t(id, ord) GROUP BY id
 		 ) u
 		 LEFT JOIN job j ON j.source = $1 AND j.source_job_id = u.id
-		 WHERE j.id IS NULL OR NOT EXISTS (SELECT 1 FROM job_observation o WHERE o.job_id = j.id)
+		 LEFT JOIN LATERAL (SELECT o.id, o.description_trimmed_at FROM job_observation o WHERE o.job_id = j.id
+		                    ORDER BY o.observed_at DESC, o.id DESC LIMIT 1) cur ON true
+		 WHERE j.id IS NULL OR cur.id IS NULL
+		    OR (cur.description_trimmed_at IS NOT NULL AND j.listing_status <> 'open')
 		 ORDER BY u.ord`, source, sourceJobIDs)
 	if err != nil {
 		return nil, fmt.Errorf("store: jobs without observation: %w", err)

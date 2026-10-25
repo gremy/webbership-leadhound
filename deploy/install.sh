@@ -88,7 +88,7 @@ done
 
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
-	leadhound-brief.timer leadhound-backup.timer
+	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer
 leads_timers /etc/leadhound/env
 systemctl list-timers 'leadhound-*' --no-pager
 rm -rf -- "$stage"

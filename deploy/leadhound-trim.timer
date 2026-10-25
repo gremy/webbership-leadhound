@@ -1,0 +1,13 @@
+# The trim, daily at 15:00 (leadhound-trim.service): clear of the night's ATS collect (01:00,
+# which can run past 06:00), the 03:30 dump and the morning collect and brief. Persistent: a
+# trim missed while the server was down runs at the next boot.
+[Unit]
+Description=leadhound trim of old posting text, daily
+
+[Timer]
+OnCalendar=*-*-* 15:00:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

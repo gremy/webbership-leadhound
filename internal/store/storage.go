@@ -68,3 +68,43 @@ func (q Queries) TrimBatch(ctx context.Context, opt TrimOptions, afterID int64) 
 	r.LastID = *last
 	return r, nil
 }
+
+// TrimResult is what TrimDescriptions did: the observations it trimmed, rejected and
+// expired, and the batches that scanned something.
+type TrimResult struct {
+	Rejected int
+	Expired  int
+	Batches  int
+}
+
+// TrimDescriptions runs TrimBatch from the first observation until a batch scans nothing,
+// calling pause (when not nil) after every batch that scanned something, so the trim yields
+// between its small transactions. It stops when ctx ends, before the next batch or inside
+// one, and returns what the batches so far did with ctx's error; what they trimmed stays
+// trimmed, and the next run finds the rest again (the scan reads untrimmed rows only).
+func (q Queries) TrimDescriptions(ctx context.Context, opt TrimOptions, pause func()) (TrimResult, error) {
+	var res TrimResult
+	var after int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		r, err := q.TrimBatch(ctx, opt, after)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return res, ctxErr
+			}
+			return res, err
+		}
+		if r.Done {
+			return res, nil
+		}
+		after = r.LastID
+		res.Rejected += r.Rejected
+		res.Expired += r.Expired
+		res.Batches++
+		if pause != nil {
+			pause()
+		}
+	}
+}
