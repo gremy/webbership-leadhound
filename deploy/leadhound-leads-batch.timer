@@ -1,0 +1,13 @@
+# The morning batch (leadhound-leads-batch.service). Enabled by install.sh only when sending
+# is switched on. Persistent: a morning missed while the server was down runs at the next
+# boot.
+[Unit]
+Description=leadhound leads build and next batch
+
+[Timer]
+OnCalendar=*-*-* 06:15:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

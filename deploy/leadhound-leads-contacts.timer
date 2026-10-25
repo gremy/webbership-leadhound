@@ -1,0 +1,13 @@
+# The daily contact search (leadhound-leads-contacts.service). Enabled by install.sh only
+# with LEADHOUND_LEADS_TIMERS=on. Persistent: a day missed while the server was down runs at
+# the next boot.
+[Unit]
+Description=leadhound leads contact search
+
+[Timer]
+OnCalendar=*-*-* 10:00:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

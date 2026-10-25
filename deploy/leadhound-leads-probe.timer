@@ -1,0 +1,13 @@
+# The daily site probe (leadhound-leads-probe.service). Enabled by install.sh only with
+# LEADHOUND_LEADS_TIMERS=on. Persistent: a day missed while the server was down runs at the
+# next boot.
+[Unit]
+Description=leadhound leads site probe
+
+[Timer]
+OnCalendar=*-*-* 13:00:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

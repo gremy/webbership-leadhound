@@ -1,0 +1,14 @@
+# The send, hourly on weekdays (leadhound-leads-send.service); the hours cover the working
+# day in the recipients' zones, and send checks each recipient's own hours. Enabled by
+# install.sh only when sending is switched on. Not persistent: a send missed while the
+# server was down waits for the next hour, never a catch-up outside business hours.
+[Unit]
+Description=leadhound leads send, hourly on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 10..19:00:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=false
+
+[Install]
+WantedBy=timers.target

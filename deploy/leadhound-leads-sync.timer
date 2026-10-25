@@ -1,0 +1,12 @@
+# The reply sync every 15 minutes (leadhound-leads-sync.service). Enabled by install.sh only
+# when sending is switched on. Not persistent: the next quarter hour catches up anyway.
+[Unit]
+Description=leadhound leads reply sync, every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00 Europe/Bucharest
+RandomizedDelaySec=600
+Persistent=false
+
+[Install]
+WantedBy=timers.target

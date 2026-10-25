@@ -6,7 +6,8 @@ Nothing in this directory names a server: the host is an ssh destination in your
 ## What runs when
 
 All times are Europe/Bucharest.
-Each timer adds a random delay of up to 10 minutes and is persistent, so a run missed while the server was down happens at the next boot.
+Each timer adds a random delay of up to 10 minutes.
+Every timer but the leads send and sync is persistent, so a run missed while the server was down happens at the next boot.
 
 | Timer | When | Runs |
 | --- | --- | --- |
@@ -15,6 +16,8 @@ Each timer adds a random delay of up to 10 minutes and is persistent, so a run m
 | `leadhound-collect.timer` | 06:30 and 14:30 | `collect linkedin`, then `score --max-duration 45m` |
 | `leadhound-prebrief.timer` | 07:30 | `canary linkedin` (once a day; a second start the same day does nothing) |
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
+
+The five leads timers are installed on every deploy but run only when `/etc/leadhound/env` switches them on: see [Leads on the server](#leads-on-the-server).
 
 The console, `leadhound-console.service`, has no timer: it runs all the time once it is configured, and restarts five seconds after a crash, but never after bad config (exit 2).
 See [Console](#console).
@@ -49,9 +52,10 @@ Each one also sets `GOMEMLIMIT` below its ceiling, so Go collects garbage harder
 | `leadhound-brief`, `leadhound-prebrief` | 600M | 450MiB |
 | `leadhound-collect` | 1G | 850MiB |
 | `leadhound-ats` | 1200M | 900MiB |
+| `leadhound-leads-*` | 600M | 450MiB |
 
 A LinkedIn collect has peaked near 530 MB and is not streamed, and the ATS run's peak has not been measured, so those two keep the highest ceilings.
-The two collect units also run at `CPUWeight=50`.
+The two collect units and the five leads units also run at `CPUWeight=50`.
 
 ## Layout on the server
 
@@ -140,7 +144,7 @@ Run these on the server as root, in order.
   - Both roles run without parallel workers, so one leadhound query uses one CPU.
   - Both roles run without JIT, which only adds compile time to the queries leadhound runs.
   - `leadhound_app` sessions may write at most 512 MB of temp files, so a runaway sort or hash cannot fill the disk.
-  - `leadhound_app` may hold at most 24 connections: four per pool for the console, the three collecting and briefing units and two leads units running at once.
+  - `leadhound_app` may hold at most 32 connections: four per pool for every process that can run at once, at worst the console, the ATS run, the LinkedIn collect and the brief with the leads contact search, send and sync at 10:00 (28).
   - `leadhound_owner` has no statement timeout, so a migration's index build may take as long as it needs.
   Locally `make db-local` applies the same file, then lifts the connection limit so parallel test runs can share the role.
 - `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml` and `ats-boards.yaml` from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`) after checking the profile loads; run it after you edit either file.
@@ -155,6 +159,43 @@ Run these on the server as root, in order.
   Run without a terminal (from a script), ssh warns that it allocates none, and the steps then need `sudo` without a password for the ssh user.
 - `deploy` and `deploy-data` refuse to run, even as `make -n`, without `HOST` and `CONFIRM=1`; `remote` refuses without `HOST`, and without `CONFIRM=1` for anything but the read-only lists.
 - The brief's LinkedIn recheck runs before the day's `brief_log` row is written, so a brief that crashes in between rechecks again on its retry; the three-try limit bounds that.
+
+## Leads on the server
+
+Five timers run the Drupal leads; all times are Europe/Bucharest, each with up to 10 minutes of random delay.
+Every leads unit has the same sandbox as the other timed units, `MemoryMax=600M` with `GOMEMLIMIT=450MiB`, `Nice=10`, idle I/O and `CPUWeight=50`, and each command runs under a `timeout` that `TimeoutStartSec` covers.
+Business hours, spacing, daily caps, the warm-up ramp and the pause are the commands' own (`leads.yaml` and the console), never the units'.
+
+| Timer | When | Runs | Switched on by |
+| --- | --- | --- | --- |
+| `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h` | `LEADHOUND_LEADS_TIMERS=on` |
+| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h` | `LEADHOUND_LEADS_TIMERS=on` |
+| `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m` | sending on |
+| `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 3h45m` | sending on |
+| `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | sending on |
+
+- The probe and the contact search are the finding timers.
+  They start unattended reads of public sites: up to 10,000 homepages a day, and up to 300 organisations searched for a published contact a day, each site's robots file read and honoured first.
+  They share a fetch lock in the data directory, `/opt/leadhound/data/.leads-fetch.lock`, without waiting: a run that finds it held exits 75, which the unit counts as done.
+- The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
+  The send sends only approved messages, each in its recipient's business hours (the send hours cover the working day in the UK, Ireland and central Europe), and the sync reads the mailbox for replies, opt-outs and bounces.
+  Send and sync take no file lock: their database locks keep them apart.
+  The send and sync timers are not persistent, so a run missed while the server was down is never caught up outside its hours.
+- No leads unit reads `/etc/leadhound/migrate.env`; they hold only the app role.
+
+Every deploy installs the units and decides the timers from `/etc/leadhound/env`, the last line for each name counting, as for the units:
+
+- With `LEADHOUND_LEADS_TIMERS=on`, the probe and contacts timers are enabled; otherwise they are disabled and stopped.
+- With that, `LEADHOUND_LEADS_SEND=on`, `LEADHOUND_OUTREACH=live`, and a `LEADHOUND_OUTREACH_USER` and a `LEADHOUND_IMAP_ADDR` that are not empty, the batch, send and sync timers are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch and never syncs without a mailbox.
+- The deploy prints which leads timers are on, and for those that are off, which lines are missing.
+
+To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer` (or deploy).
+To turn sending on, write the mailbox lines (`LEADHOUND_SMTP_ADDR`, `LEADHOUND_IMAP_ADDR`, `LEADHOUND_OUTREACH_USER`, `LEADHOUND_OUTREACH_PASSWORD`, typed into the file on the server) and `LEADHOUND_OUTREACH=live`, then `LEADHOUND_LEADS_SEND=on`, run `systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`, and restart the console so it reads the new settings: `systemctl restart leadhound-console.service`.
+A unit reads the env file only when it starts.
+
+To pause sending, use the pause switch on the console's Leads page: the send timer keeps running and sends nothing until you resume, and nothing on the server changes.
+To stop everything, remove the two switch lines (or set them to anything but `on`) and run `systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
+A run already in progress finishes; `systemctl stop leadhound-leads-<name>.service` ends it at once.
 
 ## Console
 

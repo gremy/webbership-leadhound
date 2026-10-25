@@ -12,8 +12,10 @@
 -- the usage lock's worst case (a transaction held open across an AI call: 3 tries of 20 s
 -- each plus backoff, about 62 s), so a billed call's usage row is never rolled back; no
 -- parallel workers and no JIT, so one query takes one CPU; at most 512 MB of temp files per
--- session; at most 24 connections (the console's pool and the units' pools, 4 each, with the
--- two leads units running at once). temp_file_limit is superuser-only, hence the superuser.
+-- session; at most 32 connections, the pools of every leadhound process that can run at once,
+-- 4 each: the worst case is the console, the ATS run, the LinkedIn collect and the brief with,
+-- at 10:00, the leads contact search, send and reply sync all at once (28). temp_file_limit
+-- is superuser-only, hence the superuser.
 --
 -- leadhound_owner runs the migrations: no parallel workers and no JIT either, and no
 -- statement timeout, so an index build may take as long as it needs.
@@ -26,7 +28,7 @@ BEGIN
     ALTER ROLE leadhound_app SET max_parallel_workers_per_gather = 0;
     ALTER ROLE leadhound_app SET jit = off;
     ALTER ROLE leadhound_app SET temp_file_limit = '512MB';
-    ALTER ROLE leadhound_app CONNECTION LIMIT 24;
+    ALTER ROLE leadhound_app CONNECTION LIMIT 32;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'leadhound_owner') THEN
     ALTER ROLE leadhound_owner SET max_parallel_workers_per_gather = 0;

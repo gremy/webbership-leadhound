@@ -1,0 +1,61 @@
+# The send: up to 25 messages of approved batches, each in its recipient's business hours,
+# spaced and capped by the command itself (leads.yaml), and nothing while sending is paused
+# in the console. Started by leadhound-leads-send.timer, which install.sh enables only when
+# sending is switched on (deploy/README.md, Leads on the server). No file lock: send and
+# sync serialise through their database locks.
+[Unit]
+Description=leadhound leads send
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=leadhound
+Group=leadhound
+# root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
+EnvironmentFile=/etc/leadhound/env
+# timeout ends a send that hangs.
+ExecStart=/usr/bin/timeout --kill-after=5m 3h45m /opt/leadhound/bin/leadhound leads send --max 25
+# Longer than the send's timeout and its kill grace together (3h50).
+TimeoutStartSec=4h
+Nice=10
+IOSchedulingClass=idle
+# The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
+# neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit
+# throttled there hangs instead of failing. GOMEMLIMIT makes Go collect garbage harder
+# well before the ceiling.
+MemoryMax=600M
+Environment=GOMEMLIMIT=450MiB
+# Half the default CPU share, so a long run yields to the server's other services.
+CPUWeight=50
+# Hardening. The whole file system is read-only to leadhound except the data directory
+# (LEADHOUND_DATA_DIR), where the fetch lock and a shadow message outbox live. It needs the
+# network (public sites, mail, Postgres) and nothing else.
+WorkingDirectory=/opt/leadhound
+ReadWritePaths=/opt/leadhound/data
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

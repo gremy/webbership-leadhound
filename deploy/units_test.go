@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -80,14 +81,16 @@ func units(t *testing.T, pattern string) map[string]unit {
 	return out
 }
 
-// schedule is each timer's OnCalendar lines and each service's ExecStart lines: the run
-// order the deploy promises (README.md).
+// schedule is each timer's OnCalendar lines, whether it is persistent, and each service's
+// ExecStart lines: the run order the deploy promises (README.md).
 var schedule = map[string]struct {
-	calendar []string
-	exec     []string
+	calendar   []string
+	persistent bool
+	exec       []string
 }{
 	"leadhound-ats": {
 		[]string{"*-*-* 01:00:00 Europe/Bucharest"},
+		true,
 		[]string{
 			"-/usr/bin/timeout --kill-after=5m 4h /opt/leadhound/bin/leadhound collect ats",
 			scoreLock + "/usr/bin/timeout --kill-after=2m 2h20m /opt/leadhound/bin/leadhound score --max-duration 2h",
@@ -95,6 +98,7 @@ var schedule = map[string]struct {
 	},
 	"leadhound-collect": {
 		[]string{"*-*-* 06:30:00 Europe/Bucharest", "*-*-* 14:30:00 Europe/Bucharest"},
+		true,
 		[]string{
 			"-" + linkedinLock + "1800 --conflict-exit-code 75 " + linkedinLockPath +
 				" /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound collect linkedin",
@@ -103,17 +107,58 @@ var schedule = map[string]struct {
 	},
 	"leadhound-prebrief": {
 		[]string{"*-*-* 07:30:00 Europe/Bucharest"},
+		true,
 		[]string{linkedinLock + "2700 --conflict-exit-code 75 " + linkedinLockPath + " /opt/leadhound/bin/leadhound canary linkedin"},
 	},
 	"leadhound-brief": {
 		[]string{"*-*-* 07:50:00 Europe/Bucharest"},
+		true,
 		[]string{linkedinLock + "1800 --conflict-exit-code 75 " + linkedinLockPath + " /opt/leadhound/bin/leadhound brief --send"},
 	},
 	"leadhound-backup": {
 		[]string{"*-*-* 03:30:00 Europe/Bucharest"},
+		true,
 		[]string{"/opt/leadhound/bin/leadhound-backup"},
 	},
+	"leadhound-leads-probe": {
+		[]string{"*-*-* 13:00:00 Europe/Bucharest"},
+		true,
+		[]string{leadsFetchLock + "/usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000"},
+	},
+	"leadhound-leads-contacts": {
+		[]string{"*-*-* 10:00:00 Europe/Bucharest"},
+		true,
+		[]string{leadsFetchLock + "/usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300"},
+	},
+	"leadhound-leads-batch": {
+		[]string{"*-*-* 06:15:00 Europe/Bucharest"},
+		true,
+		[]string{
+			"-/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build",
+			"/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads batch new",
+		},
+	},
+	// Not persistent: a send missed while the server was down is never caught up outside the
+	// recipients' business hours, and the next sync comes within 15 minutes anyway.
+	"leadhound-leads-send": {
+		[]string{"Mon..Fri *-*-* 10..19:00:00 Europe/Bucharest"},
+		false,
+		[]string{"/usr/bin/timeout --kill-after=5m 3h45m /opt/leadhound/bin/leadhound leads send --max 25"},
+	},
+	"leadhound-leads-sync": {
+		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
+		false,
+		[]string{"/usr/bin/timeout --kill-after=5m 10m /opt/leadhound/bin/leadhound leads sync"},
+	},
 }
+
+// leadsFinding and leadsSending are the leads timers install.sh enables only as
+// /etc/leadhound/env switches them on: the finding ones with LEADHOUND_LEADS_TIMERS=on, the
+// sending ones only with that, LEADHOUND_LEADS_SEND=on, live outreach and the mailbox.
+var (
+	leadsFinding = []string{"leadhound-leads-contacts.timer", "leadhound-leads-probe.timer"}
+	leadsSending = []string{"leadhound-leads-batch.timer", "leadhound-leads-send.timer", "leadhound-leads-sync.timer"}
+)
 
 // daemons are the services that run all the time rather than from a timer, with their
 // ExecStart line.
@@ -139,6 +184,9 @@ const (
 	linkedinLockPath = "/opt/leadhound/data/.linkedin.lock"
 	linkedinLock     = "/usr/bin/flock --wait "
 	scoreLock        = "/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock "
+	// leadsFetchLock is the flock call the two leads steps that read the public web start
+	// with: no wait, and exit 75 when the other holds it.
+	leadsFetchLock = "/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock "
 )
 
 func base(path string) string {
@@ -172,8 +220,8 @@ func TestTimers(t *testing.T) {
 		if got := u.one(t, path, "Timer", "RandomizedDelaySec"); got != "600" {
 			t.Errorf("%s: RandomizedDelaySec = %s, want 600", path, got)
 		}
-		if got := u.one(t, path, "Timer", "Persistent"); got != "true" {
-			t.Errorf("%s: Persistent = %s, want true", path, got)
+		if got := u.one(t, path, "Timer", "Persistent"); got != strconv.FormatBool(want.persistent) {
+			t.Errorf("%s: Persistent = %s, want %t", path, got, want.persistent)
 		}
 		if got := u.one(t, path, "Install", "WantedBy"); got != "timers.target" {
 			t.Errorf("%s: WantedBy = %s, want timers.target", path, got)
@@ -305,7 +353,8 @@ func systemdDuration(v string) (time.Duration, error) {
 	return time.ParseDuration(strings.ReplaceAll(v, "min", "m"))
 }
 
-// TestInstallEnablesEveryTimer: deploy/install.sh enables exactly the timers in deploy/, and
+// TestInstallEnablesEveryTimer: deploy/install.sh names exactly the timers in deploy/, enables
+// every one but the leads timers on every deploy (TestInstallLeadsTimers decides those), and
 // enables and restarts every daemon after the new binary is in place, so the running server
 // picks it up. The console is skipped while the env file has no password hash, so a deploy
 // before the console is configured still succeeds.
@@ -314,19 +363,48 @@ func TestInstallEnablesEveryTimer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled := regexp.MustCompile(`leadhound-[a-z]+\.timer`).FindAllString(string(b), -1)
-	slices.Sort(enabled)
-	enabled = slices.Compact(enabled)
-	var timers []string
+	timerName := regexp.MustCompile(`leadhound-[a-z-]+\.timer`)
+	named := timerName.FindAllString(string(b), -1)
+	slices.Sort(named)
+	named = slices.Compact(named)
+	var timers, always []string
 	for path := range units(t, "*.timer") {
-		timers = append(timers, filepath.Base(path))
+		name := filepath.Base(path)
+		timers = append(timers, name)
+		if !slices.Contains(leadsFinding, name) && !slices.Contains(leadsSending, name) {
+			always = append(always, name)
+		}
 	}
 	slices.Sort(timers)
-	if !slices.Equal(enabled, timers) {
-		t.Errorf("install.sh enables %q, want %q", enabled, timers)
+	slices.Sort(always)
+	if !slices.Equal(named, timers) {
+		t.Errorf("install.sh names %q, want %q", named, timers)
+	}
+	if want := len(leadsFinding) + len(leadsSending) + len(always); len(timers) != want {
+		t.Errorf("%d timers, want %d: a leads timer in the test's sets has no file", len(timers), want)
 	}
 
 	steps := installSteps(t)
+	// The unconditional enable: its line and the continuation after it, outside leads_timers.
+	start := slices.IndexFunc(steps, func(l string) bool {
+		return strings.HasPrefix(l, "systemctl enable --now leadhound-") && !strings.Contains(l, "leads")
+	})
+	if start < 0 {
+		t.Fatal("install.sh has no systemctl enable --now for the timers")
+	}
+	line := steps[start]
+	for i := start; strings.HasSuffix(steps[i], `\`) && i+1 < len(steps); i++ {
+		line += " " + steps[i+1]
+	}
+	unconditional := timerName.FindAllString(line, -1)
+	slices.Sort(unconditional)
+	if !slices.Equal(unconditional, always) {
+		t.Errorf("install.sh enables %q on every deploy, want %q", unconditional, always)
+	}
+	if call := firstLine(steps, "leads_timers /etc/leadhound/env"); call < 0 || call < firstLine(steps, "systemctl daemon-reload") {
+		t.Error("install.sh does not run leads_timers /etc/leadhound/env after systemctl daemon-reload")
+	}
+
 	swap := firstLine(steps, "mv -f", `"$bin/.leadhound.new"`, `"$bin/leadhound"`)
 	for name := range daemons {
 		enable := firstLine(steps, "systemctl enable "+name+".service")
@@ -361,7 +439,7 @@ var configVar = regexp.MustCompile(`"((?:LEADHOUND|TYPESAFE|RESEND)_[A-Z0-9_]+)"
 // except the owner role's URL, which only migrate.env.example carries.
 func TestEnvExamplesCoverConfig(t *testing.T) {
 	vars := map[string]bool{}
-	for _, src := range []string{"../internal/config/config.go", "../internal/store/store.go"} {
+	for _, src := range []string{"../internal/config/config.go", "../internal/store/store.go", "../internal/leadconfig/env.go"} {
 		b, err := os.ReadFile(src) // #nosec G304 -- the repository's own source
 		if err != nil {
 			t.Fatal(err)
@@ -705,11 +783,16 @@ func TestTimeoutsCoverWaits(t *testing.T) {
 // memory is each leadhound service's ceiling and its Go heap target: MemoryMax in systemd's
 // units (M and G are 1024-based) and GOMEMLIMIT in Go's.
 var memory = map[string]struct{ max, goLimit string }{
-	"leadhound-console":  {"300M", "200MiB"},
-	"leadhound-brief":    {"600M", "450MiB"},
-	"leadhound-prebrief": {"600M", "450MiB"},
-	"leadhound-collect":  {"1G", "850MiB"},
-	"leadhound-ats":      {"1200M", "900MiB"},
+	"leadhound-console":        {"300M", "200MiB"},
+	"leadhound-brief":          {"600M", "450MiB"},
+	"leadhound-prebrief":       {"600M", "450MiB"},
+	"leadhound-collect":        {"1G", "850MiB"},
+	"leadhound-ats":            {"1200M", "900MiB"},
+	"leadhound-leads-probe":    {"600M", "450MiB"},
+	"leadhound-leads-contacts": {"600M", "450MiB"},
+	"leadhound-leads-batch":    {"600M", "450MiB"},
+	"leadhound-leads-send":     {"600M", "450MiB"},
+	"leadhound-leads-sync":     {"600M", "450MiB"},
 }
 
 // TestMemoryCeiling: the server is shared, so every leadhound unit but the backup has a
@@ -820,5 +903,197 @@ func TestScoreHasBudget(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Errorf("%d score steps, want 2 (ats, collect)", seen)
+	}
+}
+
+// TestLeadsUnits: every leads unit yields to the server's other services (Nice, idle I/O,
+// half the CPU share), runs each command under a /usr/bin/timeout, carries no environment of
+// its own beyond GOMEMLIMIT (hours, caps and the pause stay in the commands), and a step that
+// takes the fetch lock counts the lock's exit 75 as done.
+func TestLeadsUnits(t *testing.T) {
+	leads := units(t, "leadhound-leads-*.service")
+	if len(leads) != len(leadsFinding)+len(leadsSending) {
+		t.Errorf("%d leads services, want %d", len(leads), len(leadsFinding)+len(leadsSending))
+	}
+	fetches := 0
+	for path, u := range leads {
+		for key, want := range map[string]string{"Nice": "10", "IOSchedulingClass": "idle", "CPUWeight": "50"} {
+			if got := u.one(t, path, "Service", key); got != want {
+				t.Errorf("%s: %s = %s, want %s", path, key, got, want)
+			}
+		}
+		for _, e := range u["Service"]["Environment"] {
+			if !strings.HasPrefix(e, "GOMEMLIMIT=") {
+				t.Errorf("%s: Environment=%s; a leads unit sets only GOMEMLIMIT", path, e)
+			}
+		}
+		locked := false
+		for _, e := range u["Service"]["ExecStart"] {
+			cmd := strings.TrimPrefix(e, "-")
+			if after, ok := strings.CutPrefix(cmd, leadsFetchLock); ok {
+				cmd, locked = after, true
+			}
+			if !strings.HasPrefix(cmd, "/usr/bin/timeout --kill-after=") || !strings.Contains(cmd, " /opt/leadhound/bin/leadhound leads ") {
+				t.Errorf("%s: %q: a leads step runs as /usr/bin/timeout --kill-after=... <D> leadhound leads ...", path, e)
+			}
+		}
+		success := u["Service"]["SuccessExitStatus"]
+		switch {
+		case locked:
+			fetches++
+			if !slices.Equal(success, []string{"75"}) {
+				t.Errorf("%s: SuccessExitStatus = %q, want 75: a run that finds the fetch lock held is done", path, success)
+			}
+		case len(success) > 0:
+			t.Errorf("%s: SuccessExitStatus = %q without the fetch lock", path, success)
+		}
+	}
+	if fetches != len(leadsFinding) {
+		t.Errorf("%d leads units take the fetch lock, want %d (probe, contacts)", fetches, len(leadsFinding))
+	}
+}
+
+// TestNoUnitLoadsOwnerEnv: no unit reads the owner role's environment; only install.sh's
+// migrate does.
+func TestNoUnitLoadsOwnerEnv(t *testing.T) {
+	paths, err := filepath.Glob("leadhound-*.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if ext := filepath.Ext(path); ext != ".service" && ext != ".timer" {
+			continue
+		}
+		b, err := os.ReadFile(path) // #nosec G304 -- the test's own deploy files
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "migrate.env") {
+			t.Errorf("%s: names migrate.env; the units hold only the app role", path)
+		}
+	}
+}
+
+// installFunc is the shell function name() { ... } from install.sh, through its closing brace.
+func installFunc(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	in := false
+	for line := range strings.Lines(string(b)) {
+		if strings.HasPrefix(line, name+"() {") {
+			in = true
+		}
+		if in {
+			out = append(out, line)
+			if strings.TrimRight(line, "\n") == "}" {
+				return strings.Join(out, "")
+			}
+		}
+	}
+	t.Fatalf("install.sh has no function %s", name)
+	return ""
+}
+
+// TestInstallLeadsTimers runs install.sh's own leads_timers against env files, with systemctl
+// replaced by a recorder, and checks exactly which leads timers end up enabled, and that every
+// other one is disabled and stopped. The server env today has none of the switch lines, so a
+// deploy leaves every leads timer off.
+func TestInstallLeadsTimers(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "run.sh")
+	body := "set -eu\n" + installFunc(t, "env_value") + installFunc(t, "leads_timers") + "leads_timers \"$1\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fake := "#!/bin/sh\necho \"$*\" >>\"$SYSTEMCTL_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(fake), 0o700); err != nil { // #nosec G306 -- an executable stub in a test temp dir
+		t.Fatal(err)
+	}
+	const (
+		finding = "LEADHOUND_LEADS_TIMERS=on\n"
+		send    = "LEADHOUND_LEADS_SEND=on\n"
+		live    = "LEADHOUND_OUTREACH=live\n"
+		user    = "LEADHOUND_OUTREACH_USER=outreach@mail.example\n"
+		imap    = "LEADHOUND_IMAP_ADDR=mail.example:993\n"
+	)
+	all := slices.Concat(leadsFinding, leadsSending)
+	for _, tc := range []struct {
+		name, env string
+		want      []string
+	}{
+		{"empty env", "", nil},
+		{"the env.example lines, empty", "LEADHOUND_LEADS_TIMERS=\nLEADHOUND_LEADS_SEND=\nLEADHOUND_OUTREACH=\nLEADHOUND_OUTREACH_USER=\nLEADHOUND_IMAP_ADDR=\n", nil},
+		{"finding on only", finding, leadsFinding},
+		{"finding and send on, shadow", finding + send + user + imap, leadsFinding},
+		{"finding and send on, live, no mailbox", finding + send + live, leadsFinding},
+		{"everything but the IMAP address", finding + send + live + user + "LEADHOUND_IMAP_ADDR=\n", leadsFinding},
+		{"everything but the mailbox user", finding + send + live + imap, leadsFinding},
+		{"everything", finding + send + live + user + imap, all},
+		{"everything, quoted as systemd allows", "LEADHOUND_LEADS_TIMERS=\"on\"\nLEADHOUND_LEADS_SEND='on'\nLEADHOUND_OUTREACH=\"live\"\n" + user + imap, all},
+		{"send without finding", send + live + user + imap, nil},
+		{"finding switched off by a later line", finding + send + live + user + imap + "LEADHOUND_LEADS_TIMERS=off\n", nil},
+		{"send switched off by a later line", finding + send + live + user + imap + "LEADHOUND_LEADS_SEND=\n", leadsFinding},
+		{"not quite on", "LEADHOUND_LEADS_TIMERS=online\n" + send + live + user + imap, nil},
+		{"not quite live", finding + send + "LEADHOUND_OUTREACH=lively\n" + user + imap, leadsFinding},
+		{"commented out", "#LEADHOUND_LEADS_TIMERS=on\n# " + send, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := filepath.Join(t.TempDir(), "env")
+			if err := os.WriteFile(env, []byte(tc.env), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(t.TempDir(), "systemctl.log")
+			cmd := exec.Command(sh, script, env) // #nosec G204 -- the test's own script
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SYSTEMCTL_LOG="+log)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("leads_timers: %v\n%s", err, out)
+			}
+			b, err := os.ReadFile(log) // #nosec G304 -- the test's own temp file
+			if err != nil {
+				t.Fatal(err)
+			}
+			var enabled, disabled []string
+			for line := range strings.Lines(string(b)) {
+				f := strings.Fields(line)
+				switch {
+				case len(f) > 2 && f[0] == "enable" && f[1] == "--now":
+					enabled = append(enabled, f[2:]...)
+				case len(f) > 2 && f[0] == "disable" && f[1] == "--now":
+					disabled = append(disabled, f[2:]...)
+				default:
+					t.Errorf("systemctl %s: not enable --now or disable --now", strings.TrimSpace(line))
+				}
+			}
+			slices.Sort(enabled)
+			want := slices.Clone(tc.want)
+			slices.Sort(want)
+			if !slices.Equal(enabled, want) {
+				t.Errorf("enabled %q, want %q\n%s", enabled, want, out)
+			}
+			// Every leads timer is decided on every deploy: enabled, or disabled and stopped.
+			decided := slices.Concat(enabled, disabled)
+			slices.Sort(decided)
+			wantAll := slices.Clone(all)
+			slices.Sort(wantAll)
+			if !slices.Equal(decided, wantAll) {
+				t.Errorf("enabled or disabled %q, want each of %q once", decided, wantAll)
+			}
+			if len(disabled) > 0 && !strings.Contains(string(out), " off (") {
+				t.Errorf("leads_timers disabled %q without saying which are off and why:\n%s", disabled, out)
+			}
+		})
 	}
 }

@@ -2,8 +2,9 @@
 # install.sh STAGE: installs a release that `make deploy` copied into the directory STAGE.
 # Run on the server as root (make deploy runs it with sudo). Order: the env files' owner and
 # mode, the Postgres limits on the leadhound roles, the new binary beside the old one, migrate
-# with the new binary as the owner role, then the swap, the backup script, the units, the timers and the console. A failed migrate
-# leaves the old binary and the old units in place. STAGE is removed once the units are in.
+# with the new binary as the owner role, then the swap, the backup script, the units, the timers, the
+# leads timers as /etc/leadhound/env switches them, and the console. A failed migrate leaves the old
+# binary and the old units in place. STAGE is removed once the units are in.
 set -eu
 
 stage=${1:?usage: install.sh STAGE}
@@ -13,6 +14,41 @@ data=/opt/leadhound/data
 fail() {
 	echo "install: $*" >&2
 	exit 1
+}
+
+# env_value FILE NAME: the value the units get for NAME from FILE, from the last line that sets
+# it, quotes and trailing blanks left out; empty when no line sets it.
+env_value() {
+	sed -n "s/^[[:space:]]*$2=//p" "$1" | tail -n 1 | tr -d "\"'" | sed 's/[[:space:]]*$//'
+}
+
+# leads_timers FILE: the leads timers reach the public web and a mailbox, so each set runs only
+# when FILE switches it on (deploy/README.md, Leads on the server); otherwise it is disabled and
+# stopped, so a deploy never leaves one running that FILE does not ask for. The finding timers
+# need LEADHOUND_LEADS_TIMERS=on. The drafting, sending and reply timers also need
+# LEADHOUND_LEADS_SEND=on, live outreach and the mailbox, so the server never drafts a shadow
+# batch and never syncs without a mailbox.
+leads_timers() {
+	off=
+	[ "$(env_value "$1" LEADHOUND_LEADS_TIMERS)" = on ] || off="$off LEADHOUND_LEADS_TIMERS=on"
+	if [ -z "$off" ]; then
+		systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer
+		echo "install: leads finding timers on: probe, contacts"
+	else
+		systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer
+		echo "install: leads finding timers off (probe, contacts): $1 has no$off"
+	fi
+	[ "$(env_value "$1" LEADHOUND_LEADS_SEND)" = on ] || off="$off LEADHOUND_LEADS_SEND=on"
+	[ "$(env_value "$1" LEADHOUND_OUTREACH)" = live ] || off="$off LEADHOUND_OUTREACH=live"
+	[ -n "$(env_value "$1" LEADHOUND_OUTREACH_USER)" ] || off="$off LEADHOUND_OUTREACH_USER"
+	[ -n "$(env_value "$1" LEADHOUND_IMAP_ADDR)" ] || off="$off LEADHOUND_IMAP_ADDR"
+	if [ -z "$off" ]; then
+		systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
+		echo "install: leads sending timers on: batch, send, sync"
+	else
+		systemctl disable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
+		echo "install: leads sending timers off (batch, send, sync): $1 has no$off"
+	fi
 }
 
 # The one-time bootstrap (deploy/README.md) comes first.
@@ -53,6 +89,7 @@ done
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer
+leads_timers /etc/leadhound/env
 systemctl list-timers 'leadhound-*' --no-pager
 rm -rf -- "$stage"
 
