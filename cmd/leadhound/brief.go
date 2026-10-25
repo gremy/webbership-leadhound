@@ -97,7 +97,7 @@ func runBrief(ctx context.Context, args []string) error {
 	}
 	dayStr := day.Format(time.DateOnly)
 
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}

@@ -101,7 +101,7 @@ func runSitesImport(ctx context.Context, args []string) error {
 		}
 	}
 
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}
@@ -562,7 +562,7 @@ func runSitesEval(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}

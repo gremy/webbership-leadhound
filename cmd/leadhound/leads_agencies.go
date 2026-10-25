@@ -159,7 +159,7 @@ func runAgenciesImport(ctx context.Context, args []string) error {
 		}
 		list = kept
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}

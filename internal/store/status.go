@@ -176,35 +176,61 @@ type TrackRow struct {
 	Reason  string
 }
 
-// TrackList returns every job with a status event and its current status, latest change
-// first. status "" leaves out the jobs still new, "all" keeps every one, and any status in
-// JobStatuses keeps only that one.
-func (q Queries) TrackList(ctx context.Context, status string) ([]TrackRow, error) {
+// TrackList returns the jobs with a status event and their current status (the latest event
+// over all of a job's events), latest change first, with total, how many jobs match before
+// the cap. status "" leaves out the jobs still new, "all" keeps every one, and any status in
+// JobStatuses keeps only that one. limit caps the rows returned; 0 returns every one.
+//
+// Every job gets its new event when it is first stored, so "all" and "new" match nearly
+// every job: the console caps them. The other filters match only jobs that have an event
+// other than new, which status_event_active_idx finds without reading the new events of
+// every other job.
+func (q Queries) TrackList(ctx context.Context, status string, limit int) ([]TrackRow, int, error) {
 	if status != "" && status != "all" && !slices.Contains(JobStatuses, status) {
-		return nil, fmt.Errorf("store: track list %q: %w", status, ErrBadStatus)
+		return nil, 0, fmt.Errorf("store: track list %q: %w", status, ErrBadStatus)
+	}
+	// candidates narrows the jobs whose latest event is read; it never decides the status.
+	candidates := `true`
+	if status != "all" && status != "new" {
+		candidates = `e.job_id IN (SELECT job_id FROM status_event WHERE status <> 'new')`
+	}
+	var capped any // NULL is LIMIT ALL
+	if limit > 0 {
+		capped = limit
 	}
 	rows, err := q.db.Query(ctx,
-		`SELECT j.id, coalesce(o.title, j.title), c.name, s.status, s.at, s.reason
-		 FROM job j
+		`WITH latest AS (
+		   SELECT DISTINCT ON (e.job_id) e.job_id, e.status, e.at, e.reason
+		   FROM status_event e
+		   WHERE `+candidates+`
+		   ORDER BY e.job_id, e.at DESC, e.id DESC
+		 ), picked AS (
+		   SELECT job_id, status, at, reason, count(*) OVER () AS total
+		   FROM latest
+		   WHERE ($1 = 'all') OR ($1 = '' AND status <> 'new') OR status = $1
+		   ORDER BY at DESC, job_id
+		   LIMIT $2
+		 )
+		 SELECT p.job_id, coalesce(o.title, j.title), c.name, p.status, p.at, p.reason, p.total
+		 FROM picked p
+		 JOIN job j ON j.id = p.job_id
 		 JOIN company c ON c.id = j.company_id
-		 JOIN LATERAL (SELECT status, at, reason FROM status_event WHERE job_id = j.id
-		               ORDER BY at DESC, id DESC LIMIT 1) s ON true
 		 LEFT JOIN LATERAL (SELECT title FROM job_observation WHERE job_id = j.id
 		                    ORDER BY observed_at DESC, id DESC LIMIT 1) o ON true
-		 WHERE ($1 = 'all') OR ($1 = '' AND s.status <> 'new') OR s.status = $1
-		 ORDER BY s.at DESC, j.id`, status)
+		 ORDER BY p.at DESC, p.job_id`, status, capped)
 	if err != nil {
-		return nil, fmt.Errorf("store: track list: %w", err)
+		return nil, 0, fmt.Errorf("store: track list: %w", err)
 	}
+	total := 0
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (TrackRow, error) {
 		var t TrackRow
-		err := r.Scan(&t.JobID, &t.Title, &t.Company, &t.Status, &t.Since, &t.Reason)
+		err := r.Scan(&t.JobID, &t.Title, &t.Company, &t.Status, &t.Since, &t.Reason, &total)
 		return t, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("store: track list: %w", err)
+		return nil, 0, fmt.Errorf("store: track list: %w", err)
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // CountJobsFirstSeen counts the jobs from source first seen on the calendar day of day in

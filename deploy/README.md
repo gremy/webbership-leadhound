@@ -73,10 +73,12 @@ Run these on the server as root, in order.
 
    ```sh
    sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -f deploy/sql/roles.sql
+   sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -f deploy/sql/limits.sql
    sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres -c "CREATE DATABASE leadhound OWNER leadhound_owner"
    sudo -u postgres psql -v ON_ERROR_STOP=1 -d leadhound -f deploy/sql/grants.sql
    ```
 
+   `limits.sql` sets the per-role limits described under Everyday; every deploy applies it again.
    Then give both roles a password generated on the server (`openssl rand -hex 32`), set with `ALTER ROLE … PASSWORD` in `psql`, never on a command line that lands in a shell history.
 
 4. Write `/etc/leadhound/env` from `deploy/env.example` and `/etc/leadhound/migrate.env` from `deploy/migrate.env.example`, both `root:root 0600`.
@@ -117,6 +119,16 @@ Run these on the server as root, in order.
 - `make deploy HOST=… [ARCH=…] CONFIRM=1` ships a new release: it runs `make check`, builds a static Linux binary, copies it with `deploy/install.sh`, the backup script and the units, runs `migrate` with the new binary as the owner role, then puts the new binary and units in place, reloads systemd and enables the timers.
   A failed `migrate` stops the deploy with a non-zero exit and leaves the old binary and units running; the release stays in its temporary directory on the server.
   Once the console is configured, the deploy also restarts it on the new binary and waits up to 10 seconds for it to answer; if it does not, the deploy prints its last log lines and exits non-zero, with the timers already in place.
+- Every deploy re-applies `deploy/sql/limits.sql` as the Postgres superuser before it migrates; if that fails, the deploy stops with the old release running.
+  Postgres runs a query's work in its own service, so the units' CPU and memory settings cannot bound it; these per-role limits are what does:
+  - `leadhound_app` statements stop after 3 minutes, so no single query can hold the shared database for long; a command that needs longer sets its own bound for one session.
+  - `leadhound_app` transactions left idle are ended after 10 minutes, which is above the longest an AI call holds the usage transaction open (about a minute), so a billed call's usage row is never rolled back.
+  - Both roles run without parallel workers, so one leadhound query uses one CPU.
+  - Both roles run without JIT, which only adds compile time to the queries leadhound runs.
+  - `leadhound_app` sessions may write at most 512 MB of temp files, so a runaway sort or hash cannot fill the disk.
+  - `leadhound_app` may hold at most 24 connections: four per pool for the console, the three collecting and briefing units and two leads units running at once.
+  - `leadhound_owner` has no statement timeout, so a migration's index build may take as long as it needs.
+  Locally `make db-local` applies the same file, then lifts the connection limit so parallel test runs can share the role.
 - `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml` and `ats-boards.yaml` from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`) after checking the profile loads; run it after you edit either file.
   It copies nothing else: the title screen is part of `leadhound.yaml`, and the eval golden set, the privacy denylist and the board seed lists are never needed on the server.
 - `make remote HOST=… ARGS='track list'` runs one command on the server as the `leadhound` user with the units' environment.

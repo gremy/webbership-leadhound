@@ -306,12 +306,16 @@ func briefJobOf(n int, s store.JobSummary) console.BriefJob {
 		ListingStatus: s.ListingStatus, URL: s.URL}
 }
 
-// Tracked is the tracker, as `leadhound track list --status` shows it.
+// trackedCap is the most jobs the Tracked page lists: "all" and "new" match nearly every job.
+const trackedCap = 500
+
+// Tracked is the tracker, as `leadhound track list --status` shows it, the latest trackedCap
+// changes at most.
 func (b *backend) Tracked(ctx context.Context, status string) ([]console.Tracked, error) {
 	if status != "" && status != "all" && !slices.Contains(store.JobStatuses, status) {
 		return nil, fmt.Errorf("%w: status must be all or one of %s", console.ErrUserFixable, strings.Join(store.JobStatuses, ", "))
 	}
-	rows, err := b.s.Q().TrackList(ctx, status)
+	rows, _, err := b.s.Q().TrackList(ctx, status, trackedCap)
 	if err != nil {
 		return nil, err
 	}

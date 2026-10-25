@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -295,5 +296,75 @@ func TestOpen(t *testing.T) {
 	}
 	if one != 1 {
 		t.Fatalf("SELECT 1 = %d", one)
+	}
+}
+
+// TestStoreAppNameAndTimeout checks that WithAppName names every connection, and that
+// WithStatementTimeout raises the timeout for fn only: the connection goes back to the pool
+// with the role's default, after an error from fn as well.
+func TestStoreAppNameAndTimeout(t *testing.T) {
+	ctx := context.Background()
+	storetest.Migrated(t)
+	// One connection, so the query after WithStatementTimeout runs on the connection it used.
+	t.Setenv("LEADHOUND_DB_MAX_CONNS", "1")
+	s, err := store.Open(ctx, storetest.AppDSN(), store.WithAppName("leadhound test"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	setting := func(q store.Queries, name string) string {
+		t.Helper()
+		v, err := q.Setting(ctx, name)
+		if err != nil {
+			t.Fatalf("setting %s: %v", name, err)
+		}
+		return v
+	}
+	if got := setting(s.Q(), "application_name"); got != "leadhound test" {
+		t.Fatalf("application_name = %q, want %q", got, "leadhound test")
+	}
+	roleDefault := setting(s.Q(), "statement_timeout")
+
+	var inside string
+	err = s.WithStatementTimeout(ctx, 10*time.Minute, func(q store.Queries) error {
+		inside = setting(q, "statement_timeout")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithStatementTimeout: %v", err)
+	}
+	if inside != "10min" {
+		t.Fatalf("statement_timeout inside = %q, want 10min", inside)
+	}
+	if got := setting(s.Q(), "statement_timeout"); got != roleDefault {
+		t.Fatalf("statement_timeout after = %q, want the role default %q", got, roleDefault)
+	}
+
+	// fn's error comes back as it is, and the timeout is reset all the same.
+	errFn := errors.New("fn failed")
+	err = s.WithStatementTimeout(ctx, 10*time.Minute, func(q store.Queries) error {
+		inside = setting(q, "statement_timeout")
+		return errFn
+	})
+	if !errors.Is(err, errFn) {
+		t.Fatalf("WithStatementTimeout err = %v, want fn's error", err)
+	}
+	if inside != "10min" {
+		t.Fatalf("statement_timeout inside (error path) = %q, want 10min", inside)
+	}
+	if got := setting(s.Q(), "statement_timeout"); got != roleDefault {
+		t.Fatalf("statement_timeout after an error = %q, want the role default %q", got, roleDefault)
+	}
+
+	// Where deploy/sql/limits.sql is applied, the role default is its 3 minutes.
+	var roleConfig []string
+	if err := s.Pool().QueryRow(ctx,
+		`SELECT coalesce(array_agg(c), '{}') FROM pg_db_role_setting d, unnest(d.setconfig) c
+		 WHERE d.setrole = (SELECT oid FROM pg_roles WHERE rolname = current_user)`).Scan(&roleConfig); err != nil {
+		t.Fatalf("read role settings: %v", err)
+	}
+	if slices.Contains(roleConfig, "statement_timeout=3min") && roleDefault != "3min" {
+		t.Fatalf("role default statement_timeout = %q, want 3min", roleDefault)
 	}
 }

@@ -51,7 +51,7 @@ func leadsOpen(ctx context.Context, load leadsLoad) (*store.Store, leadsSetup, e
 	if err != nil {
 		return nil, leadsSetup{}, err
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return nil, leadsSetup{}, err
 	}

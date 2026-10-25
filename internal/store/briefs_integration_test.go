@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -208,14 +209,14 @@ func TestStatusHelpers(t *testing.T) {
 		t.Fatalf("unknown job summary = %v", err)
 	}
 
-	rows, err := q.TrackList(ctx, "")
-	if err != nil || len(rows) != 3 {
-		t.Fatalf("TrackList = %+v, %v", rows, err)
+	rows, total, err := q.TrackList(ctx, "", 0)
+	if err != nil || len(rows) != 3 || total != 3 {
+		t.Fatalf("TrackList = %+v, %d, %v", rows, total, err)
 	}
-	if rows, _ := q.TrackList(ctx, "applied"); len(rows) != 1 || rows[0].JobID != b {
-		t.Fatalf("TrackList applied = %+v", rows)
+	if rows, total, _ := q.TrackList(ctx, "applied", 0); len(rows) != 1 || rows[0].JobID != b || total != 1 {
+		t.Fatalf("TrackList applied = %+v, %d", rows, total)
 	}
-	if _, err := q.TrackList(ctx, "dreaming"); !errors.Is(err, store.ErrBadStatus) {
+	if _, _, err := q.TrackList(ctx, "dreaming", 0); !errors.Is(err, store.ErrBadStatus) {
 		t.Fatalf("bad filter = %v", err)
 	}
 	if n, err := q.CountJobsFirstSeen(ctx, "linkedin", time.UTC, now); err != nil || n != 3 {
@@ -223,6 +224,66 @@ func TestStatusHelpers(t *testing.T) {
 	}
 	if n, err := q.CountJobsFirstSeen(ctx, "linkedin", time.UTC, now.AddDate(0, 0, -2)); err != nil || n != 0 {
 		t.Fatalf("CountJobsFirstSeen two days ago = %d, %v", n, err)
+	}
+}
+
+// TestTrackListLatestEventDecides: a job's current status is its latest event over all its
+// events, so a job set back to new after a non-new event is new, not active; the cap keeps
+// the latest changes and total counts every match.
+func TestTrackListLatestEventDecides(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	now := time.Now()
+	back := seedBriefJob(t, q, "1", now)   // applied, then new again
+	active := seedBriefJob(t, q, "2", now) // new, then shortlisted
+	fresh := seedBriefJob(t, q, "3", now)  // only new
+	for _, e := range []struct {
+		job    int64
+		status string
+		actor  string
+		ago    time.Duration
+	}{
+		{back, "new", "system", 5 * time.Hour},
+		{back, "applied", leadstore.ActorGremy, 4 * time.Hour},
+		{back, "new", leadstore.ActorGremy, time.Hour},
+		{active, "new", "system", 3 * time.Hour},
+		{active, "shortlisted", leadstore.ActorGremy, 2 * time.Hour},
+		{fresh, "new", "system", 30 * time.Minute},
+	} {
+		id, err := q.InsertStatusEvent(ctx, e.job, e.status, "", e.actor, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ownerExec(t, `UPDATE status_event SET at = $1 WHERE id = $2`, now.Add(-e.ago), id)
+	}
+
+	ids := func(rows []store.TrackRow) []int64 {
+		var out []int64
+		for _, r := range rows {
+			out = append(out, r.JobID)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		status string
+		limit  int
+		want   []int64
+		total  int
+	}{
+		{"", 0, []int64{active}, 1},
+		{"applied", 0, nil, 0},
+		{"new", 0, []int64{fresh, back}, 2},
+		{"new", 1, []int64{fresh}, 2},
+		{"all", 0, []int64{fresh, back, active}, 3},
+		{"all", 2, []int64{fresh, back}, 3},
+	} {
+		rows, total, err := q.TrackList(ctx, tc.status, tc.limit)
+		if err != nil || !slices.Equal(ids(rows), tc.want) || total != tc.total {
+			t.Errorf("TrackList(%q, %d) = %v, %d, %v; want %v, %d", tc.status, tc.limit, ids(rows), total, err, tc.want, tc.total)
+		}
+	}
+	if rows, _, _ := q.TrackList(ctx, "new", 0); len(rows) == 2 && (rows[1].Status != "new" || rows[1].Title != "Go Engineer 1") {
+		t.Errorf("job set back to new = %+v", rows[1])
 	}
 }
 

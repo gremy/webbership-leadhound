@@ -6,8 +6,10 @@ CMD    := ./cmd/leadhound
 LEADHOUND_MIGRATE_DATABASE_URL ?= postgres://leadhound_owner@localhost/leadhound_dev?sslmode=disable
 TEST_DB_DSN                    ?= postgres://leadhound_app@localhost/leadhound_test?sslmode=disable
 TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound_test?sslmode=disable
+TEST_SCALE_DSN                 ?= postgres://leadhound_app@localhost/leadhound_scale?sslmode=disable
+TEST_SCALE_MIGRATE_DSN         ?= postgres://leadhound_owner@localhost/leadhound_scale?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local
+.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -71,10 +73,10 @@ fmt-check:
 vet:
 	go vet ./...
 
-## lint-if-present: golangci-lint, integration-tagged files included, when installed; without it, say so and carry on
+## lint-if-present: golangci-lint, integration- and scale-tagged files included, when installed; without it, say so and carry on
 lint-if-present:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --build-tags integration ./...; \
+		golangci-lint run --build-tags integration,scale ./...; \
 	else \
 		echo "lint: golangci-lint not installed (brew install golangci-lint); skipped"; \
 	fi
@@ -88,13 +90,22 @@ test-integration:
 	TEST_DB_REQUIRED=1 TEST_DB_DSN='$(TEST_DB_DSN)' TEST_MIGRATE_DSN='$(TEST_MIGRATE_DSN)' \
 		go test -tags integration -p 1 ./... -race
 
+## test-scale: time and memory budgets on the production-sized leadhound_scale database (seeded once, then reused)
+test-scale:
+	TEST_DB_REQUIRED=1 TEST_SCALE_DSN='$(TEST_SCALE_DSN)' TEST_SCALE_MIGRATE_DSN='$(TEST_SCALE_MIGRATE_DSN)' \
+		go test -tags 'integration scale' -run 'Scale' -p 1 -timeout 45m ./...
+
 ## check: everything a commit must pass
 check: fmt-check vet lint-if-present test privacy-tree
 
-## db-local: create the roles and the dev and test databases on local Postgres (idempotent)
+## db-local: create the roles, their limits, and the dev, test and scale databases on local Postgres (idempotent)
 db-local:
 	psql -v ON_ERROR_STOP=1 -d postgres -f deploy/sql/roles.sql
-	@for db in leadhound_dev leadhound_test; do \
+	psql -v ON_ERROR_STOP=1 -d postgres -f deploy/sql/limits.sql
+	@# Parallel test runs share the app role, so locally it has no connection cap; every
+	@# other limit stays as on the server.
+	psql -v ON_ERROR_STOP=1 -d postgres -c 'ALTER ROLE leadhound_app CONNECTION LIMIT -1'
+	@for db in leadhound_dev leadhound_test leadhound_scale; do \
 		if psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$$db'" | grep -q 1; then \
 			echo "db-local: $$db exists"; \
 		else \
@@ -142,12 +153,12 @@ prepush: privacy-tree
 build-linux:
 	GOOS=linux GOARCH=$(ARCH) CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(LINUX_BINARY) $(CMD)
 
-## deploy: make deploy HOST=<ssh host> [ARCH=arm64|amd64] CONFIRM=1: check, build, copy the
-## binary, backup script and units, migrate as the owner role, enable the timers
-deploy: check build-linux
+## deploy: make deploy HOST=<ssh host> [ARCH=arm64|amd64] CONFIRM=1: check, the scale test, build,
+## copy the binary, backup script, role limits and units, migrate as the owner role, enable the timers
+deploy: check test-scale build-linux
 	@stage=$$($(SSH) $(HOST) mktemp -d) && \
 	$(SCP) $(LINUX_BINARY) $(HOST):$$stage/leadhound && \
-	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/leadhound-*.service deploy/leadhound-*.timer $(HOST):$$stage/ && \
+	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/sql/limits.sql deploy/leadhound-*.service deploy/leadhound-*.timer $(HOST):$$stage/ && \
 	$(SSH) -t $(HOST) sudo sh $$stage/install.sh $$stage
 
 ## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile, then copy

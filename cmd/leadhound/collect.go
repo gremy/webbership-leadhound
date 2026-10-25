@@ -168,7 +168,7 @@ func openStoreAndZone(ctx context.Context, cfg config.Config) (*store.Store, *ti
 	if err != nil {
 		return nil, nil, usageError("LEADHOUND_TZ: %v", err)
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return nil, nil, err
 	}

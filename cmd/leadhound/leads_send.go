@@ -267,7 +267,7 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 			return usageError("LEADHOUND_OUTREACH is live, so sending needs %s", strings.Join(missing, ", "))
 		}
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}

@@ -1,8 +1,8 @@
 #!/bin/sh
 # install.sh STAGE: installs a release that `make deploy` copied into the directory STAGE.
 # Run on the server as root (make deploy runs it with sudo). Order: the env files' owner and
-# mode, the new binary beside the old one, migrate with the new binary as the owner role,
-# then the swap, the backup script, the units, the timers and the console. A failed migrate
+# mode, the Postgres limits on the leadhound roles, the new binary beside the old one, migrate
+# with the new binary as the owner role, then the swap, the backup script, the units, the timers and the console. A failed migrate
 # leaves the old binary and the old units in place. STAGE is removed once the units are in.
 set -eu
 
@@ -28,6 +28,11 @@ chmod 0600 /etc/leadhound/env /etc/leadhound/migrate.env
 install -d -o root -g root -m 0755 /opt/leadhound "$bin"
 install -d -o leadhound -g leadhound -m 0750 "$data"
 install -d -o postgres -g postgres -m 0700 /var/backups/leadhound
+
+# The per-role limits (sql/limits.sql) are re-applied on every deploy. root opens the file and
+# psql reads it on stdin, because the stage is 0700 and the postgres user cannot read inside it.
+runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d postgres <"$stage/limits.sql" ||
+	fail "the Postgres limits for the leadhound roles did not apply; nothing else was changed"
 
 # The new binary migrates before it replaces the old one, so a failed migrate leaves the
 # release that was running.

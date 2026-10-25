@@ -147,7 +147,7 @@ func runTrackList(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	rows, err := s.Q().TrackList(ctx, *status)
+	rows, _, err := s.Q().TrackList(ctx, *status, 0)
 	if err != nil {
 		return err
 	}

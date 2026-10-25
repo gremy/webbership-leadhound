@@ -18,6 +18,7 @@ import (
 	_ "time/tzdata" // LEADHOUND_TZ resolves on a server image with no zoneinfo
 
 	"github.com/gremy/webbership-leadhound/internal/config"
+	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
 // command runs one subcommand with the arguments after its name.
@@ -26,6 +27,9 @@ type command func(ctx context.Context, args []string) error
 // commands maps a subcommand name to its function. Each command file adds its own entry from
 // init, for example commands["migrate"] = runMigrate.
 var commands = map[string]command{}
+
+// commandName is the subcommand run dispatched to; the store names its connections after it.
+var commandName string
 
 // errUsage marks an error the caller can fix by changing the command line or the
 // environment; main exits 2 for it, 1 for any other error.
@@ -57,6 +61,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+	commandName = args[0]
 	err := cmd(ctx, args[1:])
 	switch {
 	case err == nil:
@@ -83,6 +88,10 @@ func usage(w io.Writer) {
 	}
 	_, _ = fmt.Fprintf(w, "usage: leadhound <command> [flags]\ncommands: %s\n", list)
 }
+
+// appName is the store option every command opens the database with, so pg_stat_activity
+// shows which command holds a connection.
+func appName() store.Option { return store.WithAppName("leadhound " + commandName) }
 
 // loadConfig reads the environment and checks the variables a command cannot run without.
 // Any problem is a usage error listing every problem at once.

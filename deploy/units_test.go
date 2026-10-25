@@ -553,6 +553,59 @@ func TestInstallMigratesBeforeSwap(t *testing.T) {
 	}
 }
 
+// TestInstallAppliesLimitsBeforeMigrate: install.sh applies sql/limits.sql as the postgres
+// user, with root opening the file onto psql's stdin (the stage is 0700, so postgres cannot
+// open a path inside it), and stops the deploy on a failure, before the migrate runs.
+func TestInstallAppliesLimitsBeforeMigrate(t *testing.T) {
+	steps := installSteps(t)
+	limits := firstLine(steps, "runuser -u postgres --", "psql", "ON_ERROR_STOP=1", `<"$stage/limits.sql"`)
+	migrate := firstLine(steps, `"$bin/.leadhound.new" migrate`)
+	switch {
+	case limits < 0:
+		t.Fatal(`install.sh does not run psql as postgres with <"$stage/limits.sql" on stdin`)
+	case migrate < 0:
+		t.Fatal(`install.sh does not run migrate with "$bin/.leadhound.new"`)
+	case limits > migrate:
+		t.Errorf("install.sh applies the limits (line %d) after migrate (line %d)", limits, migrate)
+	}
+	if i := firstLine(steps, "-f", "limits.sql"); i >= 0 {
+		t.Errorf("install.sh has psql open limits.sql itself, which postgres cannot read in the stage: %q", steps[i])
+	}
+	if limits >= 0 && !strings.Contains(steps[limits], "|| fail") && (limits+1 >= len(steps) || !strings.HasPrefix(steps[limits+1], "fail ")) {
+		t.Errorf("install.sh does not stop when the limits fail to apply: %q", steps[limits])
+	}
+}
+
+// TestDeployCopiesLimits: make deploy copies sql/limits.sql into the stage, where install.sh
+// reads it.
+func TestDeployCopiesLimits(t *testing.T) {
+	b, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recipe []string
+	in := false
+	for line := range strings.Lines(string(b)) {
+		switch {
+		case strings.HasPrefix(line, "deploy:"):
+			in = true
+		case in && strings.HasPrefix(line, "\t"):
+			recipe = append(recipe, line)
+		case in:
+			in = false
+		}
+	}
+	if len(recipe) == 0 {
+		t.Fatal("the Makefile has no deploy recipe")
+	}
+	for _, l := range recipe {
+		if strings.Contains(l, "$(SCP)") && slices.Contains(strings.Fields(l), "deploy/sql/limits.sql") {
+			return
+		}
+	}
+	t.Error("make deploy does not copy deploy/sql/limits.sql to the stage")
+}
+
 // TestInstallLocksEnvFiles: install.sh makes both env files root:root 0600 before anything
 // reads them.
 func TestInstallLocksEnvFiles(t *testing.T) {

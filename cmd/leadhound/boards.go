@@ -226,7 +226,7 @@ func runBoardsImport(ctx context.Context, args []string) error {
 		}
 		rows = append(rows, store.BoardImport{BoardKey: b.RegistryKey(), Name: b.Name, Origin: *origin})
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}
@@ -330,7 +330,7 @@ func runBoardsList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal())
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}
