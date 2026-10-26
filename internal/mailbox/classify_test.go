@@ -403,7 +403,63 @@ func verdictMessages(t *testing.T) []wrappedMessage {
 	} {
 		all = append(all, wrapFixture(t, "classify "+c.subject+" "+c.text, c.subject, c.text, false, c.want)...)
 	}
+	for _, c := range legacyCharsetMessages(t) {
+		all = append(all, wrappedMessage{c.name, c.raw, c.text, c.want})
+	}
 	return all
+}
+
+type charsetMessage struct {
+	name  string
+	raw   []byte
+	text  []byte
+	want  verdict
+	where OptOutWhere
+}
+
+// legacyCharsetMessages (M1, L1) are whole replies with the charset their client declares:
+// a windows-1250 8bit body, an iso-8859-2 quoted-printable body, and UTF-8 with cedilla
+// letters, each a plain reply above our ro line under an Outlook Original Message quote.
+func legacyCharsetMessages(t *testing.T) []charsetMessage {
+	t.Helper()
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	reply := crlf("Mul\xFEumesc, revin.\n\n" + originalMessage + ourBody + roLineCP1250 + "\n")
+	// iso-8859-2 has no „ ” marks; clients send straight quotes.
+	latin2 := strings.NewReplacer("\x84", `"`, "\x94", `"`).Replace(reply)
+	cp := func(cs, cte string) []byte {
+		return replyHdr("Re: Drupal 7", "Content-Type", "text/plain; charset="+cs, "Content-Transfer-Encoding", cte)
+	}
+	return []charsetMessage{
+		{"windows-1250 8bit reply over our quoted line", cp("windows-1250", "8bit"), []byte(reply), notOptOut, OptOutQuoted},
+		{"iso-8859-2 quoted-printable reply over our quoted line", cp("iso-8859-2", "quoted-printable"),
+			encodeQP(t, latin2), notOptOut, OptOutQuoted},
+		{"utf-8 cedilla reply over our quoted line", cp("UTF-8", "8bit"),
+			[]byte(crlf("Mulţumesc, revin.\n\n" + originalMessage + ourBody + roLineCedilla + "\n")), notOptOut, OptOutQuoted},
+		{"windows-1250 8bit own dezabonare over our quoted line", cp("windows-1250", "8bit"),
+			[]byte(crlf("Dezabonare, v\xE3 rog.\n\n" + originalMessage + ourBody + roLineCP1250 + "\n")), realOptOut, OptOutText},
+		{"iso-8859-2 quoted-printable own dezabonați-mă over our quoted line", cp("iso-8859-2", "quoted-printable"),
+			encodeQP(t, strings.Replace(latin2, "Mul\xFEumesc, revin.", "V\xE3 rog, dezabona\xFEi-m\xE3.", 1)), realOptOut, OptOutText},
+		{"windows-1250 8bit dezabonează", cp("windows-1250", "8bit"),
+			[]byte(crlf("V\xE3 rog s\xE3 m\xE3 dezaboneaz\xE3 cineva.\n")), realOptOut, OptOutText},
+	}
+}
+
+// TestOptOutInLegacyCharsets (M1, L1): the exact verdict for each legacy-charset reply.
+func TestOptOutInLegacyCharsets(t *testing.T) {
+	for _, c := range legacyCharsetMessages(t) {
+		t.Run(c.name, func(t *testing.T) {
+			if len(c.text) > FirstTextBytes {
+				t.Fatalf("fixture is %d bytes, more than the %d-byte peek", len(c.text), FirstTextBytes)
+			}
+			h, err := ParseHeader(c.raw, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := OptOutIn(h.Fields, c.text, testOwnLines); got != c.where {
+				t.Fatalf("got %q, want %q\ntext: %q", got, c.where, c.text)
+			}
+		})
+	}
 }
 
 // TestOptOutInVerdicts (FO5): every hand-tagged fixture, in every wrapping, reads as its

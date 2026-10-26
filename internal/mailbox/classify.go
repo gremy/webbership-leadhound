@@ -72,8 +72,9 @@ type Result struct {
 var (
 	// optOutWords (RA5, FO1): Go's \b is ASCII-only, so the Romanian forms that end in a
 	// letter with a diacritic (dezabonează, dezabonați) are matched by their stem, with no
-	// boundary after it (it errs toward opt-out).
-	optOutWords = regexp.MustCompile(`(?i)\b(unsubscribe|remove\s+me|dezabonare|dezabona|dezabonez|dezabonati|abmelden|afmelden|abbestellen|austragen|opt[\s-]?out)\b|(?i)\b(dezaboneaz[aă]|dezabona[tț]i)`)
+	// boundary after it (it errs toward opt-out). dezaboneaz has no final letter at all, so
+	// a legacy-charset final ă (windows-1250 0xE3, not UTF-8) still matches (L1).
+	optOutWords = regexp.MustCompile(`(?i)\b(unsubscribe|remove\s+me|dezabonare|dezabona|dezabonez|dezabonati|abmelden|afmelden|abbestellen|austragen|opt[\s-]?out)\b|(?i)\b(dezaboneaz|dezabona[tț]i)`)
 	msgIDRe     = regexp.MustCompile(`<([^<>\s]+)>`)
 	wordDecoder = new(mime.WordDecoder)
 )

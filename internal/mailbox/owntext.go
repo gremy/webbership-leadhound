@@ -32,6 +32,9 @@ var (
 	}
 	htmlLineTag = regexp.MustCompile(`(?i)<\s*/?\s*(br|p|div|li|tr|blockquote|hr|h[1-6]|table|ul|ol)\b[^>]*>`)
 	htmlAnyTag  = regexp.MustCompile(`<[^>]*(>|$)`)
+	// htmlStartRe (L2): text not declared HTML is taken as HTML only when it opens with a
+	// real tag, so a plain "<Bitte abmelden>" or "<< unsubscribe >>" stays plain text.
+	htmlStartRe = regexp.MustCompile(`(?i)^\s*<(html|!doctype|head|body|div|p|br|span|table|meta|style)[\s>/]`)
 
 	// FO2.3: attribution lines, en / ro / de / nl / fr.
 	attributionRe = regexp.MustCompile(`(?i)^\s*(On .+ wrote:|(În|In) .+ a scris:|Am .+ schrieb .*:|Op .+ schreef .*:|Le .+ a écrit\s*:)\s*$`)
@@ -54,14 +57,14 @@ func HasOptOutWord(s string) bool { return optOutWords.MatchString(s) }
 // lines and our own lines taken out; tail is the text from that header on, with its quoted
 // lines and our own lines taken out. tail is kept because a sender may answer inline under
 // our quoted email, so the caller counts an opt-out word in either. html says the text is
-// text/html; text starting with "<" is taken as HTML too. Both are returned with LF line
+// text/html; text opening with a real tag (htmlStartRe) is taken as HTML too. Both are returned with LF line
 // ends; our lines are replaced by a space, never by nothing, so no two words are glued.
 func OwnText(text []byte, html bool, ownLines []string) (own, tail []byte) {
 	s := strings.ReplaceAll(string(text), "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 
 	var htmlTail string
-	if html || strings.HasPrefix(strings.TrimLeftFunc(s, unicode.IsSpace), "<") {
+	if html || htmlStartRe.MatchString(s) {
 		s, htmlTail = stripHTMLQuote(s)
 	}
 
@@ -183,9 +186,13 @@ func isQuoteMark(r rune) bool {
 	return false
 }
 
-// normOptOut (FO3) normalises s for comparing our lines: lower case, the quote marks
-// removed, every run of whitespace one space, trimmed. A broken UTF-8 byte (the 600-byte
-// peek can cut a character) is dropped.
+// normOptOut (FO3) normalises s for comparing our lines to its ASCII skeleton: lower case,
+// every run of whitespace one space, trimmed, and every other non-ASCII rune dropped, with
+// a broken UTF-8 byte (the 600-byte peek can cut a character). The quote marks are dropped
+// too. Our ro line then compares equal however the reply's client spelled its letters: as
+// windows-1250 or iso-8859-2 bytes (never valid UTF-8, so dropped as broken bytes), or in
+// UTF-8 with the cedilla ş/ţ for the comma-below ș/ț (M1). Our lines are still matched
+// whole, or as a cut prefix of at least minCutLine skeleton characters at the very end.
 func normOptOut(s string) string {
 	runes, _, _ := normMapped(s)
 	return strings.TrimSpace(string(runes))
@@ -201,12 +208,14 @@ func normMapped(s string) (norm []rune, start, end []int) {
 		switch {
 		case r == utf8.RuneError || isQuoteMark(r):
 		case unicode.IsSpace(r):
+			// Before the non-ASCII case: a no-break space is still a word break.
 			if space {
 				end[len(end)-1] = j
 			} else {
 				norm, start, end = append(norm, ' '), append(start, i), append(end, j)
 				space = true
 			}
+		case r > unicode.MaxASCII:
 		default:
 			norm, start, end = append(norm, unicode.ToLower(r)), append(start, i), append(end, j)
 			space = false

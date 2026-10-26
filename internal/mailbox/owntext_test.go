@@ -120,7 +120,34 @@ var ownTextFixtures = []ownFixture{
 	{"opt-out", "opt-out", false, realOptOut},
 	{"stop inside a sentence", "We will stop using Drupal 7", false, notOptOut},
 	{"a > b is the sender's", "a > b, so please unsubscribe", false, realOptOut},
+
+	// M1: our ro line quoted under an Outlook Original Message header in a legacy charset
+	// or with cedilla letters; the reply above it is a reply.
+	{"cp1250 Original Message quoting our ro line", "Mul\xFEumesc.\n\n" + originalMessage + ourBody + roLineCP1250 + "\n", false, notOptOut},
+	{"utf-8 cedilla Original Message quoting our ro line", "Mulţumesc.\n\n" + originalMessage + ourBody + roLineCedilla + "\n", false, notOptOut},
+	// M1 safety: the sender's own word next to our cp1250 line still counts.
+	{"cp1250 own dezabonare above our quoted line", "Dezabonare, v\xE3 rog.\n\n" + originalMessage + ourBody + roLineCP1250 + "\n", false, realOptOut},
+	{"cp1250 own dezabonați-mă above our quoted line", "V\xE3 rog, dezabona\xFEi-m\xE3.\n\n" + originalMessage + ourBody + roLineCP1250 + "\n", false, realOptOut},
+	{"cp1250 own dezabonare under our quoted line", "Mul\xFEumesc.\n\n" + originalMessage + ourBody + roLineCP1250 + "\n\ndezabonare\n", false, realOptOut},
+	{"cp1250 own dezabonare on our quoted line", "Mul\xFEumesc.\n\n" + originalMessage + ourBody + roLineCP1250 + " dezabonare\n", false, realOptOut},
+	{"utf-8 cedilla own dezabonați-mă next to our line", "Vă rog, dezabonaţi-mă.\n\n" + originalMessage + ourBody + roLineCedilla + "\n", false, realOptOut},
+	// L1: a cp1250 dezabonează (final ă = 0xE3).
+	{"cp1250 dezabonează", "V\xE3 rog s\xE3 m\xE3 dezaboneaz\xE3 cineva", false, realOptOut},
+	// L2: plain text that opens with "<" but no real tag is plain text.
+	{"plain <Bitte abmelden>", "<Bitte abmelden>", false, realOptOut},
+	{"plain << unsubscribe >>", "<< unsubscribe >>", false, realOptOut},
+	{"undeclared real HTML quoting our line", `<div dir="ltr">Thanks.</div><div class="gmail_quote"><div>` + attrEN + `</div><blockquote>Hello Ana,<br>` +
+		`Not relevant? Reply &quot;unsubscribe&quot; and I won&#39;t write again.</blockquote></div>`, false, notOptOut},
+	{"undeclared HTML document", "<!DOCTYPE html><html><body><p>Thanks.</p><blockquote>Not relevant? Reply &quot;unsubscribe&quot; and I won&#39;t write again.</blockquote></body></html>", false, notOptOut},
 }
+
+// Our ro line as a legacy client sends it (M1): windows-1250 bytes (ă 0xE3, ț 0xFE, „ 0x84,
+// ” 0x94, ș 0xBA), and UTF-8 with the cedilla letters ş/ţ instead of comma-below ș/ț.
+var (
+	roLineCP1250    = "Nu v\xE3 intereseaz\xE3? R\xE3spunde\xFEi cu \x84dezabonare\x94 \xBAi nu v\xE3 mai scriu."
+	roLineCedilla   = "Nu vă interesează? Răspundeţi cu „dezabonare” şi nu vă mai scriu."
+	originalMessage = "-----Original Message-----\nFrom: Sam <" + senderAddr + ">\nSent: Monday, 26 October 2026 18:10\n\n"
+)
 
 // ownVerdict is the FO1 decision on OwnText's result: a word in own or tail, or own just
 // "stop".
@@ -169,8 +196,16 @@ func TestOwnTextKeepsStructure(t *testing.T) {
 
 func TestNormOptOut(t *testing.T) {
 	got := normOptOut("  Nu vă INTERESEAZĂ?\n Răspundeți cu „dezabonare”  «x» 'y' \"z\" ‘w’ “v”  ")
-	if want := "nu vă interesează? răspundeți cu dezabonare x y z w v"; got != want {
+	// The ASCII skeleton (M1): letters with diacritics drop out.
+	if want := "nu v intereseaz? rspundei cu dezabonare x y z w v"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+	// Our ro line, its windows-1250 bytes and its cedilla spelling share one skeleton; a
+	// no-break space is still a space.
+	for _, v := range []string{roLineCP1250, roLineCedilla, strings.ReplaceAll(roLine, " ", " ")} {
+		if normOptOut(v) != normOptOut(roLine) {
+			t.Fatalf("%q normalises to %q, want %q", v, normOptOut(v), normOptOut(roLine))
+		}
 	}
 }
 
