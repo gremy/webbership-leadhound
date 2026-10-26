@@ -45,7 +45,14 @@ const (
 	atsWait            = 10 * time.Minute             // leadhound-ats.service takes no lock: it starts at once
 	atsRunLimit        = 8*time.Hour + 15*time.Minute // leadhound-ats.service: TimeoutStartSec=8h15min
 	collectUnitTimeout = 5*time.Hour + 30*time.Minute // leadhound-collect.service: TimeoutStartSec=5h30min
+	// atsScoreWait mirrors leadhound-ats.service's score step, flock --wait 5400 on the
+	// score lock: past it (and the grace) after the last ATS collect, the score never started.
+	atsScoreWait = 5400 * time.Second
 )
+
+// runNoteDidNotFinish is the note preview.go and brief.go defer onto their run row and
+// replace only on success: a row closed with it finished badly.
+const runNoteDidNotFinish = "did not finish"
 
 // runLimits is how long an action may wait to start, and how long its unit may run.
 type runLimits struct{ Wait, Run time.Duration }
@@ -87,11 +94,12 @@ func finalRow(action string, r store.Run) bool {
 	return false
 }
 
-// ended is when r ended: its finished_at, or, for a run still open past limit, the moment
-// its unit's timeout killed it (badly).
+// ended is when r ended: its finished_at (badly when its note is still the deferred "did
+// not finish"), or, for a run still open past limit, the moment its unit's timeout killed
+// it (badly).
 func ended(r store.Run, now time.Time, limit time.Duration) (at time.Time, ok, badly bool) {
 	if r.FinishedAt != nil {
-		return *r.FinishedAt, true, false
+		return *r.FinishedAt, true, r.Note == runNoteDidNotFinish
 	}
 	if now.Sub(r.StartedAt) > limit {
 		return r.StartedAt.Add(limit), true, true
@@ -101,10 +109,11 @@ func ended(r store.Run, now time.Time, limit time.Duration) (at time.Time, ok, b
 
 // progress is how far one instance of an action got after its anchor.
 type progress struct {
-	started *time.Time // the first step's start; nil when nothing started
-	step    string     // what runs now, while not done
-	done    *time.Time // the final step's end
-	badly   bool       // the final step, or the unit, never finished
+	started *time.Time    // the first step's start; nil when nothing started
+	step    string        // what runs now, while not done
+	done    *time.Time    // the final step's end
+	badly   bool          // the final step, or the unit, never finished
+	stuck   time.Duration // non-zero: the next step never started within this wait (plus the grace)
 }
 
 // runProgress walks action's steps in order from after: a step counts only if it started
@@ -137,7 +146,14 @@ func runProgress(action string, after time.Time, runs []store.Run, now time.Time
 			}
 		}
 		if last == nil && c != nil {
-			if _, ok, _ := ended(*c, now, collectUnitTimeout); ok {
+			if end, ok, _ := ended(*c, now, collectUnitTimeout); ok {
+				// The fetch's preview starts once the collect ends, after at most its
+				// LinkedIn lock wait; past that it never will. A timed collect that ran
+				// after a request the watcher never took ends the same way.
+				if now.Sub(end) > previewWait+runNowStuckGrace {
+					p.stuck = previewWait
+					return p
+				}
 				p.step = "scoring, then the results"
 			} else {
 				p.step = "reading LinkedIn"
@@ -201,15 +217,34 @@ func atsProgress(after time.Time, runs []store.Run, now time.Time, lim runLimits
 		p.done, p.badly = &lastEnd, true
 		return p
 	}
+	// Score rows carry no source, so every score that started after the last ATS collect
+	// ended, within the ATS score's lock wait, is the closest proof: the run is done only
+	// once all of them have finished. Another unit's score may hold the lock first, but the
+	// ATS score's flock wakes the moment the earlier score frees it, so no gap shows.
+	scoreBy := lastEnd.Add(atsScoreWait + runNowStuckGrace)
+	var doneAt time.Time
+	scored, scoredBadly := false, false
 	for _, r := range runs {
-		if !isScore(r) || r.StartedAt.Before(lastEnd) {
+		if !isScore(r) || r.StartedAt.Before(lastEnd) || r.StartedAt.After(scoreBy) {
 			continue
 		}
-		if at, ok, b := ended(r, now, lim.Run); ok {
-			p.done, p.badly = &at, b
+		at, ok, b := ended(r, now, lim.Run)
+		if !ok {
+			p.step = "scoring"
 			return p
 		}
-		p.step = "scoring"
+		if !scored || at.After(doneAt) {
+			doneAt, scoredBadly = at, b
+		}
+		scored = true
+	}
+	if scored {
+		p.done, p.badly = &doneAt, scoredBadly
+		return p
+	}
+	if now.After(scoreBy) {
+		// The score never took the lock within its wait: the run did not finish.
+		p.done, p.badly = &scoreBy, true
 		return p
 	}
 	p.step = "waiting to score"
@@ -276,8 +311,15 @@ func runNowState(action string, requested *time.Time, runs []store.Run, now time
 		a.State, a.Since = "done", p.done
 		a.Line = "Last done at " + hhmm(*p.done, now) + "."
 		if p.badly {
-			a.Line = "The last run did not finish; it started at " + hhmm(*p.started, now) + "."
+			a.Line = "The last run did not finish. It started at " + hhmm(*p.started, now) + "."
 		}
+		return a
+	case p.stuck != 0:
+		a.State, a.Since = "stuck", requested
+		if requested == nil {
+			a.Since = p.started
+		}
+		a.Line = stuckLine(action, hhmm(*a.Since, now), p.stuck)
 		return a
 	case p.started != nil:
 		a.State, a.Since, a.Pending = "running", p.started, true
@@ -287,14 +329,7 @@ func runNowState(action string, requested *time.Time, runs []store.Run, now time
 	asked := hhmm(*requested, now)
 	a.Since = requested
 	if now.Sub(*requested) > lim.Wait+runNowStuckGrace {
-		a.State = "stuck"
-		cause := fmt.Sprintf("LinkedIn may have stayed busy for %s (press again), or the watcher is not running", waitWords(lim.Wait))
-		if action == console.RunATS {
-			cause = "The watcher may not be running"
-		}
-		a.Line = fmt.Sprintf("Asked at %s and not started. %s: see deploy/README.md, Run now "+
-			"(systemctl reset-failed leadhound-%s.path leadhound-%s.service, then systemctl start leadhound-%s.path).",
-			asked, cause, action, action, action)
+		a.State, a.Line = "stuck", stuckLine(action, asked, lim.Wait)
 		return a
 	}
 	a.State, a.Pending = "waiting", true
@@ -305,6 +340,18 @@ func runNowState(action string, requested *time.Time, runs []store.Run, now time
 		}
 	}
 	return a
+}
+
+// stuckLine is the stuck sentence: both causes (LinkedIn busy past wait, or a watcher that
+// is not running) and the fix.
+func stuckLine(action, asked string, wait time.Duration) string {
+	cause := fmt.Sprintf("LinkedIn may have stayed busy for %s (press again), or the watcher is not running", waitWords(wait))
+	if action == console.RunATS {
+		cause = "The watcher may not be running"
+	}
+	return fmt.Sprintf("Asked at %s and not started. %s: see deploy/README.md, Run now "+
+		"(systemctl reset-failed leadhound-%s.path leadhound-%s.service, then systemctl start leadhound-%s.path).",
+		asked, cause, action, action, action)
 }
 
 // waitWords is a lock wait in words: "30 minutes", "5h30".

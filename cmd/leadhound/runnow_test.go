@@ -145,6 +145,45 @@ func TestRunNowStateGrid(t *testing.T) {
 		{"no request, a timed brief done", console.RunBrief, nil, []store.Run{
 			runAt("brief", "", ago(4*time.Hour), tp(ago(4*time.Hour-time.Minute))),
 		}, "done", "Last done at 08:01"},
+		// The fetch's preview never started after its joined collect ended: stuck, not
+		// running forever.
+		{"fetch: no preview after its joined collect ended", console.RunFetch, tp(ago(2 * time.Hour)), []store.Run{
+			runAt("collect", "linkedin", ago(110*time.Minute), tp(ago(previewWait+runNowStuckGrace+time.Minute))),
+		}, "stuck", "or the watcher is not running: see deploy/README.md, Run now (systemctl reset-failed leadhound-fetch.path leadhound-fetch.service, then systemctl start leadhound-fetch.path)"},
+		{"fetch: a timed collect after a dead watcher does not mask stuck", console.RunFetch, tp(ago(4 * time.Hour)), []store.Run{
+			runAt("collect", "linkedin", ago(3*time.Hour), tp(ago(2*time.Hour))),
+		}, "stuck", "Asked at 08:00 and not started"},
+		{"fetch: within the preview's wait after its collect", console.RunFetch, tp(ago(2 * time.Hour)), []store.Run{
+			runAt("collect", "linkedin", ago(110*time.Minute), tp(ago(previewWait+runNowStuckGrace-time.Minute))),
+		}, "running", "scoring, then the results"},
+		// The ATS score never started within its lock wait after the last collect.
+		{"ats: no score within the score lock wait", console.RunATS, tp(ago(4 * time.Hour)), []store.Run{
+			runAt("collect", "greenhouse", ago(3*time.Hour), tp(ago(atsScoreWait+runNowStuckGrace+time.Minute))),
+		}, "done", "The last run did not finish."},
+		{"ats: within the score lock wait", console.RunATS, tp(ago(4 * time.Hour)), []store.Run{
+			runAt("collect", "greenhouse", ago(3*time.Hour), tp(ago(atsScoreWait+runNowStuckGrace-time.Minute))),
+		}, "running", "waiting to score"},
+		// A run closed by its deferred "did not finish" note finished badly.
+		{"preview: a run noted did not finish", console.RunPreview, req, []store.Run{
+			{Command: "preview", StartedAt: ago(3 * time.Minute), FinishedAt: tp(ago(time.Minute)), Note: runNoteDidNotFinish},
+		}, "done", "The last run did not finish."},
+		{"fetch: a preview noted did not finish", console.RunFetch, req, []store.Run{
+			{Command: "preview", Source: "fetch", StartedAt: ago(3 * time.Minute), FinishedAt: tp(ago(time.Minute)), Note: runNoteDidNotFinish},
+		}, "done", "The last run did not finish."},
+		{"brief: a run noted did not finish", console.RunBrief, req, []store.Run{
+			{Command: "brief", StartedAt: ago(3 * time.Minute), FinishedAt: tp(ago(time.Minute)), Note: runNoteDidNotFinish},
+		}, "done", "The last run did not finish."},
+		// Another unit's score held the lock and ended first; the ATS's own still runs.
+		{"ats: another unit's score ends while the ATS score runs", console.RunATS, req, []store.Run{
+			runAt("collect", "greenhouse", ago(4*time.Minute), tp(ago(3*time.Minute))),
+			runAt("score", "", ago(3*time.Minute), tp(ago(2*time.Minute))),
+			runAt("score", "", ago(2*time.Minute), nil),
+		}, "running", "scoring"},
+		{"ats: done once every later score finished", console.RunATS, req, []store.Run{
+			runAt("collect", "greenhouse", ago(4*time.Minute), tp(ago(3*time.Minute))),
+			runAt("score", "", ago(3*time.Minute), tp(ago(2*time.Minute))),
+			runAt("score", "", ago(2*time.Minute), tp(ago(time.Minute))),
+		}, "done", "Last done at 11:59"},
 	}
 	for _, c := range extra {
 		t.Run(c.name, func(t *testing.T) {
