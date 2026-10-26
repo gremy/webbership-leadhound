@@ -24,7 +24,7 @@ const secretboxImport = "github.com/gremy/webbership-leadhound/internal/secretbo
 // that may refer to it.
 var secretboxAllowed = map[string][]string{
 	"Open":           {"leads_senders.go", "mailboxcore.go"},
-	"LoadPrivateKey": {"leads_send.go", "leads_sync.go", "leads_selftest.go", "mailboxcore.go"},
+	"LoadPrivateKey": {"leads_send.go", "leads_sync.go", "leads_selftest.go", "leads_suppress_review.go", "mailboxcore.go"},
 	"ReadPrivateKey": {"leads_mailboxes.go"},
 }
 

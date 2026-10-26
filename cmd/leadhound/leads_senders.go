@@ -103,23 +103,31 @@ func checkSenderFor(ctx context.Context, lq leadstore.Queries, host, selector st
 // errMailboxCreds: a mailbox's sealed password cannot be used, so mailboxCreds paused it.
 var errMailboxCreds = errors.New("the mailbox is paused")
 
-// mailboxCreds opens mb's sealed password with key and returns it only when it was sealed
-// by key's public key for exactly mb's current address, login and servers. Otherwise it
-// pauses mb when it is active (actor system, with the reason the operator reads) and returns an error that
-// wraps errMailboxCreds and never carries the password. It is the only place in this
-// command that opens a sealed password.
+// openCreds opens mb's sealed password with key and returns it only when it was sealed by
+// key's public key for exactly mb's current address, login and servers; otherwise the
+// reason the operator reads, and never the password. It writes nothing. It is the only
+// place in this command that opens a sealed password.
+func openCreds(key secretbox.PrivateKey, mb leadstore.Mailbox) (secretbox.Credentials, string) {
+	if mb.SealedBy != secretbox.Fingerprint(key.Public()) {
+		return secretbox.Credentials{}, "re-enter the password: it was saved under a different key"
+	}
+	creds, err := secretbox.Open(key, mb.PasswordSealed)
+	switch {
+	case err != nil:
+		return secretbox.Credentials{}, "re-enter the password: it could not be opened"
+	case !creds.Matches(mb.Address, mb.Login, mb.SMTPAddr, mb.IMAPAddr):
+		return secretbox.Credentials{}, "re-enter the password: the mailbox's settings changed since it was saved"
+	}
+	return creds, ""
+}
+
+// mailboxCreds is openCreds for a job that uses the mailbox: when the password cannot be
+// used it pauses mb when it is active (actor system, with the reason the operator reads) and
+// returns an error that wraps errMailboxCreds and never carries the password.
 func mailboxCreds(ctx context.Context, lq leadstore.Queries, key secretbox.PrivateKey, mb leadstore.Mailbox) (secretbox.Credentials, error) {
-	reason := "re-enter the password: it was saved under a different key"
-	if mb.SealedBy == secretbox.Fingerprint(key.Public()) {
-		creds, err := secretbox.Open(key, mb.PasswordSealed)
-		switch {
-		case err != nil:
-			reason = "re-enter the password: it could not be opened"
-		case !creds.Matches(mb.Address, mb.Login, mb.SMTPAddr, mb.IMAPAddr):
-			reason = "re-enter the password: the mailbox's settings changed since it was saved"
-		default:
-			return creds, nil
-		}
+	creds, reason := openCreds(key, mb)
+	if reason == "" {
+		return creds, nil
 	}
 	refused := fmt.Errorf("%w: mailbox %d: %s", errMailboxCreds, mb.ID, reason)
 	// Only an active mailbox gets the pause row: a sync every 15 minutes finds a paused one

@@ -275,7 +275,7 @@ Someone with a shell as the service user is outside what the key protects agains
 - An existing key is never overwritten.
   Every deploy reads the public key from the key file again and rewrites the env line if it differs, so the two always match; leave the line empty in your copy of `deploy/env.example`.
 - The key reaches only the send, sync and mailbox check units, as a systemd credential (`LoadCredential=`), and every other unit, the console's included, has `/run/credentials` walled off.
-  `make remote` hands it on the same way, and only to `leads selftest`, `leads send`, `leads sync` and `leads mailboxes check`.
+  `make remote` hands it on the same way, and only to `leads selftest`, `leads send`, `leads sync`, `leads mailboxes check` and `leads suppress review`.
 - `LEADHOUND_MAILBOX_KEY_FILE` is for local runs only; never set it on the server.
   The console refuses to start when it is set to anything (the empty line in `deploy/env.example` is fine).
 - **Back the key up by hand.**
@@ -421,11 +421,58 @@ When you add the same account as a mailbox, its first sync reads the last 30 day
 Old replies, bounces and opt-outs found that way are matched to your old messages and applied again:
 
 - a lead still batched or contacted moves to replied, bounced or opted out, as the old sync did;
-- a suppression you removed by hand since then comes back, and any unsent follow-ups of that lead are cancelled;
+- a suppression you removed or lifted since then comes back, and any unsent follow-ups of that lead are cancelled;
 - the reply, bounce and opt-out counts for that day can include those old ones, since they are recorded when read.
 
 Nothing is sent because of it, and the new mailbox's bounce pause counts only its own sends.
 Look over the Leads page after that first sync; a fresh install has no such rows and sees none of this.
+
+### Opt-outs, suppressions and lifting one
+
+The sync reads a message as an opt-out when its subject or the sender's own words ask to hear no more:
+
+- the subject holds an opt-out word, or is just "stop";
+- the sender's own text holds an opt-out word, or is just "stop" once spaces and punctuation are trimmed.
+
+The opt-out words are in English, Romanian, German and Dutch: unsubscribe, remove me, opt out (or opt-out, optout), dezabonare, dezabona, dezabonez, dezabonează, dezabonați, abmelden, abbestellen, austragen and afmelden.
+Quoted text does not count: lines starting with `>`, the "On … wrote:" line and its Romanian, German, Dutch and French forms, and an HTML reply's quoted part are taken out first.
+Our own lines do not count either: the opt-out line from `leads.yaml` and the selftest's instruction sentence are removed wherever they appear, in any case or quote marks, wrapped or cut off at the end.
+A forwarded or Outlook-style quote ("Original Message", "From: … Sent: …") is not thrown away: an opt-out word the sender typed inline under it still counts.
+When a reply is in several parts (as Gmail sends them), the first text part is decoded before it is read, so an opt-out written in a base64 or quoted-printable part is caught.
+A message that is not an opt-out but answers us is a reply, and stops that lead's follow-ups as any reply does.
+
+Because a reply quotes our email, our own text may hold an opt-out word only in the opt-out line.
+The draft check refuses a draft whose subject, or whose text outside the opt-out line, holds one ("the text holds an opt-out word outside the opt-out line"); reword the template.
+
+A suppression stops all writing to its address or domain.
+One recorded by mistake can be lifted, by its number; nothing in the app ever lifts one on its own.
+A lift is a record, never a delete: the suppression stays, with the lift's date, where it came from and your reason beside it.
+
+- In the console: open Leads, go to Suppressions, and under Lift a suppression type the number from the list, the domain shown in the list (for an address, the part after the `@`) to confirm, and a reason.
+- From the command line on the server:
+
+  ```sh
+  make remote HOST=<ssh host> CONFIRM=1 ARGS='leads suppress lift 2 --domain example.com --reason "reply quoted our opt-out line"'
+  ```
+
+The reason is 3 to 300 characters on one line, with no address in it.
+A lift is refused, and nothing changes, when the number does not exist, the domain is not that suppression's, the reason is missing, or the suppression was already lifted.
+When it works it says what was lifted and whether another active suppression still blocks the same address or domain.
+A lift never changes a lead's state: a lead that read as opted out still does, and the command line says how many such leads there are.
+A new opt-out from the same address suppresses it again, as a new suppression.
+`leads suppress list` shows the active suppressions, then the lifted ones with their reasons; the console shows the same under Suppressions.
+
+To find past opt-outs that were only quoted text, run the review:
+
+```sh
+make remote HOST=<ssh host> CONFIRM=1 ARGS='leads suppress review'
+```
+
+It reads each opt-out message again from its mailbox and judges it by the rules above, so it gets the mailbox key and needs `CONFIRM=1`; it only reads, and writes nothing.
+It lists first each one that now reads as a reply, with the exact lift line to run, then how many still read as opt-outs and which could not be read again (a renumbered folder, a deleted message, a retired mailbox), and ends with "Nothing was lifted: review and lift by hand."
+It prints no lift line for a suppression that another opt-out still leans on ("also covers event …: do not lift"), since lifting it would free an address that really asked to hear no more.
+
+`leads transfer` carries only active suppressions: a lifted one is left behind, and a suppression the target had lifted is recorded there again.
 
 ## Console
 

@@ -66,6 +66,10 @@ Nothing is written by a model: every draft is a template filled with facts the p
   The old mailbox lines in the env file are no longer read.
   Adding a first mailbox, the key and its backup, the limits, the pauses and the first test are in "Mailboxes" in `deploy/README.md`.
 - **Suppression**: `leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no]`, `leads suppress list` and `leads suppress check VALUE`; a suppressed address or domain is never drafted or sent to.
+  An opt-out is read from the subject and the sender's own words only, never from quoted text or our own lines, and a draft whose text holds an opt-out word outside the opt-out line is refused.
+  A suppression recorded by mistake is lifted by the operator only, by number, with a reason (`leads suppress lift ID --domain DOMAIN --reason TEXT`, or Lift a suppression on the console's Leads page); the lift is kept as a record, lead states do not change, and a new opt-out suppresses again.
+  `leads suppress review` reads past opt-outs again and lists those that were only quoted text, with the lift line for each; it writes nothing.
+  The details are in "Opt-outs, suppressions and lifting one" in `deploy/README.md`.
 - **Settings and data**: `leads check-config [--agencies FILE]` checks `leads.yaml`, the templates and the agency list without printing any value; `make deploy-data` runs it, then copies `leads.yaml`, `agencies.yaml` and `leads-templates/` to the server with the jobs settings (`leadhound.yaml`, `ats-boards.yaml`); `examples/leads.yaml` is the starting point for your own.
   `leads transfer export DIR` and `leads transfer import DIR` move lead data from one database to another, re-keyed by natural keys so they never collide with the other side's ids; an import can run again safely, it is refused while a live message may be in flight, and both print counts only.
 - **On a server**: five leads timers run the loop (probe and contacts daily, the batch each morning, send hourly in business hours on weekdays, sync every 15 minutes); every deploy installs them, and each stays off until `/etc/leadhound/env` turns it on.

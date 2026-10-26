@@ -13,9 +13,9 @@ import (
 
 func init() { leadsCommands["suppress"] = runLeadsSuppress }
 
-const leadsSuppressUsage = "usage: leadhound leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no] | list | check VALUE | lift ID --domain DOMAIN --reason TEXT"
+const leadsSuppressUsage = "usage: leadhound leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no] | list | check VALUE | lift ID --domain DOMAIN --reason TEXT | review"
 
-// runLeadsSuppress is `leads suppress add|list|check|lift`. A suppression is lifted only by
+// runLeadsSuppress is `leads suppress add|list|check|lift|review`. A suppression is lifted only by
 // the operator, by id, with a reason (FO6).
 func runLeadsSuppress(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -30,6 +30,8 @@ func runLeadsSuppress(ctx context.Context, args []string) error {
 		return runSuppressCheck(ctx, args[1:])
 	case "lift":
 		return runSuppressLift(ctx, args[1:])
+	case "review":
+		return runSuppressReview(ctx, args[1:])
 	}
 	return usageError("unknown suppress subcommand %q; %s", args[0], leadsSuppressUsage)
 }

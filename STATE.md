@@ -1,6 +1,12 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+No false opt-outs (2026-10-26, on local main, not yet pushed or deployed; plan `leadhound-false-opt-outs`):
+- CP1 (detection, `b47f703`) and CP2 (lift, `4bb4a5d`) are committed: an opt-out is read from the subject and the sender's own words only, our own lines and quoted text are taken out, a multipart reply's first text part is decoded, and a draft with an opt-out word outside the opt-out line is refused.
+- A suppression is lifted by number with a reason (`leads suppress lift`, or Lift a suppression on the console's Leads page); the lift is a record, lead states do not change, transfer carries active suppressions only.
+- CP3 is in progress: `leads suppress review` (reads past opt-outs again, writes nothing) and the docs ("Opt-outs, suppressions and lifting one" in `deploy/README.md`).
+- Left for CP4: the risk review, then push and deploy on the operator's yes, lift suppression 2 on production (the selftest reply), and run the review there. Sending stays off.
+
 Mailboxes are built (2026-10-26, on local main, not yet pushed or deployed; plan `leadhound-mailboxes`):
 - Any number of sending mailboxes live in the database and the console's Mailboxes page (add, check, pause, resume, retire), with the same verbs in `leads mailboxes`; the four old env mailbox lines are no longer read.
 - Each password is sealed with a public key at entry; only the send, sync and mailbox-check jobs get the private key (`/etc/leadhound/mailbox.key`, a systemd credential), and the console never can open one.
@@ -9,7 +15,6 @@ Mailboxes are built (2026-10-26, on local main, not yet pushed or deployed; plan
 - Health pauses: hard bounces, a refused login, an unusable password; a policy block refuses that email and pauses the domain.
 - Docs: "Mailboxes" in `deploy/README.md`. Next: the security review, the local walk, then push and deploy.
 
-The Run now card is built (2026-10-26, not yet deployed):
 The Run now card is built (2026-10-26, not yet deployed):
 - The console dashboard can ask for four runs: show results now, fetch new jobs then show, send today's email now (only while today is unsent), and the nightly ATS collect behind a confirm.
 - The console only writes a request file under `/opt/leadhound/data/run/`; one systemd `.path` unit per action starts its fixed service, so the console gains no privilege.

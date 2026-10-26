@@ -63,10 +63,11 @@ ifneq ($(filter leads_sites leads_contacts leads_agencies leads_transfer,$(REMOT
 REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock
 endif
 # remote hands the mailboxes' private key, as the same systemd credential the units get, only
-# to the verbs that open a mailbox password (selftest, send, sync, mailboxes check); every
-# other verb runs without it, as every unit but those jobs does.
+# to the verbs that open a mailbox password (selftest, send, sync, mailboxes check, suppress
+# review); every other verb runs without it, as every unit but those jobs does. suppress
+# review stays out of REMOTE_READONLY: it reaches the mailboxes, so it needs CONFIRM=1.
 REMOTE_KEY :=
-ifneq ($(filter leads_selftest leads_send leads_sync leads_mailboxes_check,$(REMOTE_VERB) $(REMOTE_VERB3)),)
+ifneq ($(filter leads_selftest leads_send leads_sync leads_mailboxes_check leads_suppress_review,$(REMOTE_VERB) $(REMOTE_VERB3)),)
 REMOTE_KEY := -p LoadCredential=mailbox-key:/etc/leadhound/mailbox.key
 endif
 ifneq ($(filter $(ARCH),arm64 amd64),$(ARCH))
