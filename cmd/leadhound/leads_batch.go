@@ -137,7 +137,7 @@ func runBatchNew(ctx context.Context, args []string) error {
 }
 
 // checkMailboxDomains runs and records today's DNS check (checkSenderFor) once for each
-// domain and selector of an active mailbox that has no pass since the start of the
+// address host and selector of an active mailbox that has no pass since the start of the
 // operator's day. A failed check is recorded too, so newBatch can say what is missing.
 func checkMailboxDomains(ctx context.Context, lq leadstore.Queries, loc *time.Location, now time.Time) error {
 	mbs, err := lq.Mailboxes(ctx, startOfDay(now, loc))
@@ -146,12 +146,12 @@ func checkMailboxDomains(ctx context.Context, lq leadstore.Queries, loc *time.Lo
 	}
 	seen := map[string]bool{}
 	for _, m := range mbs {
-		key := m.Domain + "\x00" + m.DKIMSelector
+		key := m.Host() + "\x00" + m.DKIMSelector
 		if m.State != leadstore.MailboxActive || m.DNSPassedToday || seen[key] {
 			continue
 		}
 		seen[key] = true
-		if _, err := checkSenderFor(ctx, lq, m.Domain, m.DKIMSelector, now); err != nil {
+		if _, err := checkSenderFor(ctx, lq, m.Host(), m.DKIMSelector, now); err != nil {
 			return err
 		}
 	}

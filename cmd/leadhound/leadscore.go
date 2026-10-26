@@ -445,7 +445,7 @@ func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now ti
 }
 
 // notReadyRefusal says why no active mailbox in mbs is ready for new leads (decision 5),
-// from what is recorded since today (the start of the operator's day): for each domain and
+// from what is recorded since today (the start of the operator's day): for each host and
 // selector whose DNS check has not passed today, that today's check has not run, or what
 // today's latest check found missing; otherwise that no mailbox's latest check passed.
 func notReadyRefusal(ctx context.Context, lq leadstore.Queries, mbs []leadstore.MailboxStatus, today time.Time) error {
@@ -455,20 +455,20 @@ func notReadyRefusal(ctx context.Context, lq leadstore.Queries, mbs []leadstore.
 		if m.State != leadstore.MailboxActive || m.DNSPassedToday {
 			continue
 		}
-		key := m.Domain + "\x00" + m.DKIMSelector
+		key := m.Host() + "\x00" + m.DKIMSelector
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		r, ok, err := lq.LatestSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Domain), m.DKIMSelector, today)
+		r, ok, err := lq.LatestSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Host()), m.DKIMSelector, today)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			why = append(why, fmt.Sprintf("Today's domain check has not run for %s yet: press Check on its mailbox, or wait for the morning batch.", m.Domain))
+			why = append(why, fmt.Sprintf("Today's domain check has not run for %s yet: press Check on its mailbox, or wait for the morning batch.", m.Host()))
 			continue
 		}
-		why = append(why, fmt.Sprintf("Today's domain check failed for %s: %s.", m.Domain, missingRecords(r, m.DKIMSelector)))
+		why = append(why, fmt.Sprintf("Today's domain check failed for %s: %s.", m.Host(), missingRecords(r, m.DKIMSelector)))
 	}
 	if len(why) == 0 {
 		return refused("No mailbox is ready for new leads: its latest check has not passed. Press Check on its mailbox.")

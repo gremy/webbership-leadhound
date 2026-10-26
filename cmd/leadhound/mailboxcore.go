@@ -520,7 +520,7 @@ func checkMailbox(ctx context.Context, lq leadstore.Queries, key secretbox.Priva
 	user := config.Secret(creds.Login)
 	smtpErr := leadsMail.probeSMTP(ctx, st.SMTPAddr, user, creds.Password)
 	_, imapErr := leadsMail.probeIMAP(ctx, st.IMAPAddr, user, creds.Password)
-	res, err := checkSenderFor(ctx, lq, st.Domain, st.DKIMSelector, now)
+	res, err := checkSenderFor(ctx, lq, st.Host(), st.DKIMSelector, now)
 	if err != nil {
 		return leadstore.MailboxCheckResult{}, err
 	}
@@ -530,14 +530,14 @@ func checkMailbox(ctx context.Context, lq leadstore.Queries, key secretbox.Priva
 	if imapOK {
 		r.FoldersOK = ptrTo(imapErr == nil)
 	}
-	dnsErr := res.Err(st.Domain, st.DKIMSelector)
+	dnsErr := res.Err(st.Host(), st.DKIMSelector)
 	switch {
 	case smtpErr != nil:
 		r.Fix = mailbox.FixFor(mailbox.StepSMTP, smtpErr, serverHost(st.SMTPAddr))
 	case imapErr != nil:
 		r.Fix = mailbox.FixFor(mailbox.StepIMAP, imapErr, serverHost(st.IMAPAddr))
 	case dnsErr != nil:
-		r.Fix = mailbox.FixFor(mailbox.StepDNS, dnsErr, st.Domain)
+		r.Fix = mailbox.FixFor(mailbox.StepDNS, dnsErr, st.Host())
 	}
 	r.Outcome = leadstore.CheckPassed
 	if r.Fix != "" {

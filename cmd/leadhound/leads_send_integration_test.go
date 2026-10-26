@@ -148,12 +148,14 @@ type fakeMail struct {
 	raw      []byte
 }
 
-// fakeSMTP records every message; errs fails the n-th call (from 0); onSend runs after a
-// call is recorded; block, when set, holds every call until it is closed.
+// fakeSMTP records every message; errs fails the n-th call (from 0) and errTo every call to
+// a recipient; onSend runs after a call is recorded; block, when set, holds every call until
+// it is closed.
 type fakeSMTP struct {
 	mu      sync.Mutex
 	sent    []fakeMail
 	errs    map[int]error
+	errTo   map[string]error
 	onSend  func(n int, to string)
 	block   chan struct{}
 	entered chan struct{}
@@ -170,6 +172,9 @@ func (f *fakeSMTP) Send(_ context.Context, from, to string, raw []byte) (string,
 	n := len(f.sent)
 	f.sent = append(f.sent, fakeMail{from, to, raw})
 	err := f.errs[n]
+	if e, ok := f.errTo[to]; ok {
+		err = e
+	}
 	hook := f.onSend
 	f.mu.Unlock()
 	if hook != nil {
@@ -223,6 +228,9 @@ type sendWorld struct {
 	// mail is the per-mailbox world; the seeded mailbox's fakes are smtp and box.
 	mail    *mailboxFakes
 	mailbox leadstore.Mailbox
+	// fromName is the From name batchFrom freezes on its messages, as a batch freezes the
+	// mailbox's or leads.yaml's at creation (default leads.yaml's sender.name).
+	fromName string
 }
 
 // newSendWorld sets the outreach env (live or shadow), a cap of capPerDay from 1 Oct 2026,
@@ -230,7 +238,7 @@ type sendWorld struct {
 func newSendWorld(t *testing.T, live bool, capPerDay int) *sendWorld {
 	t.Helper()
 	w := &sendWorld{dir: leadsDB(t), clock: &sendClock{t: time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)},
-		box: newFakeBox(), smtp: &fakeSMTP{}, dns: passingDNS(), lq: leadstoretest.Q(t)}
+		box: newFakeBox(), smtp: &fakeSMTP{}, dns: passingDNS(), lq: leadstoretest.Q(t), fromName: "Demo Sender"}
 	if live {
 		t.Setenv("LEADHOUND_OUTREACH", "live")
 	} else {
@@ -361,7 +369,7 @@ func (w *sendWorld) batchFrom(t *testing.T, mb leadstore.Mailbox, shadow bool, l
 				Subject: fmt.Sprintf("Your Drupal site, note %d", step+1), Body: fmt.Sprintf("Hello %s, note %d.\n", domain, step+1),
 				MessageID: fmt.Sprintf("b%dl%ds%d@%s", len(drafts), id, step, testSenderDomain)}
 			if step == 0 {
-				d.MailboxID = mb.ID
+				d.MailboxID, d.FromName = mb.ID, w.fromName
 				first = d.MessageID
 			} else {
 				d.InReplyTo = first

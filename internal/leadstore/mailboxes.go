@@ -77,6 +77,23 @@ type Mailbox struct {
 	CreatedAt      time.Time `db:"created_at"`
 }
 
+// Host is the address's own host (everything after the @, in lower case and punycode as
+// stored): where its DNS records are checked (SPF, the DKIM selector, DMARC) and the key of
+// its sender_check rows. Domain, the registrable domain, is for caps and domain pauses.
+func (m Mailbox) Host() string {
+	return MailboxHost(m.Address)
+}
+
+// MailboxHost is the host of a mailbox address, as Mailbox.Host.
+func MailboxHost(address string) string {
+	_, host, _ := strings.Cut(strings.ToLower(strings.TrimSpace(address)), "@")
+	return host
+}
+
+// hostSQL is the SQL of Mailbox.Host over sender_mailbox mb (its address is stored in
+// lower case).
+const hostSQL = `split_part(mb.address, '@', 2)`
+
 // MailboxEdit is a change to a mailbox; a nil field stays as it is. A change of Login,
 // SMTPAddr or IMAPAddr needs PasswordSealed (and SealedBy) too.
 type MailboxEdit struct {
@@ -120,7 +137,7 @@ type MailboxStatus struct {
 	LastCheck            *MailboxCheck // the latest check, of any outcome; nil when none
 	FirstLiveSend        *time.Time    // the first live (non-selftest) message sent from it
 	SentToday            int           // live emails sent, maybe sent or sending since since
-	DNSPassedToday       bool          // a full SPF/DKIM/DMARC pass for its domain and selector since since
+	DNSPassedToday       bool          // a full SPF/DKIM/DMARC pass for its Host and selector since since
 }
 
 func checkMailboxActor(actor string) error {
@@ -292,14 +309,45 @@ func (q Queries) SetMailboxState(ctx context.Context, id int64, state, reason, s
 	return nil
 }
 
+// PauseMailboxIfActive pauses mailbox id alone (scope mailbox) with reason by actor, only
+// when its latest state is active, and reports whether it wrote the row. A mailbox already
+// paused (by the operator, its domain or the system) or retired keeps its latest row, so a
+// check repeated on a paused mailbox never stacks rows or overwrites the operator's reason
+// and scope. A missing mailbox is ErrMailboxNotFound.
+func (q Queries) PauseMailboxIfActive(ctx context.Context, id int64, reason, actor string) (bool, error) {
+	if err := checkMailboxActor(actor); err != nil {
+		return false, fmt.Errorf("leadstore: pause mailbox: %w", err)
+	}
+	var found, wrote bool
+	err := q.db.QueryRow(ctx,
+		`WITH mb AS (SELECT id FROM sender_mailbox WHERE id = $1 FOR UPDATE),
+		 cur AS (SELECT s.state FROM mailbox_state s WHERE s.mailbox_id = $1 ORDER BY s.id DESC LIMIT 1),
+		 ins AS (
+		   INSERT INTO mailbox_state (mailbox_id, state, reason, scope, actor)
+		   SELECT id, 'paused', $2, 'mailbox', $3 FROM mb WHERE coalesce((SELECT state FROM cur), 'active') = 'active'
+		   RETURNING id
+		 )
+		 SELECT EXISTS (SELECT 1 FROM mb), EXISTS (SELECT 1 FROM ins)`,
+		id, reason, actor).Scan(&found, &wrote)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("leadstore: pause mailbox: %w", err)
+	case !found:
+		return false, fmt.Errorf("leadstore: pause mailbox %d: %w", id, ErrMailboxNotFound)
+	}
+	return wrote, nil
+}
+
 // latestStateSQL is the latest mailbox_state row of each mailbox, as a lateral subquery
 // over sender_mailbox mb.
 const latestStateSQL = `LEFT JOIN LATERAL (
 	  SELECT s.state, s.reason, s.scope, s.at FROM mailbox_state s WHERE s.mailbox_id = mb.id ORDER BY s.id DESC LIMIT 1
 	) st ON true`
 
-// SetDomainState appends one state row (scope domain) for every mailbox on domain that is
-// not retired, and returns how many it wrote.
+// SetDomainState appends one state row (scope domain) for every mailbox on domain whose
+// latest state is active, and returns how many it wrote. A mailbox already paused (on its
+// own, say by its bounces) gets no row, so a later resume of the domain, which lifts only
+// domain-scope pauses, never lifts its own pause; a retired one never changes.
 func (q Queries) SetDomainState(ctx context.Context, domain, state, reason, actor string) (int, error) {
 	if err := checkStateScope(state, ScopeDomain); err != nil {
 		return 0, fmt.Errorf("leadstore: set domain state: %w", err)
@@ -310,7 +358,7 @@ func (q Queries) SetDomainState(ctx context.Context, domain, state, reason, acto
 	tag, err := q.db.Exec(ctx,
 		`WITH mbs AS (
 		   SELECT mb.id FROM sender_mailbox mb `+latestStateSQL+`
-		   WHERE mb.domain = $1 AND coalesce(st.state, 'active') <> 'retired'
+		   WHERE mb.domain = $1 AND coalesce(st.state, 'active') = 'active'
 		   ORDER BY mb.id FOR UPDATE OF mb
 		 )
 		 INSERT INTO mailbox_state (mailbox_id, state, reason, scope, actor)
@@ -465,7 +513,7 @@ func (q Queries) MailboxesOnDomain(ctx context.Context, domain string) (int, err
 const liveSentStates = `('sending', 'sent', 'maybe_sent')`
 
 // Mailboxes returns every mailbox, by id, with its latest state and check, its first live
-// send, what it sent since since and whether its domain and selector passed a DNS check
+// send, what it sent since since and whether its host and selector passed a DNS check
 // since since: one query. since is the start of the operator's day.
 func (q Queries) Mailboxes(ctx context.Context, since time.Time) ([]MailboxStatus, error) {
 	rows, err := q.db.Query(ctx,
@@ -475,7 +523,7 @@ func (q Queries) Mailboxes(ctx context.Context, since time.Time) ([]MailboxStatu
 		   ck.spf, ck.dkim, ck.dmarc, ck.fix, ck.outcome,
 		   fl.first, sd.n,
 		   EXISTS (SELECT 1 FROM sender_check sc
-		     WHERE sc.domain_sha256 = sha256(convert_to(mb.domain, 'UTF8')) AND sc.selector = mb.dkim_selector
+		     WHERE sc.domain_sha256 = sha256(convert_to(`+hostSQL+`, 'UTF8')) AND sc.selector = mb.dkim_selector
 		       AND sc.selector <> '' AND sc.checked_at >= $1 AND sc.spf AND sc.dkim AND sc.dmarc)
 		 FROM sender_mailbox mb
 		 `+latestStateSQL+`

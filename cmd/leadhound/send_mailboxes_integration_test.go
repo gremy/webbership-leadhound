@@ -14,6 +14,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 )
 
 // The send run over many mailboxes (MB-R9, MB-R11). Until the cursor key is swapped to the
@@ -52,14 +53,14 @@ func newMultiWorld(t *testing.T, capPerDay int) *multiWorld {
 	return w
 }
 
-// add seeds a mailbox for address, with passing DNS records for its domain (selector sel1).
+// add seeds a mailbox for address, with passing DNS records for its host (selector sel1).
 func (w *multiWorld) add(t *testing.T, address string) leadstore.Mailbox {
 	t.Helper()
 	m := seedMailbox(t, w.lq, address)
-	if m.Domain != testSenderDomain {
-		w.dns[m.Domain] = []string{"v=spf1 -all"}
-		w.dns["sel1._domainkey."+m.Domain] = []string{"v=DKIM1; k=rsa; p=MIIB"}
-		w.dns["_dmarc."+m.Domain] = []string{"v=DMARC1; p=none"}
+	if h := m.Host(); h != testSenderDomain {
+		w.dns[h] = []string{"v=spf1 -all"}
+		w.dns["sel1._domainkey."+h] = []string{"v=DKIM1; k=rsa; p=MIIB"}
+		w.dns["_dmarc."+h] = []string{"v=DMARC1; p=none"}
 	}
 	w.watch(address)
 	return m
@@ -173,7 +174,7 @@ func TestSendCapsPerMailboxAndDomain(t *testing.T) {
 }
 
 // TestSendMailboxHealth: two hard bounces pause their mailbox while the other keeps sending;
-// a policy block (5.7.x) pauses every mailbox on its domain and the message waits; a refused
+// a policy block (5.7.x) pauses every mailbox on its domain and the message is refused; a refused
 // login pauses its mailbox alone and the run exits non-zero.
 func TestSendMailboxHealth(t *testing.T) {
 	t.Run("bounces", func(t *testing.T) {
@@ -227,8 +228,11 @@ func TestSendMailboxHealth(t *testing.T) {
 		if rows := mailboxStateRows(t, c.ID); len(rows) != 0 {
 			t.Errorf("C state rows %q", rows)
 		}
-		if n := w.count(t, `SELECT count(*) FROM outreach_message WHERE step = 0 AND state = 'approved' AND mailbox_id IN ($1, $2)`, w.a.ID, b.ID); n != 3 {
-			t.Errorf("%d first emails of the blocked domain still approved, want 3", n)
+		if n := w.count(t, `SELECT count(*) FROM outreach_message WHERE step = 0 AND state = 'approved' AND mailbox_id IN ($1, $2)`, w.a.ID, b.ID); n != 2 {
+			t.Errorf("%d first emails of the blocked domain still approved, want the 2 not tried", n)
+		}
+		if n := w.count(t, `SELECT count(*) FROM outreach_message WHERE step = 0 AND state = 'refused' AND mailbox_id = $1`, w.a.ID); n != 1 {
+			t.Errorf("%d blocked messages refused, want 1", n)
 		}
 		if n := w.count(t, `SELECT count(*) FROM suppression`); n != 0 {
 			t.Error("a policy block suppressed the recipient")
@@ -346,4 +350,198 @@ func TestSelftestPerMailbox(t *testing.T) {
 		t.Error("the selftest by address did not go from A")
 	}
 	w.sweep(t, b.Address)
+}
+
+// policyBlock is a receiving server's 5.7.1 at RCPT.
+func policyBlock() error {
+	return &mailbox.SendError{Kind: mailbox.Refused, Stage: "rcpt", Code: 550, Enhanced: [3]int{5, 7, 1}, Text: "blocked"}
+}
+
+// TestSendPolicyBlockRefusesTheMessage: the message a receiving server blocked by policy
+// (5.7.x) is refused, its address not suppressed, and the domain stays paused; once the
+// operator resumes the domain, the next run sends the others and does not pause it again,
+// though that recipient's server still blocks.
+func TestSendPolicyBlockRefusesTheMessage(t *testing.T) {
+	w := newMultiWorld(t, 20)
+	b := w.add(t, "b@"+testSenderDomain)
+	w.batchFrom(t, w.a, false, w.leads(t, "a1.example", "a2.example"))
+	w.batchFrom(t, b, false, w.leads(t, "b1.example"))
+	w.smtp.errs = map[int]error{0: policyBlock()}
+	w.mustRun(t, "leads", "send")
+	blocked := w.smtp.recipients()
+	if len(blocked) != 1 {
+		t.Fatalf("A tried %v, want one send and then the domain pause", blocked)
+	}
+	w.smtp.errTo = map[string]error{blocked[0]: policyBlock()}
+	if n := w.count(t, `SELECT count(*) FROM outreach_message WHERE to_address = $1 AND step = 0 AND state = 'refused'`, blocked[0]); n != 1 {
+		t.Errorf("the blocked message is not refused (%d refused)", n)
+	}
+	if n := w.count(t, `SELECT count(*) FROM suppression`); n != 0 {
+		t.Error("a policy block suppressed the recipient")
+	}
+	want := "paused domain system: a receiving server blocked mail from " + testSenderDomain + " (5.7.1)"
+	for _, id := range []int64{w.a.ID, b.ID} {
+		if rows := mailboxStateRows(t, id); len(rows) != 1 || rows[0] != want {
+			t.Errorf("mailbox %d state rows %q, want [%q]", id, rows, want)
+		}
+	}
+
+	ctx := context.Background()
+	if _, err := setDomainPause(ctx, w.lq, w.clock.now(), testSenderDomain, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	w.mustRun(t, "leads", "send")
+	if n := w.count(t, `SELECT count(*) FROM outreach_message WHERE step = 0 AND state = 'sent' AND mailbox_id IN ($1, $2)`, w.a.ID, b.ID); n != 2 {
+		t.Errorf("%d first emails sent after the resume, want the other 2", n)
+	}
+	for _, id := range []int64{w.a.ID, b.ID} {
+		st, err := mailboxStatusByID(ctx, w.lq, id, w.clock.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.State != leadstore.MailboxActive || len(mailboxStateRows(t, id)) != 2 {
+			t.Errorf("mailbox %d after the resume: %s, rows %q", id, st.State, mailboxStateRows(t, id))
+		}
+	}
+}
+
+// TestSendDomainPauseKeepsOwnPause: a policy block on a domain writes no domain row over a
+// mailbox there already paused on its own (by bounces), so the operator's resume of the
+// domain leaves that mailbox paused with its own reason.
+func TestSendDomainPauseKeepsOwnPause(t *testing.T) {
+	w := newMultiWorld(t, 20)
+	b := w.add(t, "b@"+testSenderDomain)
+	ctx := context.Background()
+	const bounced = "2 hard bounces in its last 50 live sends"
+	if err := w.lq.SetMailboxState(ctx, w.a.ID, leadstore.MailboxPaused, bounced, leadstore.ScopeMailbox, leadstore.ActorSystem); err != nil {
+		t.Fatal(err)
+	}
+	w.batchFrom(t, b, false, w.leads(t, "b1.example"))
+	w.mail.smtpOf(b.Address).errs = map[int]error{0: policyBlock()}
+	w.mustRun(t, "leads", "send")
+	wantA := "paused mailbox system: " + bounced
+	if rows := mailboxStateRows(t, w.a.ID); len(rows) != 1 || rows[0] != wantA {
+		t.Errorf("A state rows %q, want [%q]", rows, wantA)
+	}
+	if rows := mailboxStateRows(t, b.ID); len(rows) != 1 || !strings.HasPrefix(rows[0], "paused domain system: ") {
+		t.Errorf("B state rows %q", rows)
+	}
+	if _, err := setDomainPause(ctx, w.lq, w.clock.now(), testSenderDomain, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	a, err := mailboxStatusByID(ctx, w.lq, w.a.ID, w.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.State != leadstore.MailboxPaused || a.Reason != bounced || a.Scope != leadstore.ScopeMailbox {
+		t.Errorf("A after the domain resume: %s %s %q, want paused by its bounces", a.State, a.Scope, a.Reason)
+	}
+	if st, err := mailboxStatusByID(ctx, w.lq, b.ID, w.clock.now()); err != nil || st.State != leadstore.MailboxActive {
+		t.Errorf("B after the domain resume: %+v, %v", st.State, err)
+	}
+}
+
+// TestSendChecksTheAddressHost: a mailbox on a subdomain has its DNS checked at its own host
+// (where its records are) and its readiness reads that host's pass, while
+// caps.domain_per_day still counts its registrable domain.
+func TestSendChecksTheAddressHost(t *testing.T) {
+	w := newMultiWorld(t, 20)
+	w.editConfig(t, `domain_per_day: 50`, `domain_per_day: 1`)
+	x := w.add(t, "x@"+"mail.brand.example")
+	if x.Domain != "brand"+".example" || x.Host() != "mail.brand"+".example" {
+		t.Fatalf("x domain %q host %q", x.Domain, x.Host())
+	}
+	// y on the registrable domain, with another selector, so no record of x's sits there.
+	y := seedMailbox(t, w.lq, "y@"+"brand.example", withSelector("s2"), withDNSPass())
+	w.watch(y.Address)
+	w.batchFrom(t, x, false, w.leads(t, "x1.example", "x2.example"))
+	w.batchFrom(t, y, false, w.leads(t, "y1.example"))
+	out := w.mustRun(t, "leads", "send")
+	if strings.Contains(out, "DNS check failed") {
+		t.Errorf("a mailbox failed its DNS check:\n%s", out)
+	}
+	if n := len(w.sentFrom(x.Address)) + len(w.sentFrom(y.Address)); n != 1 {
+		t.Errorf("%d sends from brand.example, want caps.domain_per_day 1:\n%s", n, out)
+	}
+	st, err := mailboxStatusByID(context.Background(), w.lq, x.ID, w.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.DNSPassedToday {
+		t.Error("x's readiness does not read its host's pass")
+	}
+	if n := w.count(t, `SELECT count(*) FROM sender_check WHERE domain_sha256 = $1 AND selector = 'sel1' AND spf AND dkim AND dmarc`,
+		leadstore.SenderDomainSHA256(x.Host())); n != 1 {
+		t.Errorf("%d passes recorded for x's host, want 1", n)
+	}
+}
+
+// TestSendMidRunEdit: a mailbox whose servers and password the operator changes during a run
+// (sealed again, so the sync opens it) is opened again before its next send: the next
+// message goes through the new server, never the sender built for the old one.
+func TestSendMidRunEdit(t *testing.T) {
+	w := newMultiWorld(t, 20)
+	w.editConfig(t, `spacing_minutes: \[3, 9\]`, `spacing_minutes: [11, 11]`)
+	w.batchFrom(t, w.a, false, w.leads(t, "a1.example", "a2.example"))
+	moved := "smtp.moved" + ".invalid:465"
+	key := currentTestKey(t)
+	w.smtp.onSend = func(n int, _ string) {
+		if n != 0 {
+			return
+		}
+		sealed, err := secretbox.Seal(key.Public(), secretbox.Credentials{
+			Address: w.a.Address, Login: w.a.Login, SMTPAddr: moved, IMAPAddr: w.a.IMAPAddr, Password: config.Secret(testPassword),
+		}, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := w.lq.UpdateMailbox(context.Background(), w.a.ID, leadstore.MailboxEdit{SMTPAddr: &moved,
+			PasswordSealed: sealed, SealedBy: secretbox.Fingerprint(key.Public())}); err != nil {
+			t.Error(err)
+		}
+	}
+	out := w.mustRun(t, "leads", "send")
+	if n := w.smtp.count(); n != 2 {
+		t.Errorf("A sent %d, want 2:\n%s", n, out)
+	}
+	var addrs []string
+	for _, c := range w.mail.callsOf("smtp") {
+		addrs = append(addrs, c.addr)
+	}
+	if len(addrs) != 2 || addrs[1] != moved {
+		t.Errorf("SMTP senders built for %q, want the second for the new server %q", addrs, moved)
+	}
+}
+
+// TestSendKeepsTheFrozenFromName: the From name is the one frozen with the message; a change
+// of leads.yaml's sender.name after approval changes nothing, and an empty frozen name sends
+// with no display name.
+func TestSendKeepsTheFrozenFromName(t *testing.T) {
+	w := newMultiWorld(t, 20)
+	b := w.add(t, "b@"+"other.example")
+	w.fromName = "Frozen Name"
+	w.batchFrom(t, w.a, false, w.leads(t, "a1.example"))
+	w.fromName = ""
+	w.batchFrom(t, b, false, w.leads(t, "b1.example"))
+	w.editConfig(t, `name: "Demo Sender"`, `name: "Changed Name"`)
+	w.mustRun(t, "leads", "send")
+	fromLine := func(raw []byte) string {
+		for l := range strings.SplitSeq(string(raw), "\r\n") {
+			if strings.HasPrefix(l, "From: ") {
+				return l
+			}
+		}
+		return ""
+	}
+	a, bs := w.mail.smtpOf(w.a.Address).sent, w.mail.smtpOf(b.Address).sent
+	if len(a) != 1 || len(bs) != 1 {
+		t.Fatalf("A sent %d, B %d, want 1 each", len(a), len(bs))
+	}
+	if l := fromLine(a[0].raw); !strings.Contains(l, "Frozen Name") || strings.Contains(l, "Changed Name") {
+		t.Errorf("A's From %q, want the frozen name", l)
+	}
+	if l := fromLine(bs[0].raw); strings.Contains(l, "Changed Name") || strings.Contains(l, "Demo Sender") || strings.Contains(l, "\"") {
+		t.Errorf("B's From %q, want no display name", l)
+	}
 }

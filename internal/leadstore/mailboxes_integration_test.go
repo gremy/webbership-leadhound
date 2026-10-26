@@ -619,3 +619,47 @@ func TestSeedMailbox(t *testing.T) {
 		t.Errorf("seeded status = %+v", st)
 	}
 }
+
+// TestMailboxDNSByHostAndDomainPause: a mailbox on a subdomain reads the DNS pass of its own
+// host, not its registrable domain's; a domain pause skips a mailbox already paused, and a
+// pause by PauseMailboxIfActive writes once.
+func TestMailboxDNSByHostAndDomainPause(t *testing.T) {
+	leadstoretest.Reset(t)
+	q := leadstoretest.Q(t)
+	ctx := context.Background()
+	x := addMailbox(t, q, "x@mail.brand.example")
+	y := addMailbox(t, q, "y@brand.example")
+	today := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	pass := mailbox.DNSResult{SPF: true, DKIM: true, DMARC: true}
+	if err := q.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256("brand.example"), "lh", pass, today.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if st := statusOf(t, q, x, today); st.Domain != "brand.example" || st.Host() != "mail.brand.example" || st.DNSPassedToday {
+		t.Errorf("x = %q %q passed %v; want brand.example, mail.brand.example, not passed by the domain's row", st.Domain, st.Host(), st.DNSPassedToday)
+	}
+	if err := q.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256("mail.brand.example"), "lh", pass, today.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if st := statusOf(t, q, x, today); !st.DNSPassedToday {
+		t.Error("x does not read its host's pass")
+	}
+	for range 2 {
+		if _, err := q.PauseMailboxIfActive(ctx, x, "2 hard bounces", leadstore.ActorSystem); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := q.SetDomainState(ctx, "brand.example", leadstore.MailboxPaused, "policy block 5.7.1", leadstore.ActorSystem)
+	if err != nil || n != 1 {
+		t.Fatalf("domain pause = %d, %v; want 1 row (y alone)", n, err)
+	}
+	if st := statusOf(t, q, x, today); st.Reason != "2 hard bounces" || st.Scope != leadstore.ScopeMailbox {
+		t.Errorf("x after the domain pause = %s %q, want its own pause", st.Scope, st.Reason)
+	}
+	if st := statusOf(t, q, y, today); st.State != leadstore.MailboxPaused || st.Scope != leadstore.ScopeDomain {
+		t.Errorf("y after the domain pause = %+v", st)
+	}
+	var rows int
+	if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT count(*) FROM mailbox_state WHERE mailbox_id = $1`, x).Scan(&rows); err != nil || rows != 1 {
+		t.Errorf("x has %d state rows (%v), want 1", rows, err)
+	}
+}

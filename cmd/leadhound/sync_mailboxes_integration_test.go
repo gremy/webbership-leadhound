@@ -329,3 +329,30 @@ func TestSyncAllSameFolderTwoMailboxes(t *testing.T) {
 		t.Errorf("%d events after a second sync, want 4", n)
 	}
 }
+
+// TestSyncAllPausesOnce: a mailbox whose password cannot be used is paused once, however many
+// syncs find it so, and a pause the operator set for its domain keeps its reason and scope.
+func TestSyncAllPausesOnce(t *testing.T) {
+	w := newSyncWorld(t)
+	ctx := context.Background()
+	broken := seedMailbox(t, w.lq, "broken@third.example")
+	held := seedMailbox(t, w.lq, "held@fourth.example")
+	if _, err := w.lq.SetDomainState(ctx, "fourth.example", leadstore.MailboxPaused, "the operator's break", leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{broken.ID, held.ID} {
+		ownerExec(t, `UPDATE sender_mailbox SET imap_addr = 'imap.moved.invalid:993' WHERE id = $1`, id)
+	}
+	for range 2 {
+		got := w.sync(t)
+		if got[broken.ID].OK || got[held.ID].OK {
+			t.Errorf("a mailbox with an unusable password synced: %+v", got)
+		}
+	}
+	if rows := mailboxStateRows(t, broken.ID); len(rows) != 1 || !strings.HasPrefix(rows[0], "paused mailbox system: re-enter the password") {
+		t.Errorf("broken state rows %q, want one pause", rows)
+	}
+	if rows := mailboxStateRows(t, held.ID); len(rows) != 1 || rows[0] != "paused domain operator: the operator's break" {
+		t.Errorf("held state rows %q, want the operator's domain pause alone", rows)
+	}
+}

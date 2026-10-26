@@ -72,7 +72,7 @@ type mailboxSeed struct {
 
 type mailboxOpt func(*mailboxSeed)
 
-// withDNSPass records today's full DNS pass for the mailbox's domain and selector, stamped
+// withDNSPass records today's full DNS pass for the mailbox's host and selector, stamped
 // with leadsNow() so a test that fixes the clock sees it as today.
 func withDNSPass() mailboxOpt { return func(s *mailboxSeed) { s.dnsPass = true } }
 
@@ -115,7 +115,7 @@ func seedMailbox(t *testing.T, lq leadstore.Queries, address string, opts ...mai
 		t.Fatal(err)
 	}
 	if s.dnsPass {
-		if err := lq.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Domain), m.DKIMSelector,
+		if err := lq.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Host()), m.DKIMSelector,
 			mailbox.DNSResult{SPF: true, DKIM: true, DMARC: true}, leadsNow()); err != nil {
 			t.Fatal(err)
 		}

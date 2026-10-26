@@ -473,6 +473,11 @@ func (r *sendRun) refresh(ctx context.Context, now time.Time) error {
 			mb = &sendMailbox{}
 			r.mbs[m.ID] = mb
 		}
+		if mb.sender != nil && sealChanged(mb.Mailbox, m.Mailbox) {
+			// The operator changed its login, a server or its password during the run: the
+			// next send opens the password again and checks it still matches.
+			mb.sender, mb.creds = nil, nil
+		}
 		mb.MailboxStatus = m
 		switch {
 		case m.State == leadstore.MailboxRetired:
@@ -486,6 +491,13 @@ func (r *sendRun) refresh(ctx context.Context, now time.Time) error {
 		r.order = append(r.order, m.ID)
 	}
 	return nil
+}
+
+// sealChanged reports whether what a mailbox's sealed password is opened and bound by
+// (its login, servers, sealed password or sealing key) differs between a and b.
+func sealChanged(a, b leadstore.Mailbox) bool {
+	return a.Login != b.Login || a.SMTPAddr != b.SMTPAddr || a.IMAPAddr != b.IMAPAddr ||
+		a.SealedBy != b.SealedBy || !bytes.Equal(a.PasswordSealed, b.PasswordSealed)
 }
 
 // block stops sending from mb for the rest of the run, saying why once; word, when set, is
@@ -526,8 +538,8 @@ func (r *sendRun) loads() []outreach.MailboxLoad {
 	return out
 }
 
-// gateDNS runs, for each mailbox that may send and has no DNS pass today for its domain and
-// selector, the check now (once per domain and selector); a failing check blocks it.
+// gateDNS runs, for each mailbox that may send and has no DNS pass today for its host and
+// selector, the check now (once per host and selector); a failing check blocks it.
 func (r *sendRun) gateDNS(ctx context.Context, now time.Time) error {
 	checked := map[string]mailbox.DNSResult{}
 	for _, id := range r.order {
@@ -535,11 +547,11 @@ func (r *sendRun) gateDNS(ctx context.Context, now time.Time) error {
 		if !mb.ready() || mb.DNSPassedToday {
 			continue
 		}
-		k := strings.ToLower(mb.Domain) + " " + mb.DKIMSelector
+		k := mb.Host() + " " + mb.DKIMSelector
 		res, ok := checked[k]
 		if !ok {
 			var err error
-			if res, err = checkSenderFor(ctx, r.lq, mb.Domain, mb.DKIMSelector, now); err != nil {
+			if res, err = checkSenderFor(ctx, r.lq, mb.Host(), mb.DKIMSelector, now); err != nil {
 				return err
 			}
 			checked[k] = res
@@ -927,13 +939,14 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 			return false, nil
 		}
 	}
-	// From the message's own mailbox, under the From name frozen with it.
+	// From the message's own mailbox, under the From name frozen with it as it is: an empty
+	// one is no display name, never leads.yaml's name of today.
 	from := row.FromAddress
 	if from == "" {
 		from = mb.Address
 	}
 	now := leadsNow()
-	raw, err := mailbox.Build(outboxMessage(row.Message, cmpOr(row.FromName, r.setup.leads.Sender.Name), from, now))
+	raw, err := mailbox.Build(outboxMessage(row.Message, row.FromName, from, now))
 	if err != nil {
 		r.rep.refused = append(r.rep.refused, label+" (not a valid message)")
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: "+err.Error())
@@ -1011,10 +1024,12 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		r.followUp(wctx, row, now)
 		r.appendSent(ctx, mb, raw)
 	case mailbox.IsPolicyBlock(sendErr) && errors.As(sendErr, &se):
-		// Our domain, not this lead: the message waits, and every mailbox on the domain
-		// pauses until the operator resumes it.
+		// Our domain, not this lead: every mailbox on the domain pauses until the operator
+		// resumes it. The message is refused (its address is not suppressed): kept approved,
+		// it would be first again after the resume and pause the domain once more.
 		r.rep.note(notePolicyBlock)
-		if err := r.lq.Requeue(wctx, row.ID, *row.DueAt, se.Error()); err != nil {
+		r.rep.refused = append(r.rep.refused, label+" (blocked by the receiving server's policy)")
+		if err := r.lq.MarkRefused(wctx, row.ID, se.Error()); err != nil {
 			return true, err
 		}
 		if _, err := r.lq.SetDomainState(wctx, mb.Domain, leadstore.MailboxPaused, policyReason(mb.Domain, se.Enhanced), leadstore.ActorSystem); err != nil {
@@ -1027,7 +1042,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 				r.block(other, why, noteMailboxPaused)
 			}
 		}
-		r.printf("Message %d stays approved and goes once its mailbox is resumed.\n", row.ID)
+		r.printf("Message %d is refused: that server blocked it by policy, and nothing is suppressed.\n", row.ID)
 	case errors.As(sendErr, &se) && se.Kind == mailbox.Refused:
 		r.rep.refused = append(r.rep.refused, label+" (refused by the server)")
 		if err := leadsInTx(wctx, r.s.Pool(), func(tq leadstore.Queries) error {

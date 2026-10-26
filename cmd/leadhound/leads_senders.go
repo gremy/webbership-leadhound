@@ -89,11 +89,12 @@ func dkimSelector(cfg leadconfig.Config) string {
 	return leadconfig.DefaultDKIMSelector
 }
 
-// checkSenderFor runs the DNS check of a mailbox's domain with its own DKIM selector and
-// records it with that selector (domain hashed), which is what a mailbox's readiness reads.
-func checkSenderFor(ctx context.Context, lq leadstore.Queries, domain, selector string, now time.Time) (mailbox.DNSResult, error) {
-	res := mailbox.CheckDNS(ctx, leadsMail.resolver, domain, selector)
-	if err := lq.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(domain), selector, res, now); err != nil {
+// checkSenderFor runs the DNS check of a mailbox's host (its address's own host, where its
+// records are; Mailbox.Host) with its own DKIM selector and records it with that selector
+// (host hashed), which is what a mailbox's readiness reads.
+func checkSenderFor(ctx context.Context, lq leadstore.Queries, host, selector string, now time.Time) (mailbox.DNSResult, error) {
+	res := mailbox.CheckDNS(ctx, leadsMail.resolver, host, selector)
+	if err := lq.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(host), selector, res, now); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -104,7 +105,7 @@ var errMailboxCreds = errors.New("the mailbox is paused")
 
 // mailboxCreds opens mb's sealed password with key and returns it only when it was sealed
 // by key's public key for exactly mb's current address, login and servers. Otherwise it
-// pauses mb (actor system, with the reason the operator reads) and returns an error that
+// pauses mb when it is active (actor system, with the reason the operator reads) and returns an error that
 // wraps errMailboxCreds and never carries the password. It is the only place in this
 // command that opens a sealed password.
 func mailboxCreds(ctx context.Context, lq leadstore.Queries, key secretbox.PrivateKey, mb leadstore.Mailbox) (secretbox.Credentials, error) {
@@ -121,8 +122,9 @@ func mailboxCreds(ctx context.Context, lq leadstore.Queries, key secretbox.Priva
 		}
 	}
 	refused := fmt.Errorf("%w: mailbox %d: %s", errMailboxCreds, mb.ID, reason)
-	if err := lq.SetMailboxState(ctx, mb.ID, leadstore.MailboxPaused, reason, leadstore.ScopeMailbox, leadstore.ActorSystem); err != nil &&
-		!errors.Is(err, leadstore.ErrMailboxRetired) {
+	// Only an active mailbox gets the pause row: a sync every 15 minutes finds a paused one
+	// so again, and the operator's own pause (its reason, its scope) stays the latest row.
+	if _, err := lq.PauseMailboxIfActive(ctx, mb.ID, reason, leadstore.ActorSystem); err != nil {
 		return secretbox.Credentials{}, errors.Join(refused, err)
 	}
 	return secretbox.Credentials{}, refused
@@ -140,10 +142,10 @@ func dnsLine(r mailbox.DNSResult) string {
 	return fmt.Sprintf("SPF %s · DKIM %s · DMARC %s", passFail(r.SPF), passFail(r.DKIM), passFail(r.DMARC))
 }
 
-// runLeadsSenders is `leads senders check`: SPF, DKIM and DMARC for each unique domain and
-// DKIM selector of the mailboxes that are not retired, each checked once and recorded with
-// its selector (what a mailbox's readiness reads). It prints one line per domain and
-// selector, naming its mailboxes by id and never the domain, and opens no password. A
+// runLeadsSenders is `leads senders check`: SPF, DKIM and DMARC for each unique address host
+// and DKIM selector of the mailboxes that are not retired, each checked once and recorded
+// with its selector (what a mailbox's readiness reads). It prints one line per host and
+// selector, naming its mailboxes by id and never the host, and opens no password. A
 // failing record still exits 0: the check ran, and send reads its row.
 func runLeadsSenders(ctx context.Context, args []string) error {
 	const usage = "usage: leadhound leads senders check"
@@ -162,8 +164,8 @@ func runLeadsSenders(ctx context.Context, args []string) error {
 		return err
 	}
 	type target struct {
-		domain, selector string
-		ids              []int64
+		host, selector string
+		ids            []int64
 	}
 	var targets []*target
 	byKey := map[string]*target{}
@@ -171,10 +173,10 @@ func runLeadsSenders(ctx context.Context, args []string) error {
 		if mb.State == leadstore.MailboxRetired {
 			continue
 		}
-		k := strings.ToLower(mb.Domain) + " " + mb.DKIMSelector
+		k := mb.Host() + " " + mb.DKIMSelector
 		t, ok := byKey[k]
 		if !ok {
-			t = &target{domain: mb.Domain, selector: mb.DKIMSelector}
+			t = &target{host: mb.Host(), selector: mb.DKIMSelector}
 			byKey[k] = t
 			targets = append(targets, t)
 		}
@@ -185,7 +187,7 @@ func runLeadsSenders(ctx context.Context, args []string) error {
 		return nil
 	}
 	for _, t := range targets {
-		res, err := checkSenderFor(ctx, lq, t.domain, t.selector, now)
+		res, err := checkSenderFor(ctx, lq, t.host, t.selector, now)
 		if err != nil {
 			return err
 		}

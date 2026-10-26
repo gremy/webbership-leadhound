@@ -265,7 +265,7 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 // mailboxesSending is the Leads page's sending totals over the stored mailboxes, read from
 // the start of the operator's day: capToday sums today's cap of every mailbox ready for new
 // leads (readyForLeads), each domain's share at most outreach.DomainCap; dns is shown as
-// passed only when every active mailbox's domain and selector passed today (then the
+// passed only when every active mailbox's host and selector passed today (then the
 // earliest of those passes), else today's latest failed check of the first one that did not
 // pass, and nil when one has no check today or no mailbox is active. It reads stored rows
 // only: the console never reaches the network.
@@ -291,7 +291,7 @@ func mailboxesSending(ctx context.Context, lq leadstore.Queries, db store.DBTX, 
 			}
 			byDomain[domain] += outreach.MailboxCap(cfg, ml, now.In(loc))
 		}
-		pair := [2]string{m.Domain, strings.TrimSpace(m.DKIMSelector)}
+		pair := [2]string{m.Host(), strings.TrimSpace(m.DKIMSelector)}
 		if !seen[pair] {
 			seen[pair] = true
 			pairs = append(pairs, pair)
