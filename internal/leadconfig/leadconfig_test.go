@@ -312,7 +312,7 @@ func TestCeilingConstant(t *testing.T) {
 
 func TestDKIMSelectorDefault(t *testing.T) {
 	dir := demoDir(t)
-	replaceIn(t, dir, FileName, "  dkim_selector: sel1 # your mail provider's DKIM selector (the name before ._domainkey); set yours\n", "")
+	replaceIn(t, dir, FileName, "  dkim_selector: sel1 # the DKIM selector (the name before ._domainkey) for a mailbox added without a preset or its own\n", "")
 	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
