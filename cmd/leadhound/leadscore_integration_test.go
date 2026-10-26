@@ -34,7 +34,6 @@ func leadsScene(t *testing.T) string {
 	t.Helper()
 	dir := leadsDB(t)
 	t.Setenv("LEADHOUND_OUTREACH", "")
-	t.Setenv("LEADHOUND_OUTREACH_USER", "")
 	t.Setenv("LEADHOUND_TZ", "Europe/Bucharest")
 	saved := leadsNow
 	leadsNow = func() time.Time { return leadsTuesday }
@@ -49,7 +48,6 @@ func leadsScene(t *testing.T) string {
 func goLive(t *testing.T) {
 	t.Helper()
 	t.Setenv("LEADHOUND_OUTREACH", "live")
-	t.Setenv("LEADHOUND_OUTREACH_USER", "outreach@"+"sender.example")
 	saved := leadsMail
 	leadsMail.allowReserved = true
 	newMailboxFakes().install(&leadsMail)

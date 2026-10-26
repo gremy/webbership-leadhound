@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,7 +22,9 @@ const leadsCheckConfigUsage = "usage: leadhound leads check-config [--agencies F
 // templates and the agency list (default <data dir>/agencies.yaml) as the leads commands
 // do, and prints counts only. Any problem is a usage error listing them all, the priority
 // block's among them (leadconfig.Profile.Problems: points out of bounds, unknown kinds,
-// majors, channels or countries, rank bands out of order). It needs no database.
+// majors, channels or countries, rank bands out of order). A variable of the old single
+// mailbox still set is named on a line of its own: it is no longer read, and the mailbox
+// belongs in the console. It needs no database.
 func runLeadsCheckConfig(_ context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads check-config", flag.ContinueOnError)
 	agenciesPath := fs.String("agencies", "", "the agency list (default <data dir>/agencies.yaml)")
@@ -66,6 +69,13 @@ func runLeadsCheckConfig(_ context.Context, args []string) error {
 		"agencies: %d with a website, %d without · TLDs: %d · countries: %d · operator addresses: %d\n",
 		leadconfig.FileName, len(lc.Templates.Sets), steps, forms, plural(len(lc.Templates.Footers), "footer", "footers"),
 		len(list), skipped, len(lc.SiteLists.TLDs), len(lc.Countries), len(lc.Sender.OperatorAddresses))
+	env, _ := leadconfig.LoadEnv(os.Getenv)
+	switch n := len(env.Retired); {
+	case n == 1:
+		_, _ = fmt.Fprintf(stdout, "%s is no longer read: add the mailbox in the console (Mailboxes)\n", env.Retired[0])
+	case n > 1:
+		_, _ = fmt.Fprintf(stdout, "%s (and %d more) are no longer read: add the mailbox in the console (Mailboxes)\n", env.Retired[0], n-1)
+	}
 	return nil
 }
 

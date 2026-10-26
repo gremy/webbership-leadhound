@@ -20,7 +20,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gremy/webbership-leadhound/internal/fetch"
-	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
@@ -70,7 +69,7 @@ func newFakeBox() *fakeBox {
 	return &fakeBox{validity: map[string]uint32{"INBOX": 7, "Junk": 3}, msgs: map[string][]mailbox.Fetched{}}
 }
 
-func (b *fakeBox) open(context.Context, leadconfig.Env) (mailbox.Reader, error) {
+func (b *fakeBox) open(context.Context) (mailbox.Reader, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.opens++
@@ -237,10 +236,6 @@ func newSendWorld(t *testing.T, live bool, capPerDay int) *sendWorld {
 	} else {
 		t.Setenv("LEADHOUND_OUTREACH", "")
 	}
-	t.Setenv("LEADHOUND_OUTREACH_USER", testUser)
-	t.Setenv("LEADHOUND_OUTREACH_PASSWORD", testPassword)
-	t.Setenv("LEADHOUND_SMTP_ADDR", "smtp."+testSenderDomain+":465")
-	t.Setenv("LEADHOUND_IMAP_ADDR", "imap."+testSenderDomain+":993")
 	t.Setenv("LEADHOUND_TZ", "Europe/London")
 	w.editConfig(t, `start_date: 2026-11-16`, `start_date: 2026-10-01`)
 	w.editConfig(t, `ramp: \[.*\]`, fmt.Sprintf("ramp: [{from_day: 0, per_day: %d}]", capPerDay))
@@ -250,8 +245,6 @@ func newSendWorld(t *testing.T, live bool, capPerDay int) *sendWorld {
 	leadsNow = w.clock.now
 	leadsMail = mailDeps{
 		resolver:      w.dns,
-		openReader:    w.box.open,
-		smtp:          func(leadconfig.Env) mailSender { return w.smtp },
 		sleep:         w.clock.sleep,
 		rand:          savedMail.rand,
 		syncWait:      200 * time.Millisecond,
@@ -726,7 +719,6 @@ func TestSendCapAndOutcomes(t *testing.T) {
 // kinds of batch never cross (RA1).
 func TestSendShadowAndLiveApart(t *testing.T) {
 	w := newSendWorld(t, false, 1)
-	t.Setenv("LEADHOUND_IMAP_ADDR", "")
 	shadowLeads := map[int64]string{w.lead(t, "alpha.example"): "alpha.example", w.lead(t, "bravo.example"): "bravo.example"}
 	w.batch(t, true, shadowLeads)
 	live := w.lead(t, "charlie.example")
@@ -770,7 +762,6 @@ func TestSendShadowAndLiveApart(t *testing.T) {
 
 	// Live: the two shadow_sent today leave the cap of 1 free, and the shadow batch is left alone.
 	t.Setenv("LEADHOUND_OUTREACH", "live")
-	t.Setenv("LEADHOUND_IMAP_ADDR", "imap."+testSenderDomain+":993")
 	out = w.mustRun(t, "leads", "send")
 	wantLines(t, "live after shadow", out, "Sent 1: charlie.example")
 	if s := w.leadState(t, "charlie.example"); s != leadstore.LeadContacted {
@@ -885,11 +876,6 @@ func TestSendConcurrentOnce(t *testing.T) {
 
 func TestSyncCommand(t *testing.T) {
 	w := newSendWorld(t, true, 20)
-	t.Setenv("LEADHOUND_IMAP_ADDR", "")
-	if out := w.mustRun(t, "leads", "sync"); !strings.Contains(out, "No IMAP settings") || w.box.opens != 0 {
-		t.Errorf("sync without IMAP:\n%s", out)
-	}
-	t.Setenv("LEADHOUND_IMAP_ADDR", "imap."+testSenderDomain+":993")
 
 	leads := map[int64]string{}
 	for _, d := range []string{"reply.example", "optout.example", "bounce.example", "auto.example", "colleague.example"} {
@@ -911,11 +897,12 @@ func TestSyncCommand(t *testing.T) {
 
 	out := w.mustRun(t, "leads", "sync")
 	wantLines(t, "sync", out,
+		fmt.Sprintf("Mailbox %d: synced.\n", w.mailbox.ID),
 		"3 replies to read in the outreach mailbox: reply.example, optout.example, colleague.example",
 		"Of those, 1 is an opt-out, now suppressed.",
 		"1 automatic reply (recorded only).",
 		"2 other messages in the outreach mailbox.")
-	if !strings.HasPrefix(out, "3 replies to read") {
+	if !strings.HasPrefix(out, fmt.Sprintf("Mailbox %d: synced.\n  3 replies to read", w.mailbox.ID)) {
 		t.Errorf("sync output does not lead with what to read:\n%s", out)
 	}
 	for d, want := range map[string]string{"reply.example": "replied", "optout.example": "opted_out", "auto.example": "contacted", "colleague.example": "replied", "bounce.example": "contacted"} {
@@ -935,13 +922,13 @@ func TestSyncCommand(t *testing.T) {
 	if n := w.count(t, `SELECT count(*) FROM mailbox_event WHERE from_domain LIKE '%@%'`); n != 0 {
 		t.Error("an event holds an address")
 	}
-	if c, _, _ := w.lq.MailboxCursor(context.Background(), "INBOX"); c.UIDValidity != 7 || c.LastUID != 4 {
+	if c, _, _ := w.lq.MailboxCursorFor(context.Background(), w.mailbox.ID, "INBOX"); c.UIDValidity != 7 || c.LastUID != 4 {
 		t.Errorf("INBOX cursor %+v", c)
 	}
 	byDate := w.box.byDate
 
 	// Again: nothing new, read from the cursor.
-	if out := w.mustRun(t, "leads", "sync"); !strings.Contains(out, "Mailbox synced: nothing new.") {
+	if out := w.mustRun(t, "leads", "sync"); out != fmt.Sprintf("Mailbox %d: synced, nothing new.\n", w.mailbox.ID) {
 		t.Errorf("second sync:\n%s", out)
 	}
 	if w.box.byDate != byDate {
@@ -956,7 +943,7 @@ func TestSyncCommand(t *testing.T) {
 	if w.box.byDate != byDate+1 {
 		t.Errorf("a UIDVALIDITY change did not rescan by date (%d → %d)", byDate, w.box.byDate)
 	}
-	if c, _, _ := w.lq.MailboxCursor(context.Background(), "INBOX"); c.UIDValidity != 8 || c.LastUID != 4 {
+	if c, _, _ := w.lq.MailboxCursorFor(context.Background(), w.mailbox.ID, "INBOX"); c.UIDValidity != 8 || c.LastUID != 4 {
 		t.Errorf("INBOX cursor after the change %+v", c)
 	}
 	if s := w.leadState(t, "optout.example"); s != "opted_out" {
@@ -1023,18 +1010,13 @@ func TestSelftest(t *testing.T) {
 
 func TestSendersCheck(t *testing.T) {
 	w := newSendWorld(t, true, 20)
-	t.Setenv("LEADHOUND_OUTREACH_USER", "")
-	if code, out := w.run(t, "leads", "senders", "check"); code != 2 || !strings.Contains(out, "LEADHOUND_OUTREACH_USER") {
-		t.Errorf("no user exited %d:\n%s", code, out)
-	}
-	t.Setenv("LEADHOUND_OUTREACH_USER", testUser)
 	w.dns["sel1._domainkey."+testSenderDomain] = []string{"v=spf1 wrong record"}
 	out := w.mustRun(t, "leads", "senders", "check")
-	wantLines(t, "check", out, "SPF pass\nDKIM fail\nDMARC pass\n", "a record fails")
+	wantLines(t, "check", out, fmt.Sprintf("Mailbox %d (selector sel1): SPF pass · DKIM fail · DMARC pass: sending waits until every record passes.", w.mailbox.ID))
 	if strings.Contains(out, testSenderDomain) {
 		t.Errorf("output names the domain:\n%s", out)
 	}
-	if n := w.count(t, `SELECT count(*) FROM sender_check WHERE spf AND NOT dkim AND dmarc AND domain_sha256 = $1`, leadstore.SenderDomainSHA256(testSenderDomain)); n != 1 {
+	if n := w.count(t, `SELECT count(*) FROM sender_check WHERE spf AND NOT dkim AND dmarc AND selector = 'sel1' AND domain_sha256 = $1`, leadstore.SenderDomainSHA256(testSenderDomain)); n != 1 {
 		t.Errorf("%d sender_check rows", n)
 	}
 	if code, _ := w.run(t, "leads", "senders"); code != 2 {

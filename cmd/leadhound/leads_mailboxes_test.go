@@ -30,7 +30,7 @@ func mailboxesRun(t *testing.T, args ...string) (int, string, string) {
 func noEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"LEADHOUND_DATA_DIR", "LEADHOUND_DATABASE_URL", secretbox.KeyFileEnv, secretbox.PublicKeyEnv,
-		"CREDENTIALS_DIRECTORY", "LEADHOUND_OUTREACH", "LEADHOUND_OUTREACH_USER", "LEADHOUND_OUTREACH_PASSWORD"} {
+		"CREDENTIALS_DIRECTORY", "LEADHOUND_OUTREACH"} {
 		t.Setenv(k, "")
 	}
 }

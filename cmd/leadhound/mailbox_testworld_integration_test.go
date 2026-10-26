@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/config"
-	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
@@ -255,7 +254,7 @@ func (f *mailboxFakes) readerFor(ctx context.Context, addr string, user, passwor
 	if !ok {
 		return nil, &mailbox.IMAPError{Stage: "login", Text: "authentication failed"}
 	}
-	return box.open(ctx, leadconfig.Env{})
+	return box.open(ctx)
 }
 
 func (f *mailboxFakes) probeSMTP(_ context.Context, addr string, user, password config.Secret) error {
@@ -279,7 +278,7 @@ func (f *mailboxFakes) probeIMAP(ctx context.Context, addr string, user, passwor
 	if err != nil {
 		return mailbox.Mailboxes{}, err
 	}
-	r, err := box.open(ctx, leadconfig.Env{})
+	r, err := box.open(ctx)
 	if err != nil {
 		return mailbox.Mailboxes{}, err
 	}

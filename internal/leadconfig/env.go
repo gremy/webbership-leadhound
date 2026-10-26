@@ -2,23 +2,23 @@ package leadconfig
 
 import (
 	"fmt"
-	"net"
 	"strconv"
-
-	"github.com/gremy/webbership-leadhound/internal/config"
 )
 
-// Env is the outreach part of the environment. User and Password are Secrets and stay
-// redacted however the struct is printed; the other fields carry no credential.
+// Env is the outreach part of the environment. It carries no credential: the sending
+// mailboxes, their servers and their sealed passwords live in the database.
 type Env struct {
-	SMTPAddr         string        // LEADHOUND_SMTP_ADDR: host:port
-	IMAPAddr         string        // LEADHOUND_IMAP_ADDR: host:port
-	User             config.Secret // LEADHOUND_OUTREACH_USER: the mailbox address
-	Password         config.Secret // LEADHOUND_OUTREACH_PASSWORD
-	Outreach         string        // LEADHOUND_OUTREACH: "" is shadow, "live" sends over SMTP
-	ProbeConcurrency int           // LEADHOUND_PROBE_CONCURRENCY: sites probed at once
-	ProbeRate        int           // LEADHOUND_PROBE_RATE: requests per second across a run
+	Outreach         string // LEADHOUND_OUTREACH: "" is shadow, "live" sends over SMTP
+	ProbeConcurrency int    // LEADHOUND_PROBE_CONCURRENCY: sites probed at once
+	ProbeRate        int    // LEADHOUND_PROBE_RATE: requests per second across a run
+	// Retired names the variables of RetiredEnv that are still set, in its order; their
+	// values are never read.
+	Retired []string
 }
+
+// RetiredEnv are the variables of the old single outreach mailbox. They are no longer read:
+// the operator adds each sending mailbox in the console (Mailboxes) instead.
+var RetiredEnv = []string{"LEADHOUND_OUTREACH_USER", "LEADHOUND_OUTREACH_PASSWORD", "LEADHOUND_SMTP_ADDR", "LEADHOUND_IMAP_ADDR"}
 
 // Defaults and ranges for the outreach variables.
 const (
@@ -34,15 +34,15 @@ func (e Env) Live() bool { return e.Outreach == OutreachLive }
 
 // LoadEnv reads the outreach variables through getenv, as config.Load does: every variable
 // with its default, and one problem per value that cannot be used (which then keeps its
-// default). Problems never repeat a secret value.
+// default). A retired variable still set is named in Retired, never a problem.
 func LoadEnv(getenv func(string) string) (Env, []string) {
 	var problems []string
 	report := func(p string) { problems = append(problems, p) }
-	e := Env{
-		SMTPAddr: hostPort(getenv, "LEADHOUND_SMTP_ADDR", report),
-		IMAPAddr: hostPort(getenv, "LEADHOUND_IMAP_ADDR", report),
-		User:     config.Secret(getenv("LEADHOUND_OUTREACH_USER")),
-		Password: config.Secret(getenv("LEADHOUND_OUTREACH_PASSWORD")),
+	var e Env
+	for _, k := range RetiredEnv {
+		if getenv(k) != "" {
+			e.Retired = append(e.Retired, k)
+		}
 	}
 	switch v := getenv("LEADHOUND_OUTREACH"); v {
 	case "", OutreachLive:
@@ -53,19 +53,6 @@ func LoadEnv(getenv func(string) string) (Env, []string) {
 	e.ProbeConcurrency = inRange(getenv, "LEADHOUND_PROBE_CONCURRENCY", DefaultProbeConcurrency, 1, MaxProbeConcurrency, report)
 	e.ProbeRate = inRange(getenv, "LEADHOUND_PROBE_RATE", DefaultProbeRate, 1, MaxProbeRate, report)
 	return e, problems
-}
-
-// hostPort reads a host:port variable; an unusable value is reported and left empty.
-func hostPort(getenv func(string) string, name string, report func(string)) string {
-	v := getenv(name)
-	if v == "" {
-		return ""
-	}
-	if host, port, err := net.SplitHostPort(v); err != nil || host == "" || port == "" {
-		report(fmt.Sprintf("%s must be host:port, such as mail.example:465, not %q", name, v))
-		return ""
-	}
-	return v
 }
 
 // inRange reads a whole number between lo and hi, keeping def when it is unset or unusable.

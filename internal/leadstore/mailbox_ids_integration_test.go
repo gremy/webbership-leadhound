@@ -56,9 +56,9 @@ func TestCursorForMailbox(t *testing.T) {
 		t.Errorf("B-INBOX cursor's mailbox_id = %d (%v), want %d", id, err, b.ID)
 	}
 
-	// A row the old path wrote (no mailbox) is taken over by the first per-mailbox write,
+	// A row from before mailboxes (no mailbox) is taken over by the first per-mailbox write,
 	// which rescans rather than trusts a place it did not record.
-	if err := f.q.AdvanceCursor(ctx, "INBOX", 7, 40, at); err != nil {
+	if _, err := f.owner.Exec(ctx, `INSERT INTO mailbox_cursor (mailbox, uidvalidity, last_uid, synced_at) VALUES ('INBOX', 7, 40, $1)`, at); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := f.q.MailboxCursorFor(ctx, a.ID, "INBOX"); err != nil || ok {
@@ -69,10 +69,6 @@ func TestCursorForMailbox(t *testing.T) {
 	}
 	if c, ok, err := f.q.MailboxCursorFor(ctx, a.ID, "INBOX"); err != nil || !ok || c.LastUID != 3 {
 		t.Errorf("after the take-over: %+v %v %v, want last UID 3", c, ok, err)
-	}
-	// The old reader still reads by folder name.
-	if c, ok, err := f.q.MailboxCursor(ctx, "B-INBOX"); err != nil || !ok || c.UIDValidity != 5 || c.LastUID != 2 {
-		t.Errorf("old reader of B-INBOX: %+v %v %v", c, ok, err)
 	}
 }
 

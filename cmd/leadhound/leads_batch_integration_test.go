@@ -126,7 +126,6 @@ func mustRun(t *testing.T, args ...string) string {
 func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	dir := leadsDB(t)
 	t.Setenv("LEADHOUND_OUTREACH", "")
-	t.Setenv("LEADHOUND_OUTREACH_USER", "")
 	saved := leadsNow
 	leadsNow = func() time.Time { return time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC) } // a Tuesday
 	t.Cleanup(func() { leadsNow = saved })
@@ -290,7 +289,6 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 
 	// Live: reserved leads never enter, so there is nothing to batch.
 	t.Setenv("LEADHOUND_OUTREACH", "live")
-	t.Setenv("LEADHOUND_OUTREACH_USER", "outreach@"+"sender.example")
 	wantLines(t, "live batch new", mustRun(t, "leads", "batch", "new"), "No batch: no candidate lead")
 	if n := batchCount(t, `SELECT count(*) FROM outreach_batch`); n != 1 {
 		t.Errorf("%d batches after a live batch new over fixture leads, want 1", n)
@@ -342,7 +340,6 @@ func mustConfig(t *testing.T) config.Config {
 func TestLeadsBatchTampered(t *testing.T) {
 	leadsDB(t)
 	t.Setenv("LEADHOUND_OUTREACH", "")
-	t.Setenv("LEADHOUND_OUTREACH_USER", "")
 	batchFixture(t)
 	mustRun(t, "leads", "build")
 	mustRun(t, "leads", "batch", "new")

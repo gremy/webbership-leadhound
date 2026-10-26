@@ -60,15 +60,10 @@ func runLeadsBatch(ctx context.Context, args []string) error {
 	return usageError("unknown batch subcommand %q; %s", args[0], leadsBatchUsage)
 }
 
-// batchMode is whether a new batch is shadow, and the domain its Message-IDs end in. A
-// batch is shadow unless LEADHOUND_OUTREACH is live and LEADHOUND_OUTREACH_USER names a
-// mailbox (RA1).
-//
-// The batch's Message-IDs now end in each draft's mailbox domain, so idDomain is unused; the
-// signature stays until the old single-mailbox settings go (plan Task 2.6).
-func batchMode(env leadconfig.Env) (shadow bool, idDomain string) { //nolint:unparam // kept until Task 2.6 removes it
-	idDomain = outreach.MessageIDDomain(env.User.Reveal())
-	return !env.Live() || idDomain == outreach.ShadowDomain, idDomain
+// batchMode is whether a new batch is shadow: unless LEADHOUND_OUTREACH is live (RA1). Each
+// draft's Message-ID ends in its own mailbox's domain.
+func batchMode(env leadconfig.Env) (shadow bool) {
+	return !env.Live()
 }
 
 // runBatchNew is `leads batch new [--size N]`: newBatch, which drafts the whole sequence
@@ -98,9 +93,6 @@ func runBatchNew(ctx context.Context, args []string) error {
 		return err
 	}
 	bs := newBatchSetup(setup, loc)
-	if setup.env.Live() && bs.shadow {
-		_, _ = fmt.Fprintln(stdout, "LEADHOUND_OUTREACH is live but no mailbox sends for it: this batch is shadow. Add a mailbox first: leadhound leads mailboxes add.")
-	}
 	now := leadsNow()
 	if !bs.shadow {
 		if err := checkMailboxDomains(ctx, leadstore.NewQueries(s.Pool()), loc, now); err != nil {

@@ -406,8 +406,8 @@ func renderBranch(b *parse.BranchNode, used map[string]bool, fixed *[]string) {
 // ShadowDomain ends the Message-IDs of a shadow batch, made without an outreach mailbox.
 const ShadowDomain = "shadow.invalid"
 
-// MessageIDDomain is the part after "@" in the outreach mailbox address
-// (LEADHOUND_OUTREACH_USER), lower-cased; without a usable address it is ShadowDomain.
+// MessageIDDomain is the part after "@" in a sending mailbox's address, lower-cased;
+// without a usable address it is ShadowDomain.
 func MessageIDDomain(outreachUser string) string {
 	i := strings.LastIndexByte(outreachUser, '@')
 	if i < 0 {

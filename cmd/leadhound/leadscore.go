@@ -263,8 +263,7 @@ type batchSetup struct {
 }
 
 func newBatchSetup(setup leadsSetup, loc *time.Location) batchSetup {
-	shadow, _ := batchMode(setup.env)
-	return batchSetup{leads: setup.leads, shadow: shadow, loc: loc}
+	return batchSetup{leads: setup.leads, shadow: batchMode(setup.env), loc: loc}
 }
 
 // NewBatchRequest is one `batch new`.

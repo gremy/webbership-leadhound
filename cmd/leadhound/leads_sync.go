@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/mail"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -30,17 +32,8 @@ const (
 	fetchChunk = 50
 )
 
-var (
-	// errSyncRunning: another sync holds the sync lock.
-	errSyncRunning = errors.New("a sync is running")
-	// errNoIMAP: the IMAP variables are not all set, so there is no mailbox to read.
-	errNoIMAP = errors.New("no IMAP settings")
-)
-
-// imapReady reports whether the IMAP variables a sync needs are all set.
-func imapReady(env leadconfig.Env) bool {
-	return env.IMAPAddr != "" && env.User.Reveal() != "" && env.Password.Reveal() != ""
-}
+// errSyncRunning: another sync holds the sync lock.
+var errSyncRunning = errors.New("a sync is running")
 
 // syncSummary is what one sync saw.
 type syncSummary struct {
@@ -156,79 +149,25 @@ func lockWait(ctx context.Context, pool *pgxpool.Pool, key int64, wait time.Dura
 	}
 }
 
-// syncMailbox reads INBOX and the \Junk mailbox from their cursors (a UIDVALIDITY change,
-// or no cursor yet, rereads the last 30 days by date), classifies each message and records
-// it with its effects in one transaction per message, moving the cursor with it. It holds
-// the sync lock throughout, waiting up to wait for it (errSyncRunning after that).
-func syncMailbox(ctx context.Context, pool *pgxpool.Pool, env leadconfig.Env, wait time.Duration) (syncSummary, error) {
-	sum := syncSummary{ByKind: map[mailbox.MessageKind]int{}}
-	if !imapReady(env) {
-		return sum, errNoIMAP
-	}
-	lock, err := lockWait(ctx, pool, leadstore.SyncLockKey, wait)
-	if errors.Is(err, leadstore.ErrLockHeld) {
-		return sum, errSyncRunning
-	}
-	if err != nil {
-		return sum, err
-	}
-	defer lock.Release()
-
-	lq := leadstore.NewQueries(pool)
-	refs, err := lq.SentRefs(ctx)
-	if err != nil {
-		return sum, err
-	}
-	match := newMatcher(refs)
-	r, err := leadsMail.openReader(ctx, env)
-	if err != nil {
-		return sum, fmt.Errorf("leads sync: %w", err)
-	}
-	defer func() { _ = r.Close() }()
-	boxes, err := r.ListMailboxes()
-	if err != nil {
-		return sum, fmt.Errorf("leads sync: %w", err)
-	}
-	names := []string{cmpOr(boxes.Inbox, "INBOX")}
-	if boxes.Junk != "" && boxes.Junk != names[0] {
-		names = append(names, boxes.Junk)
-		sum.Junk = true
-	}
-	for _, name := range names {
-		if err := syncOne(ctx, pool, r, name, match, &sum); err != nil {
-			return sum, fmt.Errorf("leads sync: %w", err)
-		}
-	}
-	return sum, nil
-}
-
-// syncOne reads one mailbox of the outreach mailbox the variables name.
-func syncOne(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, name string, match matcher, sum *syncSummary) error {
-	return syncFolder(ctx, pool, r, folderOf{}, name, match, sum)
-}
-
-// folderOf says whose folder syncFolder reads: a sending mailbox (mailboxID, with the health
-// rules of cfg), or, with mailboxID 0, the outreach mailbox the variables name.
+// folderOf says whose folder syncFolder reads: sending mailbox mailboxID, with the health
+// rules of cfg.
 type folderOf struct {
 	mailboxID int64
 	cfg       leadconfig.Config
 }
 
-// syncFolder reads folder name. For a sending mailbox, its cursor and events carry the
-// mailbox, and a bounce matched to one of our messages marks that message a hard bounce and
-// checks the health of the mailbox it went from.
+// syncFolder reads folder name of a sending mailbox (a UIDVALIDITY change, or no cursor yet,
+// rereads the last 30 days by date), classifies each message and records it with its
+// effects in one transaction per message, moving the mailbox's cursor with it. A bounce
+// matched to one of our messages marks that message a hard bounce and checks the health of
+// the mailbox it went from.
 func syncFolder(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, of folderOf, name string, match matcher, sum *syncSummary) error {
 	lq := leadstore.NewQueries(pool)
 	validity, err := r.Select(name)
 	if err != nil {
 		return err
 	}
-	var cur mailbox.Cursor
-	if of.mailboxID != 0 {
-		cur, _, err = lq.MailboxCursorFor(ctx, of.mailboxID, name)
-	} else {
-		cur, _, err = lq.MailboxCursor(ctx, name)
-	}
+	cur, _, err := lq.MailboxCursorFor(ctx, of.mailboxID, name)
 	if err != nil {
 		return err
 	}
@@ -258,10 +197,6 @@ func syncFolder(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, of fo
 			hard := false
 			if err := leadsInTx(ctx, pool, func(tq leadstore.Queries) error {
 				var err error
-				if of.mailboxID == 0 {
-					a, err = tq.ApplyIncoming(ctx, in)
-					return err
-				}
 				if a, err = tq.ApplyIncomingFor(ctx, of.mailboxID, in); err != nil {
 					return err
 				}
@@ -285,10 +220,7 @@ func syncFolder(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, of fo
 		last = cur.LastUID
 	}
 	// Records the sync time; a mailbox with no new mail keeps its place.
-	if of.mailboxID != 0 {
-		return lq.AdvanceCursorFor(ctx, of.mailboxID, name, validity, last, leadsNow())
-	}
-	return lq.AdvanceCursor(ctx, name, validity, last, leadsNow())
+	return lq.AdvanceCursorFor(ctx, of.mailboxID, name, validity, last, leadsNow())
 }
 
 // mailboxSync is how one sending mailbox's sync went.
@@ -336,8 +268,7 @@ func syncAll(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, 
 	return out, nil
 }
 
-// syncSendingMailbox reads INBOX and the \Junk mailbox of mb, as syncMailbox reads the
-// outreach mailbox.
+// syncSendingMailbox reads INBOX and the \Junk mailbox of mb, each from its cursor.
 func syncSendingMailbox(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, cfg leadconfig.Config, mb leadstore.Mailbox, match matcher) mailboxSync {
 	res := mailboxSync{Summary: syncSummary{ByKind: map[mailbox.MessageKind]int{}}}
 	creds, err := mailboxCreds(ctx, leadstore.NewQueries(pool), key, mb)
@@ -438,9 +369,11 @@ func classifyFetched(f mailbox.Fetched, match matcher) (leadstore.Incoming, stri
 	return in, domain
 }
 
-// runLeadsSync is `leads sync`: it reads the outreach mailbox and applies what came in. A
-// sync already running makes it exit 0 with that said; with no IMAP settings it syncs
-// nothing and says so (shadow sends need none).
+// runLeadsSync is `leads sync`: it reads every sending mailbox that is not retired, each with
+// its own sealed password, applies what came in and prints one line per mailbox, its findings
+// under it. A sync already running makes it exit 0 with that said; with no mailbox it syncs
+// nothing and says so (no key needed). A missing key, or a mailbox that could not be read
+// to the end, fails the command once every other mailbox is synced.
 func runLeadsSync(ctx context.Context, args []string) error {
 	if len(args) != 0 {
 		return usageError("usage: leadhound leads sync")
@@ -450,17 +383,48 @@ func runLeadsSync(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	sum, err := syncMailbox(ctx, s.Pool(), setup.env, 0)
-	switch {
-	case errors.Is(err, errNoIMAP):
-		_, _ = fmt.Fprintln(stdout, "No IMAP settings (LEADHOUND_IMAP_ADDR, LEADHOUND_OUTREACH_USER, LEADHOUND_OUTREACH_PASSWORD): nothing synced.")
+	boxes, err := leadstore.NewQueries(s.Pool()).Mailboxes(ctx, leadsNow())
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(boxes, func(mb leadstore.MailboxStatus) bool { return mb.State != leadstore.MailboxRetired }) {
+		_, _ = fmt.Fprintln(stdout, "No mailbox to sync: add one in the console (Mailboxes) or with leads mailboxes add.")
 		return nil
+	}
+	key, err := secretbox.LoadPrivateKey(os.Getenv)
+	if err != nil {
+		_, _ = fmt.Fprintf(stdout, "No sync: the mailbox key is missing (%v); nothing was read.\n", err)
+		return errors.New("leads sync: the mailbox key is missing")
+	}
+	res, err := syncAll(ctx, s.Pool(), key, setup.leads, 0)
+	switch {
 	case errors.Is(err, errSyncRunning):
 		_, _ = fmt.Fprintln(stdout, "A sync is running; this one did nothing.")
 		return nil
 	case err != nil:
 		return err
 	}
-	sum.print(stdout)
+	ids := slices.Sorted(maps.Keys(res))
+	failed := 0
+	for _, id := range ids {
+		ms := res[id]
+		switch {
+		case !ms.OK:
+			failed++
+			_, _ = fmt.Fprintf(stdout, "Mailbox %d: not synced: %s\n", id, ms.Note)
+		case ms.Summary.Messages == 0:
+			_, _ = fmt.Fprintf(stdout, "Mailbox %d: synced, nothing new.\n", id)
+		default:
+			_, _ = fmt.Fprintf(stdout, "Mailbox %d: synced.\n", id)
+			var b strings.Builder
+			ms.Summary.print(&b)
+			for line := range strings.Lines(b.String()) {
+				_, _ = fmt.Fprint(stdout, "  "+line)
+			}
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("leads sync: %s not synced", plural(failed, "mailbox", "mailboxes"))
+	}
 	return nil
 }

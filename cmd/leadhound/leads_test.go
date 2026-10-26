@@ -147,7 +147,7 @@ func TestSiteClientsDryRun(t *testing.T) {
 }
 
 func TestLeadsEnv(t *testing.T) {
-	for _, k := range []string{"LEADHOUND_PROBE_RATE", "LEADHOUND_PROBE_CONCURRENCY", "LEADHOUND_OUTREACH", "LEADHOUND_SMTP_ADDR", "LEADHOUND_IMAP_ADDR"} {
+	for _, k := range []string{"LEADHOUND_PROBE_RATE", "LEADHOUND_PROBE_CONCURRENCY", "LEADHOUND_OUTREACH"} {
 		t.Setenv(k, "")
 	}
 	if _, err := leadsEnv(config.Config{}, leadsForProbe); !errors.Is(err, errUsage) || !strings.Contains(err.Error(), "LEADHOUND_DATA_DIR") {

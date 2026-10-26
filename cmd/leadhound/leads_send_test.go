@@ -78,15 +78,6 @@ func TestClassifyFetched(t *testing.T) {
 }
 
 func TestSendSetupHelpers(t *testing.T) {
-	user := "outreach" + "@" + "Mail.Sender.example"
-	if d, ok := sendingDomain(leadconfig.Env{User: config.Secret(user)}); !ok || d != "mail.sender.example" {
-		t.Errorf("sendingDomain = %q %v", d, ok)
-	}
-	for _, bad := range []string{"", "outreach", "@sender.example", "outreach@"} {
-		if _, ok := sendingDomain(leadconfig.Env{User: config.Secret(bad)}); ok {
-			t.Errorf("sendingDomain(%q) ok", bad)
-		}
-	}
 	setup := leadsSetup{env: leadconfig.Env{Outreach: leadconfig.OutreachLive}}
 	op := "me" + "@" + "operator.example"
 	setup.leads.Sender.OperatorAddresses = []config.Secret{config.Secret(op)}

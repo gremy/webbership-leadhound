@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -53,7 +54,7 @@ func TestAdvisoryLocks(t *testing.T) {
 
 func leadstoretestReset(t *testing.T) { t.Helper(); newSiteFixture(t) }
 
-func TestSenderCheckAndCursor(t *testing.T) {
+func TestSenderCheck(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
 	sha := leadstore.SenderDomainSHA256("Mail.Sender.EXAMPLE.")
@@ -76,28 +77,7 @@ func TestSenderCheckAndCursor(t *testing.T) {
 	if ok, _ := f.q.SenderCheckPassedSince(ctx, sha, day.AddDate(0, 0, 1)); ok {
 		t.Error("yesterday's check counts for tomorrow")
 	}
-	if _, ok, err := f.q.MailboxCursor(ctx, "INBOX"); err != nil || ok {
-		t.Fatalf("cursor before any sync: %v %v", ok, err)
-	}
-	at := day.Add(11 * time.Hour)
-	for _, step := range []struct {
-		v, uid   uint32
-		wantV    uint32
-		wantLast uint32
-	}{
-		{7, 10, 7, 10},
-		{7, 4, 7, 10}, // never backwards under one UIDVALIDITY
-		{7, 12, 7, 12},
-		{9, 3, 9, 3}, // a new UIDVALIDITY replaces it
-	} {
-		if err := f.q.AdvanceCursor(ctx, "INBOX", step.v, step.uid, at); err != nil {
-			t.Fatal(err)
-		}
-		c, ok, err := f.q.MailboxCursor(ctx, "INBOX")
-		if err != nil || !ok || c.UIDValidity != step.wantV || c.LastUID != step.wantLast {
-			t.Errorf("after (%d, %d): %+v %v %v", step.v, step.uid, c, ok, err)
-		}
-	}
+	// The cursor's own steps are TestCursorForMailbox's.
 }
 
 // sentLead makes a live batch for one lead, approves it and marks step 0 sent; it returns
@@ -153,9 +133,10 @@ func TestApplyIncomingEffects(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
 	at := time.Now()
+	mb := leadstoretest.SeedMailbox(t, f.q, "out@mail.example")
 	apply := func(uid uint32, kind mailbox.MessageKind, ref *leadstore.SentRef) leadstore.Applied {
 		t.Helper()
-		a, err := f.q.ApplyIncoming(ctx, leadstore.Incoming{Mailbox: "INBOX", UIDValidity: 1, UID: uid, Kind: kind,
+		a, err := f.q.ApplyIncomingFor(ctx, mb.ID, leadstore.Incoming{Mailbox: "INBOX", UIDValidity: 1, UID: uid, Kind: kind,
 			FromDomain: "reply.localhost", Matched: ref, At: at})
 		if err != nil {
 			t.Fatalf("apply %s: %v", kind, err)
@@ -223,7 +204,7 @@ func TestApplyIncomingEffects(t *testing.T) {
 	if events != 6 || withAt != 0 {
 		t.Errorf("events %d, with an address %d", events, withAt)
 	}
-	if c, _, _ := f.q.MailboxCursor(ctx, "INBOX"); c.LastUID != 6 || c.UIDValidity != 1 {
+	if c, _, _ := f.q.MailboxCursorFor(ctx, mb.ID, "INBOX"); c.LastUID != 6 || c.UIDValidity != 1 {
 		t.Errorf("cursor %+v", c)
 	}
 }
@@ -273,7 +254,8 @@ func TestCreateSelftestAndOptOut(t *testing.T) {
 	if err != nil || len(refs) != 1 || !refs[0].Selftest() {
 		t.Fatalf("refs %+v %v", refs, err)
 	}
-	a, err := f.q.ApplyIncoming(ctx, leadstore.Incoming{Mailbox: "INBOX", UIDValidity: 1, UID: 1, Kind: mailbox.KindOptOut,
+	mb := leadstoretest.SeedMailbox(t, f.q, "out@mail.example")
+	a, err := f.q.ApplyIncomingFor(ctx, mb.ID, leadstore.Incoming{Mailbox: "INBOX", UIDValidity: 1, UID: 1, Kind: mailbox.KindOptOut,
 		FromDomain: "sender.localhost", Matched: &refs[0], At: due})
 	if err != nil {
 		t.Fatal(err)

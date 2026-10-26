@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand/v2"
 	"net"
 	"strings"
@@ -24,15 +23,13 @@ type mailSender interface {
 	Send(ctx context.Context, from, to string, raw []byte) (reply string, err error)
 }
 
-// mailDeps are the outreach mailbox's outside world: DNS, IMAP, SMTP and the clock's
+// mailDeps are the sending mailboxes' outside world: DNS, IMAP, SMTP and the clock's
 // sleeps. Tests replace leadsMail with fakes, so no test reaches a real server.
 type mailDeps struct {
-	resolver   mailbox.Resolver
-	openReader func(ctx context.Context, env leadconfig.Env) (mailbox.Reader, error)
-	smtp       func(env leadconfig.Env) mailSender
-	// The per-mailbox world: each sending mailbox's own servers and login (addr is
-	// host:port). smtpFor builds its sender, readerFor dials and logs in to its IMAP,
-	// probeSMTP and probeIMAP test its logins without sending.
+	resolver mailbox.Resolver
+	// Each sending mailbox's own servers and login (addr is host:port). smtpFor builds its
+	// sender, readerFor dials and logs in to its IMAP, probeSMTP and probeIMAP test its
+	// logins without sending.
 	smtpFor   func(addr string, user, password config.Secret) mailSender
 	readerFor func(ctx context.Context, addr string, user, password config.Secret) (mailbox.Reader, error)
 	probeSMTP func(ctx context.Context, addr string, user, password config.Secret) error
@@ -50,16 +47,6 @@ type mailDeps struct {
 
 var leadsMail = mailDeps{
 	resolver: net.DefaultResolver,
-	openReader: func(ctx context.Context, env leadconfig.Env) (mailbox.Reader, error) {
-		r := &mailbox.IMAPReader{Addr: env.IMAPAddr, User: env.User, Password: env.Password}
-		if err := r.Dial(ctx); err != nil {
-			return nil, err
-		}
-		return r, nil
-	},
-	smtp: func(env leadconfig.Env) mailSender {
-		return &mailbox.SMTPSender{Addr: env.SMTPAddr, User: env.User, Password: env.Password}
-	},
 	smtpFor: func(addr string, user, password config.Secret) mailSender {
 		return &mailbox.SMTPSender{Addr: addr, User: user, Password: password}
 	},
@@ -94,32 +81,12 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// sendingDomain is the part after "@" in LEADHOUND_OUTREACH_USER, lower case; ok is false
-// without a usable address.
-func sendingDomain(env leadconfig.Env) (string, bool) {
-	user := strings.TrimSpace(env.User.Reveal())
-	i := strings.LastIndexByte(user, '@')
-	if i <= 0 || i == len(user)-1 {
-		return "", false
-	}
-	return strings.ToLower(user[i+1:]), true
-}
-
 // dkimSelector is sender.dkim_selector, leadconfig.DefaultDKIMSelector when blank.
 func dkimSelector(cfg leadconfig.Config) string {
 	if s := strings.TrimSpace(cfg.Sender.DKIMSelector); s != "" {
 		return s
 	}
 	return leadconfig.DefaultDKIMSelector
-}
-
-// checkSender runs the DNS check of the sending domain and records it (domain hashed).
-func checkSender(ctx context.Context, lq leadstore.Queries, domain, selector string, now time.Time) (mailbox.DNSResult, error) {
-	res := mailbox.CheckDNS(ctx, leadsMail.resolver, domain, selector)
-	if err := lq.RecordSenderCheck(ctx, leadstore.SenderDomainSHA256(domain), res, now); err != nil {
-		return res, err
-	}
-	return res, nil
 }
 
 // checkSenderFor runs the DNS check of a mailbox's domain with its own DKIM selector and
@@ -173,41 +140,76 @@ func dnsLine(r mailbox.DNSResult) string {
 	return fmt.Sprintf("SPF %s · DKIM %s · DMARC %s", passFail(r.SPF), passFail(r.DKIM), passFail(r.DMARC))
 }
 
-// printDNS writes one line per record and the note (which never names the domain).
-func printDNS(w io.Writer, r mailbox.DNSResult) {
-	_, _ = fmt.Fprintf(w, "SPF %s\nDKIM %s\nDMARC %s\n", passFail(r.SPF), passFail(r.DKIM), passFail(r.DMARC))
-	if r.Note != "" {
-		_, _ = fmt.Fprintf(w, "Note: %s\n", r.Note)
-	}
-}
-
-// runLeadsSenders is `leads senders check`: SPF, DKIM (sender.dkim_selector) and DMARC for
-// the sending domain, the part after "@" in LEADHOUND_OUTREACH_USER. It records the check
-// and prints pass or fail per record, never the domain. A failing record still exits 0: the
-// check ran, and send reads its row.
+// runLeadsSenders is `leads senders check`: SPF, DKIM and DMARC for each unique domain and
+// DKIM selector of the mailboxes that are not retired, each checked once and recorded with
+// its selector (what a mailbox's readiness reads). It prints one line per domain and
+// selector, naming its mailboxes by id and never the domain, and opens no password. A
+// failing record still exits 0: the check ran, and send reads its row.
 func runLeadsSenders(ctx context.Context, args []string) error {
 	const usage = "usage: leadhound leads senders check"
 	if len(args) != 1 || args[0] != "check" {
 		return usageError("%s", usage)
 	}
-	s, setup, err := leadsOpen(ctx, leadsForProbe)
+	s, _, err := leadsOpen(ctx, leadsForProbe)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-	domain, ok := sendingDomain(setup.env)
-	if !ok {
-		return usageError("LEADHOUND_OUTREACH_USER is not set to the outreach mailbox address; the check reads the sending domain from it")
-	}
-	res, err := checkSender(ctx, leadstore.NewQueries(s.Pool()), domain, dkimSelector(setup.leads), leadsNow())
+	lq := leadstore.NewQueries(s.Pool())
+	now := leadsNow()
+	boxes, err := lq.Mailboxes(ctx, now)
 	if err != nil {
 		return err
 	}
-	if res.OK() {
-		_, _ = fmt.Fprintln(stdout, "Sending domain DNS: all three records pass; send may run today.")
-	} else {
-		_, _ = fmt.Fprintln(stdout, "Sending domain DNS: a record fails, so send will not send until it passes.")
+	type target struct {
+		domain, selector string
+		ids              []int64
 	}
-	printDNS(stdout, res)
+	var targets []*target
+	byKey := map[string]*target{}
+	for _, mb := range boxes {
+		if mb.State == leadstore.MailboxRetired {
+			continue
+		}
+		k := strings.ToLower(mb.Domain) + " " + mb.DKIMSelector
+		t, ok := byKey[k]
+		if !ok {
+			t = &target{domain: mb.Domain, selector: mb.DKIMSelector}
+			byKey[k] = t
+			targets = append(targets, t)
+		}
+		t.ids = append(t.ids, mb.ID)
+	}
+	if len(targets) == 0 {
+		_, _ = fmt.Fprintln(stdout, "No mailbox to check: add one in the console (Mailboxes) or with leads mailboxes add.")
+		return nil
+	}
+	for _, t := range targets {
+		res, err := checkSenderFor(ctx, lq, t.domain, t.selector, now)
+		if err != nil {
+			return err
+		}
+		verdict := "sending waits until every record passes."
+		if res.OK() {
+			verdict = "sending may go ahead today."
+		}
+		line := fmt.Sprintf("%s (selector %s): %s: %s", mailboxIDs(t.ids), t.selector, dnsLine(res), verdict)
+		if res.Note != "" {
+			line += " Note: " + res.Note
+		}
+		_, _ = fmt.Fprintln(stdout, line)
+	}
 	return nil
+}
+
+// mailboxIDs is "Mailbox 3" or "Mailboxes 1, 3".
+func mailboxIDs(ids []int64) string {
+	if len(ids) == 1 {
+		return fmt.Sprintf("Mailbox %d", ids[0])
+	}
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprint(id)
+	}
+	return "Mailboxes " + strings.Join(parts, ", ")
 }

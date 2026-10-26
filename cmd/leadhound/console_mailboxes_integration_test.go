@@ -17,8 +17,7 @@ import (
 )
 
 // TestConsoleLeadsSendingFromMailboxes: the Leads page's sending summary through the real
-// backend is read from the stored mailboxes, never the old single-mailbox settings (live
-// here with LEADHOUND_OUTREACH_USER empty): with zero, one and two active mailboxes, today's
+// backend is read from the stored mailboxes: with zero, one and two active mailboxes, today's
 // cap is the caps of the mailboxes ready for new leads summed (each domain at most
 // caps.domain_per_day), and the records show as passed only when every active domain and
 // selector passed today.
@@ -30,7 +29,6 @@ func TestConsoleLeadsSendingFromMailboxes(t *testing.T) {
 		dir := leadsScene(t)
 		setCaps(t, dir, "2026-10-01", "[{from_day: 0, per_day: "+perDay+"}]")
 		t.Setenv("LEADHOUND_OUTREACH", "live")
-		t.Setenv("LEADHOUND_OUTREACH_USER", "")
 		return leadsBackend(t), leadstoretest.Q(t)
 	}
 	sending := func(t *testing.T, b *backend) console.Sending {
@@ -71,7 +69,6 @@ func TestConsoleLeadsSendingFromMailboxes(t *testing.T) {
 	t.Run("shadow", func(t *testing.T) {
 		b, _ := scene(t, "10")
 		t.Setenv("LEADHOUND_OUTREACH", "")
-		t.Setenv("LEADHOUND_OUTREACH_USER", testUser)
 		if s := sending(t, b); s.SetUp {
 			t.Error("shadow outreach shows sending set up")
 		}
