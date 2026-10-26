@@ -390,7 +390,7 @@ type Contacted struct {
 	Cancelled int64 // pending messages cancelled ('hand-contacted')
 }
 
-// MarkContacted records that Gremy reached domain by hand (RA15). It makes sure a
+// MarkContacted records that the operator reached domain by hand (RA15). It makes sure a
 // site_owner org exists for the domain's registrable domain (source probe, linked to its
 // site row when one exists), then upserts its lead: from the org's finding when there is
 // one (a Drupal 6–9 probe → unsupported, 10 → d10; an agency's first finding →

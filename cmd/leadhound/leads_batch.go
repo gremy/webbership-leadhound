@@ -665,7 +665,7 @@ func runBatchDiscard(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runLeadsDone is `leads done K`: Gremy used contact-form or LinkedIn message K.
+// runLeadsDone is `leads done K`: the operator used contact-form or LinkedIn message K.
 func runLeadsDone(ctx context.Context, args []string) error {
 	const usage = "usage: leadhound leads done MESSAGE (the message number batch show prints)"
 	fs := flag.NewFlagSet("leads done", flag.ContinueOnError)
@@ -710,7 +710,7 @@ func runLeadsDone(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runLeadsMarkContacted is `leads mark-contacted DOMAIN [--note …]` (RA15): Gremy reached
+// runLeadsMarkContacted is `leads mark-contacted DOMAIN [--note …]` (RA15): the operator reached
 // DOMAIN by hand, so no batch drafts it again.
 func runLeadsMarkContacted(ctx context.Context, args []string) error {
 	const usage = "usage: leadhound leads mark-contacted DOMAIN [--note TEXT]"

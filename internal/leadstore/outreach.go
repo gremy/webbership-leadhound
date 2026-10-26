@@ -342,10 +342,10 @@ type Approval struct {
 	Skipped  int  // messages skipped (by the skip list, suppression or lead state)
 }
 
-// ApproveBatch approves batch id for Gremy (RA2). It is refused unless hashPrefix (at least
+// ApproveBatch approves batch id for the operator (RA2). It is refused unless hashPrefix (at least
 // MinHashPrefix hex digits) is a prefix of the batch's content_sha256, and unless its rows
 // still hash to that (ErrBatchTampered). An approved batch is
-// approved again as a no-op (Already). skip lists the item numbers Gremy left out, where
+// approved again as a no-op (Already). skip lists the item numbers the operator left out, where
 // an item is one lead: the batch's distinct leads numbered from 1 in BatchMessages order
 // (lead id, then step), so batch show must number them the same way. Their messages are skipped and, in a live batch, the lead moves to skipped. Every
 // other item is re-checked (suppression's second point): a suppressed lead, or one no
@@ -386,7 +386,7 @@ func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, 
 	if err != nil {
 		return Approval{}, fmt.Errorf("leadstore: approve batch: %w", err)
 	}
-	// The rows must still be what Gremy was shown (an owner edit after batch new is refused).
+	// The rows must still be what the operator was shown (an owner edit after batch new is refused).
 	if sum, err := ContentSHA256(DraftsOf(msgs)); err != nil || !bytes.Equal(sum, content) {
 		return Approval{}, fmt.Errorf("leadstore: approve batch %d: %w", id, ErrBatchTampered)
 	}

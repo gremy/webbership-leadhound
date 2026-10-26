@@ -28,9 +28,9 @@ const dnsDomain = "sender.example"
 
 func goodRecords() map[string][]string {
 	return map[string][]string{
-		dnsDomain:                           {"google-site-verification=abc", "v=spf1 include:spf.mail.example ~all"},
-		"spacemail._domainkey." + dnsDomain: {"v=DKIM1; k=rsa; p=MIIBIjANBgkq"},
-		"_dmarc." + dnsDomain:               {"v=DMARC1; p=none"},
+		dnsDomain:                      {"google-site-verification=abc", "v=spf1 include:spf.mail.example ~all"},
+		"sel1._domainkey." + dnsDomain: {"v=DKIM1; k=rsa; p=MIIBIjANBgkq"},
+		"_dmarc." + dnsDomain:          {"v=DMARC1; p=none"},
 	}
 }
 
@@ -46,19 +46,19 @@ func TestCheckDNS(t *testing.T) {
 		{"spf missing", func(m map[string][]string) { m[dnsDomain] = []string{"google-site-verification=abc"} }, "",
 			false, true, true, "spf"},
 		{"spf domain not found", func(m map[string][]string) { delete(m, dnsDomain) }, "", false, true, true, "not found"},
-		{"dkim missing", func(m map[string][]string) { delete(m, "spacemail._domainkey."+dnsDomain) }, "",
+		{"dkim missing", func(m map[string][]string) { delete(m, "sel1._domainkey."+dnsDomain) }, "",
 			true, false, true, "dkim"},
 		{"dmarc missing", func(m map[string][]string) { delete(m, "_dmarc."+dnsDomain) }, "", true, true, false, "dmarc"},
 		{"wrong prefixes", func(m map[string][]string) {
 			m[dnsDomain] = []string{"spf1 v=spf1"}
-			m["spacemail._domainkey."+dnsDomain] = []string{"k=rsa; v=DKIM1"}
+			m["sel1._domainkey."+dnsDomain] = []string{"k=rsa; v=DKIM1"}
 			m["_dmarc."+dnsDomain] = []string{"v=DMARC2; p=none"}
 		}, "", false, false, false, "v=spf1"},
 		{"split dkim txt", func(m map[string][]string) {
-			m["spacemail._domainkey."+dnsDomain] = []string{"v=DKIM1; k=rsa; p=MIIBIj", "ANBgkqhkiG9w0BAQEFAAOC"}
+			m["sel1._domainkey."+dnsDomain] = []string{"v=DKIM1; k=rsa; p=MIIBIj", "ANBgkqhkiG9w0BAQEFAAOC"}
 		}, "", true, true, true, ""},
 		{"split dkim txt whose first string is only the version", func(m map[string][]string) {
-			m["spacemail._domainkey."+dnsDomain] = []string{"v=DKI", "M1; k=rsa; p=MIIB"}
+			m["sel1._domainkey."+dnsDomain] = []string{"v=DKI", "M1; k=rsa; p=MIIB"}
 		}, "", true, true, true, ""},
 		{"lookup failure", func(map[string][]string) {}, "_dmarc." + dnsDomain, true, true, false, "lookup failed"},
 		{"case and spaces", func(m map[string][]string) {
@@ -71,7 +71,7 @@ func TestCheckDNS(t *testing.T) {
 			m := goodRecords()
 			c.edit(m)
 			r := fakeResolver{txt: m, fail: map[string]bool{c.fail: c.fail != ""}}
-			got := CheckDNS(context.Background(), r, dnsDomain, "spacemail")
+			got := CheckDNS(context.Background(), r, dnsDomain, "sel1")
 			if got.SPF != c.spf || got.DKIM != c.dkim || got.DMARC != c.dmarc {
 				t.Fatalf("got %+v, want spf=%v dkim=%v dmarc=%v", got, c.spf, c.dkim, c.dmarc)
 			}
@@ -90,7 +90,7 @@ func TestCheckDNS(t *testing.T) {
 
 func TestCheckDNSBadInput(t *testing.T) {
 	r := fakeResolver{txt: goodRecords()}
-	for _, c := range []struct{ domain, selector string }{{"", "spacemail"}, {dnsDomain, ""}, {dnsDomain, "a.b"}} {
+	for _, c := range []struct{ domain, selector string }{{"", "sel1"}, {dnsDomain, ""}, {dnsDomain, "a.b"}} {
 		got := CheckDNS(context.Background(), r, c.domain, c.selector)
 		if got.SPF || got.DKIM || got.DMARC || got.Note == "" || strings.Contains(got.Note, "sender") {
 			t.Fatalf("CheckDNS(%q, %q) = %+v", c.domain, c.selector, got)
@@ -101,7 +101,7 @@ func TestCheckDNSBadInput(t *testing.T) {
 func TestCheckDNSCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	got := CheckDNS(ctx, fakeResolver{txt: goodRecords()}, dnsDomain, "spacemail")
+	got := CheckDNS(ctx, fakeResolver{txt: goodRecords()}, dnsDomain, "sel1")
 	if got.SPF || got.DKIM || got.DMARC || !strings.Contains(got.Note, context.Canceled.Error()) {
 		t.Fatalf("got %+v", got)
 	}
@@ -112,7 +112,7 @@ var _ Resolver = net.DefaultResolver
 
 func TestCheckDNSNoteNeverHoldsTheLookupError(t *testing.T) {
 	r := fakeResolver{txt: goodRecords(), fail: map[string]bool{dnsDomain: true}}
-	got := CheckDNS(context.Background(), r, dnsDomain, "spacemail")
+	got := CheckDNS(context.Background(), r, dnsDomain, "sel1")
 	if got.SPF || strings.Contains(got.Note, "misbehaving") || strings.Contains(got.Note, "no such host") {
 		t.Fatalf("note carries the resolver's error: %q", got.Note)
 	}

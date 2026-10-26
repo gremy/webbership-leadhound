@@ -123,7 +123,7 @@ func (r *sendReport) runNote(runErr error) string {
 	return strings.Join(parts, " · ")
 }
 
-// print writes the outcome decision-first: what Gremy must check, then what went.
+// print writes the outcome decision-first: what the operator must check, then what went.
 func (r *sendReport) print(w io.Writer) {
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 	if len(r.maybe) > 0 {
@@ -664,7 +664,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 		r.rep.refused = append(r.rep.refused, label+" ("+noteReserved+")")
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: reserved recipient")
 	}
-	// What Gremy approved, byte for byte (RA2).
+	// What the operator approved, byte for byte (RA2).
 	if !bytes.Equal(leadstore.MessageSHA256(row.ToAddress, row.Subject, row.BodyText, row.InReplyTo), row.ApprovedSHA256) {
 		r.rep.note(noteTampered)
 		r.rep.refused = append(r.rep.refused, label+" ("+noteTampered+")")

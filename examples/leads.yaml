@@ -13,7 +13,7 @@ agency_finding_pattern: '(?i)drupal\s*(7|8|9|10|11)|upgrade|migrat'
 sender:
   name: "Demo Sender"
   identity_line: "Demo Ltd, 1 Example Street, Example City"
-  dkim_selector: spacemail
+  dkim_selector: sel1 # your mail provider's DKIM selector (the name before ._domainkey); set yours
   operator_addresses: [operator@sender.example]
   site_url: https://sender.example/
   opt_out_lines: # language -> the opt-out line; every language an email country uses needs one

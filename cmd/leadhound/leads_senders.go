@@ -79,12 +79,12 @@ func sendingDomain(env leadconfig.Env) (string, bool) {
 	return strings.ToLower(user[i+1:]), true
 }
 
-// dkimSelector is sender.dkim_selector, spacemail when blank.
+// dkimSelector is sender.dkim_selector, leadconfig.DefaultDKIMSelector when blank.
 func dkimSelector(cfg leadconfig.Config) string {
 	if s := strings.TrimSpace(cfg.Sender.DKIMSelector); s != "" {
 		return s
 	}
-	return "spacemail"
+	return leadconfig.DefaultDKIMSelector
 }
 
 // checkSender runs the DNS check of the sending domain and records it (domain hashed).

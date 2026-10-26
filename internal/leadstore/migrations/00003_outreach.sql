@@ -43,7 +43,7 @@ CREATE TABLE lead_event (
   CONSTRAINT lead_event_actor_check CHECK (actor IN ('gremy', 'system'))
 );
 
--- outreach_batch: one set of drafts Gremy reads and approves by its content hash.
+-- outreach_batch: one set of drafts the operator reads and approves by its content hash.
 CREATE TABLE outreach_batch (
   id bigserial PRIMARY KEY,
   shadow boolean NOT NULL,            -- a shadow batch never changes lead.state and never goes live

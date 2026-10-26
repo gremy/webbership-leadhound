@@ -104,7 +104,7 @@ func TestSendSetupHelpers(t *testing.T) {
 	if err := selftestAllowed(setup, op); !errors.Is(err, errUsage) {
 		t.Errorf("shadow selftest: %v", err)
 	}
-	if dkimSelector(leadconfig.Config{}) != "spacemail" {
+	if dkimSelector(leadconfig.Config{}) != leadconfig.DefaultDKIMSelector {
 		t.Error("default selector")
 	}
 }

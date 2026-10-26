@@ -205,9 +205,9 @@ func (r fakeResolver) LookupTXT(_ context.Context, name string) ([]string, error
 
 func passingDNS() fakeResolver {
 	return fakeResolver{
-		testSenderDomain: {"v=spf1 include:_spf." + testSenderDomain + " -all"},
-		"spacemail._domainkey." + testSenderDomain: {"v=DKIM1; k=rsa; p=MIIB"},
-		"_dmarc." + testSenderDomain:               {"v=DMARC1; p=none"},
+		testSenderDomain:                      {"v=spf1 include:_spf." + testSenderDomain + " -all"},
+		"sel1._domainkey." + testSenderDomain: {"v=DKIM1; k=rsa; p=MIIB"},
+		"_dmarc." + testSenderDomain:          {"v=DMARC1; p=none"},
 	}
 }
 
@@ -982,7 +982,7 @@ func TestSendersCheck(t *testing.T) {
 		t.Errorf("no user exited %d:\n%s", code, out)
 	}
 	t.Setenv("LEADHOUND_OUTREACH_USER", testUser)
-	w.dns["spacemail._domainkey."+testSenderDomain] = []string{"v=spf1 wrong record"}
+	w.dns["sel1._domainkey."+testSenderDomain] = []string{"v=spf1 wrong record"}
 	out := w.mustRun(t, "leads", "senders", "check")
 	wantLines(t, "check", out, "SPF pass\nDKIM fail\nDMARC pass\n", "a record fails")
 	if strings.Contains(out, testSenderDomain) {

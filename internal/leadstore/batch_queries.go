@@ -173,7 +173,7 @@ type Done struct {
 	LeadState string // the lead's state afterwards
 }
 
-// MarkDone records that Gremy used approved contact-form or LinkedIn message id by hand:
+// MarkDone records that the operator used approved contact-form or LinkedIn message id by hand:
 // the message becomes done (sent_at now). In a live batch its lead moves from batched to
 // contacted with actor; a lead already past batched keeps its state, and a shadow batch
 // never touches the lead (RA1). An email message is ErrNotManual, a message that is not

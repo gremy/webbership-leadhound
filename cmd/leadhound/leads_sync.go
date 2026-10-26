@@ -60,7 +60,7 @@ func (s *syncSummary) add(kind mailbox.MessageKind, domain string, a leadstore.A
 	}
 }
 
-// print writes the summary decision-first: what Gremy has to read, then what was only
+// print writes the summary decision-first: what the operator has to read, then what was only
 // counted.
 func (s syncSummary) print(w io.Writer) {
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }

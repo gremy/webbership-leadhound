@@ -374,7 +374,7 @@ func (q Queries) Requeue(ctx context.Context, id int64, due time.Time, reply str
 
 // SendingIDs returns the live messages left in state sending, oldest first. Under the send
 // lock none is in flight, so each was interrupted between SMTP and its outcome: it may
-// have gone, and is for Gremy to check by hand.
+// have gone, and is for the operator to check by hand.
 func (q Queries) SendingIDs(ctx context.Context) ([]int64, error) {
 	ids, err := collect(ctx, q.db, pgx.RowTo[int64],
 		`SELECT m.id FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
@@ -418,7 +418,7 @@ type Selftest struct {
 
 // CreateSelftest writes one selftest (RA14): an org selftest-<n> (kind and source selftest),
 // its lead (kind selftest, channel email, no route), and a live one-message batch approved
-// on Gremy's word (the command line names his own address), the message due at d.Due. Run
+// on the operator's word (the command line names their own address), the message due at d.Due. Run
 // it in a transaction.
 func (q Queries) CreateSelftest(ctx context.Context, d SelftestDraft) (Selftest, error) {
 	var st Selftest

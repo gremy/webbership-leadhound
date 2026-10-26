@@ -37,7 +37,7 @@ const FileName = "leads.yaml"
 const HardDailyCeiling = 40
 
 // DefaultDKIMSelector is sender.dkim_selector when the file leaves it out.
-const DefaultDKIMSelector = "spacemail"
+const DefaultDKIMSelector = "default"
 
 // ErrInvalid wraps every problem with the file's content or its templates.
 var ErrInvalid = errors.New("invalid leads config")

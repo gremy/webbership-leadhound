@@ -102,7 +102,7 @@ func TestDemoLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("demo: %v", err)
 	}
-	if cfg.Sender.DKIMSelector != "spacemail" || cfg.Sender.SiteURL != "https://sender.example/" {
+	if cfg.Sender.DKIMSelector != "sel1" || cfg.Sender.SiteURL != "https://sender.example/" {
 		t.Errorf("sender = %+v", cfg.Sender)
 	}
 	if len(cfg.Sender.OperatorAddresses) != 1 {
@@ -312,7 +312,7 @@ func TestCeilingConstant(t *testing.T) {
 
 func TestDKIMSelectorDefault(t *testing.T) {
 	dir := demoDir(t)
-	replaceIn(t, dir, FileName, "  dkim_selector: spacemail\n", "")
+	replaceIn(t, dir, FileName, "  dkim_selector: sel1 # your mail provider's DKIM selector (the name before ._domainkey); set yours\n", "")
 	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)

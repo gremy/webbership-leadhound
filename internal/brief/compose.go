@@ -545,7 +545,7 @@ func applyWording(t string) string {
 }
 
 // referralURLs are two LinkedIn people searches built from the company name alone: its
-// recruiters and its engineering managers. The member opens them himself.
+// recruiters and its engineering managers. The member opens them by hand.
 func referralURLs(company string) (recruiter, manager string) {
 	q := func(s string) string {
 		// QueryEscape writes a space as "+" and a literal "+" as "%2B", so this is exact.
