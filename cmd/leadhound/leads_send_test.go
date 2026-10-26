@@ -87,10 +87,7 @@ func TestSendSetupHelpers(t *testing.T) {
 			t.Errorf("sendingDomain(%q) ok", bad)
 		}
 	}
-	setup := leadsSetup{env: leadconfig.Env{Outreach: leadconfig.OutreachLive, User: config.Secret(user)}}
-	if got := strings.Join(liveMissing(setup), ","); got != "LEADHOUND_SMTP_ADDR,LEADHOUND_IMAP_ADDR,LEADHOUND_OUTREACH_PASSWORD" {
-		t.Errorf("liveMissing = %s", got)
-	}
+	setup := leadsSetup{env: leadconfig.Env{Outreach: leadconfig.OutreachLive}}
 	op := "me" + "@" + "operator.example"
 	setup.leads.Sender.OperatorAddresses = []config.Secret{config.Secret(op)}
 	if err := selftestAllowed(setup, op); err != nil {
@@ -106,5 +103,30 @@ func TestSendSetupHelpers(t *testing.T) {
 	}
 	if dkimSelector(leadconfig.Config{}) != leadconfig.DefaultDKIMSelector {
 		t.Error("default selector")
+	}
+}
+
+// TestSendMailboxWords: the reasons a mailbox is paused for, and the run note and report of
+// messages held for their mailbox and of a missing key.
+func TestSendMailboxWords(t *testing.T) {
+	for stage, want := range map[string]string{
+		"auth": "the server refused the login", "mail": "the server refused mail from this address", "data": "the server refused the account at data",
+	} {
+		if got := accountReason(stage); got != want {
+			t.Errorf("accountReason(%q) = %q, want %q", stage, got, want)
+		}
+	}
+	if got := policyReason("sender.example", [3]int{5, 7, 1}); got != "a receiving server blocked mail from sender.example (5.7.1)" {
+		t.Errorf("policyReason = %q", got)
+	}
+	r := &sendReport{live: true, held: map[outreach.HoldReason]int{holdMailbox: 2}}
+	r.note(noteKeyMissing)
+	if got, want := r.runNote(nil), "live · sent 0 · refused 0 · maybe_sent 0 · retry 0 · cancelled 0 · skipped 0 · held mailbox 2 · notes mailbox key missing"; got != want {
+		t.Errorf("note\n got %q\nwant %q", got, want)
+	}
+	var b strings.Builder
+	r.print(&b)
+	if !strings.Contains(b.String(), "Held for a later run: its mailbox cannot send now 2.") {
+		t.Errorf("report:\n%s", b.String())
 	}
 }

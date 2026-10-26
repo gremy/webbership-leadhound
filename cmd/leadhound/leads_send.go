@@ -7,16 +7,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/mail"
+	"maps"
+	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -51,7 +55,20 @@ const (
 	noteFollowup    = "followup"
 	noteStuck       = "stuck-sending"
 	notePaused      = "paused by the operator"
+	// noteKeyMissing: a live run found no mailbox key and sent nothing (the brief reads it).
+	noteKeyMissing    = "mailbox key missing"
+	noteNoMailbox     = "no mailbox"
+	noteMailboxPaused = "mailbox paused"
+	notePolicyBlock   = "policy-block"
 )
+
+// holdMailbox holds a due message whose mailbox may not send in this run: paused, not
+// checked, its DNS or sync failed, its login refused, or no mailbox at all.
+const holdMailbox outreach.HoldReason = "mailbox"
+
+// cancelMailboxRetired is the cancel reason of a message whose mailbox is retired: a thread
+// must come from the same address.
+const cancelMailboxRetired = "mailbox retired"
 
 // errPaused stops a send run before a message is claimed: the operator paused sending.
 var errPaused = errors.New("leads send: paused by the operator")
@@ -65,6 +82,8 @@ type sendOptions struct {
 	max int // at most this many messages (0: as many as Plan picks)
 	// selftestTo makes the run a selftest: one message to this operator address.
 	selftestTo string
+	// selftestMailbox is the selftest's mailbox, its id or address; "" with only one.
+	selftestMailbox string
 }
 
 // sendReport is what one send run did; its note is the run row's note.
@@ -82,6 +101,8 @@ type sendReport struct {
 	notes     []string
 	// pausedAt is when the operator paused sending, when that stopped this run.
 	pausedAt *time.Time
+	// stopped: the run ended before planning and said why (no key, no ready mailbox).
+	stopped bool
 }
 
 func (r *sendReport) note(word string) {
@@ -103,7 +124,7 @@ func (r *sendReport) runNote(runErr error) string {
 		fmt.Sprintf("maybe_sent %d", len(r.maybe)), fmt.Sprintf("retry %d", r.retry),
 		fmt.Sprintf("cancelled %d", r.cancelled), fmt.Sprintf("skipped %d", r.skipped)}
 	var held []string
-	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, outreach.HoldNotDue} {
+	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, outreach.HoldNotDue, holdMailbox} {
 		if n := r.held[h]; n > 0 {
 			held = append(held, fmt.Sprintf("%s %d", h, n))
 		}
@@ -150,10 +171,11 @@ func (r *sendReport) print(w io.Writer) {
 		p("%s cancelled (suppressed, or the lead moved on).\n", plural(int(r.cancelled), "pending message", "pending messages"))
 	}
 	var held []string
-	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain} {
+	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, holdMailbox} {
 		if n := r.held[h]; n > 0 {
 			held = append(held, fmt.Sprintf("%s %d", map[outreach.HoldReason]string{
 				outreach.HoldCap: "today's cap", outreach.HoldHours: "outside business hours", outreach.HoldDomain: "one per domain per run",
+				holdMailbox: "its mailbox cannot send now",
 			}[h], n))
 		}
 	}
@@ -168,7 +190,7 @@ func (r *sendReport) print(w io.Writer) {
 			r.pausedAt.Format("2006-01-02 15:04"))
 		return
 	}
-	if len(r.sent)+len(r.refused)+len(r.maybe)+len(r.stuck)+r.retry+len(held) == 0 && r.cancelled == 0 {
+	if len(r.sent)+len(r.refused)+len(r.maybe)+len(r.stuck)+r.retry+len(held) == 0 && r.cancelled == 0 && !r.stopped {
 		p("Nothing due to send.\n")
 	}
 }
@@ -255,65 +277,59 @@ func runLeadsSendPause(ctx context.Context, pause bool, args []string) error {
 	return nil
 }
 
-// liveMissing names the variables a live send needs that are not set.
-func liveMissing(setup leadsSetup) []string {
-	var missing []string
-	for _, v := range []struct {
-		name string
-		set  bool
-	}{
-		{"LEADHOUND_SMTP_ADDR", setup.env.SMTPAddr != ""},
-		{"LEADHOUND_IMAP_ADDR", setup.env.IMAPAddr != ""},
-		{"LEADHOUND_OUTREACH_USER (the mailbox address, local@domain)", validUser(setup.env)},
-		{"LEADHOUND_OUTREACH_PASSWORD", setup.env.Password.Reveal() != ""},
-	} {
-		if !v.set {
-			missing = append(missing, v.name)
-		}
-	}
-	return missing
-}
-
-// validUser reports whether LEADHOUND_OUTREACH_USER is a bare local@domain address: the
-// sending domain the DNS gate checks comes from it.
-func validUser(env leadconfig.Env) bool {
-	u := env.User.Reveal()
-	if _, ok := sendingDomain(env); !ok {
-		return false
-	}
-	a, err := mail.ParseAddress(u)
-	return err == nil && a.Address == u && a.Name == ""
-}
-
 // startOfDay is midnight of now's day in loc.
 func startOfDay(now time.Time, loc *time.Location) time.Time {
 	t := now.In(loc)
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 }
 
-// sendRun is one send (or selftest) after its command line is read: its setup, store,
-// zone and report.
-type sendRun struct {
-	w      io.Writer
-	s      *store.Store
-	lq     leadstore.Queries
-	setup  leadsSetup
-	loc    *time.Location // LEADHOUND_TZ: the day the cap counts, and a selftest's hours
-	live   bool
-	from   string
-	sender mailSender
-	box    *mailbox.Outbox
-	opts   sendOptions
-	rep    *sendReport
+// sendMailbox is one sending mailbox as a send run sees it: its row and readiness as last
+// read, why this run sends nothing more from it, and (live, once opened) its credentials and
+// sender.
+type sendMailbox struct {
+	leadstore.MailboxStatus
+	// blocked is why this run sends nothing more from the mailbox, in plain words (never an
+	// address or a password); "" while it may send.
+	blocked string
+	creds   *secretbox.Credentials
+	sender  mailSender
+}
 
-	syncing  bool
+func (m *sendMailbox) ready() bool { return m.blocked == "" }
+
+// sendRun is one send (or selftest) after its command line is read: its setup, store,
+// zone, mailboxes and report.
+type sendRun struct {
+	w     io.Writer
+	s     *store.Store
+	lq    leadstore.Queries
+	setup leadsSetup
+	loc   *time.Location // LEADHOUND_TZ: the day the cap counts, and a selftest's hours
+	live  bool
+	box   *mailbox.Outbox
+	opts  sendOptions
+	rep   *sendReport
+
+	// key opens the sealed passwords (live only; shadow never opens one).
+	key secretbox.PrivateKey
+	// mbs is every mailbox by id; order the ids of those not retired, ascending.
+	mbs   map[int64]*sendMailbox
+	order []int64
+	// selftestMB is the mailbox a selftest sends from.
+	selftestMB int64
+	// accountErr: a mailbox's login or sender address was refused; the run went on with the
+	// other mailboxes and exits non-zero so the operator sees it.
+	accountErr error
+
 	lastSync time.Time
 }
 
-// leadsSendRun runs one send in its fixed order (Task 5.3), any failure stopping it before
-// SMTP: the send lock (RA3); the sending domain's DNS check passed today, else run now; a
-// reply sync (fail-closed); Plan with today's cap; per message a re-sync when the last is
-// over 10 minutes old, the checks, MarkSending, Send and its outcome; the spacing pause.
+// leadsSendRun runs one send in its fixed order, any failure stopping it before SMTP: the
+// send lock (RA3); the operator's pause; the mailbox key (live); per mailbox its state, its
+// latest check and its domain's DNS check passed today, else run now; the reply sync of
+// every mailbox (fail-closed per mailbox); PlanMailboxes with each mailbox's room today; per
+// message a re-sync when the last is over 10 minutes old, the checks, MarkSending, Send from
+// the message's own mailbox and its outcome; the spacing pause.
 func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
 	if err != nil {
@@ -333,16 +349,18 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 			return err
 		}
 	}
-	if live {
-		if missing := liveMissing(setup); len(missing) > 0 {
-			return usageError("LEADHOUND_OUTREACH is live, so sending needs %s", strings.Join(missing, ", "))
-		}
-	}
 	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	lq := leadstore.NewQueries(s.Pool())
+	var selftestMB int64
+	if opts.selftestTo != "" {
+		if selftestMB, err = selftestMailbox(ctx, lq, opts.selftestMailbox, startOfDay(leadsNow(), loc)); err != nil {
+			return err
+		}
+	}
 	lock, err := leadstore.TryLock(ctx, s.Pool(), leadstore.SendLockKey)
 	if errors.Is(err, leadstore.ErrLockHeld) {
 		_, _ = fmt.Fprintln(w, "Another send is running; this one did nothing.")
@@ -354,7 +372,7 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 	defer lock.Release()
 
 	r := &sendRun{
-		w: w, s: s, lq: leadstore.NewQueries(s.Pool()), setup: setup, loc: loc, live: live, opts: opts,
+		w: w, s: s, lq: lq, setup: setup, loc: loc, live: live, opts: opts, selftestMB: selftestMB,
 		rep: &sendReport{live: live, held: map[outreach.HoldReason]int{}},
 	}
 	command, source := commandLeadsSend, sourceOutreachShadow
@@ -363,10 +381,7 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 	}
 	if live {
 		source = sourceOutreach
-		r.from = setup.env.User.Reveal()
-		r.sender = leadsMail.smtp(setup.env)
 	} else {
-		r.from = "outreach@" + outreach.MessageIDDomain(setup.env.User.Reveal())
 		r.box = &mailbox.Outbox{Dir: filepath.Join(setup.dataDir, outboxDir), Location: loc, Now: leadsNow}
 	}
 	runID, err := s.Q().StartRun(ctx, command, source)
@@ -374,14 +389,47 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 		return err
 	}
 	runErr := r.run(ctx)
-	if err := s.Q().FinishRun(context.WithoutCancel(ctx), runID, store.RunResult{Note: r.rep.runNote(runErr)}); err != nil && runErr == nil {
+	if err := s.Q().FinishRun(context.WithoutCancel(ctx), runID,
+		store.RunResult{Note: r.rep.runNote(errors.Join(runErr, r.accountErr))}); err != nil && runErr == nil {
 		return err
 	}
 	if runErr != nil {
 		return runErr
 	}
 	r.rep.print(w)
-	return nil
+	return r.accountErr
+}
+
+// selftestMailbox picks the mailbox a selftest sends from: the one named by want (its id or
+// its address), or with want empty the only mailbox that is not retired. The address is
+// never echoed.
+func selftestMailbox(ctx context.Context, lq leadstore.Queries, want string, since time.Time) (int64, error) {
+	ms, err := lq.Mailboxes(ctx, since)
+	if err != nil {
+		return 0, err
+	}
+	var open []leadstore.MailboxStatus
+	for _, m := range ms {
+		if m.State != leadstore.MailboxRetired {
+			open = append(open, m)
+		}
+	}
+	want = strings.TrimSpace(want)
+	if want == "" {
+		switch len(open) {
+		case 0:
+			return 0, usageError("a selftest sends from a mailbox, and there is none: add one first (Mailboxes in the console, or leads mailboxes add)")
+		case 1:
+			return open[0].ID, nil
+		}
+		return 0, usageError("there is more than one mailbox: name the one to test with --mailbox ID or ADDRESS (leads mailboxes list)")
+	}
+	for _, m := range open {
+		if strconv.FormatInt(m.ID, 10) == want || strings.EqualFold(m.Address, want) {
+			return m.ID, nil
+		}
+	}
+	return 0, usageError("--mailbox names no mailbox that is not retired (leads mailboxes list)")
 }
 
 func (r *sendRun) printf(format string, a ...any) { _, _ = fmt.Fprintf(r.w, format, a...) }
@@ -407,9 +455,104 @@ func (r *sendRun) checkPaused(ctx context.Context, lq leadstore.Queries) error {
 	return errPaused
 }
 
+// refresh reads every mailbox again (its state, check, sends today). A mailbox that is
+// retired, paused or (live) without a passed latest check is blocked; a block, once set,
+// stays for the run.
+func (r *sendRun) refresh(ctx context.Context, now time.Time) error {
+	ms, err := r.lq.Mailboxes(ctx, startOfDay(now, r.loc))
+	if err != nil {
+		return err
+	}
+	if r.mbs == nil {
+		r.mbs = map[int64]*sendMailbox{}
+	}
+	r.order = r.order[:0]
+	for _, m := range ms {
+		mb := r.mbs[m.ID]
+		if mb == nil {
+			mb = &sendMailbox{}
+			r.mbs[m.ID] = mb
+		}
+		mb.MailboxStatus = m
+		switch {
+		case m.State == leadstore.MailboxRetired:
+			mb.blocked = "it is retired"
+			continue
+		case m.State == leadstore.MailboxPaused:
+			r.block(mb, "it is paused; nothing is sent from it until the operator resumes it", "")
+		case r.live && (m.LastCheck == nil || m.LastCheck.Outcome != leadstore.CheckPassed):
+			r.block(mb, "its latest check has not passed: press Check on its mailbox", "")
+		}
+		r.order = append(r.order, m.ID)
+	}
+	return nil
+}
+
+// block stops sending from mb for the rest of the run, saying why once; word, when set, is
+// the run note's word for it.
+func (r *sendRun) block(mb *sendMailbox, why, word string) {
+	if word != "" {
+		r.rep.note(word)
+	}
+	if mb.blocked != "" {
+		return
+	}
+	mb.blocked = why
+	r.printf("Mailbox %d: nothing is sent from it in this run: %s.\n", mb.ID, why)
+}
+
+// anyReady reports whether a mailbox that is not retired may still send.
+func (r *sendRun) anyReady() bool {
+	for _, id := range r.order {
+		if r.mbs[id].ready() {
+			return true
+		}
+	}
+	return false
+}
+
+// loads is every mailbox as RoomToday reads it: a blocked one has no room, though its sends
+// today still count toward its domain.
+func (r *sendRun) loads() []outreach.MailboxLoad {
+	out := make([]outreach.MailboxLoad, 0, len(r.mbs))
+	for _, mb := range r.mbs {
+		ml := outreach.MailboxLoad{ID: mb.ID, Domain: mb.Domain, SentToday: mb.SentToday, Ready: mb.ready()}
+		if r.setup.leads.Caps.StartDate.IsFirstSend() && mb.FirstLiveSend != nil {
+			fs := mb.FirstLiveSend.In(r.loc)
+			ml.FirstSend = &fs
+		}
+		out = append(out, ml)
+	}
+	return out
+}
+
+// gateDNS runs, for each mailbox that may send and has no DNS pass today for its domain and
+// selector, the check now (once per domain and selector); a failing check blocks it.
+func (r *sendRun) gateDNS(ctx context.Context, now time.Time) error {
+	checked := map[string]mailbox.DNSResult{}
+	for _, id := range r.order {
+		mb := r.mbs[id]
+		if !mb.ready() || mb.DNSPassedToday {
+			continue
+		}
+		k := strings.ToLower(mb.Domain) + " " + mb.DKIMSelector
+		res, ok := checked[k]
+		if !ok {
+			var err error
+			if res, err = checkSenderFor(ctx, r.lq, mb.Domain, mb.DKIMSelector, now); err != nil {
+				return err
+			}
+			checked[k] = res
+		}
+		if !res.OK() {
+			r.block(mb, fmt.Sprintf("its domain's DNS check failed (%s); fix the records, then press Check on its mailbox", dnsLine(res)), noteDNS)
+		}
+	}
+	return nil
+}
+
 // runOrder is run's body; it ends with errPaused when the operator's pause stops it.
 func (r *sendRun) runOrder(ctx context.Context) error {
-	env := r.setup.env
 	now := leadsNow()
 
 	// 0. The operator's pause, before anything else (and before every message, sendOne).
@@ -417,45 +560,55 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		return err
 	}
 
-	// 1. The sending domain's DNS, passed today.
-	if domain, ok := sendingDomain(env); ok {
-		sha := leadstore.SenderDomainSHA256(domain)
-		passed, err := r.lq.SenderCheckPassedSince(ctx, sha, startOfDay(now, r.loc))
+	// 1. The mailbox key: live only; shadow never opens a password.
+	if r.live {
+		key, err := secretbox.LoadPrivateKey(os.Getenv)
 		if err != nil {
-			return err
-		}
-		if !passed {
-			res, err := checkSender(ctx, r.lq, domain, dkimSelector(r.setup.leads), now)
-			if err != nil {
-				return err
-			}
-			if !res.OK() {
-				r.rep.note(noteDNS)
-				r.printf("No sends: the sending domain's DNS check failed (%s). Fix the records, then run leadhound leads senders check.\n", dnsLine(res))
-				return nil
-			}
-		}
-	} else if r.live {
-		// leadsSendRun refuses this before the run starts; never send without the DNS gate.
-		return errors.New("leads send: live without a sending domain")
-	} else {
-		r.printf("Shadow without LEADHOUND_OUTREACH_USER: no sending domain, so no DNS check.\n")
-	}
-
-	// 2. The reply sync, fail-closed. Shadow without IMAP settings has nothing to read.
-	r.syncing = r.live || imapReady(env)
-	if r.syncing {
-		if ok := r.sync(ctx, true); !ok {
+			r.rep.note(noteKeyMissing)
+			r.printf("No sends: the mailbox key is missing (%v).\n", err)
+			r.rep.stopped = true
 			return nil
 		}
-	} else {
-		r.printf("No IMAP settings: nothing synced; shadow sends go ahead (nothing can reply to a file).\n")
+		r.key = key
 	}
 
-	// A selftest's one message, approved on the command line.
+	// 2. The mailboxes, and per mailbox its domain's DNS passed today.
+	if err := r.refresh(ctx, now); err != nil {
+		return err
+	}
+	if len(r.order) == 0 {
+		r.rep.note(noteNoMailbox)
+		r.printf("No sends: there is no mailbox to send from. Add a mailbox first: Mailboxes in the console, or leads mailboxes add.\n")
+		r.rep.stopped = true
+		return nil
+	}
+	if r.live {
+		if err := r.gateDNS(ctx, now); err != nil {
+			return err
+		}
+		if !r.anyReady() {
+			r.printf("No sends: no mailbox is ready to send.\n")
+			r.rep.stopped = true
+			return nil
+		}
+		// 3. The reply sync of every mailbox, fail-closed per mailbox.
+		if ok, err := r.sync(ctx, true); err != nil || !ok {
+			return err
+		}
+	} else {
+		r.printf("Shadow: no DNS check and no reply sync; the outbox is a file, so nothing can reply.\n")
+	}
+
+	// A selftest's one message, approved on the command line, from its own mailbox.
 	var only int64
 	if r.opts.selftestTo != "" {
-		st, err := r.createSelftest(ctx, now)
+		mb := r.mbs[r.selftestMB]
+		if mb == nil || !mb.ready() {
+			r.printf("No selftest: mailbox %d is not ready to send.\n", r.selftestMB)
+			r.rep.stopped = true
+			return nil
+		}
+		st, err := r.createSelftest(ctx, now, mb)
 		if err != nil {
 			return err
 		}
@@ -475,39 +628,47 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 	}
 
-	// 3. Plan with today's cap: sent, maybe_sent and sending count, shadow_sent never does.
+	// 4. Plan with each mailbox's room today (its own cap, then its domain's): sent,
+	// maybe_sent and sending count, shadow_sent never does.
 	rows, err := r.lq.SendRows(ctx, now, !r.live)
 	if err != nil {
 		return err
 	}
-	sentToday, err := r.lq.SentSince(ctx, startOfDay(now, r.loc))
-	if err != nil {
-		return err
-	}
-	// The ramp's day 0: a fixed date, or with start_date first-send the first live send.
-	var firstSend *time.Time
-	if r.setup.leads.Caps.StartDate.IsFirstSend() {
-		if firstSend, err = r.lq.FirstLiveSend(ctx); err != nil {
-			return err
-		}
-		if firstSend != nil {
-			fs := firstSend.In(r.loc)
-			firstSend = &fs
-		}
-	}
-	capToday := outreach.CapOn(r.setup.leads, firstSend, now.In(r.loc))
 	var items, plan []outreach.PlanItem
+	retired := map[int64]bool{}
 	for _, row := range rows {
 		self := row.LeadKind == leadstore.LeadSelftest
 		// A selftest goes in its own run only; an ordinary run never sends one.
 		if (only != 0) != self || (only != 0 && row.ID != only) {
 			continue
 		}
+		mb := r.mbs[row.MailboxID]
+		switch {
+		case mb == nil:
+			// Drafted before mailboxes: no From to send it from.
+			r.rep.held[holdMailbox]++
+			r.rep.note(noteNoMailbox)
+			continue
+		case mb.State == leadstore.MailboxRetired:
+			// A thread must come from the same address, and this one is gone.
+			retired[mb.ID] = true
+			continue
+		case !mb.ready():
+			r.rep.held[holdMailbox]++
+			continue
+		}
 		items = append(items, outreach.PlanItem{
 			MessageID: row.ID, BatchID: row.BatchID, LeadID: row.LeadID, Step: row.Step,
 			Domain: recipientDomain(row.ToAddress), Loc: r.rowLoc(row.LeadKind, row.OrgCountry),
-			DueAt: *row.DueAt, Selftest: self,
+			DueAt: *row.DueAt, Selftest: self, MailboxID: row.MailboxID,
 		})
+	}
+	for _, id := range slices.Sorted(maps.Keys(retired)) {
+		n, err := r.lq.CancelMailboxPending(ctx, id, cancelMailboxRetired)
+		if err != nil {
+			return err
+		}
+		r.rep.cancelled += int64(n)
 	}
 	bh := r.setup.leads.Schedule.BusinessHours
 	if only != 0 {
@@ -516,7 +677,7 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		defer r.cancelUnsentSelftest(ctx, only)
 	} else {
 		var held map[outreach.HoldReason]int
-		plan, held = outreach.Plan(items, sentToday, capToday, now, bh)
+		plan, held = outreach.PlanMailboxes(items, outreach.RoomToday(r.setup.leads, r.loads(), now.In(r.loc)), now, bh)
 		for k, v := range held {
 			if k != outreach.HoldNotDue {
 				r.rep.held[k] += v
@@ -528,16 +689,22 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		plan = plan[:r.opts.max]
 	}
 
-	// 4. Per message, with 5. the spacing between two sends.
+	// 5. Per message, with 6. the one spacing between any two sends, whichever mailbox.
 	for i, it := range plan {
 		if err := ctx.Err(); err != nil {
 			r.rep.note(noteInterrupted)
 			return nil
 		}
-		if i > 0 && r.syncing && leadsNow().Sub(r.lastSync) > resyncAfter {
-			if ok := r.sync(ctx, false); !ok {
-				return nil
+		if i > 0 && r.live && leadsNow().Sub(r.lastSync) > resyncAfter {
+			if ok, err := r.sync(ctx, false); err != nil || !ok {
+				return err
 			}
+		}
+		mb := r.mbs[it.MailboxID]
+		if !mb.ready() {
+			// Blocked during the run: a pause, a refused login, a policy block, a failed sync.
+			r.rep.held[holdMailbox]++
+			continue
 		}
 		// Business hours at the moment of sending (RA8): the spacing may have carried this
 		// recipient's zone past its window; other zones may still be open.
@@ -545,7 +712,7 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 			r.rep.held[outreach.HoldHours]++
 			continue
 		}
-		attempted, err := r.sendOne(ctx, it.MessageID)
+		attempted, err := r.sendOne(ctx, it.MessageID, mb)
 		if err != nil {
 			return err
 		}
@@ -590,25 +757,46 @@ func (r *sendRun) cancelUnsentSelftest(ctx context.Context, id int64) {
 	}
 }
 
-// sync runs one reply sync and reports whether sending may go on. Its findings are printed
-// (the first always, a re-sync when it saw something).
-func (r *sendRun) sync(ctx context.Context, first bool) bool {
-	sum, err := syncMailbox(ctx, r.s.Pool(), r.setup.env, leadsMail.syncWait)
+// sync runs the reply sync of every mailbox and reports whether sending may go on at all
+// (false: the sync lock stayed held, or the sync could not run). A mailbox whose own sync
+// failed is blocked for the run; the others go on. Findings are printed (the first sync's
+// always, a re-sync's when it saw something), headed by the mailbox when there are several.
+func (r *sendRun) sync(ctx context.Context, first bool) (bool, error) {
+	res, err := syncAll(ctx, r.s.Pool(), r.key, r.setup.leads, leadsMail.syncWait)
 	switch {
 	case errors.Is(err, errSyncRunning):
 		r.rep.note(noteSyncRunning)
 		r.printf("No further sends: a sync is still running after %s; run send again later.\n", leadsMail.syncWait)
-		return false
+		return false, nil
 	case err != nil:
 		r.rep.note(noteSync)
 		r.printf("No further sends: the reply sync failed (%v); nothing is sent until a sync succeeds.\n", err)
-		return false
+		return false, nil
 	}
 	r.lastSync = leadsNow()
-	if first || sum.Messages > 0 {
-		sum.print(r.w)
+	for _, id := range r.order {
+		mb := r.mbs[id]
+		ms, ok := res[id]
+		switch {
+		case !ok:
+			r.block(mb, "its reply sync did not run; nothing is sent from it until a sync succeeds", noteSync)
+			continue
+		case !ms.OK:
+			r.block(mb, "the reply sync failed ("+ms.Note+"); nothing is sent from it until a sync succeeds", noteSync)
+			continue
+		}
+		if first || ms.Summary.Messages > 0 {
+			if len(res) > 1 {
+				r.printf("Mailbox %d:\n", id)
+			}
+			ms.Summary.print(r.w)
+		}
 	}
-	return true
+	// A sync can pause a mailbox (its password, or a bounce that tips its health).
+	if err := r.refresh(ctx, leadsNow()); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // rowLoc is the zone whose business hours a message keeps: its recipient country's, or the
@@ -625,17 +813,75 @@ func recipientDomain(addr string) string {
 	return d
 }
 
-// sendOne checks message id once more and sends it. attempted reports whether SMTP (or the
-// outbox) was reached. An error is a store failure, or an outbox or sender that cannot work;
-// it stops the run.
-func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err error) {
+// Why a claim found the message's mailbox unable to send.
+var (
+	errClaimRetired = errors.New("the mailbox is retired")
+	errClaimPaused  = errors.New("the mailbox is paused")
+)
+
+// mailboxState reads mailbox id's latest state through tq (the claim's transaction).
+func (r *sendRun) mailboxState(ctx context.Context, tq leadstore.Queries, id int64) (string, error) {
+	ms, err := tq.Mailboxes(ctx, startOfDay(leadsNow(), r.loc))
+	if err != nil {
+		return "", err
+	}
+	for _, m := range ms {
+		if m.ID == id {
+			return m.State, nil
+		}
+	}
+	return "", fmt.Errorf("leads send: %w", leadstore.ErrMailboxNotFound)
+}
+
+// senderOf opens mb's sealed password, only when it still matches mb's address, login and
+// servers (mailboxCreds pauses it otherwise), and builds its SMTP sender. ok is false when
+// the password cannot be used: mb is then blocked.
+func (r *sendRun) senderOf(ctx context.Context, mb *sendMailbox) (ok bool, err error) {
+	if mb.sender != nil {
+		return true, nil
+	}
+	creds, err := mailboxCreds(ctx, r.lq, r.key, mb.Mailbox)
+	if errors.Is(err, errMailboxCreds) {
+		r.block(mb, "its password cannot be used ("+err.Error()+")", noteMailboxPaused)
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	mb.creds = &creds
+	mb.sender = leadsMail.smtpFor(creds.SMTPAddr, config.Secret(creds.Login), creds.Password)
+	return true, nil
+}
+
+// accountReason is the plain reason a mailbox is paused for when the server refused its
+// account at stage.
+func accountReason(stage string) string {
+	switch stage {
+	case "auth":
+		return "the server refused the login"
+	case "mail":
+		return "the server refused mail from this address"
+	}
+	return "the server refused the account at " + stage
+}
+
+// policyReason is the reason every mailbox on domain is paused for when a receiving server
+// blocked our mail by policy (an enhanced status code 5.7.x at RCPT).
+func policyReason(domain string, code [3]int) string {
+	return fmt.Sprintf("a receiving server blocked mail from %s (%d.%d.%d)", domain, code[0], code[1], code[2])
+}
+
+// sendOne checks message id once more and sends it from mb, its own mailbox. attempted
+// reports whether SMTP (or the outbox) was reached. An error is a store failure, or an
+// outbox or sender that cannot work; it stops the run.
+func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attempted bool, err error) {
 	row, err := r.lq.SendRowByID(ctx, id)
 	if err != nil {
 		return false, err
 	}
 	// Claimed or cancelled since Plan (another sender, a sync), or the other kind of batch
 	// (RA1: a shadow send never touches a live batch, nor a live send a shadow one).
-	if row.State != leadstore.MsgApproved || row.Shadow == r.live {
+	if row.State != leadstore.MsgApproved || row.Shadow == r.live || row.MailboxID != mb.ID {
 		r.rep.skipped++
 		return false, nil
 	}
@@ -670,17 +916,42 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 		r.rep.refused = append(r.rep.refused, label+" ("+noteTampered+")")
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: tampered (the message changed after approval)")
 	}
+	// The password is opened only for a live send, and only when it matches the mailbox.
+	if r.live {
+		ok, err := r.senderOf(ctx, mb)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			r.rep.held[holdMailbox]++
+			return false, nil
+		}
+	}
+	// From the message's own mailbox, under the From name frozen with it.
+	from := row.FromAddress
+	if from == "" {
+		from = mb.Address
+	}
 	now := leadsNow()
-	raw, err := mailbox.Build(outboxMessage(row.Message, r.setup.leads.Sender.Name, r.from, now))
+	raw, err := mailbox.Build(outboxMessage(row.Message, cmpOr(row.FromName, r.setup.leads.Sender.Name), from, now))
 	if err != nil {
 		r.rep.refused = append(r.rep.refused, label+" (not a valid message)")
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: "+err.Error())
 	}
 	var claimed bool
 	err = leadsInTx(ctx, r.s.Pool(), func(tq leadstore.Queries) error {
-		// The pause is read in the claim's transaction, the last moment before SMTP.
+		// The pause is read in the claim's transaction, the last moment before SMTP, and so
+		// is the state of the message's mailbox.
 		if err := r.checkPaused(ctx, tq); err != nil {
 			return err
+		}
+		switch state, err := r.mailboxState(ctx, tq, mb.ID); {
+		case err != nil:
+			return err
+		case state == leadstore.MailboxRetired:
+			return errClaimRetired
+		case state == leadstore.MailboxPaused:
+			return errClaimPaused
 		}
 		var err error
 		if claimed, err = tq.MarkSending(ctx, row.ID); err != nil || !claimed {
@@ -688,7 +959,17 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 		}
 		return tq.StampAttempt(ctx, row.ID, now)
 	})
-	if err != nil || !claimed {
+	switch {
+	case errors.Is(err, errClaimRetired):
+		r.block(mb, "it is retired", "")
+		n, err := r.lq.CancelMailboxPending(ctx, mb.ID, cancelMailboxRetired)
+		r.rep.cancelled += int64(n)
+		return false, err
+	case errors.Is(err, errClaimPaused):
+		r.block(mb, "it is paused; nothing is sent from it until the operator resumes it", noteMailboxPaused)
+		r.rep.held[holdMailbox]++
+		return false, nil
+	case err != nil || !claimed:
 		if err == nil {
 			r.rep.skipped++
 		}
@@ -714,7 +995,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 		return true, nil
 	}
 
-	reply, sendErr := r.sender.Send(ctx, r.from, row.ToAddress, raw)
+	reply, sendErr := mb.sender.Send(ctx, from, row.ToAddress, raw)
 	// The outcome is recorded even when ctx ended during the send.
 	wctx := context.WithoutCancel(ctx)
 	var se *mailbox.SendError
@@ -728,7 +1009,25 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 		}
 		r.rep.sent = append(r.rep.sent, domain)
 		r.followUp(wctx, row, now)
-		r.appendSent(ctx, raw)
+		r.appendSent(ctx, mb, raw)
+	case mailbox.IsPolicyBlock(sendErr) && errors.As(sendErr, &se):
+		// Our domain, not this lead: the message waits, and every mailbox on the domain
+		// pauses until the operator resumes it.
+		r.rep.note(notePolicyBlock)
+		if err := r.lq.Requeue(wctx, row.ID, *row.DueAt, se.Error()); err != nil {
+			return true, err
+		}
+		if _, err := r.lq.SetDomainState(wctx, mb.Domain, leadstore.MailboxPaused, policyReason(mb.Domain, se.Enhanced), leadstore.ActorSystem); err != nil {
+			return true, err
+		}
+		why := fmt.Sprintf("a receiving server blocked mail from its domain (%d.%d.%d); every mailbox on the domain is paused until the operator resumes it",
+			se.Enhanced[0], se.Enhanced[1], se.Enhanced[2])
+		for _, id := range r.order {
+			if other := r.mbs[id]; strings.EqualFold(other.Domain, mb.Domain) {
+				r.block(other, why, noteMailboxPaused)
+			}
+		}
+		r.printf("Message %d stays approved and goes once its mailbox is resumed.\n", row.ID)
 	case errors.As(sendErr, &se) && se.Kind == mailbox.Refused:
 		r.rep.refused = append(r.rep.refused, label+" (refused by the server)")
 		if err := leadsInTx(wctx, r.s.Pool(), func(tq leadstore.Queries) error {
@@ -736,6 +1035,9 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 				return err
 			}
 			if se.Bounce {
+				if err := tq.MarkHardBounce(wctx, row.ID); err != nil {
+					return err
+				}
 				_, err := tq.Suppress(wctx, leadstore.SuppressAddress, row.ToAddress, leadstore.ReasonBounce, "smtp")
 				return err
 			}
@@ -743,16 +1045,30 @@ func (r *sendRun) sendOne(ctx context.Context, id int64) (attempted bool, err er
 		}); err != nil {
 			return true, err
 		}
+		if se.Bounce {
+			paused, err := checkBounceHealth(wctx, r.lq, r.setup.leads, mb.ID)
+			if err != nil {
+				return true, err
+			}
+			if paused {
+				r.block(mb, "it hard-bounced too often (health.bounce_pause) and is paused until the operator resumes it", noteMailboxPaused)
+			}
+		}
 	case errors.As(sendErr, &se) && se.Kind == mailbox.Account:
-		// The mailbox, not this message: back to approved, nothing suppressed, and the run
-		// stops so the operator sees it.
+		// The mailbox, not this message: back to approved, nothing suppressed, the mailbox
+		// paused, and the run ends non-zero so the operator sees it.
 		r.rep.note(noteAccount)
 		if err := r.lq.Requeue(wctx, row.ID, *row.DueAt, se.Error()); err != nil {
 			return true, err
 		}
-		r.printf("Stopped: the outreach mailbox account was refused at %s (%d). Nothing more is sent until it is fixed; message %d stays approved.\n",
-			se.Stage, se.Code, row.ID)
-		return true, fmt.Errorf("leads send: the outreach mailbox account was refused at %s (%d)", se.Stage, se.Code)
+		reason := accountReason(se.Stage)
+		if err := r.lq.SetMailboxState(wctx, mb.ID, leadstore.MailboxPaused, reason, leadstore.ScopeMailbox, leadstore.ActorSystem); err != nil &&
+			!errors.Is(err, leadstore.ErrMailboxRetired) {
+			return true, err
+		}
+		r.block(mb, fmt.Sprintf("%s (%s, %d); it is paused until the operator resumes it, and message %d stays approved",
+			reason, se.Stage, se.Code, row.ID), "")
+		r.accountErr = errors.Join(r.accountErr, fmt.Errorf("leads send: mailbox %d: %s at %s (%d)", mb.ID, reason, se.Stage, se.Code))
 	case errors.As(sendErr, &se) && se.Kind == mailbox.Retryable:
 		r.rep.retry++
 		if err := r.lq.Requeue(wctx, row.ID, now.Add(retryAfter), se.Error()); err != nil {
@@ -809,10 +1125,14 @@ func (r *sendRun) scheduleNext(ctx context.Context, tq leadstore.Queries, row le
 	return err
 }
 
-// appendSent files a copy of a sent message in the mailbox's \Sent folder, so replies thread
-// in a mail client. A failure is a note only: the message has gone.
-func (r *sendRun) appendSent(ctx context.Context, raw []byte) {
-	rd, err := leadsMail.openReader(ctx, r.setup.env)
+// appendSent files a copy of a sent message in the \Sent folder of mb, the mailbox it went
+// from, so replies thread in a mail client. A failure is a note only: the message has gone.
+func (r *sendRun) appendSent(ctx context.Context, mb *sendMailbox, raw []byte) {
+	if mb.creds == nil {
+		r.rep.note(noteAppend)
+		return
+	}
+	rd, err := leadsMail.readerFor(ctx, mb.creds.IMAPAddr, config.Secret(mb.creds.Login), mb.creds.Password)
 	if err != nil {
 		r.rep.note(noteAppend)
 		return

@@ -17,15 +17,18 @@ func init() { leadsCommands["selftest"] = runLeadsSelftest }
 // commandLeadsSelftest is the run row of `leads selftest`.
 const commandLeadsSelftest = "leads-selftest"
 
-const selftestUsage = "usage: leadhound leads selftest --to ADDRESS (one of sender.operator_addresses in leads.yaml)"
+const selftestUsage = "usage: leadhound leads selftest --to ADDRESS [--mailbox ID|ADDRESS] (--to: one of sender.operator_addresses in leads.yaml; --mailbox: the mailbox to test, needed when there is more than one)"
 
-// runLeadsSelftest is `leads selftest --to ADDRESS`: it proves the live loop on the
-// operator's own address only (RA14, RA24). It runs the send order (lock, DNS, sync), then
-// writes a selftest org, lead and one-message batch approved on this command line, and sends
-// that one message: it bypasses the cap and counts toward it. It needs LEADHOUND_OUTREACH=live.
+// runLeadsSelftest is `leads selftest --to ADDRESS [--mailbox ID|ADDRESS]`: it proves the
+// live loop of one mailbox on the operator's own address only (RA14, RA24). It runs the send
+// order (lock, key, DNS, sync), then writes a selftest org, lead and one-message batch from
+// that mailbox approved on this command line, and sends that one message: it bypasses the
+// cap and counts toward it. It needs LEADHOUND_OUTREACH=live; --mailbox is needed when more
+// than one mailbox is not retired.
 func runLeadsSelftest(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads selftest", flag.ContinueOnError)
 	to := fs.String("to", "", "the operator address to send to")
+	mb := fs.String("mailbox", "", "the mailbox to send from: its id or address")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -33,7 +36,7 @@ func runLeadsSelftest(ctx context.Context, args []string) error {
 	if len(pos) != 0 || strings.TrimSpace(*to) == "" {
 		return usageError("%s", selftestUsage)
 	}
-	return leadsSendRun(ctx, stdout, sendOptions{selftestTo: strings.ToLower(strings.TrimSpace(*to))})
+	return leadsSendRun(ctx, stdout, sendOptions{selftestTo: strings.ToLower(strings.TrimSpace(*to)), selftestMailbox: *mb})
 }
 
 // selftestAllowed refuses a selftest that is not live or not to an operator address. The
@@ -50,9 +53,10 @@ func selftestAllowed(setup leadsSetup, to string) error {
 	return usageError("--to is not one of sender.operator_addresses in leads.yaml; a selftest only writes to your own address")
 }
 
-// createSelftest writes the selftest's rows in one transaction, its message due now.
-func (r *sendRun) createSelftest(ctx context.Context, now time.Time) (leadstore.Selftest, error) {
-	msgID, err := outreach.NewMessageID(outreach.MessageIDDomain(r.setup.env.User.Reveal()), rand.Reader)
+// createSelftest writes the selftest's rows in one transaction, its message from mb (its
+// Message-ID on mb's domain, its From name mb's or sender.name) due now.
+func (r *sendRun) createSelftest(ctx context.Context, now time.Time, mb *sendMailbox) (leadstore.Selftest, error) {
+	msgID, err := outreach.NewMessageID(outreach.MessageIDDomain(mb.Address), rand.Reader)
 	if err != nil {
 		return leadstore.Selftest{}, err
 	}
@@ -66,6 +70,8 @@ func (r *sendRun) createSelftest(ctx context.Context, now time.Time) (leadstore.
 				"a reply with the word unsubscribe tests the opt-out.\n", now.In(r.loc).Format("2 Jan 2006 15:04 MST")),
 			MessageID: msgID,
 			Due:       now,
+			MailboxID: mb.ID,
+			FromName:  cmpOr(mb.FromName, r.setup.leads.Sender.Name),
 		})
 		return err
 	})

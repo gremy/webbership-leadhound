@@ -120,6 +120,8 @@ func TestSyncAllReadsEveryMailbox(t *testing.T) {
 	w.box.deliver("INBOX", "From: Shop <news@unrelated.example>\r\nSubject: Sale\r\n\r\n", "Big sale.")
 	w.box.deliver("Junk", "From: Shop <news@unrelated.example>\r\nSubject: Sale again\r\n\r\n", "Big sale.")
 	aByDate, bByDate := w.box.byDate, boxB.byDate
+	// The send in sendFrom synced and filed its Sent copies through the readers too.
+	readersBefore := len(w.mail.callsOf("reader"))
 
 	got := w.sync(t)
 	if len(got) != 2 || !got[w.a.ID].OK || !got[w.b.ID].OK {
@@ -158,7 +160,7 @@ func TestSyncAllReadsEveryMailbox(t *testing.T) {
 	if w.box.byDate != aByDate+2 || boxB.byDate != bByDate+2 {
 		t.Errorf("first sync rescans by date: A %d→%d, B %d→%d", aByDate, w.box.byDate, bByDate, boxB.byDate)
 	}
-	if calls := w.mail.callsOf("reader"); len(calls) != 2 || !calls[0].passwordOK || !calls[1].passwordOK {
+	if calls := w.mail.callsOf("reader")[readersBefore:]; len(calls) != 2 || !calls[0].passwordOK || !calls[1].passwordOK {
 		t.Errorf("reader calls %+v", calls)
 	}
 
@@ -192,6 +194,8 @@ func TestSyncAllOneMailboxDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.box.deliver("INBOX", replyHeader("reply.example", w.firstMessageID(t, "reply.example"), "Re: hello"), "Yes please.")
+	// The send in sendFrom synced and filed its Sent copy through the readers too.
+	readersBefore := len(w.mail.callsOf("reader"))
 
 	got := w.sync(t)
 	if _, ok := got[retired.ID]; ok || len(got) != 3 {
@@ -218,7 +222,7 @@ func TestSyncAllOneMailboxDown(t *testing.T) {
 			t.Errorf("a note holds a secret or an address: %q", e.Note)
 		}
 	}
-	if n := len(w.mail.callsOf("reader")); n != 2 {
+	if n := len(w.mail.callsOf("reader")) - readersBefore; n != 2 {
 		t.Errorf("%d reader calls, want 2 (A and B; never the broken or retired one)", n)
 	}
 }

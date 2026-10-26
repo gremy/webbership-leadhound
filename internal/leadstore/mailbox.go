@@ -472,6 +472,10 @@ type SelftestDraft struct {
 	Body      string
 	MessageID string
 	Due       time.Time
+	// MailboxID and FromName are the mailbox it goes from and the From name frozen with it;
+	// a zero MailboxID inserts NULL (a selftest drafted before mailboxes).
+	MailboxID int64
+	FromName  string
 }
 
 // Selftest is what CreateSelftest wrote.
@@ -505,7 +509,7 @@ func (q Queries) CreateSelftest(ctx context.Context, d SelftestDraft) (Selftest,
 	}
 	batchID, sum, err := q.CreateBatch(ctx, false, []DraftRow{{
 		LeadID: st.LeadID, Step: 0, Channel: ChannelEmail, To: strings.ToLower(strings.TrimSpace(d.To)),
-		Subject: d.Subject, Body: d.Body, MessageID: d.MessageID,
+		Subject: d.Subject, Body: d.Body, MessageID: d.MessageID, MailboxID: d.MailboxID, FromName: d.FromName,
 	}}, nil)
 	if err != nil {
 		return Selftest{}, fmt.Errorf("leadstore: create selftest: %w", err)

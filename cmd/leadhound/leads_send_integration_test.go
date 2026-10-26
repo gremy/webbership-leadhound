@@ -24,6 +24,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -347,9 +348,16 @@ func (w *sendWorld) leadIn(t *testing.T, domain, country string) int64 {
 	return id
 }
 
-// batch drafts the three-email sequence for each lead (to info@<domain>) in one batch and
-// approves it: first emails due now, follow-ups unscheduled, as batch approve leaves them.
-func (w *sendWorld) batch(t *testing.T, shadow bool, leads map[int64]string) int64 {
+// batch drafts the three-email sequence for each lead (to info@<domain>) in one batch from
+// the seeded mailbox and approves it: first emails due now, follow-ups unscheduled, as batch
+// approve leaves them.
+func (w *sendWorld) batch(t *testing.T, shadow bool, leads map[int64]string) {
+	t.Helper()
+	w.batchFrom(t, w.mailbox, shadow, leads)
+}
+
+// batchFrom is batch from mailbox mb.
+func (w *sendWorld) batchFrom(t *testing.T, mb leadstore.Mailbox, shadow bool, leads map[int64]string) {
 	t.Helper()
 	ctx := context.Background()
 	var drafts []leadstore.DraftRow
@@ -360,6 +368,7 @@ func (w *sendWorld) batch(t *testing.T, shadow bool, leads map[int64]string) int
 				Subject: fmt.Sprintf("Your Drupal site, note %d", step+1), Body: fmt.Sprintf("Hello %s, note %d.\n", domain, step+1),
 				MessageID: fmt.Sprintf("b%dl%ds%d@%s", len(drafts), id, step, testSenderDomain)}
 			if step == 0 {
+				d.MailboxID = mb.ID
 				first = d.MessageID
 			} else {
 				d.InReplyTo = first
@@ -390,7 +399,6 @@ func (w *sendWorld) batch(t *testing.T, shadow bool, leads map[int64]string) int
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return batchID
 }
 
 func (w *sendWorld) count(t *testing.T, sql string, args ...any) int {
@@ -548,7 +556,8 @@ func TestSendStopsBeforeSMTP(t *testing.T) {
 		delete(w.dns, "_dmarc."+testSenderDomain)
 		w.batch(t, false, map[int64]string{w.lead(t, "alpha.example"): "alpha.example"})
 		out := w.mustRun(t, "leads", "send")
-		wantLines(t, "dns", out, "No sends: the sending domain's DNS check failed (SPF pass · DKIM pass · DMARC fail)")
+		wantLines(t, "dns", out, fmt.Sprintf("Mailbox %d: nothing is sent from it in this run: its domain's DNS check failed (SPF pass · DKIM pass · DMARC fail)", w.mailbox.ID),
+			"No sends: no mailbox is ready to send.")
 		if w.smtp.count() != 0 || w.box.opens != 0 {
 			t.Errorf("sent %d, opened IMAP %d times after a DNS failure", w.smtp.count(), w.box.opens)
 		}
@@ -565,7 +574,8 @@ func TestSendStopsBeforeSMTP(t *testing.T) {
 		w.box.dialErr = errors.New("mailbox: imap connect: connection refused")
 		w.batch(t, false, map[int64]string{w.lead(t, "alpha.example"): "alpha.example"})
 		out := w.mustRun(t, "leads", "send")
-		wantLines(t, "imap", out, "No further sends: the reply sync failed")
+		wantLines(t, "imap", out, fmt.Sprintf("Mailbox %d: nothing is sent from it in this run: the reply sync failed (", w.mailbox.ID),
+			"Held for a later run: its mailbox cannot send now 1.")
 		if w.smtp.count() != 0 {
 			t.Errorf("sent %d with IMAP down", w.smtp.count())
 		}
@@ -599,26 +609,52 @@ func TestSendStopsBeforeSMTP(t *testing.T) {
 			t.Errorf("standalone sync under the lock exited %d:\n%s", code, out)
 		}
 	})
-	t.Run("live needs a mailbox address", func(t *testing.T) {
+	t.Run("no mailbox", func(t *testing.T) {
 		w := newSendWorld(t, true, 20)
 		w.batch(t, false, map[int64]string{w.lead(t, "alpha.example"): "alpha.example"})
-		for _, bad := range []string{"outreach", "Outreach <" + testUser + ">", "outreach@"} {
-			t.Setenv("LEADHOUND_OUTREACH_USER", bad)
-			code, out := w.run(t, "leads", "send")
-			if code != 2 || !strings.Contains(out, "LEADHOUND_OUTREACH_USER") {
-				t.Errorf("user %q exited %d:\n%s", bad, code, out)
-			}
+		if err := w.lq.SetMailboxState(context.Background(), w.mailbox.ID, leadstore.MailboxRetired, "test", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
+			t.Fatal(err)
 		}
-		if w.smtp.count() != 0 || w.count(t, `SELECT count(*) FROM run WHERE command = 'leads-send'`) != 0 || w.count(t, `SELECT count(*) FROM sender_check`) != 0 {
-			t.Error("a live send without a valid mailbox address started")
+		out := w.mustRun(t, "leads", "send")
+		wantLines(t, "no mailbox", out, "No sends: there is no mailbox to send from. Add a mailbox first")
+		if w.smtp.count() != 0 || w.box.opens != 0 || w.count(t, `SELECT count(*) FROM sender_check`) != 0 {
+			t.Error("a live send without a mailbox reached DNS, IMAP or SMTP")
+		}
+		if note := w.lastNote(t, commandLeadsSend); !strings.Contains(note, "notes no mailbox") {
+			t.Errorf("note %q", note)
 		}
 	})
-	t.Run("live needs its settings", func(t *testing.T) {
+	t.Run("missing key", func(t *testing.T) {
 		w := newSendWorld(t, true, 20)
-		t.Setenv("LEADHOUND_SMTP_ADDR", "")
+		w.batch(t, false, map[int64]string{w.lead(t, "alpha.example"): "alpha.example"})
+		t.Setenv(secretbox.KeyFileEnv, "")
+		t.Setenv("CREDENTIALS_DIRECTORY", "")
 		code, out := w.run(t, "leads", "send")
-		if code != 2 || !strings.Contains(out, "LEADHOUND_SMTP_ADDR") || strings.Contains(out, testPassword) {
-			t.Errorf("live without SMTP exited %d:\n%s", code, out)
+		if code != 0 || strings.Count(strings.TrimSpace(out), "\n") != 0 || !strings.HasPrefix(out, "No sends: the mailbox key is missing") {
+			t.Errorf("missing key exited %d, want 0 and one line:\n%s", code, out)
+		}
+		if w.smtp.count() != 0 || len(w.mail.calls) != 0 || w.count(t, `SELECT count(*) FROM sender_check`) != 0 {
+			t.Error("a run without the key reached DNS, IMAP or SMTP")
+		}
+		if note := w.lastNote(t, commandLeadsSend); !strings.Contains(note, "mailbox key missing") {
+			t.Errorf("note %q", note)
+		}
+		w.sweep(t)
+	})
+	t.Run("mailbox paused", func(t *testing.T) {
+		w := newSendWorld(t, true, 20)
+		w.batch(t, false, map[int64]string{w.lead(t, "alpha.example"): "alpha.example"})
+		if err := w.lq.SetMailboxState(context.Background(), w.mailbox.ID, leadstore.MailboxPaused, "a break", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
+			t.Fatal(err)
+		}
+		out := w.mustRun(t, "leads", "send")
+		wantLines(t, "paused mailbox", out, fmt.Sprintf("Mailbox %d: nothing is sent from it in this run: it is paused", w.mailbox.ID),
+			"No sends: no mailbox is ready to send.")
+		if w.smtp.count() != 0 || len(w.mail.callsOf("smtp")) != 0 {
+			t.Error("a paused mailbox sent")
+		}
+		if s := w.msgState(t, "alpha.example", 0); s != leadstore.MsgApproved {
+			t.Errorf("alpha %s, want approved", s)
 		}
 	})
 }
@@ -697,7 +733,10 @@ func TestSendShadowAndLiveApart(t *testing.T) {
 	w.batch(t, false, map[int64]string{live: "charlie.example"})
 
 	out := w.mustRun(t, "leads", "send")
-	wantLines(t, "shadow", out, "No IMAP settings: nothing synced; shadow sends go ahead", "Shadow: wrote 1 to the outbox")
+	wantLines(t, "shadow", out, "Shadow: no DNS check and no reply sync", "Shadow: wrote 1 to the outbox")
+	if len(w.mail.calls) != 0 || w.count(t, `SELECT count(*) FROM sender_check`) != 0 {
+		t.Error("a shadow send opened a password, reached a mailbox or checked DNS")
+	}
 	// A cap of 1 holds the second shadow message; the live batch is not touched.
 	if s := w.msgState(t, "charlie.example", 0); s != leadstore.MsgApproved {
 		t.Errorf("a shadow send touched the live batch: %s", s)
@@ -1011,8 +1050,11 @@ func TestSendAccountFailureStops(t *testing.T) {
 	w.batch(t, false, map[int64]string{w.lead(t, "alpha.example"): "alpha.example", w.lead(t, "bravo.example"): "bravo.example"})
 	w.smtp.errs = map[int]error{0: &mailbox.SendError{Kind: mailbox.Account, Stage: "auth", Code: 535, Text: "authentication failed"}}
 	code, out := w.run(t, "leads", "send")
-	if code != 1 || !strings.Contains(out, "the outreach mailbox account was refused at auth (535)") {
+	if code != 1 || !strings.Contains(out, fmt.Sprintf("Mailbox %d: nothing is sent from it in this run: the server refused the login (auth, 535)", w.mailbox.ID)) {
 		t.Errorf("exited %d:\n%s", code, out)
+	}
+	if rows := mailboxStateRows(t, w.mailbox.ID); len(rows) != 1 || rows[0] != "paused mailbox system: the server refused the login" {
+		t.Errorf("state rows %q", rows)
 	}
 	if w.smtp.count() != 1 {
 		t.Errorf("%d SMTP attempts, want the run to stop after 1", w.smtp.count())
