@@ -1,6 +1,13 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+The Run now card is built (2026-10-26, not yet deployed):
+- The console dashboard can ask for four runs: show results now, fetch new jobs then show, send today's email now (only while today is unsent), and the nightly ATS collect behind a confirm.
+- The console only writes a request file under `/opt/leadhound/data/run/`; one systemd `.path` unit per action starts its fixed service, so the console gains no privilege.
+- `leadhound preview` composes the brief's jobs part exactly as `brief` does (`composeNow`) and writes `preview.json`; it never mails, never writes `brief_log`, never shortlists. `/results` renders it with the track actions.
+- The card's state is read step by step from the request time and the `run` table, so one action's run never ends another's; a press while the same action waits or runs is refused with its time.
+- Walked locally against the dev database: preview wrote 10 jobs (5 apply, 5 your call), the card turned done with a results link, a second ATS press was refused.
+
 Jobs (slice 1) and Drupal leads (slice 2) are both built and run from the production server only, on systemd timers; the leads timers are installed but switched off.
 The release for the shared server is in, in seven commits from `a00d310` to `92c4150`:
 - Six indexes for the hot lookups, built concurrently, and per-role Postgres limits applied by every deploy (3-minute statement timeout, no parallel workers, no JIT, 512 MB temp cap, 32 connections).
@@ -50,6 +57,9 @@ Hand the leads over to the operator: finding first, sending once the mailbox pas
 - Live-unproven until the shadow week: real SMTP, IMAP and DNS (UIDVALIDITY rescan, Junk and Sent discovery, appending to Sent); the fakes cover them in tests.
 
 ## Next
+Run now, after its deploy:
+- [ ] `systemctl list-units 'leadhound-*.path'` shows four watchers waiting; press Show results now and see a `preview` run and the results page; press Fetch new jobs and see collect, score, preview in that order.
+
 Waiting for the operator:
 - [ ] The warm-contact suppressions: suppress the addresses and domains of people already known, before any finding or sending.
 - [ ] Turn finding on (`LEADHOUND_LEADS_TIMERS=on`), then check the first probe and contacts runs.
@@ -74,6 +84,7 @@ Known follow-ups:
 - `internal/brief`, `internal/mail`, `internal/ats`
 - `internal/leadconfig`, `internal/leadstore`, `internal/probe`, `internal/contacts`, `internal/outreach`, `internal/mailbox`, `internal/leadbrief`
 - `internal/console`, `internal/diskfree`
+- `internal/preview`, `cmd/leadhound/runnow.go`, `cmd/leadhound/preview.go` (the Run now card)
 - `deploy/` (units, `install.sh`, `sql/limits.sql`, `README.md`)
 
 ## Links

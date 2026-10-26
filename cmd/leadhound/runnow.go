@@ -234,7 +234,19 @@ func runAnchor(action string, runs []store.Run) (time.Time, bool) {
 }
 
 // hhmm is t's wall clock in now's location.
-func hhmm(t, now time.Time) string { return t.In(now.Location()).Format("15:04") }
+func hhmm(t, now time.Time) string {
+	t = t.In(now.Location())
+	ty, tm, td := t.Date()
+	ny, nm, nd := now.Date()
+	if ty == ny && tm == nm && td == nd {
+		return t.Format("15:04")
+	}
+	// a time from another day says which, or "21:30" reads as tonight
+	if y := now.AddDate(0, 0, -1); y.Year() == ty && y.Month() == tm && y.Day() == td {
+		return "yesterday " + t.Format("15:04")
+	}
+	return t.Format("Mon 2 Jan 15:04")
+}
 
 // runNowState is one action's state on the card, from its request time (nil when none),
 // the runs since a while before it, and the time now in the operator's location:

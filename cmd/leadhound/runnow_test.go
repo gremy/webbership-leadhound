@@ -312,3 +312,23 @@ func TestResultJob(t *testing.T) {
 		t.Fatalf("gone job = %+v", r)
 	}
 }
+
+// TestHHMMNamesTheDay: a time from an earlier day says which, so a run from last night
+// never reads as one from today.
+func TestHHMMNamesTheDay(t *testing.T) {
+	loc := time.FixedZone("test", 2*3600)
+	now := time.Date(2026, 10, 26, 5, 30, 0, 0, loc)
+	for _, c := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(2026, 10, 26, 5, 2, 0, 0, loc), "05:02"},
+		{time.Date(2026, 10, 25, 21, 30, 0, 0, loc), "yesterday 21:30"},
+		{time.Date(2026, 10, 24, 11, 8, 0, 0, loc), "Sat 24 Oct 11:08"},
+		{time.Date(2026, 10, 25, 22, 30, 0, 0, time.UTC), "00:30"}, // 22:30 UTC is already today here
+	} {
+		if got := hhmm(c.at, now); got != c.want {
+			t.Errorf("hhmm(%v) = %q, want %q", c.at, got, c.want)
+		}
+	}
+}
