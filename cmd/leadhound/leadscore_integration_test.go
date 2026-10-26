@@ -52,6 +52,7 @@ func goLive(t *testing.T) {
 	t.Setenv("LEADHOUND_OUTREACH_USER", "outreach@"+"sender.example")
 	saved := leadsMail
 	leadsMail.allowReserved = true
+	newMailboxFakes().install(&leadsMail)
 	t.Cleanup(func() { leadsMail = saved })
 }
 

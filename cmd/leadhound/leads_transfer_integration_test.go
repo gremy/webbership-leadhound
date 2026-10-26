@@ -37,6 +37,7 @@ func transferFixture(t *testing.T) (homeURL string, homeAt time.Time, homeSHA []
 	ctx := context.Background()
 	conn := storetest.AppConn(t)
 	sq, lq := store.NewQueries(conn), leadstore.NewQueries(conn)
+	seedMailbox(t, lq, testUser)
 	must := func(err error) {
 		t.Helper()
 		if err != nil {

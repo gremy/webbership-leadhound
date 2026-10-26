@@ -30,6 +30,7 @@ func batchFixture(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	lq := leadstoretest.Q(t)
+	seedMailbox(t, lq, testUser, withDNSPass())
 	core := store.NewQueries(storetest.AppConn(t))
 	runID, err := core.StartRun(ctx, "leads-sites-probe", "sites-fixture")
 	if err != nil {

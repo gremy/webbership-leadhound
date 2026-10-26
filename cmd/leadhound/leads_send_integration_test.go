@@ -220,6 +220,9 @@ type sendWorld struct {
 	dns   fakeResolver
 	lq    leadstore.Queries
 	outs  []string // every command's output, for the secrets sweep
+	// mail is the per-mailbox world; the seeded mailbox's fakes are smtp and box.
+	mail    *mailboxFakes
+	mailbox leadstore.Mailbox
 }
 
 // newSendWorld sets the outreach env (live or shadow), a cap of capPerDay from 1 Oct 2026,
@@ -254,6 +257,10 @@ func newSendWorld(t *testing.T, live bool, capPerDay int) *sendWorld {
 		lockPoll:      20 * time.Millisecond,
 		allowReserved: true,
 	}
+	w.mail = newMailboxFakes()
+	w.mail.install(&leadsMail)
+	w.mailbox = seedMailbox(t, w.lq, testUser)
+	w.mail.use(testUser, w.smtp, w.box)
 	return w
 }
 
