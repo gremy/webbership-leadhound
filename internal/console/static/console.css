@@ -889,3 +889,79 @@ details.inline summary {
 .queue .actions button {
   text-transform: none;
 }
+
+/* The dashboard's Run now card: one row per action, its button and its state line. */
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.run-row {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+}
+.run-row:first-child {
+  border-top: 0;
+  padding-top: 0.25rem;
+}
+.run-row > form {
+  margin: 0;
+}
+.run-row details form {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  background: var(--warn-soft);
+  border-radius: 8px;
+  max-width: 36rem;
+}
+.run-row details form button {
+  justify-self: start;
+}
+.run-line,
+.run-sent {
+  margin: 0;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+.run-waiting .run-line,
+.run-running .run-line {
+  color: var(--accent);
+}
+.confirm-line {
+  margin: 0;
+}
+.confirm-line input {
+  width: auto;
+  min-height: auto;
+  margin-right: 0.35rem;
+}
+.confirm-line label {
+  color: var(--text);
+}
+
+/* The results page: the brief's jobs, made now. */
+.results-group {
+  margin-bottom: 1.5rem;
+}
+.verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.9rem;
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+@media (max-width: 639px) {
+  .run-row > form button,
+  .run-row summary {
+    width: 100%;
+    justify-content: center;
+  }
+}

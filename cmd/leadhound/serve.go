@@ -360,6 +360,12 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		d.LastBrief = stamp
 	}
 	d.Leads = b.leadsSummary(ctx, now)
+	// The Run now card is read live; a failure to read it is one logged line and an empty
+	// card, never a failed dashboard.
+	if d.RunNow, err = b.RunNowCard(ctx); err != nil {
+		slog.Default().Warn("console run now card", "err", err)
+		d.RunNow = console.RunNowCard{}
+	}
 	return d, nil
 }
 

@@ -23,6 +23,8 @@ var unitCommands = [][]string{
 	{"canary", "linkedin", "--dry-run", "--fixtures", "../../internal/linkedin/testdata"},
 	{"score", "--decider", "fake"},
 	{"brief", "--outbox", ""}, // the outbox is set per test
+	{"preview", "--allow-fake"},
+	{"preview", "--after-fetch", "--allow-fake"},
 }
 
 // TestUnitCommandsCrashExitOne: a command that cannot reach its database is a crash, not a

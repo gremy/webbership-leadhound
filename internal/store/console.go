@@ -48,6 +48,31 @@ func (q Queries) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 	return runs, nil
 }
 
+// MaxRunsSince caps RunsSince: a night's ATS collect writes one row per ATS, so a two-day
+// window stays far below it.
+const MaxRunsSince = 500
+
+// RunsSince returns the runs started at or after since, oldest first (by started_at, then
+// id). Past MaxRunsSince it keeps the newest, so a cap never hides what runs now.
+func (q Queries) RunsSince(ctx context.Context, since time.Time) ([]Run, error) {
+	rows, err := q.db.Query(ctx,
+		`SELECT id, command, source, started_at, finished_at, requests, failures, stop_reason, note
+		 FROM (SELECT id, command, source, started_at, finished_at, requests, failures, stop_reason, note
+		       FROM run
+		       WHERE started_at >= $1
+		       ORDER BY started_at DESC, id DESC
+		       LIMIT $2) newest
+		 ORDER BY started_at, id`, since, MaxRunsSince)
+	if err != nil {
+		return nil, fmt.Errorf("store: runs since %s: %w", since.Format(time.RFC3339), err)
+	}
+	runs, err := pgx.CollectRows(rows, pgx.RowToStructByName[Run])
+	if err != nil {
+		return nil, fmt.Errorf("store: runs since %s: %w", since.Format(time.RFC3339), err)
+	}
+	return runs, nil
+}
+
 // AIUsage is one day's scoring calls and input tokens over every provider and model.
 type AIUsage struct{ Calls, InputTokens int }
 

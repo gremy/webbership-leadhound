@@ -53,6 +53,13 @@ type fakeBackend struct {
 	leadErr  error // returned by LeadAct
 	leadsErr error // returned by every leads read, after readErr
 	lastLead LeadAction
+
+	runOut     RunOutcome
+	runErr     error // returned by RunNow
+	lastRun    RunRequest
+	runCard    RunNowCard
+	results    Results
+	resultsErr error // returned by Results, after readErr
 }
 
 func (f *fakeBackend) count(name string) {
@@ -116,6 +123,27 @@ func (f *fakeBackend) Track(_ context.Context, req TrackRequest) (TrackOutcome, 
 	return f.out, f.err
 }
 
+func (f *fakeBackend) RunNow(_ context.Context, req RunRequest) (RunOutcome, error) {
+	f.count("RunNow")
+	f.mu.Lock()
+	f.lastRun = req
+	f.mu.Unlock()
+	return f.runOut, f.runErr
+}
+
+func (f *fakeBackend) RunNowCard(context.Context) (RunNowCard, error) {
+	f.count("RunNowCard")
+	return f.runCard, f.readErr
+}
+
+func (f *fakeBackend) Results(context.Context) (Results, error) {
+	f.count("Results")
+	if f.readErr != nil {
+		return Results{}, f.readErr
+	}
+	return f.results, f.resultsErr
+}
+
 var (
 	testDay  = time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
 	testSent = time.Date(2026, 10, 24, 4, 50, 0, 0, time.UTC)
@@ -137,6 +165,7 @@ func richBackend(text string) *fakeBackend {
 			Boards:    []BoardCount{{ATS: text, State: text, N: 5}},
 			LastRuns:  []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
 			LastBrief: &BriefStamp{Day: testDay, SentAt: testSent, Listed: 1, Health: []string{"Health: " + text}},
+			RunNow:    richCard(text),
 		},
 		brief:   BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
 		tracked: []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
@@ -154,6 +183,9 @@ func richBackend(text string) *fakeBackend {
 		prios: PrioritiesPage{Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Group: "Kind", Label: text, Value: "20"}}, Countries: text},
 			Preview: []QueueLead{{LeadID: 5, Domain: text, Score: 55, Why: []string{text}}}},
 		leadOut: LeadOutcome{Message: text},
+		runOut:  RunOutcome{Message: text},
+		runCard: richCard(text),
+		results: richResults(text),
 	}
 }
 
@@ -398,6 +430,9 @@ func TestNoWriteOnGet(t *testing.T) {
 	}
 	if n := h.b.n("Track"); n != 0 {
 		t.Errorf("a GET called Track %d times", n)
+	}
+	if n := h.b.n("RunNow"); n != 0 {
+		t.Errorf("a GET called RunNow %d times", n)
 	}
 }
 
@@ -1086,7 +1121,7 @@ func TestExternalLinks(t *testing.T) {
 func TestNoInlineScriptOrStyle(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)
-	for _, p := range []string{"/login", "/", "/jobs", "/tracked", "/runs", "/rules"} {
+	for _, p := range []string{"/login", "/", "/jobs", "/tracked", "/runs", "/rules", "/results"} {
 		cookies := []*http.Cookie{c}
 		if p == "/login" {
 			cookies = nil

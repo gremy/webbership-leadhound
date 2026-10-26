@@ -99,6 +99,9 @@ var routes = []route{
 	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
 	{"POST /leads/next/{lead}/{action}", "/leads/next/5/pin", false, (*server).steerLead},
 	{"POST /leads/priorities", "/leads/priorities", false, (*server).savePriorities},
+	{"POST /run/{action}", "/run/preview", false, (*server).runNow},
+	{"GET /run/status", "/run/status", false, (*server).runStatus},
+	{"GET /results", "/results", false, (*server).results},
 	{"GET /static/", "/static/console.css", true, (*server).static},
 	{"GET /robots.txt", "/robots.txt", true, (*server).robots},
 	{"GET /favicon.ico", "/favicon.ico", true, (*server).favicon},
@@ -111,6 +114,7 @@ type navItem struct{ Label, Path string }
 // nav is the header's links, in order.
 var nav = []navItem{
 	{"Dashboard", "/"},
+	{"Results", "/results"},
 	{"Jobs", "/jobs"},
 	{"Tracked", "/tracked"},
 	{"Runs", "/runs"},
@@ -235,18 +239,19 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 	return s.headers(cop.Handler(capBody(mux)))
 }
 
-// parseTemplates parses the layout and the job row once, then each page over a
-// copy of them.
+// parseTemplates parses the layout, the job row and the Run now card once, then
+// each page over a copy of them.
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
-		"templates/layout.html", "templates/job_row.html"))
+		"templates/layout.html", "templates/job_row.html", "templates/run_now.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
-		"leads", "leads_off", "lead_batch", "leads_next", "leads_priorities"} {
+		"leads", "leads_off", "lead_batch", "leads_next", "leads_priorities", "results"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
 	pages["job_row"] = base
+	pages["run_now"] = base
 	return pages
 }
 
@@ -297,7 +302,8 @@ func (s *server) funcs() template.FuncMap {
 			}
 			return strconv.Itoa(n) + " " + many
 		},
-		"ruleIn": func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
+		"ruleIn":  func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
+		"runCard": func(c RunNowCard) runNowView { return runNowView{Card: c} },
 		"laterThan": func(status string) []string {
 			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })
 		},
@@ -598,14 +604,18 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// dashboard is GET /.
+// dashboard is GET /, with the line from the last Run now press, if one was.
 func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
+	s.renderDashboard(w, r, http.StatusOK, s.takeFlash(w, r), false)
+}
+
+func (s *server) renderDashboard(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
 	d, err := s.b.Dashboard(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, "dashboard", page{Title: "Dashboard", Active: "/", SignedIn: true, Data: d})
+	s.render(w, r, code, "dashboard", page{Title: "Dashboard", Active: "/", SignedIn: true, Message: msg, Error: isErr, Data: d})
 }
 
 // jobs is GET /jobs: the latest sent brief's jobs under the numbers it used.
@@ -657,7 +667,8 @@ func (s *server) renderTracked(w http.ResponseWriter, r *http.Request, code int,
 
 // track is POST /jobs/track. A ref "N" comes from the Jobs page with the day of
 // the brief that numbered it, and answers there; a ref "job:ID" comes from the
-// Tracked page and answers there, keeping its status filter. An htmx request gets
+// Tracked page and answers there, keeping its status filter, or from the Results
+// page (back=results) and answers there. An htmx request gets
 // the updated row (or list) in place; a plain form gets a redirect with the result
 // in a one-time cookie. A refusal the operator can fix is shown in place (htmx,
 // 200) or on the page (422).
@@ -679,7 +690,8 @@ func (s *server) track(w http.ResponseWriter, r *http.Request) {
 		RuleField:   f.Get("rule_field"),
 		RulePattern: f.Get("rule_pattern"),
 	}
-	fromTracked := strings.HasPrefix(req.Ref, "job:")
+	fromResults := f.Get("back") == "results" && strings.HasPrefix(req.Ref, "job:")
+	fromTracked := strings.HasPrefix(req.Ref, "job:") && !fromResults
 	status := trackedStatus(f.Get("status"))
 
 	out, err := s.b.Track(r.Context(), req)
@@ -692,6 +704,8 @@ func (s *server) track(w http.ResponseWriter, r *http.Request) {
 		msg := cmp.Or(strings.TrimPrefix(strings.TrimPrefix(err.Error(), ErrUserFixable.Error()), ": "), out.Message)
 		s.log.Info("console track refused", "ref", req.Ref, "action", req.Action, "why", msg)
 		switch {
+		case fromResults:
+			s.renderResults(w, r, http.StatusUnprocessableEntity, msg, true)
 		case fromTracked:
 			code := http.StatusUnprocessableEntity
 			if isHX(r) {
@@ -708,6 +722,9 @@ func (s *server) track(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("console track", "job", out.Job.JobID, "from", out.From, "to", out.To)
 	switch {
+	case fromResults:
+		s.setFlash(w, outcomeLine(out))
+		http.Redirect(w, r, "/results#result-"+strconv.FormatInt(out.Job.JobID, 10), http.StatusSeeOther)
 	case fromTracked && isHX(r):
 		s.renderTracked(w, r, http.StatusOK, status, outcomeLine(out), false, true)
 	case fromTracked:

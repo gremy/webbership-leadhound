@@ -22,7 +22,74 @@ type Backend interface {
 	Job(ctx context.Context, id int64) (JobPage, error) // ErrNotFound for no such job
 	AddRule(ctx context.Context, req RuleRequest) (string, error)
 	DisableRule(ctx context.Context, id int64, reason string) (string, error)
+	RunNow(ctx context.Context, req RunRequest) (RunOutcome, error) // ErrUserFixable for a refusal
+	RunNowCard(ctx context.Context) (RunNowCard, error)
+	Results(ctx context.Context) (Results, error) // ErrNotFound when there is no preview yet
 	LeadsBackend
+}
+
+// The Run now actions. Each name is the request file, the .path unit and the
+// route segment alike.
+const (
+	RunPreview = "preview" // recheck and rank what is collected, show it
+	RunFetch   = "fetch"   // a LinkedIn collect and score, then the preview
+	RunBrief   = "brief"   // send today's brief now
+	RunATS     = "ats"     // the nightly ATS collect, now
+)
+
+// RunActions lists the Run now actions in the order the card shows them.
+var RunActions = []string{RunPreview, RunFetch, RunBrief, RunATS}
+
+// RunRequest asks for one Run now action. Confirmed is the ATS warning's box.
+type RunRequest struct {
+	Action    string
+	Confirmed bool
+}
+
+// RunOutcome is what a RunRequest did, as one sentence for the operator.
+type RunOutcome struct {
+	Message string
+}
+
+// RunNowCard is the dashboard's Run now card: each action's state, when
+// today's brief went (nil while unsent) and when the shown results were made
+// (nil when there are none).
+type RunNowCard struct {
+	Actions     []RunNowAction
+	BriefSentAt *time.Time
+	ResultsAt   *time.Time
+}
+
+// RunNowAction is one action's state on the card. State is one of idle,
+// waiting, running, done, stuck or unavailable; Line is the plain sentence the
+// card prints; Since is when the state began, when known; Pending is true
+// while the action waits or runs, so the card keeps polling.
+type RunNowAction struct {
+	Action, State, Line string
+	Since               *time.Time
+	Pending             bool
+}
+
+// Results is the latest preview: the jobs part of the brief, made now.
+type Results struct {
+	MadeAt                time.Time
+	Day                   time.Time
+	RecheckOff            bool
+	Health                []string // brief.HealthLines, verbatim
+	Apply, YourCall       []ResultJob
+	RunnerUp              *ResultJob
+	RunnerUpWhy           string // the criterion it failed, and why
+	Unreachable, Unscored int
+}
+
+// ResultJob is one job of the results, with its live tracking status.
+type ResultJob struct {
+	JobID                                    int64
+	Title, Company, Location, URL, ApplyType string
+	Status, ListingStatus                    string
+	ApplicantCount                           *int
+	PostedAt                                 *time.Time
+	Criteria                                 []JobCriterion
 }
 
 // ErrUserFixable wraps every refusal the operator can fix; the outcome's
@@ -59,6 +126,7 @@ type Dashboard struct {
 	LastRuns                                     []RunRow      // the latest 8
 	LastBrief                                    *BriefStamp   // day, sent at, listed count; nil when none sent
 	Leads                                        *LeadsSummary // nil when leads are not set up on this server
+	RunNow                                       RunNowCard    // read live, outside the snapshot
 }
 
 // Funnel counts the day's jobs at each step, as store.Funnel does.

@@ -176,7 +176,7 @@ func Write(dir string, p Preview) (err error) {
 // this package does not know is a wrapped error that is not ErrNone.
 func Read(dir string) (Preview, error) {
 	path := filepath.Join(dir, FileName)
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: the path is the configured data dir plus a fixed name
 	if errors.Is(err, os.ErrNotExist) {
 		return Preview{}, ErrNone
 	}

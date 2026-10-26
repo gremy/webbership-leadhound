@@ -4,6 +4,8 @@
   <h1>{{if $d.Day.IsZero}}Today{{else}}{{day $d.Day}}{{end}}</h1>
 </div>
 
+{{template "run_now" (runCard $d.RunNow)}}
+
 <div class="grid two">
   <section class="card">
     <h2>This morning's email</h2>

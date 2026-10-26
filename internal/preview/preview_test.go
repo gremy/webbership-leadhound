@@ -143,10 +143,10 @@ func TestFailedWriteKeepsOld(t *testing.T) {
 	if err := Write(dir, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // G302: a directory made read-only to force a failed write
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: restores the test directory
 
 	next := sample()
 	next.MadeAt = old.MadeAt.Add(time.Hour)
