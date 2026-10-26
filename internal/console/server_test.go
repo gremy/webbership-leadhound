@@ -60,6 +60,13 @@ type fakeBackend struct {
 	runCard    RunNowCard
 	results    Results
 	resultsErr error // returned by Results, after readErr
+
+	mailboxes   MailboxesPage
+	mailbox     MailboxPage
+	mbCard      MailboxCheckView
+	mbOut       MailboxOutcome
+	mbErr       error // returned by MailboxAct
+	lastMailbox MailboxAction
 }
 
 func (f *fakeBackend) count(name string) {
@@ -136,6 +143,41 @@ func (f *fakeBackend) RunNowCard(context.Context) (RunNowCard, error) {
 	return f.runCard, f.readErr
 }
 
+func (f *fakeBackend) Mailboxes(context.Context) (MailboxesPage, error) {
+	f.count("Mailboxes")
+	return f.mailboxes, f.leadsRead()
+}
+
+func (f *fakeBackend) Mailbox(_ context.Context, id int64) (MailboxPage, error) {
+	f.count("Mailbox")
+	if err := f.leadsRead(); err != nil {
+		return MailboxPage{}, err
+	}
+	if id != f.mailbox.Row.ID {
+		return MailboxPage{}, ErrNotFound
+	}
+	return f.mailbox, nil
+}
+
+func (f *fakeBackend) MailboxCheckCard(_ context.Context, id int64) (MailboxCheckView, error) {
+	f.count("MailboxCheckCard")
+	if err := f.leadsRead(); err != nil {
+		return MailboxCheckView{}, err
+	}
+	if id != f.mbCard.MailboxID {
+		return MailboxCheckView{}, ErrNotFound
+	}
+	return f.mbCard, nil
+}
+
+func (f *fakeBackend) MailboxAct(_ context.Context, a MailboxAction) (MailboxOutcome, error) {
+	f.count("MailboxAct")
+	f.mu.Lock()
+	f.lastMailbox = a
+	f.mu.Unlock()
+	return f.mbOut, f.mbErr
+}
+
 func (f *fakeBackend) Results(context.Context) (Results, error) {
 	f.count("Results")
 	if f.readErr != nil {
@@ -186,6 +228,11 @@ func richBackend(text string) *fakeBackend {
 		runOut:  RunOutcome{Message: text},
 		runCard: richCard(text),
 		results: richResults(text),
+
+		mailboxes: richMailboxes(text),
+		mailbox:   richMailbox(text),
+		mbCard:    passedCard(),
+		mbOut:     MailboxOutcome{Message: text, MailboxID: 1},
 	}
 }
 
@@ -1121,7 +1168,8 @@ func TestExternalLinks(t *testing.T) {
 func TestNoInlineScriptOrStyle(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)
-	for _, p := range []string{"/login", "/", "/jobs", "/tracked", "/runs", "/rules", "/results"} {
+	for _, p := range []string{"/login", "/", "/jobs", "/tracked", "/runs", "/rules", "/results",
+		"/mailboxes", "/mailboxes/new", "/mailboxes/1", "/mailboxes/1/edit"} {
 		cookies := []*http.Cookie{c}
 		if p == "/login" {
 			cookies = nil

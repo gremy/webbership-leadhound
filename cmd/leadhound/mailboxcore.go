@@ -201,7 +201,7 @@ func mailboxStatusByID(ctx context.Context, lq leadstore.Queries, id int64, sinc
 // caps.mailboxes_per_domain, ports other than 465/587 and 993, a From name with a line
 // break and an empty password. It returns the new mailbox's id.
 func addMailbox(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, pub secretbox.PublicKey, dataDir string,
-	now time.Time, in MailboxInput, actor string) (int64, error) {
+	now time.Time, in MailboxInput) (int64, error) {
 	m, err := mailboxFromInput(cfg, in)
 	if err != nil {
 		return 0, err
@@ -236,7 +236,7 @@ func addMailbox(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 	if m.PasswordSealed, m.SealedBy, err = sealFor(pub, m, in.Password); err != nil {
 		return 0, err
 	}
-	id, err := lq.AddMailbox(ctx, m, actor)
+	id, err := lq.AddMailbox(ctx, m, leadstore.ActorOperator)
 	if errors.Is(err, leadstore.ErrMailboxExists) {
 		return 0, refused("%s is already a mailbox.", m.Address)
 	}

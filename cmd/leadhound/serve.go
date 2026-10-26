@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/eval"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -60,7 +62,11 @@ const maxTrackReason = 500
 // without the operator's email and a bcrypt hash of cost 12 or more, on an address off
 // loopback, with a console URL that is not https, and with --dev unless live fetching is
 // off. When its context ends (SIGTERM from systemd) it stops taking requests, lets the open
-// ones finish for up to 10 seconds, closes the store and returns nil.
+// ones finish for up to 10 seconds, closes the store and returns nil. It also refuses to
+// start when LEADHOUND_MAILBOX_KEY_FILE is set (not empty) in its environment: that
+// variable names the private mailbox key for local worker runs, and the console must never
+// hold it. Without a usable LEADHOUND_MAILBOX_PUBLIC_KEY it starts, says so in its log, and
+// refuses only a new mailbox password.
 func runServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	dev := fs.Bool("dev", false, "plain-http cookies for local use; refused unless LEADHOUND_LIVE is off")
@@ -70,6 +76,9 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	if len(pos) != 0 {
 		return usageError("%s", serveUsage)
+	}
+	if err := serveKeyFileRefusal(os.Getenv); err != nil {
+		return err
 	}
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL", "LEADHOUND_DATA_DIR", "LEADHOUND_CONSOLE_EMAIL", "LEADHOUND_CONSOLE_PASSWORD_HASH")
 	if err != nil {
@@ -106,6 +115,9 @@ func runServe(ctx context.Context, args []string) error {
 	defer func() { stopBuilds(); b.wait() }()
 
 	logger := slog.Default()
+	if b.pubErr != nil {
+		logger.Warn("console mailbox key: no mailbox can be added or given a new password", "problem", b.pubErr.Error())
+	}
 	if *dev {
 		logger.Warn("console dev mode: cookies are not Secure and carry no __Host- prefix; for local use only")
 	}
@@ -153,6 +165,10 @@ type backend struct {
 	loc  *time.Location
 	cfg  config.Config
 	now  func() time.Time
+	// pub seals a new mailbox password (LEADHOUND_MAILBOX_PUBLIC_KEY); zero when it is
+	// missing or broken, as pubErr says. The console never holds the private key.
+	pub    secretbox.PublicKey
+	pubErr error
 
 	// base ends every build: serve cancels it at shutdown. A request's own context
 	// never does.
@@ -192,7 +208,35 @@ var _ console.Backend = (*backend)(nil)
 func newBackend(base context.Context, s *store.Store, prof candidate.Config, loc *time.Location, cfg config.Config) *backend {
 	b := &backend{s: s, prof: prof, loc: loc, cfg: cfg, now: time.Now, base: base, waitFor: dashboardWaitFor}
 	b.build = b.buildSnapshot
+	b.pub, b.pubErr = consolePublicKey(os.Getenv)
 	return b
+}
+
+// consolePublicKey is the public key the console seals new mailbox passwords with, read
+// through getenv as the CLI's add reads it; an unset or broken key is a zero key and the
+// problem.
+func consolePublicKey(getenv func(string) string) (secretbox.PublicKey, error) {
+	v := getenv(secretbox.PublicKeyEnv)
+	if v == "" {
+		return secretbox.PublicKey{}, fmt.Errorf("%s is not set", secretbox.PublicKeyEnv)
+	}
+	pub, err := secretbox.ParsePublicKey(v)
+	if err != nil {
+		return secretbox.PublicKey{}, fmt.Errorf("%s: %w", secretbox.PublicKeyEnv, err)
+	}
+	return pub, nil
+}
+
+// serveKeyFileRefusal refuses (exit 2) a console whose environment sets
+// LEADHOUND_MAILBOX_KEY_FILE to anything: that local-only variable names the private key,
+// which the console must never hold. An empty value, as deploy/env.example carries, is not
+// set.
+func serveKeyFileRefusal(getenv func(string) string) error {
+	if getenv(secretbox.KeyFileEnv) != "" {
+		return usageError("%s is set; the console must never hold the mailbox key: remove it from the console's environment "+
+			"(it is only for local send, sync and check runs)", secretbox.KeyFileEnv)
+	}
+	return nil
 }
 
 // buildSnapshot is buildInput and the funnel for now. The console never rechecks, so the

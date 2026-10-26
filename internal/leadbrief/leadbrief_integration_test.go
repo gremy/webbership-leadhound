@@ -5,6 +5,8 @@ package leadbrief_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,14 +97,26 @@ func (f fixture) probe(domain string, drupal bool, major int, when time.Time) {
 
 func tp(t time.Time) *time.Time { return &t }
 
+// senderHost is the fixture mailbox's host; its registrable domain is sender.example.
+const senderHost = "mail.sender.example"
+
+// senderCheck adds a sender_check row for host and DKIM selector, keyed as the send run
+// keys it (the host's hash).
+func (f fixture) senderCheck(host, selector string, spf, dkim, dmarc bool, when time.Time) { //nolint:unparam // the fixture writes any outcome; today's cases all pass SPF
+	f.id(`INSERT INTO sender_check (domain_sha256, selector, spf, dkim, dmarc, checked_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		leadstore.SenderDomainSHA256(host), selector, spf, dkim, dmarc, when)
+}
+
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	leadstoretest.Reset(t)
 	f := fixture{t: t, owner: storetest.OwnerConn(t)}
-	f.mailbox = leadstoretest.SeedMailbox(t, leadstoretest.Q(t), "outreach"+"@"+"sender.invalid").ID
+	// The sending mailbox's host is a subdomain of its registrable domain: DNS is checked
+	// on the host (Mailbox.Host). Its last DNS check, yesterday, failed, so it needs a check.
+	f.mailbox = leadstoretest.SeedMailbox(t, leadstoretest.Q(t), "outreach"+"@"+senderHost).ID
 	f.run = f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $2, $3)`,
 		at(10), at(10), "live · sent 0 · refused 0 · maybe_sent 0 · retry 0 · cancelled 0 · skipped 0 · notes dns")
-	f.id(`INSERT INTO sender_check (domain_sha256, spf, dkim, dmarc, checked_at) VALUES ('\x01', true, true, false, $1)`, at(9))
+	f.senderCheck(senderHost, "lh", true, true, false, at(9))
 
 	alpha, beta, gamma := f.lead("alpha.example", false), f.lead("beta.example", false), f.lead("gamma.example", false)
 	delta, self := f.lead("delta.invalid", false), f.lead("selftest-1", true)
@@ -172,8 +186,9 @@ func TestLoad(t *testing.T) {
 		Replies: []string{"beta.example", "alpha.example"}, Other: 1,
 		Batch:         &leadbrief.BatchReady{ID: 3, Emails: 1, LinkedIn: 1},
 		ManualWaiting: 1, Sent: 1, ShadowSent: 1, Bounced: 1, OptedOut: 1,
-		Paused: "dns: dmarc missing", CheckByHand: 2,
-		Probe: &leadbrief.ProbeLine{Checked: 2, Drupal: 1, ByMajor: map[int]int{7: 1}},
+		Paused: "dns: " + senderHost + " dmarc missing", CheckByHand: 2,
+		Probe:     &leadbrief.ProbeLine{Checked: 2, Drupal: 1, ByMajor: map[int]int{7: 1}},
+		Mailboxes: leadbrief.MailboxHealth{NeedsCheck: 1},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("section = %s\nwant      %s", show(got), show(want))
@@ -196,11 +211,12 @@ func TestLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(all.Replies) != 0 || all.Other != 0 || all.Batch != nil || all.ManualWaiting != 0 || all.Sent != 0 ||
-		all.ShadowSent != 0 || all.Bounced != 0 || all.OptedOut != 0 || all.CheckByHand != 0 || all.Probe != nil {
+		all.ShadowSent != 0 || all.Bounced != 0 || all.OptedOut != 0 || all.CheckByHand != 0 || all.Probe != nil ||
+		!reflect.DeepEqual(all.Mailboxes, leadbrief.MailboxHealth{}) {
 		t.Errorf("reserved TLDs counted: %s", show(all))
 	}
-	// The pause is the sending run's, not a lead's.
-	if all.Paused != "dns: dmarc missing" {
+	// The pause is the sending run's, not a lead's: it still shows, without the reserved host.
+	if all.Paused != leadbrief.PausedDNS {
 		t.Errorf("paused = %q", all.Paused)
 	}
 	// An empty list never turns the exclusion off.
@@ -223,9 +239,18 @@ func TestLoadPaused(t *testing.T) {
 		}
 		return s.Paused
 	}
-	f.id(`INSERT INTO sender_check (domain_sha256, spf, dkim, dmarc, checked_at) VALUES ('\x01', true, true, true, $1)`, at(11))
-	if p := paused(); p != "" {
-		t.Errorf("after a passing check: %q", p)
+	if p := paused(); p != leadbrief.PausedDNS {
+		t.Errorf("the fixture mailbox is on a reserved TLD, its host stays out: %q", p)
+	}
+	// A pass keyed by the registrable domain, or with another selector, is not the host's.
+	f.senderCheck("sender.example", "lh", true, true, true, at(11))
+	f.senderCheck(senderHost, "other", true, true, true, at(11))
+	if s, err := leadbrief.LoadExcluding(ctx, q, day, loc, []string{"invalid"}); err != nil || s.Paused != "dns: "+senderHost+" dmarc missing" {
+		t.Errorf("a pass on another key cleared the stop: %q, %v", s.Paused, err)
+	}
+	f.senderCheck(senderHost, "lh", true, true, true, at(11))
+	if s, err := leadbrief.LoadExcluding(ctx, q, day, loc, []string{"invalid"}); err != nil || s.Paused != "" {
+		t.Errorf("after a passing check: %q, %v", s.Paused, err)
 	}
 	f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $1, 'live · sent 0 · notes sync')`, at(12))
 	if p := paused(); p != leadbrief.PausedSync {
@@ -243,6 +268,124 @@ func TestLoadPaused(t *testing.T) {
 	f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $1, 'live · sent 2 · notes sync running')`, at(16))
 	if p := paused(); p != "" {
 		t.Errorf("a clean run left the pause: %q", p)
+	}
+}
+
+// TestLoadPausedPerHost: a DNS stop gives one result per host and selector of the mailboxes
+// not retired, a paused one included; a host with two selectors names each; a host never
+// checked says so; a retired mailbox and one on a reserved TLD stay out.
+func TestLoadPausedPerHost(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	lq := leadstoretest.Q(t)
+	second := leadstoretest.SeedMailbox(t, lq, "second"+"@"+senderHost)
+	s2 := "s2"
+	if err := lq.UpdateMailbox(ctx, second.ID, leadstore.MailboxEdit{DKIMSelector: &s2}); err != nil {
+		t.Fatal(err)
+	}
+	f.senderCheck(senderHost, "s2", true, false, true, at(10))
+	other := leadstoretest.SeedMailbox(t, lq, "hi"+"@"+"other.example")
+	if err := lq.SetMailboxState(ctx, other.ID, leadstore.MailboxPaused, "Ilinca"+" asked to wait", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	gone := leadstoretest.SeedMailbox(t, lq, "gone"+"@"+"retired.example")
+	if err := lq.SetMailboxState(ctx, gone.ID, leadstore.MailboxRetired, "", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	leadstoretest.SeedMailbox(t, lq, "fixture"+"@"+"box.invalid")
+
+	s, err := leadbrief.LoadExcluding(ctx, storetest.AppConn(t), day, loc, []string{"invalid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "dns: " + senderHost + " (lh) dmarc missing; " + senderHost + " (s2) dkim missing; other.example not checked yet"
+	if s.Paused != want {
+		t.Errorf("paused = %q\nwant     %q", s.Paused, want)
+	}
+	if strings.Contains(show(s), "Ilinca") {
+		t.Error("the operator's pause reason reached the section")
+	}
+}
+
+// TestLoadMailboxes: the mailbox line from loaded rows, against the golden files of
+// mailboxes_test.go: two ready, one paused by its bounces, one needing a check (the
+// fixture's, failed yesterday); then the key missing on the latest send run; and none at
+// all once the reserved TLDs stay out.
+func TestLoadMailboxes(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	q := storetest.AppConn(t)
+	lq := leadstoretest.Q(t)
+	today := at(24 + 1) // the brief's day, before 07:00
+	for _, host := range []string{"one.example", "two.example"} {
+		leadstoretest.SeedMailbox(t, lq, "hello"+"@"+host)
+		f.senderCheck(host, "lh", true, true, true, today)
+	}
+	bounced := leadstoretest.SeedMailbox(t, lq, "hello"+"@"+"three.example")
+	f.senderCheck("three.example", "lh", true, true, true, today)
+	if err := lq.SetMailboxState(ctx, bounced.ID, leadstore.MailboxPaused, "2 hard bounces in its last 50 live sends",
+		leadstore.ScopeMailbox, leadstore.ActorSystem); err != nil {
+		t.Fatal(err)
+	}
+	// A pass yesterday is not today's; a check requested since is not a passed one.
+	waiting := leadstoretest.SeedMailbox(t, lq, "hello"+"@"+"four.example")
+	f.senderCheck("four.example", "lh", true, true, true, today)
+	if _, err := lq.RequestCheck(ctx, waiting.ID, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	stale := leadstoretest.SeedMailbox(t, lq, "hello"+"@"+"five.example")
+	f.senderCheck("five.example", "lh", true, true, true, at(20))
+	// A retired one and one on the narrowed reserved TLD never count.
+	gone := leadstoretest.SeedMailbox(t, lq, "hello"+"@"+"six.example")
+	f.senderCheck("six.example", "lh", true, true, true, today)
+	if err := lq.SetMailboxState(ctx, gone.ID, leadstore.MailboxRetired, "", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	leadstoretest.SeedMailbox(t, lq, "hello"+"@"+"seven.invalid")
+	f.senderCheck("seven.invalid", "lh", true, true, true, today)
+
+	load := func(reserved []string) leadbrief.MailboxHealth {
+		t.Helper()
+		s, err := leadbrief.LoadExcluding(ctx, q, day, loc, reserved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Mailboxes
+	}
+	h := load([]string{"invalid"})
+	if want := (leadbrief.MailboxHealth{Ready: 2, Paused: 1, PausedWhy: []string{"2 hard bounces"}, NeedsCheck: 3}); !reflect.DeepEqual(h, want) {
+		t.Errorf("mailboxes = %+v, want %+v", h, want)
+	}
+	// The golden shape: the waiting and the stale ones checked again today.
+	for _, id := range []int64{waiting.ID, stale.ID} {
+		if err := lq.SetMailboxState(ctx, id, leadstore.MailboxRetired, "", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
+			t.Fatal(err)
+		}
+	}
+	golden(t, "mailboxes_mixed", load([]string{"invalid"}).Line())
+	golden(t, "mailboxes_none", load(nil).Line())
+
+	f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $1, $2)`,
+		today, "live · sent 0 · notes mailbox key missing")
+	golden(t, "mailboxes_key_missing", load([]string{"invalid"}).Line())
+	// A selftest run never counts; a later clean send run clears it.
+	f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-selftest', 'outreach', $1, $1, $2)`,
+		today, "live · notes mailbox key missing")
+	f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $1, $2)`,
+		today, "live · sent 1")
+	golden(t, "mailboxes_mixed", load([]string{"invalid"}).Line())
+}
+
+// golden compares line with testdata/<name>.golden, which mailboxes_test.go's unit test
+// renders from fixed values.
+func golden(t *testing.T, name, line string) {
+	t.Helper()
+	want, err := os.ReadFile(filepath.Join("testdata", name+".golden")) //nolint:gosec // a fixed test path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line+"\n" != string(want) {
+		t.Errorf("%s: %q, want the golden %q", name, line, want)
 	}
 }
 

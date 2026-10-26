@@ -18,6 +18,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 )
 
 var (
@@ -48,6 +49,7 @@ func serveEnv(t *testing.T) {
 	t.Setenv("LEADHOUND_CONSOLE_URL", "")
 	t.Setenv("LEADHOUND_CONSOLE_EMAIL", "operator@mail.example")
 	t.Setenv("LEADHOUND_CONSOLE_PASSWORD_HASH", testHash(t))
+	t.Setenv(secretbox.KeyFileEnv, "")
 }
 
 // TestServeRefusals: serve exits 2, naming the problem, without the operator's email or

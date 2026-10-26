@@ -965,3 +965,110 @@ details.inline summary {
     justify-content: center;
   }
 }
+
+/* Mailboxes: a state badge per mailbox, record lines per host, the check card's ticks. */
+.mb-state {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+  vertical-align: 0.1em;
+}
+.mb-ready {
+  background: var(--good-soft);
+  color: var(--good);
+  border-color: transparent;
+}
+.mb-needs_check,
+.mb-checking {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: transparent;
+}
+.mb-paused {
+  background: var(--bad-soft);
+  color: var(--bad);
+  border-color: transparent;
+  white-space: normal;
+}
+.records {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.mailbox-domain .item-list {
+  margin-top: 0.5rem;
+}
+.mailbox-domain details form,
+.card details form.confirm-form {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 8px;
+  max-width: 36rem;
+}
+.mailbox-domain details form {
+  background: var(--bg);
+}
+.card details form.confirm-form {
+  background: var(--warn-soft);
+}
+.card details form.confirm-form button {
+  justify-self: start;
+}
+.card > details {
+  margin-top: 0.75rem;
+}
+.good {
+  color: var(--good);
+}
+.check-outcome {
+  font-weight: 600;
+}
+.check-waiting {
+  color: var(--accent);
+}
+.ticks {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+.tick {
+  font-size: 0.95rem;
+}
+.tick .mark {
+  display: inline-block;
+  width: 1.25rem;
+  font-weight: 700;
+}
+.tick-ok .mark {
+  color: var(--good);
+}
+.tick-bad {
+  color: var(--bad);
+}
+.tick-none {
+  color: var(--muted);
+}
+.mailbox-check > form {
+  margin: 0 0 0.35rem;
+}
+.mailbox-form .hint {
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 639px) {
+  .mailbox-check > form button,
+  .card details summary {
+    width: 100%;
+    justify-content: center;
+  }
+}

@@ -9,7 +9,7 @@ TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound
 TEST_SCALE_DSN                 ?= postgres://leadhound_app@localhost/leadhound_scale?sslmode=disable
 TEST_SCALE_MIGRATE_DSN         ?= postgres://leadhound_owner@localhost/leadhound_scale?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local
+.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local mailbox-key mailbox-check-local
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -40,13 +40,13 @@ endif
 # REMOTE_VERB3 is the first three, for the leads commands whose third word is the verb.
 empty               :=
 space               := $(empty) $(empty)
-REMOTE_READONLY     := track_list rules_list boards_list leads_suppress_list leads_suppress_check leads_batch_show
+REMOTE_READONLY     := track_list rules_list boards_list leads_suppress_list leads_suppress_check leads_batch_show leads_mailboxes_list
 REMOTE_VERB         := $(subst $(space),_,$(strip $(wordlist 1,2,$(ARGS))))
 REMOTE_VERB3        := $(subst $(space),_,$(strip $(wordlist 1,3,$(ARGS))))
 ifneq ($(filter remote,$(MAKECMDGOALS)),)
 ifeq ($(filter $(REMOTE_VERB) $(REMOTE_VERB3),$(REMOTE_READONLY)),)
 ifneq ($(CONFIRM),1)
-$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list, leads suppress list|check, leads batch show))
+$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list, leads suppress list|check, leads batch show, leads mailboxes list))
 endif
 endif
 endif
@@ -61,6 +61,13 @@ REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/
 endif
 ifneq ($(filter leads_sites leads_contacts leads_agencies leads_transfer,$(REMOTE_VERB)),)
 REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock
+endif
+# remote hands the mailboxes' private key, as the same systemd credential the units get, only
+# to the verbs that open a mailbox password (selftest, send, sync, mailboxes check); every
+# other verb runs without it, as every unit but those jobs does.
+REMOTE_KEY :=
+ifneq ($(filter leads_selftest leads_send leads_sync leads_mailboxes_check,$(REMOTE_VERB) $(REMOTE_VERB3)),)
+REMOTE_KEY := -p LoadCredential=mailbox-key:/etc/leadhound/mailbox.key
 endif
 ifneq ($(filter $(ARCH),arm64 amd64),$(ARCH))
 $(error ARCH must be arm64 or amd64, not $(ARCH))
@@ -133,9 +140,21 @@ console-password:
 	else rm -f "$$tmp"; exit 1; fi
 
 ## console-local: serve the console on loopback in dev mode, with .env's settings and the hash make console-password wrote
+## (without LEADHOUND_MAILBOX_KEY_FILE: the console never holds the mailbox key, and serve refuses it)
 console-local:
 	@test -f data/console-password.hash || { echo "console-local: run make console-password first"; exit 1; }
-	@set -a; . ./.env; set +a; LEADHOUND_CONSOLE_PASSWORD_HASH=$$(cat data/console-password.hash) go run $(CMD) serve --dev
+	@set -a; . ./.env; set +a; LEADHOUND_CONSOLE_PASSWORD_HASH=$$(cat data/console-password.hash) env -u LEADHOUND_MAILBOX_KEY_FILE go run $(CMD) serve --dev
+
+## mailbox-key: write a local mailbox key pair to data/mailbox.key (mode 0600; never overwritten) and print the two .env lines to add by hand
+mailbox-key:
+	@mkdir -p data && out=$$(go run $(CMD) leads mailboxes keygen --out data/mailbox.key) && \
+	echo "mailbox-key: wrote data/mailbox.key ($$(printf '%s\n' "$$out" | grep '^Fingerprint:')). Add these two lines to .env:" && \
+	printf '%s\n' "$$out" | grep '^LEADHOUND_MAILBOX_PUBLIC_KEY=' && \
+	echo 'LEADHOUND_MAILBOX_KEY_FILE=data/mailbox.key'
+
+## mailbox-check-local: run every requested mailbox check, with .env's settings (locally nothing watches the console's request file)
+mailbox-check-local:
+	@set -a; . ./.env; set +a; go run $(CMD) leads mailboxes check --requested
 
 ## hooks: install the pre-commit and commit-msg privacy checks (never touches pre-push)
 hooks:
@@ -197,5 +216,5 @@ remote:
 	@set -f; set -- $(value ARGS); cmd=; \
 	for a in "$$@"; do cmd="$$cmd '$$(printf '%s' "$$a" | sed "s/'/'\\\\''/g")'"; done; \
 	$(SSH) -t $(HOST) "sudo systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound \
-		-p EnvironmentFile=/etc/leadhound/env -p WorkingDirectory=/opt/leadhound \
+		-p EnvironmentFile=/etc/leadhound/env -p WorkingDirectory=/opt/leadhound $(REMOTE_KEY) \
 		$(REMOTE_LOCK) /opt/leadhound/bin/leadhound$$cmd"

@@ -1,0 +1,24 @@
+{{define "mailbox_check"}}{{$c := .Card}}
+<section class="card mailbox-check" id="mailbox-check"{{if .Polling}} hx-get="/mailboxes/{{$c.MailboxID}}/check" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}>
+  <h2>Check</h2>
+  {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+  {{if eq $c.Outcome "requested"}}
+  <p class="run-line check-waiting" role="status">Checking… asked for at {{clock $c.RequestedAt}}. This card updates by itself.</p>
+  <p class="hint">Signs in to both servers and reads the domain's records, usually within a minute. Nothing is sent.</p>
+  {{else if eq $c.Outcome ""}}
+  <p class="empty">Not checked yet.</p>
+  {{else}}
+  <p class="check-outcome">{{if eq $c.Outcome "passed"}}<span class="good">Passed</span>{{else if eq $c.Outcome "failed"}}<span class="bad">Failed</span>{{else}}<span class="bad">Could not run</span>{{end}}{{with $c.CheckedAt}}, {{when .}}{{end}}.</p>
+  <ul class="ticks">
+    {{range .Ticks}}<li class="tick tick-{{.State}}"><span class="mark" aria-hidden="true">{{if eq .State "ok"}}✓{{else if eq .State "bad"}}✗{{else}}–{{end}}</span> {{.Label}}: {{if eq .State "ok"}}passed{{else if eq .State "bad"}}failed{{else}}not run{{end}}</li>{{end}}
+  </ul>
+  {{with $c.Fix}}<p class="notice notice-error" role="status">{{.}}</p>{{end}}
+  {{end}}
+  {{if and (ne $c.Outcome "requested") (not $c.Retired)}}
+  <form method="post" action="/mailboxes/{{$c.MailboxID}}/check" hx-post="/mailboxes/{{$c.MailboxID}}/check" hx-target="#mailbox-check" hx-swap="outerHTML">
+    <button type="submit"{{if ne $c.Outcome "passed"}} class="primary"{{end}}>Check now</button>
+  </form>
+  <p class="hint">Signs in to both servers, looks for the Sent and Junk folders and reads the domain's records. Sends nothing.</p>
+  {{end}}
+</section>
+{{end}}

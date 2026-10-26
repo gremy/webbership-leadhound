@@ -44,7 +44,8 @@ func TestDNSPaused(t *testing.T) {
 }
 
 func TestTodo(t *testing.T) {
-	if (Section{Sent: 3, ShadowSent: 1, Bounced: 1, OptedOut: 1, Probe: &ProbeLine{Checked: 1}}).Todo() {
+	if (Section{Sent: 3, ShadowSent: 1, Bounced: 1, OptedOut: 1, Probe: &ProbeLine{Checked: 1},
+		Mailboxes: MailboxHealth{Paused: 1, NeedsCheck: 1}}).Todo() {
 		t.Error("health alone is something to do")
 	}
 	for name, s := range map[string]Section{
@@ -55,6 +56,7 @@ func TestTodo(t *testing.T) {
 		"other":           {Other: 1},
 		"paused":          {Paused: PausedSync},
 		"operator paused": {OperatorPaused: &time.Time{}},
+		"key missing":     {Mailboxes: MailboxHealth{KeyMissing: true}},
 	} {
 		if !s.Todo() {
 			t.Errorf("%s is not something to do", name)

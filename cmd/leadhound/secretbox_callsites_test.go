@@ -48,20 +48,26 @@ func secretboxSites(t *testing.T, dir string) map[string][]string {
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
-		local := ""
+		// Every name the file imports secretbox under: a file may import it twice, once
+		// renamed (serve.go itself imports it to seal).
+		locals := map[string]bool{}
 		for _, imp := range f.Imports {
 			if p, _ := strconv.Unquote(imp.Path.Value); p != secretboxImport {
 				continue
 			}
-			local = "secretbox"
+			local := "secretbox"
 			if imp.Name != nil {
 				local = imp.Name.Name
 			}
-			if local == "." {
+			switch local {
+			case ".":
 				sites["dot import"] = append(sites["dot import"], fmt.Sprintf("%s:%d: dot import", name, fset.Position(imp.Pos()).Line))
+			case "_":
+			default:
+				locals[local] = true
 			}
 		}
-		if local == "" || local == "_" || local == "." {
+		if len(locals) == 0 {
 			continue
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
@@ -69,7 +75,7 @@ func secretboxSites(t *testing.T, dir string) map[string][]string {
 			if !ok {
 				return true
 			}
-			if id, ok := sel.X.(*ast.Ident); ok && id.Name == local {
+			if id, ok := sel.X.(*ast.Ident); ok && locals[id.Name] {
 				if _, guarded := secretboxAllowed[sel.Sel.Name]; guarded {
 					sites[sel.Sel.Name] = append(sites[sel.Sel.Name],
 						fmt.Sprintf("%s:%d: secretbox.%s", name, fset.Position(sel.Pos()).Line, sel.Sel.Name))

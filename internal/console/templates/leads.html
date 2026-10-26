@@ -27,6 +27,18 @@
     {{with $s.DNS}}
     <p>Sender records, checked {{when .At}}: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}</p>
     {{else}}<p class="muted">The sender's records have not been checked yet.</p>{{end}}
+    {{with $s.Mailboxes}}
+    <h3>Mailboxes</h3>
+    <ul class="item-list">
+      {{range .}}
+      <li>
+        <span class="item-head">{{.Address}} <span class="mb-state mb-{{.State}}">{{mailboxState .State .Reason}}</span></span>
+        <span class="item-meta">{{.Domain}} · sent {{.SentToday}} of {{.CapToday}} today · {{with .DNS}}records: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}{{else}}records not checked today{{end}}</span>
+      </li>
+      {{end}}
+    </ul>
+    {{end}}
+    <p><a href="/mailboxes">Mailboxes</a></p>
     {{if $s.Paused}}
     <form method="post" action="/leads/sending">
       <input type="hidden" name="do" value="resume">

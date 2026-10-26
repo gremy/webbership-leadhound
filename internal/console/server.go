@@ -99,6 +99,19 @@ var routes = []route{
 	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
 	{"POST /leads/next/{lead}/{action}", "/leads/next/5/pin", false, (*server).steerLead},
 	{"POST /leads/priorities", "/leads/priorities", false, (*server).savePriorities},
+	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
+	{"GET /mailboxes/new", "/mailboxes/new", false, (*server).newMailbox},
+	{"POST /mailboxes", "/mailboxes", false, (*server).addMailbox},
+	{"GET /mailboxes/{id}", "/mailboxes/1", false, (*server).mailbox},
+	{"GET /mailboxes/{id}/edit", "/mailboxes/1/edit", false, (*server).editMailboxForm},
+	{"POST /mailboxes/{id}", "/mailboxes/1", false, (*server).editMailbox},
+	{"GET /mailboxes/{id}/check", "/mailboxes/1/check", false, (*server).mailboxCheck},
+	{"POST /mailboxes/{id}/check", "/mailboxes/1/check", false, (*server).checkMailbox},
+	{"POST /mailboxes/{id}/pause", "/mailboxes/1/pause", false, (*server).pauseMailbox},
+	{"POST /mailboxes/{id}/resume", "/mailboxes/1/resume", false, (*server).resumeMailbox},
+	{"POST /mailboxes/{id}/retire", "/mailboxes/1/retire", false, (*server).retireMailbox},
+	{"POST /mailboxes/domains/{domain}/pause", "/mailboxes/domains/northwind.example/pause", false, (*server).pauseDomain},
+	{"POST /mailboxes/domains/{domain}/resume", "/mailboxes/domains/northwind.example/resume", false, (*server).resumeDomain},
 	{"POST /run/{action}", "/run/preview", false, (*server).runNow},
 	{"GET /run/status", "/run/status", false, (*server).runStatus},
 	{"GET /results", "/results", false, (*server).results},
@@ -120,6 +133,7 @@ var nav = []navItem{
 	{"Runs", "/runs"},
 	{"Rules", "/rules"},
 	{"Leads", "/leads"},
+	{"Mailboxes", "/mailboxes"},
 }
 
 // trackedFilters are the Tracked page's status filters: "" is every job no
@@ -239,19 +253,21 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 	return s.headers(cop.Handler(capBody(mux)))
 }
 
-// parseTemplates parses the layout, the job row and the Run now card once, then
-// each page over a copy of them.
+// parseTemplates parses the layout, the job row, the Run now card and the mailbox check
+// card once, then each page over a copy of them.
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
-		"templates/layout.html", "templates/job_row.html", "templates/run_now.html"))
+		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
-		"leads", "leads_off", "lead_batch", "leads_next", "leads_priorities", "results"} {
+		"leads", "leads_off", "lead_batch", "leads_next", "leads_priorities", "results",
+		"mailboxes", "mailbox", "mailbox_form"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
 	pages["job_row"] = base
 	pages["run_now"] = base
+	pages["mailbox_check"] = base
 	return pages
 }
 
@@ -302,8 +318,11 @@ func (s *server) funcs() template.FuncMap {
 			}
 			return strconv.Itoa(n) + " " + many
 		},
-		"ruleIn":  func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
-		"runCard": func(c RunNowCard) runNowView { return runNowView{Card: c} },
+		"ruleIn":       func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
+		"runCard":      func(c RunNowCard) runNowView { return runNowView{Card: c} },
+		"checkCard":    func(c MailboxCheckView) mailboxCheckView { return mailboxCheckView{Card: c} },
+		"mailboxState": mailboxState,
+		"maxMailbox":   func() int { return maxMailbox },
 		"laterThan": func(status string) []string {
 			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })
 		},

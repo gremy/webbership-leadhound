@@ -1,0 +1,21 @@
+# Mailbox check: the console's Mailboxes page records a check request in the database, then
+# writes the request time to /opt/leadhound/data/run/mailbox-check, and this watcher starts
+# leadhound-mailbox-check.service, which runs every requested check. The console itself never
+# holds a mailbox password and never reaches a mail server.
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A request while the service is already starting or
+# running is merged into that run by systemd; the run picks up every waiting request.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset:
+#   systemctl reset-failed leadhound-mailbox-check.path leadhound-mailbox-check.service
+#   systemctl start leadhound-mailbox-check.path
+[Unit]
+Description=leadhound mailbox check request
+
+[Path]
+PathChanged=/opt/leadhound/data/run/mailbox-check
+
+[Install]
+WantedBy=paths.target

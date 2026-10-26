@@ -2,8 +2,8 @@
 # install.sh STAGE: installs a release that `make deploy` copied into the directory STAGE.
 # Run on the server as root (make deploy runs it with sudo). Order: the env files' owner and
 # mode, the Postgres limits on the leadhound roles, the new binary beside the old one, migrate
-# with the new binary as the owner role, then the swap, the backup script, the units, the timers, the
-# leads timers as /etc/leadhound/env switches them, and the console. A failed migrate leaves the old
+# with the new binary as the owner role, then the swap, the mailbox key, the backup script, the units,
+# the timers, the leads timers as /etc/leadhound/env switches them, and the console. A failed migrate leaves the old
 # binary and the old units in place. STAGE is removed once the units are in.
 set -eu
 
@@ -26,8 +26,9 @@ env_value() {
 # when FILE switches it on (deploy/README.md, Leads on the server); otherwise it is disabled and
 # stopped, so a deploy never leaves one running that FILE does not ask for. The finding timers
 # need LEADHOUND_LEADS_TIMERS=on. The drafting, sending and reply timers also need
-# LEADHOUND_LEADS_SEND=on, live outreach and the mailbox, so the server never drafts a shadow
-# batch and never syncs without a mailbox.
+# LEADHOUND_LEADS_SEND=on and live outreach, so the server never drafts a shadow batch. The
+# mailboxes live in the database (the console's Mailboxes page): a run with no ready mailbox
+# sends nothing and says so.
 leads_timers() {
 	off=
 	[ "$(env_value "$1" LEADHOUND_LEADS_TIMERS)" = on ] || off="$off LEADHOUND_LEADS_TIMERS=on"
@@ -40,8 +41,6 @@ leads_timers() {
 	fi
 	[ "$(env_value "$1" LEADHOUND_LEADS_SEND)" = on ] || off="$off LEADHOUND_LEADS_SEND=on"
 	[ "$(env_value "$1" LEADHOUND_OUTREACH)" = live ] || off="$off LEADHOUND_OUTREACH=live"
-	[ -n "$(env_value "$1" LEADHOUND_OUTREACH_USER)" ] || off="$off LEADHOUND_OUTREACH_USER"
-	[ -n "$(env_value "$1" LEADHOUND_IMAP_ADDR)" ] || off="$off LEADHOUND_IMAP_ADDR"
 	if [ -z "$off" ]; then
 		systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
 		echo "install: leads sending timers on: batch, send, sync"
@@ -49,6 +48,39 @@ leads_timers() {
 		systemctl disable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
 		echo "install: leads sending timers off (batch, send, sync): $1 has no$off"
 	fi
+}
+
+# mailbox_key KEY ENV: the mailboxes' key pair. The private key KEY (root:root 0600) is
+# generated once, by the binary just moved into place, only when KEY is missing; an existing
+# key is never overwritten, because every saved mailbox password is sealed to it. Then the
+# public key is always derived from KEY and written to ENV as LEADHOUND_MAILBOX_PUBLIC_KEY=
+# (replacing a line that differs, appended when there is none), so ENV never holds a public
+# key that does not match the private one. Only the fingerprint is printed.
+mailbox_key() {
+	if [ ! -e "$1" ]; then
+		out=$("$bin/leadhound" leads mailboxes keygen --out "$1") ||
+			fail "the mailbox key could not be generated at $1"
+		chown root:root "$1"
+		chmod 0600 "$1"
+		echo "install: new mailbox key at $1, fingerprint $(printf '%s\n' "$out" | sed -n 's/^Fingerprint: //p')"
+	fi
+	line=$("$bin/leadhound" leads mailboxes pubkey --key "$1") ||
+		fail "the public key could not be read from $1 (it must be root:root 0600)"
+	case $line in
+	LEADHOUND_MAILBOX_PUBLIC_KEY=?*) ;;
+	*) fail "leads mailboxes pubkey printed no LEADHOUND_MAILBOX_PUBLIC_KEY= line" ;;
+	esac
+	if [ "LEADHOUND_MAILBOX_PUBLIC_KEY=$(env_value "$2" LEADHOUND_MAILBOX_PUBLIC_KEY)" = "$line" ] &&
+		[ "$(grep -c '^[[:space:]]*LEADHOUND_MAILBOX_PUBLIC_KEY=' "$2")" -eq 1 ]; then
+		echo "install: $2 holds the mailbox public key"
+		return
+	fi
+	tmp=$(mktemp "$2.XXXXXX")
+	grep -v '^[[:space:]]*LEADHOUND_MAILBOX_PUBLIC_KEY=' "$2" >"$tmp" || true
+	printf '%s\n' "$line" >>"$tmp"
+	chmod 0600 "$tmp"
+	mv -f "$tmp" "$2"
+	echo "install: wrote the mailbox public key to $2"
 }
 
 # The one-time bootstrap (deploy/README.md) comes first.
@@ -84,6 +116,8 @@ if ! systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound
 fi
 # A rename, so a run in progress keeps its own binary.
 mv -f "$bin/.leadhound.new" "$bin/leadhound"
+# The mailbox key, before the units that read it are installed (mailbox_key above).
+mailbox_key /etc/leadhound/mailbox.key /etc/leadhound/env
 install -o root -g root -m 0755 "$stage/leadhound-backup.sh" "$bin/leadhound-backup"
 for f in "$stage"/leadhound-*.service "$stage"/leadhound-*.timer "$stage"/leadhound-*.path; do
 	install -o root -g root -m 0644 "$f" /etc/systemd/system/
@@ -92,10 +126,10 @@ done
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer
-# The Run now watchers: the console's Run now card asks through these, and each starts only
-# its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
+# The Run now watchers and the mailbox check's: the console asks through these, and each
+# starts only its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
 # a request file left from before cannot fire on a deploy.
-systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path
+systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path
 leads_timers /etc/leadhound/env
 systemctl list-timers 'leadhound-*' --no-pager
 rm -rf -- "$stage"

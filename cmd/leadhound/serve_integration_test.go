@@ -26,6 +26,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -586,6 +587,9 @@ func TestServeRunsAndStops(t *testing.T) {
 	t.Setenv("LEADHOUND_CONSOLE_ADDR", addr)
 	t.Setenv("LEADHOUND_CONSOLE_EMAIL", "operator@mail.example")
 	t.Setenv("LEADHOUND_CONSOLE_PASSWORD_HASH", testHash(t))
+	// deploy/env.example carries an empty LEADHOUND_MAILBOX_KEY_FILE= line: an env copied
+	// from it starts the console.
+	t.Setenv(secretbox.KeyFileEnv, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- runServe(ctx, []string{"--dev"}) }()
@@ -832,7 +836,62 @@ func TestConsoleLeadsContract(t *testing.T) {
 	fixed := func(a console.LeadAction) func(*testing.T) console.LeadAction {
 		return func(*testing.T) console.LeadAction { return a }
 	}
+	// The mailbox writes: the CLI reads the password from stdin, the console from its form;
+	// both seal with the test key, and the rows compare the sealed password by opening it.
+	mailboxes := func(t *testing.T, _ string) { allowReservedNames(t); sealWithTestKey(t) }
+	mbCLI := func(args ...string) func(t *testing.T) []string {
+		return func(t *testing.T) []string {
+			saved := mailboxPasswordInput
+			t.Cleanup(func() { mailboxPasswordInput = saved })
+			mailboxPasswordInput = stdinFile(t, testPassword+"\n")
+			return append([]string{"leads", "mailboxes"}, args...)
+		}
+	}
+	mbAct := func(a console.MailboxAction) func(t *testing.T, b *backend) error {
+		return func(t *testing.T, b *backend) error {
+			_, err := b.MailboxAct(ctx, a)
+			return err
+		}
+	}
+	mbIn := func(address string) console.MailboxInput {
+		return console.MailboxInput{Address: address, SMTPAddr: "smtp.other.example:465", IMAPAddr: "imap.other.example:993", Selector: "s2",
+			FromName: "Desk", Password: config.Secret(testPassword)}
+	}
+	mbAdd := func(address string) []string {
+		return []string{"add", "--address", address, "--smtp", "smtp.other.example:465", "--imap", "imap.other.example:993", "--selector", "s2",
+			"--from-name", "Desk"}
+	}
+	secondOnDomain := func(t *testing.T, dir string) {
+		mailboxes(t, dir)
+		seedMailbox(t, leadstoretest.Q(t), "second@"+testSenderDomain)
+	}
+	paused := func(t *testing.T, dir string) {
+		mailboxes(t, dir)
+		mustRun(t, "leads", "mailboxes", "pause", "1", "--reason", "holiday")
+	}
+	domainPaused := func(t *testing.T, dir string) {
+		secondOnDomain(t, dir)
+		mustRun(t, "leads", "mailboxes", "pause", "--domain", testSenderDomain, "--reason", "blocklisted")
+	}
 	cases := []consoleContract{
+		{name: "mailbox add", prep: mailboxes, cli: mbCLI(mbAdd("Desk@Other.example")...),
+			console: mbAct(console.MailboxAction{Do: console.MailboxAdd, Input: mbIn("Desk@Other.example")})},
+		{name: "mailbox add bad address", prep: mailboxes, exit: 2, refused: true, cli: mbCLI(mbAdd("not an address")...),
+			console: mbAct(console.MailboxAction{Do: console.MailboxAdd, Input: mbIn("not an address")})},
+		{name: "mailbox add third on a domain", prep: secondOnDomain, exit: 2, refused: true, cli: mbCLI(mbAdd("third@" + testSenderDomain)...),
+			console: mbAct(console.MailboxAction{Do: console.MailboxAdd, Input: mbIn("third@" + testSenderDomain)})},
+		{name: "mailbox pause", prep: mailboxes, cli: mbCLI("pause", "1", "--reason", "holiday"),
+			console: mbAct(console.MailboxAction{Do: console.MailboxPause, ID: 1, Reason: "holiday"})},
+		{name: "mailbox resume", prep: paused, cli: mbCLI("resume", "1"),
+			console: mbAct(console.MailboxAction{Do: console.MailboxResume, ID: 1})},
+		{name: "mailbox retire unconfirmed", prep: mailboxes, exit: 2, refused: true, cli: mbCLI("retire", "1"),
+			console: mbAct(console.MailboxAction{Do: console.MailboxRetire, ID: 1})},
+		{name: "mailbox retire", prep: func(t *testing.T, dir string) { mailboxes(t, dir); approved(t, dir) }, cli: mbCLI("retire", "1", "--confirm"),
+			console: mbAct(console.MailboxAction{Do: console.MailboxRetire, ID: 1, Confirm: true})},
+		{name: "mailbox pause domain", prep: secondOnDomain, cli: mbCLI("pause", "--domain", testSenderDomain, "--reason", "blocklisted"),
+			console: mbAct(console.MailboxAction{Do: console.MailboxPauseDomain, Domain: testSenderDomain, Reason: "blocklisted"})},
+		{name: "mailbox resume domain", prep: domainPaused, cli: mbCLI("resume", "--domain", testSenderDomain),
+			console: mbAct(console.MailboxAction{Do: console.MailboxResumeDomain, Domain: testSenderDomain})},
 		{name: "approve with a skip", prep: newShadow,
 			cli: func(t *testing.T) []string {
 				return []string{"leads", "batch", "approve", "1", "--hash", batchHash(t, 1), "--skip", "2"}
@@ -908,7 +967,7 @@ func TestConsoleLeadsContract(t *testing.T) {
 				if c.prep != nil {
 					c.prep(t, dir)
 				}
-				before = leadsRows(t)
+				before = append(leadsRows(t), mailboxRows(t, dir)...)
 				if viaCLI {
 					if code, out, errOut := leadsRun(t, c.cli(t)...); code != c.exit {
 						t.Fatalf("CLI exited %d, want %d: %s%s", code, c.exit, out, errOut)
@@ -919,7 +978,7 @@ func TestConsoleLeadsContract(t *testing.T) {
 						t.Fatalf("console: err = %v, want refused %v", err, c.refused)
 					}
 				}
-				after = leadsRows(t)
+				after = append(leadsRows(t), mailboxRows(t, dir)...)
 				if !viaCLI && c.source {
 					for i, r := range after {
 						r = strings.Replace(r, " "+suppressFromConsole, " "+suppressFromCLI, 1)

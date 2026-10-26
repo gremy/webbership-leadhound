@@ -18,6 +18,7 @@
   {{range .Messages}}
   <section class="message">
     <h3>{{.Label}}{{if .State}} · {{.State}}{{with .CancelReason}} ({{.}}){{end}}{{end}}</h3>
+    {{with .From}}{{if .Address}}<p class="message-head">From: {{if .Name}}{{.Name}} &lt;{{.Address}}&gt;{{else}}{{.Address}}{{end}}</p>{{end}}{{end}}
     {{with .To}}<p class="message-head">To: {{.}}</p>{{end}}
     {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
     <div class="message-body">{{.Body}}</div>

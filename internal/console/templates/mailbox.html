@@ -1,0 +1,55 @@
+{{define "content"}}
+{{$v := .Data}}{{$p := $v.Page}}{{$m := $p.Row}}
+<div class="page-head">
+  <h1>{{$m.Address}}</h1>
+  <p><a href="/mailboxes">Back to mailboxes</a></p>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+
+<div class="grid two">
+  <section class="card">
+    <h2>Mailbox <span class="mb-state mb-{{$m.State}}">{{mailboxState $m.State $m.Reason}}</span></h2>
+    <dl class="fields">
+      <div><dt>Domain</dt><dd>{{$p.Domain}}</dd></div>
+      <div><dt>Login</dt><dd>{{$p.Login}}</dd></div>
+      <div><dt>Sending server</dt><dd>{{$p.SMTPAddr}}</dd></div>
+      <div><dt>Reading server</dt><dd>{{$p.IMAPAddr}}</dd></div>
+      <div><dt>DKIM selector</dt><dd>{{$p.Selector}}</dd></div>
+      <div><dt>From name</dt><dd>{{$p.FromName}}</dd></div>
+      <div><dt>Sent today</dt><dd>{{$m.SentToday}} of {{$m.CapToday}}</dd></div>
+      <div><dt>Warm-up</dt><dd>{{if $m.RampDay}}day {{$m.RampDay}} of the ramp{{else}}not started: it has sent nothing yet{{end}}</dd></div>
+    </dl>
+    {{if ne $m.State "retired"}}<p><a href="/mailboxes/{{$m.ID}}/edit">Edit its settings</a></p>{{end}}
+  </section>
+
+  {{template "mailbox_check" (checkCard $p.Check)}}
+</div>
+
+{{if ne $m.State "retired"}}
+<section class="card">
+  <h2>Pause or retire</h2>
+  {{if eq $m.State "paused"}}
+  {{if $m.DomainPause}}<p class="hint">Paused with its whole domain: resuming the domain on the Mailboxes page resumes it too.</p>{{end}}
+  <form method="post" action="/mailboxes/{{$m.ID}}/resume">
+    <button type="submit" class="primary">Resume this mailbox</button>
+  </form>
+  <p class="hint">A resumed mailbox sends again once its check has passed and its records passed today.</p>
+  {{else}}
+  <form method="post" action="/mailboxes/{{$m.ID}}/pause" class="stack">
+    <label for="pause-reason">Reason (optional)</label>
+    <input id="pause-reason" name="reason" maxlength="{{maxText}}">
+    <button type="submit">Pause this mailbox</button>
+  </form>
+  <p class="hint">Nothing is sent from it until you resume. Follow-ups wait for it.</p>
+  {{end}}
+  <details>
+    <summary>Retire this mailbox…</summary>
+    <form method="post" action="/mailboxes/{{$m.ID}}/retire" class="confirm-form">
+      <p class="hint">A retired mailbox never sends again. Its follow-ups not yet sent are cancelled, since a thread must come from the same address. This cannot be undone.</p>
+      <p class="confirm-line"><input type="checkbox" id="retire-confirm" name="confirm" value="yes" required> <label for="retire-confirm">I understand, retire it</label></p>
+      <button type="submit" class="primary">Retire {{$m.Address}}</button>
+    </form>
+  </details>
+</section>
+{{end}}
+{{end}}

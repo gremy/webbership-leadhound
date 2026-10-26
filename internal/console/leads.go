@@ -102,8 +102,9 @@ type Sending struct {
 	PauseReason                      string
 	SentToday, CapToday              int
 	SentYesterday, Bounced, OptedOut int
-	Stopped                          string       // why the latest send run stopped sending, or ""
-	DNS                              *SenderCheck // the latest check of the sending domain; nil when none
+	Stopped                          string           // why the latest send run stopped sending, or ""
+	DNS                              *SenderCheck     // the latest check of the sending domain; nil when none
+	Mailboxes                        []SendingMailbox // each mailbox not retired, grouped by domain
 }
 
 // SenderCheck is one check of the sending domain's records.
@@ -172,7 +173,8 @@ type LeadItem struct {
 type LeadMessage struct {
 	ID                                int64
 	Label, Channel, To, Subject, Body string
-	State, CancelReason               string // State "" while a draft
+	From                              MessageFrom // an email's From, fixed when it was drafted
+	State, CancelReason               string      // State "" while a draft
 }
 
 // LeadsQueue is the next leads, in the order batches draw them.

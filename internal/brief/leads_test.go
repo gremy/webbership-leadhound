@@ -42,6 +42,19 @@ func leadsCases() map[string]Input {
 				Probe: &leadbrief.ProbeLine{Checked: 40, ByMajor: map[int]int{}},
 			}
 		}),
+		// Mailboxes in every state after a job and a batch: the mailbox line follows the
+		// leads health line.
+		"leads_mailboxes": clean(func(in *Input) {
+			in.Apply = applyJobs()[:1]
+			in.Leads = &leadbrief.Section{Batch: &leadbrief.BatchReady{ID: 7, Emails: 3}, Sent: 6,
+				Mailboxes: leadbrief.MailboxHealth{Ready: 2, Paused: 1, NeedsCheck: 1, PausedWhy: []string{"2 hard bounces"}}}
+		}),
+		// The mailbox key missing on a sending day leads the block; the counts stay on the
+		// mailbox line.
+		"leads_key_missing": clean(func(in *Input) {
+			in.Leads = &leadbrief.Section{CheckByHand: 1,
+				Mailboxes: leadbrief.MailboxHealth{Ready: 1, KeyMissing: true}}
+		}),
 		// Nothing to act on: the block is its health line alone.
 		"leads_nothing": clean(func(in *Input) {
 			in.Leads = &leadbrief.Section{Sent: 4, Bounced: 1,
@@ -193,6 +206,8 @@ func TestLeadsSubject(t *testing.T) {
 		"leads_shadow_batch": "LeadHound · Fri 23 Oct · shadow batch 4 to approve",
 		"leads_paused":       "LeadHound · Fri 23 Oct · 3 other messages to read",
 		"leads_nothing":      "LeadHound · Fri 23 Oct · nothing new",
+		"leads_key_missing":  "LeadHound · Fri 23 Oct · mailbox key missing",
+		"leads_mailboxes":    "LeadHound · Fri 23 Oct · 1 to apply",
 	} {
 		if got, _, _ := Compose(leadsCases()[name]); got != want {
 			t.Errorf("%s: subject %q, want %q", name, got, want)
@@ -254,5 +269,42 @@ func TestLeadsOperatorPaused(t *testing.T) {
 				t.Errorf("the pause is on the health line: %s", l)
 			}
 		}
+	}
+}
+
+// TestLeadsMailboxLine: the mailbox line follows the leads health line in both block
+// shapes; a missing key is the first item, never only a health line, and is not said twice.
+func TestLeadsMailboxLine(t *testing.T) {
+	_, text, html := Compose(leadsCases()["leads_mailboxes"])
+	want := "Leads health: 6 sent, 0 bounced, 0 opted out yesterday\nMailboxes: 2 ready · 1 paused (2 hard bounces) · 1 needs a check\n"
+	if !strings.Contains(text, want) {
+		t.Errorf("text lacks the mailbox line after the health line %q:\n%s", want, text)
+	}
+	if !strings.Contains(html, "<p>Mailboxes: 2 ready · 1 paused (2 hard bounces) · 1 needs a check</p>") {
+		t.Errorf("html lacks the mailbox line:\n%s", html)
+	}
+
+	_, text, _ = Compose(leadsCases()["leads_nothing"])
+	if !strings.Contains(text, "(1 on 11)\nMailboxes: none yet — add one in the console (Mailboxes)\n") {
+		t.Errorf("collapsed block lacks the mailbox line:\n%s", text)
+	}
+
+	_, text, html = Compose(leadsCases()["leads_key_missing"])
+	item := "\nLeads\n1. The mailbox key is missing, nothing was sent: put it back (deploy/README.md, Mailboxes) and the next send run picks it up\n2. Check by hand"
+	if !strings.Contains(text, item) || strings.Contains(text, "nothing to do") {
+		t.Errorf("a missing key does not lead the block %q:\n%s", item, text)
+	}
+	if !strings.Contains(text, "\nMailboxes: 1 ready\n") || strings.Count(text, "key is missing") != 1 {
+		t.Errorf("the key is said more or less than once, or the counts are gone:\n%s", text)
+	}
+	if !strings.Contains(html, "<ol start=\"1\">\n<li>The mailbox key is missing") {
+		t.Errorf("html does not lead with the missing key:\n%s", html)
+	}
+	// With replies waiting the key still leads: nothing goes out until it is back.
+	in := leadsCases()["leads_key_missing"]
+	in.Leads.Replies = []string{"alpha.example"}
+	if subject, text, _ := Compose(in); !strings.Contains(text, "\nLeads\n1. The mailbox key is missing") ||
+		!strings.HasSuffix(subject, "mailbox key missing") {
+		t.Errorf("replies came before the missing key (%s):\n%s", subject, text)
 	}
 }

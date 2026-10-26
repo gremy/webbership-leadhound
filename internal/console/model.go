@@ -26,6 +26,7 @@ type Backend interface {
 	RunNowCard(ctx context.Context) (RunNowCard, error)
 	Results(ctx context.Context) (Results, error) // ErrNotFound when there is no preview yet
 	LeadsBackend
+	MailboxesBackend
 }
 
 // The Run now actions. Each name is the request file, the .path unit and the

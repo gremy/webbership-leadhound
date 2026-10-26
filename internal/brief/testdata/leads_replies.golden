@@ -17,6 +17,7 @@ Leads
 5. Send 3 contact forms and LinkedIn notes by hand, then mark each: leadhound leads done <message>
 6. Check by hand whether 1 email went out (never resent)
 Leads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe checked 120 sites yesterday, 14 on Drupal (9 on 7, 4 on 10, 1 version unknown)
+Mailboxes: none yet — add one in the console (Mailboxes)
 
 Health: LinkedIn ok · 0 new · canary ok
 Health: Scoring ok
@@ -39,6 +40,7 @@ Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT 
 <li>Check by hand whether 1 email went out (never resent)</li>
 </ol>
 <p>Leads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe checked 120 sites yesterday, 14 on Drupal (9 on 7, 4 on 10, 1 version unknown)</p>
+<p>Mailboxes: none yet — add one in the console (Mailboxes)</p>
 <p>Health: LinkedIn ok · 0 new · canary ok</p>
 <p>Health: Scoring ok</p>
 <p>Health: recheck not run</p>

@@ -59,7 +59,7 @@ func (w *coreWorld) input(address string) MailboxInput {
 
 func (w *coreWorld) add(t *testing.T, in MailboxInput) int64 {
 	t.Helper()
-	id, err := addMailbox(context.Background(), w.lq, w.cfg, w.key.Public(), w.dir, w.now, in, leadstore.ActorOperator)
+	id, err := addMailbox(context.Background(), w.lq, w.cfg, w.key.Public(), w.dir, w.now, in)
 	if err != nil {
 		t.Fatalf("add %s: %v", in.Address, err)
 	}
@@ -191,7 +191,7 @@ func TestAddMailboxRefusals(t *testing.T) {
 			if c.pub != nil {
 				pub = *c.pub
 			}
-			_, err := addMailbox(ctx, w.lq, w.cfg, pub, w.dir, w.now, c.in, leadstore.ActorOperator)
+			_, err := addMailbox(ctx, w.lq, w.cfg, pub, w.dir, w.now, c.in)
 			if got := refusalWords(t, err); !strings.Contains(got, c.want) {
 				t.Errorf("refusal %q, want %q", got, c.want)
 			}

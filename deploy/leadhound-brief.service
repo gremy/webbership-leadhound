@@ -50,6 +50,9 @@ AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# Only the jobs that send, sync and check a mailbox get its private key, as a systemd
+# credential; this unit sees none, so it can never read a mailbox password back.
+InaccessiblePaths=-/run/credentials
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

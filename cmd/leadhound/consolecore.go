@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 	"github.com/gremy/webbership-leadhound/internal/scoring"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -38,6 +40,9 @@ const (
 	consoleDeferDays  = 14 // the default push-back
 	consoleMaxText    = 500
 	consoleEvidence   = 3 // most evidence lines per criterion on the job page
+	// consoleMailboxText is the longest address, login, server, selector, From name or
+	// domain a Mailboxes form takes, as the form's maxlength.
+	consoleMailboxText = 320
 )
 
 // refused is the console's refusal with words, wrapped as one the operator can fix.
@@ -231,7 +236,7 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 	if sn.SentToday, err = lq.SentSince(ctx, startOfDay(now, b.loc)); err != nil {
 		return console.LeadsPage{}, err
 	}
-	if sn.CapToday, sn.DNS, err = mailboxesSending(ctx, lq, b.s.Pool(), setup.leads, b.loc, now); err != nil {
+	if sn.CapToday, sn.DNS, sn.Mailboxes, err = mailboxesSending(ctx, lq, b.s.Pool(), setup.leads, b.loc, now); err != nil {
 		return console.LeadsPage{}, err
 	}
 	p.Sending = sn
@@ -262,52 +267,56 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 	return p, nil
 }
 
-// mailboxesSending is the Leads page's sending totals over the stored mailboxes, read from
+// mailboxesSending is the Leads page's sending card over the stored mailboxes, read from
 // the start of the operator's day: capToday sums today's cap of every mailbox ready for new
 // leads (readyForLeads), each domain's share at most outreach.DomainCap; dns is shown as
 // passed only when every active mailbox's host and selector passed today (then the
 // earliest of those passes), else today's latest failed check of the first one that did not
-// pass, and nil when one has no check today or no mailbox is active. It reads stored rows
-// only: the console never reaches the network.
-func mailboxesSending(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg leadconfig.Config, loc *time.Location, now time.Time) (capToday int, dns *console.SenderCheck, err error) {
+// pass, and nil when one has no check today or no mailbox is active; rows is every mailbox
+// not retired, grouped by its registrable domain (domains in order, then by id), with its
+// own sends, limit and records today. It reads stored rows only: the console never reaches
+// the network.
+func mailboxesSending(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg leadconfig.Config, loc *time.Location, now time.Time) (
+	capToday int, dns *console.SenderCheck, rows []console.SendingMailbox, err error) {
 	today := startOfDay(now, loc)
 	mbs, err := lq.Mailboxes(ctx, today)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
+	checks := hostChecks{db: db, since: today}
 	byDomain := map[string]int{}
-	var pairs [][2]string
-	seen := map[[2]string]bool{}
+	var active []leadstore.MailboxStatus
 	for _, m := range mbs {
+		if m.State == leadstore.MailboxRetired {
+			continue
+		}
+		mbCap, _ := mailboxRamp(cfg, m, loc, now)
+		row := console.SendingMailbox{Address: m.Address, Domain: m.Domain, SentToday: m.SentToday, CapToday: mbCap}
+		row.State, row.Reason = consoleMailboxState(m)
+		if row.DNS, err = checks.of(ctx, m); err != nil {
+			return 0, nil, nil, err
+		}
+		rows = append(rows, row)
 		if m.State != leadstore.MailboxActive {
 			continue
 		}
-		domain := strings.ToLower(strings.TrimSpace(m.Domain))
+		active = append(active, m)
 		if readyForLeads(m) {
-			ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain}
-			if cfg.Caps.StartDate.IsFirstSend() && m.FirstLiveSend != nil {
-				fs := m.FirstLiveSend.In(loc)
-				ml.FirstSend = &fs
-			}
-			byDomain[domain] += outreach.MailboxCap(cfg, ml, now.In(loc))
-		}
-		pair := [2]string{m.Host(), strings.TrimSpace(m.DKIMSelector)}
-		if !seen[pair] {
-			seen[pair] = true
-			pairs = append(pairs, pair)
+			byDomain[strings.ToLower(strings.TrimSpace(m.Domain))] += mbCap
 		}
 	}
 	for _, n := range byDomain {
 		capToday += min(n, outreach.DomainCap(cfg))
 	}
-	for _, pair := range pairs {
-		c, err := senderCheckSince(ctx, db, leadstore.SenderDomainSHA256(pair[0]), pair[1], today)
+	slices.SortStableFunc(rows, func(a, b console.SendingMailbox) int { return strings.Compare(a.Domain, b.Domain) })
+	for _, m := range active {
+		c, err := checks.of(ctx, m)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		switch {
 		case c == nil:
-			return capToday, nil, nil
+			return capToday, nil, rows, nil
 		case !c.SPF || !c.DKIM || !c.DMARC:
 			if dns == nil || dns.SPF && dns.DKIM && dns.DMARC {
 				dns = c
@@ -316,7 +325,65 @@ func mailboxesSending(ctx context.Context, lq leadstore.Queries, db store.DBTX, 
 			dns = c
 		}
 	}
-	return capToday, dns, nil
+	return capToday, dns, rows, nil
+}
+
+// hostChecks reads today's record check of each mailbox host and selector once.
+type hostChecks struct {
+	db    store.DBTX
+	since time.Time
+	seen  map[[2]string]*console.SenderCheck
+}
+
+// of is today's latest record check of m's host (Mailbox.Host, never the registrable
+// domain) with its selector, nil when none ran today.
+func (h *hostChecks) of(ctx context.Context, m leadstore.MailboxStatus) (*console.SenderCheck, error) {
+	key := [2]string{m.Host(), strings.TrimSpace(m.DKIMSelector)}
+	if c, ok := h.seen[key]; ok {
+		return c, nil
+	}
+	c, err := senderCheckSince(ctx, h.db, leadstore.SenderDomainSHA256(key[0]), key[1], h.since)
+	if err != nil {
+		return nil, err
+	}
+	if h.seen == nil {
+		h.seen = map[[2]string]*console.SenderCheck{}
+	}
+	h.seen[key] = c
+	return c, nil
+}
+
+// mailboxRamp is mailbox m's ramp limit today (the operator's now, in loc) and its day of
+// the ramp: the calendar days since its first live send, from 1, as the ramp counts them;
+// 0 before its first live send. The ramp counts from that send only with caps.start_date
+// first-send (outreach.CapOn).
+func mailboxRamp(cfg leadconfig.Config, m leadstore.MailboxStatus, loc *time.Location, now time.Time) (capToday, rampDay int) {
+	ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain}
+	local := now.In(loc)
+	if m.FirstLiveSend != nil {
+		fs := m.FirstLiveSend.In(loc)
+		ml.FirstSend = &fs
+		date := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC) }
+		rampDay = max(1, int(date(local).Sub(date(fs))/(24*time.Hour))+1)
+	}
+	return outreach.MailboxCap(cfg, ml, local), rampDay
+}
+
+// consoleMailboxState is m's state as the console names it: retired, paused (with its
+// reason), checking while a check waits or runs, ready when ready for new leads
+// (readyForLeads), else needs a check.
+func consoleMailboxState(m leadstore.MailboxStatus) (state, reason string) {
+	switch {
+	case m.State == leadstore.MailboxRetired:
+		return console.MailboxRetired, ""
+	case m.State == leadstore.MailboxPaused:
+		return console.MailboxPaused, m.Reason
+	case m.LastCheck != nil && m.LastCheck.Outcome == leadstore.CheckRequested:
+		return console.MailboxChecking, ""
+	case readyForLeads(m):
+		return console.MailboxReady, ""
+	}
+	return console.MailboxNeedsCheck, ""
 }
 
 // senderCheckSince is the latest check of the domain whose hash is domainSHA with DKIM
@@ -433,6 +500,9 @@ func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, e
 		for _, m := range it.Msgs {
 			lm := console.LeadMessage{ID: m.ID, Label: consoleMessageLabel(m, len(it.Msgs)), Channel: m.Channel, To: m.ToAddress,
 				Subject: m.Subject, Body: strings.TrimRight(m.BodyText, "\n"), CancelReason: m.CancelReason}
+			if m.Channel == "email" && m.FromAddress != "" {
+				lm.From = console.MessageFrom{Name: m.FromName, Address: m.FromAddress}
+			}
 			if m.State != leadstore.MsgDraft {
 				lm.State = m.State
 			}
@@ -1026,4 +1096,243 @@ func (b *backend) steer(ctx context.Context, a console.LeadAction) (console.Lead
 		return console.LeadOutcome{}, err
 	}
 	return console.LeadOutcome{Message: msg}, nil
+}
+
+// The console's side of the Mailboxes pages: reads of the stored mailboxes, and every write
+// through the mailbox core (mailboxcore.go) that `leads mailboxes` runs, so both write the
+// same rows and refuse with the same words. The console holds only the public key: it seals
+// a new password, and never opens one.
+
+// keyMissing reports whether serve has no usable public key, so no password can be sealed.
+func (b *backend) keyMissing() bool { return b.pub == (secretbox.PublicKey{}) }
+
+// mailboxesPerDomain is caps.mailboxes_per_domain as addMailbox applies it.
+func mailboxesPerDomain(cfg leadconfig.Config) int {
+	return min(cmp.Or(cfg.Caps.MailboxesPerDomain, leadconfig.DefaultMailboxesPerDomain), leadconfig.HardMailboxesPerDomain)
+}
+
+// mailboxRow is m as one row of the Mailboxes page.
+func (b *backend) mailboxRow(cfg leadconfig.Config, m leadstore.MailboxStatus, now time.Time) console.MailboxRow {
+	r := console.MailboxRow{ID: m.ID, Address: m.Address, SentToday: m.SentToday}
+	r.State, r.Reason = consoleMailboxState(m)
+	r.DomainPause = m.State == leadstore.MailboxPaused && m.Scope == leadstore.ScopeDomain
+	r.CapToday, r.RampDay = mailboxRamp(cfg, m, b.loc, now)
+	if m.LastCheck != nil && m.LastCheck.Outcome != leadstore.CheckRequested {
+		r.LastCheck = m.LastCheck.CheckedAt
+	}
+	return r
+}
+
+// mailboxCheckView is m's latest check as its card shows it.
+func mailboxCheckView(m leadstore.MailboxStatus) console.MailboxCheckView {
+	v := console.MailboxCheckView{MailboxID: m.ID, Retired: m.State == leadstore.MailboxRetired}
+	if c := m.LastCheck; c != nil {
+		at := c.RequestedAt
+		v.Outcome, v.RequestedAt, v.CheckedAt, v.Fix = c.Outcome, &at, c.CheckedAt, c.Fix
+		v.SMTPOK, v.IMAPOK, v.FoldersOK, v.SPF, v.DKIM, v.DMARC = c.SMTPOK, c.IMAPOK, c.FoldersOK, c.SPF, c.DKIM, c.DMARC
+	}
+	return v
+}
+
+// mailboxStatus is mailbox id as of the operator's today, console.ErrNotFound when there is
+// none, with the leads settings.
+func (b *backend) mailboxStatus(ctx context.Context, id int64) (leadstore.MailboxStatus, leadsSetup, time.Time, error) {
+	setup, err := b.leadsSetup(leadsForProbe)
+	if err != nil {
+		return leadstore.MailboxStatus{}, leadsSetup{}, time.Time{}, err
+	}
+	now := b.now()
+	ms, err := b.lq().Mailboxes(ctx, startOfDay(now, b.loc))
+	if err != nil {
+		return leadstore.MailboxStatus{}, leadsSetup{}, time.Time{}, err
+	}
+	for _, m := range ms {
+		if m.ID == id {
+			return m, setup, now, nil
+		}
+	}
+	return leadstore.MailboxStatus{}, leadsSetup{}, time.Time{}, console.ErrNotFound
+}
+
+// Mailboxes is every mailbox grouped by its registrable domain (in order of each domain's
+// first mailbox), each group with its sends today against caps.domain_per_day, its
+// mailboxes against caps.mailboxes_per_domain, today's record checks per host and selector
+// of its active mailboxes, and whether the domain is paused as a whole: none of its
+// mailboxes active and one paused with the domain. It reads stored rows only.
+func (b *backend) Mailboxes(ctx context.Context) (console.MailboxesPage, error) {
+	setup, err := b.leadsSetup(leadsForProbe)
+	if err != nil {
+		return console.MailboxesPage{}, err
+	}
+	now := b.now()
+	today := startOfDay(now, b.loc)
+	ms, err := b.lq().Mailboxes(ctx, today)
+	if err != nil {
+		return console.MailboxesPage{}, err
+	}
+	p := console.MailboxesPage{RetiredEnv: setup.env.Retired, KeyMissing: b.keyMissing()}
+	for _, pr := range mailboxPresets {
+		p.Presets = append(p.Presets, console.MailboxPreset{Name: pr.Name, SMTP: pr.SMTP, IMAP: pr.IMAP, Selector: pr.Selector})
+	}
+	checks := hostChecks{db: b.s.Pool(), since: today}
+	group := map[string]int{}
+	activeOn := map[string]int{}
+	listed := map[[3]string]bool{}
+	for _, m := range ms {
+		i, ok := group[m.Domain]
+		if !ok {
+			i = len(p.Groups)
+			group[m.Domain] = i
+			p.Groups = append(p.Groups, console.MailboxDomain{Domain: m.Domain, DomainLimit: outreach.DomainCap(setup.leads),
+				MailboxLimit: mailboxesPerDomain(setup.leads)})
+		}
+		g := &p.Groups[i]
+		g.SentToday += m.SentToday
+		g.Rows = append(g.Rows, b.mailboxRow(setup.leads, m, now))
+		switch m.State {
+		case leadstore.MailboxRetired:
+			continue
+		case leadstore.MailboxPaused:
+			if m.Scope == leadstore.ScopeDomain && !g.Paused {
+				g.Paused, g.PauseReason = true, m.Reason
+			}
+		case leadstore.MailboxActive:
+			activeOn[m.Domain]++
+			key := [3]string{m.Domain, m.Host(), strings.TrimSpace(m.DKIMSelector)}
+			if listed[key] {
+				break
+			}
+			listed[key] = true
+			c, err := checks.of(ctx, m)
+			if err != nil {
+				return console.MailboxesPage{}, err
+			}
+			hc := console.HostCheck{Host: key[1], Selector: key[2]}
+			if c != nil {
+				at := c.At
+				hc.At, hc.SPF, hc.DKIM, hc.DMARC = &at, c.SPF, c.DKIM, c.DMARC
+			}
+			g.DNS = append(g.DNS, hc)
+		}
+		g.Mailboxes++
+	}
+	for i := range p.Groups {
+		if g := &p.Groups[i]; activeOn[g.Domain] > 0 {
+			g.Paused, g.PauseReason = false, ""
+		}
+	}
+	return p, nil
+}
+
+// Mailbox is mailbox id in full, never with its password.
+func (b *backend) Mailbox(ctx context.Context, id int64) (console.MailboxPage, error) {
+	m, setup, now, err := b.mailboxStatus(ctx, id)
+	if err != nil {
+		return console.MailboxPage{}, err
+	}
+	return console.MailboxPage{Row: b.mailboxRow(setup.leads, m, now), Domain: m.Domain, Login: m.Login, SMTPAddr: m.SMTPAddr,
+		IMAPAddr: m.IMAPAddr, Selector: m.DKIMSelector, FromName: m.FromName, KeyMissing: b.keyMissing(), Check: mailboxCheckView(m)}, nil
+}
+
+// MailboxCheckCard is mailbox id's latest check, read fresh for the polling card.
+func (b *backend) MailboxCheckCard(ctx context.Context, id int64) (console.MailboxCheckView, error) {
+	m, _, _, err := b.mailboxStatus(ctx, id)
+	if err != nil {
+		return console.MailboxCheckView{}, err
+	}
+	return mailboxCheckView(m), nil
+}
+
+// MailboxAct runs one Mailboxes write through the mailbox core and words what it did; every
+// refusal is the core's, wrapping console.ErrUserFixable. A write that was saved but whose
+// check could not be started (the request file) says so and is logged, never a failure.
+func (b *backend) MailboxAct(ctx context.Context, a console.MailboxAction) (console.MailboxOutcome, error) {
+	setup, err := b.leadsSetup(leadsForProbe)
+	if err != nil {
+		return console.MailboxOutcome{}, err
+	}
+	in := a.Input
+	for _, s := range []string{in.Address, in.Login, in.SMTPAddr, in.IMAPAddr, in.Selector, in.FromName, in.Preset, a.Domain} {
+		if utf8.RuneCountInString(s) > consoleMailboxText {
+			return console.MailboxOutcome{}, refused("Each field takes at most %d characters; nothing was changed.", consoleMailboxText)
+		}
+	}
+	if utf8.RuneCountInString(a.Reason) > consoleMaxText {
+		return console.MailboxOutcome{}, refused("The reason takes at most %d characters; nothing was changed.", consoleMaxText)
+	}
+	lq, now := b.lq(), b.now()
+	input := MailboxInput{Address: in.Address, Login: in.Login, SMTPAddr: in.SMTPAddr, IMAPAddr: in.IMAPAddr, Selector: in.Selector,
+		FromName: in.FromName, Preset: in.Preset, Password: in.Password}
+	switch a.Do {
+	case console.MailboxAdd:
+		id, err := addMailbox(ctx, lq, setup.leads, b.pub, setup.dataDir, now, input)
+		switch {
+		case err != nil && id > 0:
+			slog.Default().Warn("console mailbox check not started", "mailbox", id, "err", err.Error())
+			return console.MailboxOutcome{MailboxID: id,
+				Message: fmt.Sprintf("Mailbox %d is added, but its check could not be started: press Check now.", id)}, nil
+		case err != nil:
+			return console.MailboxOutcome{}, err
+		}
+		return console.MailboxOutcome{MailboxID: id, Message: fmt.Sprintf("Mailbox %d is added; its first check is running.", id)}, nil
+	case console.MailboxEdit:
+		input.Address, input.Preset = "", ""
+		recheck, err := editMailbox(ctx, lq, b.pub, setup.dataDir, now, a.ID, input)
+		switch {
+		case err != nil && recheck:
+			slog.Default().Warn("console mailbox check not started", "mailbox", a.ID, "err", err.Error())
+			return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is saved, but its check could not be started: press Check now.", a.ID)}, nil
+		case err != nil:
+			return console.MailboxOutcome{}, err
+		case recheck:
+			return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is saved; it is checked again with the new settings.", a.ID)}, nil
+		}
+		return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is saved.", a.ID)}, nil
+	case console.MailboxCheck:
+		cid, err := requestCheck(ctx, lq, setup.dataDir, now, a.ID)
+		switch {
+		case err != nil && cid > 0:
+			slog.Default().Warn("console mailbox check not started", "mailbox", a.ID, "err", err.Error())
+			return console.MailboxOutcome{Message: "The check is asked for, but could not be started; press Check now again in a minute."}, nil
+		case err != nil:
+			return console.MailboxOutcome{}, err
+		}
+		return console.MailboxOutcome{Message: "The check is asked for."}, nil
+	case console.MailboxPause, console.MailboxResume:
+		pause := a.Do == console.MailboxPause
+		sw, err := setMailboxPause(ctx, lq, now, a.ID, pause, a.Reason)
+		switch {
+		case err != nil:
+			return console.MailboxOutcome{}, err
+		case pause && !sw.Changed:
+			return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is already paused.", a.ID)}, nil
+		case !pause && !sw.Changed:
+			return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is not paused.", a.ID)}, nil
+		case pause:
+			return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is paused: nothing is sent from it until you resume it.", a.ID)}, nil
+		}
+		return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is resumed.", a.ID)}, nil
+	case console.MailboxRetire:
+		n, err := retireMailbox(ctx, lq, now, a.ID, a.Confirm)
+		if err != nil {
+			return console.MailboxOutcome{}, err
+		}
+		return console.MailboxOutcome{Message: fmt.Sprintf("Mailbox %d is retired; %s cancelled.", a.ID, plural(n, "unsent message", "unsent messages"))}, nil
+	case console.MailboxPauseDomain, console.MailboxResumeDomain:
+		pause := a.Do == console.MailboxPauseDomain
+		sw, err := setDomainPause(ctx, lq, now, a.Domain, pause, a.Reason)
+		if err != nil {
+			return console.MailboxOutcome{}, err
+		}
+		verb := "resumed"
+		if pause {
+			verb = "paused"
+		}
+		msg := fmt.Sprintf("%d mailboxes on %s are %s.", sw.Changed, sw.Domain, verb)
+		if sw.Kept > 0 {
+			msg += fmt.Sprintf(" %d stay paused on their own: resume each on its page.", sw.Kept)
+		}
+		return console.MailboxOutcome{Message: msg}, nil
+	}
+	return console.MailboxOutcome{}, refused("That is not something the Mailboxes pages do.")
 }

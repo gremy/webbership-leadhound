@@ -346,13 +346,14 @@ func writeJob(t, h *strings.Builder, n int, j Job, day time.Time, yourCall bool)
 }
 
 // writeLeads writes the leads block decision-first, numbered on from the jobs (leadsItems),
-// then one health line. With nothing to act on it is the health line alone.
+// then one health line and the mailbox line (mailboxLine). With nothing to act on it is the
+// two lines alone.
 func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section, day time.Time) {
-	health := leadsHealth(s)
+	health, boxes := leadsHealth(s), mailboxLine(s)
 	if !s.Todo() {
 		line := "Leads: nothing to do · " + health
-		fmt.Fprintf(t, "%s\n\n", line)
-		fmt.Fprintf(h, "<p>%s</p>\n", esc(line))
+		fmt.Fprintf(t, "%s\n%s\n\n", line, boxes)
+		fmt.Fprintf(h, "<p>%s</p>\n<p>%s</p>\n", esc(line), esc(boxes))
 		return
 	}
 	items, _ := leadsItems(s, day)
@@ -364,12 +365,20 @@ func writeLeads(t, h *strings.Builder, n int, s leadbrief.Section, day time.Time
 	}
 	h.WriteString("</ol>\n")
 	line := "Leads health: " + health
-	fmt.Fprintf(t, "%s\n\n", line)
-	fmt.Fprintf(h, "<p>%s</p>\n", esc(line))
+	fmt.Fprintf(t, "%s\n%s\n\n", line, boxes)
+	fmt.Fprintf(h, "<p>%s</p>\n<p>%s</p>\n", esc(line), esc(boxes))
 }
 
-// leadsItems are the leads actions in decision order: replies to read, other messages to
-// read, a sending pause to fix, the batch to approve, the manual items, the emails to check
+// mailboxLine is the mailboxes' health line. A missing key is the block's first item
+// (leadsItems), so here the line keeps the counts rather than saying it twice.
+func mailboxLine(s leadbrief.Section) string {
+	m := s.Mailboxes
+	m.KeyMissing = false
+	return m.Line()
+}
+
+// leadsItems are the leads actions in decision order: a missing mailbox key (nothing goes
+// out until it is back), replies to read, other messages to read, a sending pause to fix, the batch to approve, the manual items, the emails to check
 // by hand. first is the first one in a few words, for the subject. day is the brief's day.
 func leadsItems(s leadbrief.Section, day time.Time) (items []string, first string) {
 	add := func(item, short string) {
@@ -377,6 +386,10 @@ func leadsItems(s leadbrief.Section, day time.Time) (items []string, first strin
 			first = short
 		}
 		items = append(items, item)
+	}
+	if s.Mailboxes.KeyMissing {
+		add("The mailbox key is missing, nothing was sent: put it back (deploy/README.md, Mailboxes) and the next send run picks it up",
+			"mailbox key missing")
 	}
 	if n := len(s.Replies); n > 0 {
 		add(fmt.Sprintf("Read %s in the outreach mailbox: %s", plural(n, "reply", "replies"), strings.Join(s.Replies, ", ")),

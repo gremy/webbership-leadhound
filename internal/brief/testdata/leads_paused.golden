@@ -10,6 +10,7 @@ Leads
 2. Sending is paused (dns: dmarc missing): fix it, then run leadhound leads senders check
 3. Check by hand whether 2 emails went out (never resent)
 Leads health: 1 sent, 0 bounced, 0 opted out yesterday · probe checked 40 sites yesterday, none on Drupal
+Mailboxes: none yet — add one in the console (Mailboxes)
 
 Health: LinkedIn ok · 0 new · canary ok
 Health: Scoring ok
@@ -26,6 +27,7 @@ Health: recheck not run
 <li>Check by hand whether 2 emails went out (never resent)</li>
 </ol>
 <p>Leads health: 1 sent, 0 bounced, 0 opted out yesterday · probe checked 40 sites yesterday, none on Drupal</p>
+<p>Mailboxes: none yet — add one in the console (Mailboxes)</p>
 <p>Health: LinkedIn ok · 0 new · canary ok</p>
 <p>Health: Scoring ok</p>
 <p>Health: recheck not run</p>

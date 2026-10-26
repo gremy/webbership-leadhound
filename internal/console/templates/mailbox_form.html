@@ -1,0 +1,71 @@
+{{define "content"}}
+{{$f := .Data}}
+<div class="page-head">
+  <h1>{{if $f.Edit}}Edit {{$f.Address}}{{else}}Add a mailbox{{end}}</h1>
+  <p><a href="{{if $f.Edit}}/mailboxes/{{$f.ID}}{{else}}/mailboxes{{end}}">Back</a></p>
+</div>
+{{if $f.Message}}<p class="notice{{if $f.Error}} notice-error{{end}}" role="{{if $f.Error}}alert{{else}}status{{end}}">{{$f.Message}}</p>{{end}}
+
+{{if and $f.KeyMissing (not $f.Edit)}}
+<p class="notice notice-error" role="status">Mailboxes can't be added yet: the mailbox key is not set up. See deploy/README.md, Mailboxes.</p>
+{{else}}
+{{if $f.KeyMissing}}<p class="notice notice-error" role="status">A new password can't be saved yet: the mailbox key is not set up. See deploy/README.md, Mailboxes.</p>{{end}}
+
+{{if not $f.Edit}}
+<section class="card">
+  <h2>Provider</h2>
+  <form method="get" action="/mailboxes/new" class="stack preset" hx-get="/mailboxes/new" hx-trigger="change" hx-target="#main" hx-select="#main" hx-swap="outerHTML" hx-push-url="true">
+    <label for="mb-preset-pick">Fill in the servers for</label>
+    <select id="mb-preset-pick" name="preset">
+      <option value="">Choose a provider</option>
+      {{range $f.Presets}}<option value="{{.Name}}"{{if eq .Name $f.Preset}} selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+    <button type="submit">Fill in</button>
+  </form>
+  <p class="hint">Choose the provider first: it fills the servers and selector below. Other fills nothing.</p>
+</section>
+{{end}}
+
+<section class="card">
+  <h2>{{if $f.Edit}}Settings{{else}}The mailbox{{end}}</h2>
+  <form method="post" action="{{if $f.Edit}}/mailboxes/{{$f.ID}}{{else}}/mailboxes{{end}}" class="stack mailbox-form" autocomplete="off">
+    {{if $f.Edit}}
+    <p>Address: {{$f.Address}}</p>
+    <p class="hint">An address cannot change. To send from another one, add it as a new mailbox.</p>
+    {{else}}
+    <input type="hidden" name="preset" value="{{$f.Preset}}">
+    <label for="mb-address">Address</label>
+    <input id="mb-address" name="address" type="email" required maxlength="{{maxMailbox}}" autocomplete="off" value="{{$f.Address}}">
+    <p class="hint">The address the emails come from.</p>
+    {{end}}
+
+    <label for="mb-login">Login</label>
+    <input id="mb-login" name="login" maxlength="{{maxMailbox}}" autocomplete="off" placeholder="same as the address" value="{{$f.Login}}">
+    <p class="hint">The name you sign in with; blank when it is the address.</p>
+
+    <label for="mb-password">Password</label>
+    <input id="mb-password" name="password" type="password" autocomplete="new-password" maxlength="{{maxMailbox}}"{{if not $f.Edit}} required{{end}}>
+    <p class="hint">{{if $f.Edit}}Optional: blank keeps the saved password. Changing the login or a server needs the password again.{{else}}Saved sealed: the console can store it but never read it back.{{end}}</p>
+
+    <label for="mb-smtp">Sending server</label>
+    <input id="mb-smtp" name="smtp_addr" maxlength="{{maxMailbox}}" autocomplete="off" placeholder="host:465" value="{{$f.SMTPAddr}}">
+    <p class="hint">The SMTP server as host:port; port 465 or 587.</p>
+
+    <label for="mb-imap">Reading server</label>
+    <input id="mb-imap" name="imap_addr" maxlength="{{maxMailbox}}" autocomplete="off" placeholder="host:993" value="{{$f.IMAPAddr}}">
+    <p class="hint">The IMAP server as host:port, port 993. Replies are read from it.</p>
+
+    <label for="mb-selector">DKIM selector</label>
+    <input id="mb-selector" name="selector" maxlength="63" autocomplete="off" value="{{$f.Selector}}">
+    <p class="hint">The name before ._domainkey in the domain's DKIM record.</p>
+
+    <label for="mb-from-name">From name</label>
+    <input id="mb-from-name" name="from_name" maxlength="{{maxMailbox}}" autocomplete="off" value="{{$f.FromName}}">
+    <p class="hint">The name the emails show; blank uses the leads settings' sender name.</p>
+
+    <button type="submit" class="primary">{{if $f.Edit}}Save{{else}}Add and check it{{end}}</button>
+  </form>
+  <p class="hint">{{if $f.Edit}}A change to the login or a server is checked again before the mailbox sends.{{else}}After adding, the mailbox is checked: both sign-ins, the Sent and Junk folders, and the domain's records. Nothing is sent.{{end}}</p>
+</section>
+{{end}}
+{{end}}

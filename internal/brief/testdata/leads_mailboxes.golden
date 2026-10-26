@@ -1,0 +1,40 @@
+== subject
+LeadHound · Fri 23 Oct · 1 to apply
+== text
+LeadHound · Fri 23 Oct · 1 to apply
+
+Apply
+1. Senior Go Engineer · Northwind Labs · remote EU · 12 applicants · posted today · apply on their site
+   Why: stack pass (Go, Postgres) · seniority pass (senior) · location pass
+        "Build Go services on Postgres" · "Fully remote within the EU"
+   Link: https://www.linkedin.com/jobs/view/1000000001
+   Find a referral: https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20recruiter · https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20engineering%20manager
+
+Leads
+2. Approve batch 7 (3 emails): leadhound leads batch show 7
+Leads health: 6 sent, 0 bounced, 0 opted out yesterday
+Mailboxes: 2 ready · 1 paused (2 hard bounces) · 1 needs a check
+
+Health: LinkedIn ok · 0 new · canary ok
+Health: Scoring ok
+Health: recheck not run
+Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number.
+== html
+<!doctype html>
+<html><body>
+<p><strong>LeadHound · Fri 23 Oct · 1 to apply</strong></p>
+<h2>Apply</h2>
+<ol start="1">
+<li>Senior Go Engineer · Northwind Labs · remote EU · 12 applicants · posted today · apply on their site<br>Why: stack pass (Go, Postgres) · seniority pass (senior) · location pass<br>&#34;Build Go services on Postgres&#34; · &#34;Fully remote within the EU&#34;<br>Link: <a href="https://www.linkedin.com/jobs/view/1000000001">https://www.linkedin.com/jobs/view/1000000001</a><br>Find a referral: <a href="https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20recruiter">recruiters</a> · <a href="https://www.linkedin.com/search/results/people/?keywords=Northwind%20Labs%20engineering%20manager">engineering managers</a></li>
+</ol>
+<h2>Leads</h2>
+<ol start="2">
+<li>Approve batch 7 (3 emails): leadhound leads batch show 7</li>
+</ol>
+<p>Leads health: 6 sent, 0 bounced, 0 opted out yesterday</p>
+<p>Mailboxes: 2 ready · 1 paused (2 hard bounces) · 1 needs a check</p>
+<p>Health: LinkedIn ok · 0 new · canary ok</p>
+<p>Health: Scoring ok</p>
+<p>Health: recheck not run</p>
+<p>Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT or leadhound track N maybe, N being its number.</p>
+</body></html>

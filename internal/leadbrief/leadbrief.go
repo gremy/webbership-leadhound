@@ -8,9 +8,12 @@
 package leadbrief
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +49,71 @@ type Section struct {
 	CheckByHand int
 	// Probe is yesterday's site probe numbers, nil when nothing was probed.
 	Probe *ProbeLine
+	// Mailboxes is the sending mailboxes' health, for its one line (MailboxHealth.Line).
+	Mailboxes MailboxHealth
+}
+
+// MailboxHealth counts the sending mailboxes that are not retired, by readiness, as of the
+// start of the brief's day; mailboxes on a reserved TLD stay out.
+type MailboxHealth struct {
+	// Ready may be given new leads: active, its latest check passed, and its host and
+	// selector passed today's DNS check. Paused are paused, by the operator or the system;
+	// NeedsCheck are active but not ready.
+	Ready, Paused, NeedsCheck int
+	// PausedWhy are the paused ones' reasons in fixed words (pausedWhy), each once, in
+	// mailbox order. The operator's own words never reach it: they are free text.
+	PausedWhy []string
+	// KeyMissing says the latest send run since yesterday found no mailbox key and sent
+	// nothing.
+	KeyMissing bool
+}
+
+// Line is the brief's mailbox line, decision-first: "Mailboxes: 2 ready · 1 paused (2 hard
+// bounces) · 1 needs a check".
+func (m MailboxHealth) Line() string {
+	if m.KeyMissing {
+		return "Mailboxes: the mailbox key is missing, nothing was sent"
+	}
+	if m.Ready+m.Paused+m.NeedsCheck == 0 {
+		return "Mailboxes: none yet — add one in the console (Mailboxes)"
+	}
+	parts := []string{fmt.Sprintf("%d ready", m.Ready)}
+	if m.Paused > 0 {
+		p := fmt.Sprintf("%d paused", m.Paused)
+		if len(m.PausedWhy) > 0 {
+			p += " (" + strings.Join(m.PausedWhy, ", ") + ")"
+		}
+		parts = append(parts, p)
+	}
+	switch {
+	case m.NeedsCheck == 1:
+		parts = append(parts, "1 needs a check")
+	case m.NeedsCheck > 1:
+		parts = append(parts, fmt.Sprintf("%d need a check", m.NeedsCheck))
+	}
+	return "Mailboxes: " + strings.Join(parts, " · ")
+}
+
+// bouncesReason is the reason the bounce health rule writes (cmd/leadhound's
+// checkBounceHealth); its count is the one number a pause shows.
+var bouncesReason = regexp.MustCompile(`^(\d+) hard bounces in its last \d+ live sends$`)
+
+// pausedWhy is a paused mailbox's reason in fixed words. The system's reasons have known
+// shapes (cmd/leadhound's checkBounceHealth, policyReason, mailboxCreds); anything else is
+// the operator's own text, which never reaches the brief.
+func pausedWhy(scope, reason string) string {
+	switch {
+	case bouncesReason.MatchString(reason):
+		return bouncesReason.FindStringSubmatch(reason)[1] + " hard bounces"
+	case strings.HasPrefix(reason, "a receiving server blocked mail from "):
+		return "blocked by a receiving server"
+	case strings.HasPrefix(reason, "re-enter the password"):
+		return "password to re-enter"
+	case scope == leadstore.ScopeDomain:
+		return "its domain paused by the operator"
+	default:
+		return "by the operator"
+	}
 }
 
 // BatchReady is a batch waiting for approval, counted by item channel: first emails (a
@@ -64,10 +132,11 @@ type ProbeLine struct {
 }
 
 // Todo reports whether the section has anything for the member to act on; when it has
-// not, the brief shows only its health line.
+// not, the brief shows only its health line. A missing mailbox key stops sending as a DNS
+// stop does, so it counts; the other mailbox counts are health.
 func (s Section) Todo() bool {
 	return len(s.Replies) > 0 || s.Other > 0 || s.Paused != "" || s.OperatorPaused != nil || s.Batch != nil ||
-		s.ManualWaiting > 0 || s.CheckByHand > 0
+		s.ManualWaiting > 0 || s.CheckByHand > 0 || s.Mailboxes.KeyMissing
 }
 
 // The Paused values.
@@ -82,11 +151,12 @@ const (
 const sendCommand = "leads-send"
 
 // The send run's note words that stop sending (cmd/leadhound's noteDNS, noteSync,
-// noteAccount).
+// noteAccount), and the one that says the key was missing (noteKeyMissing).
 const (
-	noteDNS     = "dns"
-	noteSync    = "sync"
-	noteAccount = "smtp-account"
+	noteDNS        = "dns"
+	noteSync       = "sync"
+	noteAccount    = "smtp-account"
+	noteKeyMissing = "mailbox key missing"
 )
 
 // Load reads the section for the brief of day, yesterday being the calendar day before it
@@ -107,13 +177,20 @@ func loadExcluding(ctx context.Context, q store.DBTX, day time.Time, loc *time.L
 	today := time.Date(y, m, d, 0, 0, 0, 0, loc)
 	yesterday, tomorrow := today.AddDate(0, 0, -1), today.AddDate(0, 0, 1)
 
-	var s Section
+	var (
+		s     Section
+		note  string
+		boxes []leadstore.MailboxStatus
+	)
 	steps := []func() error{
 		func() error { return s.loadReplies(ctx, q, re, yesterday, tomorrow) },
 		func() error { return s.loadOther(ctx, q, re, yesterday, tomorrow) },
 		func() error { return s.loadBatch(ctx, q, re) },
 		func() error { return s.loadOutreach(ctx, q, re, yesterday, today) },
-		func() error { return s.loadPaused(ctx, q, yesterday) },
+		func() (err error) { note, err = sendNote(ctx, q, yesterday); return err },
+		func() (err error) { boxes, err = keptMailboxes(ctx, q, re, today); return err },
+		func() error { return s.loadPaused(ctx, q, note, boxes) },
+		func() error { s.loadMailboxes(note, boxes); return nil },
 		func() error { return s.loadOperatorPaused(ctx, q, loc) },
 		func() error { return s.loadProbe(ctx, q, re, yesterday, today) },
 	}
@@ -202,40 +279,129 @@ func (s *Section) loadOutreach(ctx context.Context, q store.DBTX, re string, fro
 	return nil
 }
 
-// loadPaused reads why the latest finished send run since from stopped sending, if it did.
-// A DNS stop names the records the latest sender check found missing, and a sender check
-// that has passed since clears it.
-func (s *Section) loadPaused(ctx context.Context, q store.DBTX, from time.Time) error {
+// sendNote is the note of the latest finished send run since from, "" when none.
+func sendNote(ctx context.Context, q store.DBTX, from time.Time) (string, error) {
 	var note string
 	err := q.QueryRow(ctx,
 		`SELECT note FROM run WHERE command = $1 AND finished_at IS NOT NULL AND started_at >= $2
 		 ORDER BY id DESC LIMIT 1`, sendCommand, from).Scan(&note)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return nil
+		return "", nil
 	case err != nil:
-		return fmt.Errorf("send run: %w", err)
+		return "", fmt.Errorf("send run: %w", err)
 	}
+	return note, nil
+}
+
+// keptMailboxes are the mailboxes not retired, by id, as of since (the start of the brief's
+// day), leaving out those on a reserved TLD (re, a regular expression Go and Postgres read
+// alike).
+func keptMailboxes(ctx context.Context, q store.DBTX, re string, since time.Time) ([]leadstore.MailboxStatus, error) {
+	all, err := leadstore.NewQueries(q).Mailboxes(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("mailboxes: %w", err)
+	}
+	reserved, err := regexp.Compile(re)
+	if err != nil {
+		return nil, fmt.Errorf("mailboxes: %w", err)
+	}
+	var out []leadstore.MailboxStatus
+	for _, m := range all {
+		if m.State != leadstore.MailboxRetired && !reserved.MatchString(m.Domain) && !reserved.MatchString(m.Host()) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// loadMailboxes counts boxes by readiness and reads the key-missing note of the send run.
+func (s *Section) loadMailboxes(note string, boxes []leadstore.MailboxStatus) {
+	h := MailboxHealth{KeyMissing: NoteWords(note)[noteKeyMissing]}
+	for _, m := range boxes {
+		switch {
+		case m.State == leadstore.MailboxPaused:
+			h.Paused++
+			if why := pausedWhy(m.Scope, m.Reason); !slices.Contains(h.PausedWhy, why) {
+				h.PausedWhy = append(h.PausedWhy, why)
+			}
+		case m.LastCheck != nil && m.LastCheck.Outcome == leadstore.CheckPassed && m.DNSPassedToday:
+			h.Ready++
+		default:
+			h.NeedsCheck++
+		}
+	}
+	s.Mailboxes = h
+}
+
+// loadPaused reads why the send run's note says sending stopped, if it did. A DNS stop
+// names, per host and DKIM selector of boxes, the records its latest sender check found
+// missing; a sender check that has passed since clears that one.
+func (s *Section) loadPaused(ctx context.Context, q store.DBTX, note string, boxes []leadstore.MailboxStatus) error {
 	words := NoteWords(note)
 	switch {
 	case words[noteDNS]:
-		var spf, dkim, dmarc bool
-		err := q.QueryRow(ctx,
-			`SELECT spf, dkim, dmarc FROM sender_check ORDER BY checked_at DESC, id DESC LIMIT 1`).Scan(&spf, &dkim, &dmarc)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			s.Paused = PausedDNS
-		case err != nil:
-			return fmt.Errorf("sender check: %w", err)
-		default:
-			s.Paused = DNSPaused(spf, dkim, dmarc)
+		p, err := dnsPaused(ctx, q, boxes)
+		if err != nil {
+			return err
 		}
+		s.Paused = p
 	case words[noteSync]:
 		s.Paused = PausedSync
 	case words[noteAccount]:
 		s.Paused = PausedAccount
 	}
 	return nil
+}
+
+// dnsPaused is the DNS Paused value: one result per host and selector of boxes, from its
+// latest sender check ("dns: mail.alpha.example dmarc missing; beta.example not checked
+// yet"); a host with more than one selector names it ("beta.example (s2) dkim missing").
+// When no host has a check on file it is PausedDNS; when every one passed, "".
+func dnsPaused(ctx context.Context, q store.DBTX, boxes []leadstore.MailboxStatus) (string, error) {
+	type pair struct{ host, selector string }
+	var pairs []pair
+	selectors := map[string]int{}
+	for _, m := range boxes {
+		p := pair{m.Host(), strings.TrimSpace(m.DKIMSelector)}
+		if !slices.Contains(pairs, p) {
+			pairs = append(pairs, p)
+			selectors[p.host]++
+		}
+	}
+	slices.SortFunc(pairs, func(a, b pair) int {
+		return cmp.Or(cmp.Compare(a.host, b.host), cmp.Compare(a.selector, b.selector))
+	})
+	var results []string
+	checked := false
+	for _, p := range pairs {
+		name := p.host
+		if selectors[p.host] > 1 {
+			name += " (" + p.selector + ")"
+		}
+		var spf, dkim, dmarc bool
+		err := q.QueryRow(ctx,
+			`SELECT spf, dkim, dmarc FROM sender_check WHERE domain_sha256 = $1 AND selector = $2 AND selector <> ''
+			 ORDER BY checked_at DESC, id DESC LIMIT 1`, leadstore.SenderDomainSHA256(p.host), p.selector).Scan(&spf, &dkim, &dmarc)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			results = append(results, name+" not checked yet")
+		case err != nil:
+			return "", fmt.Errorf("sender check: %w", err)
+		default:
+			checked = true
+			if r := DNSPaused(spf, dkim, dmarc); r != "" {
+				results = append(results, name+" "+strings.TrimPrefix(r, "dns: "))
+			}
+		}
+	}
+	switch {
+	case !checked:
+		return PausedDNS, nil
+	case len(results) == 0:
+		return "", nil
+	}
+	return "dns: " + strings.Join(results, "; "), nil
 }
 
 // loadOperatorPaused reads the operator's pause switch (leadstore.SendPaused).

@@ -14,6 +14,10 @@ User=leadhound
 Group=leadhound
 # root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
 EnvironmentFile=/etc/leadhound/env
+# The mailboxes' private key (root:root 0600, written by install.sh), handed to this job
+# alone as a systemd credential: it opens the sealed passwords from
+# $CREDENTIALS_DIRECTORY/mailbox-key. Only send, sync and the mailbox check get it.
+LoadCredential=mailbox-key:/etc/leadhound/mailbox.key
 # timeout ends a send that hangs.
 ExecStart=/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --max 25
 # Longer than the send's timeout and its kill grace together (3h50).

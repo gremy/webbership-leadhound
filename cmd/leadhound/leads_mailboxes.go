@@ -205,7 +205,7 @@ func mailboxesAdd(ctx context.Context, args []string) error {
 	if err != nil && os.Getenv(secretbox.PublicKeyEnv) != "" {
 		return usageError("%s: %v", secretbox.PublicKeyEnv, err)
 	}
-	id, err := addMailbox(ctx, lq, setup.leads, pub, setup.dataDir, leadsNow(), in, leadstore.ActorOperator)
+	id, err := addMailbox(ctx, lq, setup.leads, pub, setup.dataDir, leadsNow(), in)
 	if err != nil {
 		return mailboxCLIError(err)
 	}

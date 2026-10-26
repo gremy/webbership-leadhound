@@ -3,6 +3,7 @@ package deploy
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
 
 // unit is one systemd unit file: each key's values, in file order, by section.
@@ -159,7 +162,8 @@ var schedule = map[string]struct {
 
 // leadsFinding and leadsSending are the leads timers install.sh enables only as
 // /etc/leadhound/env switches them on: the finding ones with LEADHOUND_LEADS_TIMERS=on, the
-// sending ones only with that, LEADHOUND_LEADS_SEND=on, live outreach and the mailbox.
+// sending ones only with that, LEADHOUND_LEADS_SEND=on and live outreach (the mailboxes live
+// in the database, so no env line names one).
 var (
 	leadsFinding = []string{"leadhound-leads-contacts.timer", "leadhound-leads-probe.timer"}
 	leadsSending = []string{"leadhound-leads-batch.timer", "leadhound-leads-send.timer", "leadhound-leads-sync.timer"}
@@ -187,11 +191,18 @@ var triggered = map[string]struct {
 		wants: []string{"leadhound-collect.service"},
 		after: []string{"network-online.target", "postgresql.service", "leadhound-collect.service"},
 	},
+	// The console's Mailboxes page asks for a check here: the console never holds a mailbox
+	// password, so the login test runs in this job, which gets the key.
+	"leadhound-mailbox-check": {
+		exec:  "/usr/bin/timeout --kill-after=1m 5m /opt/leadhound/bin/leadhound leads mailboxes check --requested",
+		after: []string{"network-online.target", "postgresql.service"},
+	},
 }
 
-// runActions are the Run now actions: each has a request file /opt/leadhound/data/run/<action>
-// and a watcher leadhound-<action>.path that starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats"}
+// runActions are the console's requests (the Run now actions and the mailbox check): each has
+// a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
+// starts leadhound-<action>.service.
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -565,7 +576,7 @@ var configVar = regexp.MustCompile(`"((?:LEADHOUND|TYPESAFE|RESEND)_[A-Z0-9_]+)"
 // except the owner role's URL, which only migrate.env.example carries.
 func TestEnvExamplesCoverConfig(t *testing.T) {
 	vars := map[string]bool{}
-	for _, src := range []string{"../internal/config/config.go", "../internal/store/store.go", "../internal/leadconfig/env.go"} {
+	for _, src := range []string{"../internal/config/config.go", "../internal/store/store.go", "../internal/leadconfig/env.go", "../internal/secretbox/secretbox.go"} {
 		b, err := os.ReadFile(src) // #nosec G304 -- the repository's own source
 		if err != nil {
 			t.Fatal(err)
@@ -573,6 +584,10 @@ func TestEnvExamplesCoverConfig(t *testing.T) {
 		for _, m := range configVar.FindAllStringSubmatch(string(b), -1) {
 			vars[m[1]] = true
 		}
+	}
+	// The old mailbox lines are named in env.go only to say they are no longer read.
+	for _, v := range leadconfig.RetiredEnv {
+		delete(vars, v)
 	}
 	if len(vars) < 10 {
 		t.Fatalf("found only %d variables in the config source", len(vars))
@@ -599,6 +614,11 @@ func TestEnvExamplesCoverConfig(t *testing.T) {
 		case v == ownerURL:
 		case !inEnv:
 			t.Errorf("env.example has no line for %s", v)
+		}
+	}
+	for _, v := range leadconfig.RetiredEnv {
+		if _, ok := env[v]; ok {
+			t.Errorf("env.example sets %s, which is no longer read: mailboxes are added in the console", v)
 		}
 	}
 	if _, ok := migrate[ownerURL]; !ok || len(migrate) != 1 {
@@ -628,7 +648,7 @@ var (
 // fileSuffixes are the last labels of the file and unit names these files mention.
 var fileSuffixes = []string{
 	"yaml", "yml", "sql", "sh", "service", "timer", "target", "example", "env", "md", "dump",
-	"csv", "lock", "new", "part", "txt", "json", "go", "path",
+	"csv", "lock", "new", "part", "txt", "json", "go", "path", "key",
 }
 
 // TestNoHostsOrAddresses: nothing in deploy/ names a real host or address. The only host
@@ -923,6 +943,7 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-leads-batch":    {"600M", "450MiB"},
 	"leadhound-leads-send":     {"600M", "450MiB"},
 	"leadhound-leads-sync":     {"600M", "450MiB"},
+	"leadhound-mailbox-check":  {"600M", "450MiB"},
 }
 
 // TestMemoryCeiling: the server is shared, so every leadhound unit but the backup has a
@@ -1098,15 +1119,16 @@ func TestTrimUnit(t *testing.T) {
 	}
 }
 
-// TestLeadsUnits: every leads unit yields to the server's other services (Nice, idle I/O,
-// half the CPU share), runs each command under a /usr/bin/timeout, carries no environment of
-// its own beyond GOMEMLIMIT (hours, caps and the pause stay in the commands), and a step that
-// takes the fetch lock counts the lock's exit 75 as done.
+// TestLeadsUnits: every leads unit, the mailbox check included, yields to the server's other
+// services (Nice, idle I/O, half the CPU share), runs each command under a /usr/bin/timeout,
+// carries no environment of its own beyond GOMEMLIMIT (hours, caps and the pause stay in the
+// commands), and a step that takes the fetch lock counts the lock's exit 75 as done.
 func TestLeadsUnits(t *testing.T) {
 	leads := units(t, "leadhound-leads-*.service")
 	if len(leads) != len(leadsFinding)+len(leadsSending) {
 		t.Errorf("%d leads services, want %d", len(leads), len(leadsFinding)+len(leadsSending))
 	}
+	leads["leadhound-mailbox-check.service"] = readUnit(t, "leadhound-mailbox-check.service")
 	fetches := 0
 	for path, u := range leads {
 		for key, want := range map[string]string{"Nice": "10", "IOSchedulingClass": "idle", "CPUWeight": "50"} {
@@ -1217,8 +1239,9 @@ func TestInstallLeadsTimers(t *testing.T) {
 		finding = "LEADHOUND_LEADS_TIMERS=on\n"
 		send    = "LEADHOUND_LEADS_SEND=on\n"
 		live    = "LEADHOUND_OUTREACH=live\n"
-		user    = "LEADHOUND_OUTREACH_USER=outreach@mail.example\n"
-		imap    = "LEADHOUND_IMAP_ADDR=mail.example:993\n"
+		// The old mailbox lines no longer switch anything on or off.
+		user = "LEADHOUND_OUTREACH_USER=outreach@mail.example\n"
+		imap = "LEADHOUND_IMAP_ADDR=mail.example:993\n"
 	)
 	all := slices.Concat(leadsFinding, leadsSending)
 	for _, tc := range []struct {
@@ -1226,19 +1249,19 @@ func TestInstallLeadsTimers(t *testing.T) {
 		want      []string
 	}{
 		{"empty env", "", nil},
-		{"the env.example lines, empty", "LEADHOUND_LEADS_TIMERS=\nLEADHOUND_LEADS_SEND=\nLEADHOUND_OUTREACH=\nLEADHOUND_OUTREACH_USER=\nLEADHOUND_IMAP_ADDR=\n", nil},
+		{"the env.example lines, empty", "LEADHOUND_LEADS_TIMERS=\nLEADHOUND_LEADS_SEND=\nLEADHOUND_OUTREACH=\nLEADHOUND_MAILBOX_PUBLIC_KEY=\nLEADHOUND_MAILBOX_KEY_FILE=\n", nil},
 		{"finding on only", finding, leadsFinding},
-		{"finding and send on, shadow", finding + send + user + imap, leadsFinding},
-		{"finding and send on, live, no mailbox", finding + send + live, leadsFinding},
-		{"everything but the IMAP address", finding + send + live + user + "LEADHOUND_IMAP_ADDR=\n", leadsFinding},
-		{"everything but the mailbox user", finding + send + live + imap, leadsFinding},
-		{"everything", finding + send + live + user + imap, all},
-		{"everything, quoted as systemd allows", "LEADHOUND_LEADS_TIMERS=\"on\"\nLEADHOUND_LEADS_SEND='on'\nLEADHOUND_OUTREACH=\"live\"\n" + user + imap, all},
-		{"send without finding", send + live + user + imap, nil},
-		{"finding switched off by a later line", finding + send + live + user + imap + "LEADHOUND_LEADS_TIMERS=off\n", nil},
-		{"send switched off by a later line", finding + send + live + user + imap + "LEADHOUND_LEADS_SEND=\n", leadsFinding},
-		{"not quite on", "LEADHOUND_LEADS_TIMERS=online\n" + send + live + user + imap, nil},
-		{"not quite live", finding + send + "LEADHOUND_OUTREACH=lively\n" + user + imap, leadsFinding},
+		{"finding and send on, shadow", finding + send, leadsFinding},
+		{"finding and send on, shadow, old mailbox lines", finding + send + user + imap, leadsFinding},
+		{"everything", finding + send + live, all},
+		{"everything, no old mailbox lines needed", finding + send + live + "LEADHOUND_OUTREACH_USER=\nLEADHOUND_IMAP_ADDR=\n", all},
+		{"everything, old mailbox lines left in", finding + send + live + user + imap, all},
+		{"everything, quoted as systemd allows", "LEADHOUND_LEADS_TIMERS=\"on\"\nLEADHOUND_LEADS_SEND='on'\nLEADHOUND_OUTREACH=\"live\"\n", all},
+		{"send without finding", send + live, nil},
+		{"finding switched off by a later line", finding + send + live + "LEADHOUND_LEADS_TIMERS=off\n", nil},
+		{"send switched off by a later line", finding + send + live + "LEADHOUND_LEADS_SEND=\n", leadsFinding},
+		{"not quite on", "LEADHOUND_LEADS_TIMERS=online\n" + send + live, nil},
+		{"not quite live", finding + send + "LEADHOUND_OUTREACH=lively\n", leadsFinding},
 		{"commented out", "#LEADHOUND_LEADS_TIMERS=on\n# " + send, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1511,5 +1534,244 @@ func TestInstallArmsEveryPath(t *testing.T) {
 	}
 	if !copies {
 		t.Error("make deploy does not copy deploy/leadhound-*.path to the stage")
+	}
+}
+
+// mailboxWorkers are the only services that open a sealed mailbox password, so the only ones
+// handed the mailboxes' private key, as a systemd credential.
+var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-sync", "leadhound-mailbox-check"}
+
+const (
+	mailboxCredential = "mailbox-key:/etc/leadhound/mailbox.key" //nolint:gosec // G101: a systemd credential name and path, not a credential
+	noCredentials     = "-/run/credentials"                      //nolint:gosec // G101: a path the units hide, not a credential
+)
+
+// TestMailboxKeyOnlyForWorkers: the send, the sync and the mailbox check have the key's
+// LoadCredential= line and nothing else does; every other service, the console first, has
+// InaccessiblePaths=-/run/credentials, so a compromised console or job can store a new sealed
+// password but never read one back (MB-R4).
+func TestMailboxKeyOnlyForWorkers(t *testing.T) {
+	credKey := regexp.MustCompile(`^(Load|Set|Import)Credential`)
+	all := units(t, "*.service")
+	for _, pattern := range []string{"*.timer", "*.path"} {
+		maps.Copy(all, units(t, pattern))
+	}
+	seen := 0
+	for path, u := range all {
+		name := base(path)
+		worker := filepath.Ext(path) == ".service" && slices.Contains(mailboxWorkers, name)
+		if worker {
+			seen++
+		}
+		for section, keys := range u {
+			for key, vals := range keys {
+				if !credKey.MatchString(key) {
+					continue
+				}
+				if !worker || section != "Service" || key != "LoadCredential" || !slices.Equal(vals, []string{mailboxCredential}) {
+					t.Errorf("%s: [%s] %s = %q; only %q get a credential, exactly LoadCredential=%s", path, section, key, vals, mailboxWorkers, mailboxCredential)
+				}
+			}
+		}
+		if filepath.Ext(path) != ".service" {
+			continue
+		}
+		inaccessible := strings.Fields(strings.Join(u["Service"]["InaccessiblePaths"], " "))
+		switch {
+		case worker && len(u["Service"]["LoadCredential"]) == 0:
+			t.Errorf("%s: no LoadCredential=%s; it opens the sealed passwords", path, mailboxCredential)
+		case worker && slices.ContainsFunc(inaccessible, func(p string) bool { return strings.Contains(p, "/run/credentials") }):
+			t.Errorf("%s: InaccessiblePaths = %q hides its own credential", path, inaccessible)
+		case !worker && !slices.Contains(inaccessible, noCredentials):
+			t.Errorf("%s: InaccessiblePaths = %q, want it to include %s", path, inaccessible, noCredentials)
+		}
+	}
+	if seen != len(mailboxWorkers) {
+		t.Errorf("%d of the %d mailbox workers have a .service file", seen, len(mailboxWorkers))
+	}
+}
+
+// TestRemoteKeyOnlyForWorkers: make remote hands the key, as the same credential, only to the
+// verbs that open a password; every other verb runs without it, and leads mailboxes list is
+// free like the other lists.
+func TestRemoteKeyOnlyForWorkers(t *testing.T) {
+	mk, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("no make")
+	}
+	for _, tc := range []struct {
+		args    string
+		confirm bool
+		key     bool
+	}{
+		{"leads selftest", true, true},
+		{"leads send --max 1", true, true},
+		{"leads sync", true, true},
+		{"leads mailboxes check 3", true, true},
+		{"leads mailboxes check --requested", true, true},
+		{"leads mailboxes list", false, false},
+		{"leads mailboxes add --address a@mail.example", true, false},
+		{"leads mailboxes keygen --out x", true, false},
+		{"leads batch show", false, false},
+		{"leads sends", true, false},
+		{"track list", false, false},
+		{"serve", true, false},
+	} {
+		t.Run(tc.args, func(t *testing.T) {
+			args := []string{"-n", "-C", "..", "remote", "HOST=h.invalid", "ARGS=" + tc.args}
+			if tc.confirm {
+				args = append(args, "CONFIRM=1")
+			}
+			cmd := exec.Command(mk, args...) // #nosec G204 -- the test's own Makefile
+			cmd.Env = append(os.Environ(), "MAKEFLAGS=", "CONFIRM=")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make %q: %v\n%s", args, err, out)
+			}
+			if got := strings.Contains(string(out), "-p LoadCredential="+mailboxCredential); got != tc.key {
+				t.Errorf("make remote ARGS=%q hands the key = %t, want %t:\n%s", tc.args, got, tc.key, out)
+			}
+		})
+	}
+}
+
+// TestInstallMailboxKey: install.sh generates the mailbox key after the new binary is in place
+// and before the units are installed, only when the key file is missing, never overwrites it,
+// always derives the public line from the key file (replacing one that differs, appending one
+// that is missing), and prints the fingerprint but no key (MB-R15). It runs install.sh's own
+// mailbox_key against a fake leadhound.
+func TestInstallMailboxKey(t *testing.T) {
+	steps := installSteps(t)
+	swap := firstLine(steps, "mv -f", `"$bin/.leadhound.new"`, `"$bin/leadhound"`)
+	call := firstLine(steps, "mailbox_key /etc/leadhound/mailbox.key /etc/leadhound/env")
+	unitsAt := firstLine(steps, "/etc/systemd/system/")
+	switch {
+	case call < 0:
+		t.Fatal("install.sh does not run mailbox_key /etc/leadhound/mailbox.key /etc/leadhound/env")
+	case call < swap:
+		t.Errorf("install.sh runs mailbox_key (line %d) before the binary swap (line %d)", call, swap)
+	case call > unitsAt:
+		t.Errorf("install.sh runs mailbox_key (line %d) after installing the units (line %d)", call, unitsAt)
+	}
+	fn := installFunc(t, "mailbox_key")
+	if strings.Contains(fn, ".leadhound.new") || !strings.Contains(fn, `"$bin/leadhound" leads mailboxes keygen --out "$1"`) {
+		t.Errorf("mailbox_key does not generate with the installed binary:\n%s", fn)
+	}
+
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "run.sh")
+	body := "set -eu\n" + installFunc(t, "fail") + installFunc(t, "env_value") + fn + "bin=\"$3\"\nmailbox_key \"$1\" \"$2\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The fake keygen refuses an existing file as the real one does; the fake pubkey derives
+	// the public key from the private one, so a stale env line shows as a mismatch.
+	fake := `#!/bin/sh
+echo "$*" >>"$LEADHOUND_LOG"
+case "$3" in
+keygen)
+	[ ! -e "$5" ] || { echo "$5 already exists" >&2; exit 2; }
+	printf 'PRIVATE-%s\n' "$FAKE_KEY" >"$5"
+	echo "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-$FAKE_KEY"
+	echo "Fingerprint: fp-$FAKE_KEY"
+	;;
+pubkey)
+	[ -z "${FAKE_PUBKEY_FAIL:-}" ] || exit 2
+	k=$(cat "$5")
+	echo "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-${k#PRIVATE-}"
+	;;
+*) exit 9 ;;
+esac
+`
+	for name, body := range map[string]string{"leadhound": fake, "chown": "#!/bin/sh\nexit 0\n"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil { // #nosec G306 -- an executable stub in a test temp dir
+			t.Fatal(err)
+		}
+	}
+	const other = "LEADHOUND_DATABASE_URL=postgres://app@localhost/leadhound\nLEADHOUND_TZ=Europe/Bucharest\n"
+	for _, tc := range []struct {
+		name       string
+		key        string // the key file's contents; empty is no file
+		env        string
+		pubFail    bool
+		wantFail   bool
+		wantKeygen bool
+		wantEnv    string // empty: the env file is unchanged
+		wantOut    string
+	}{
+		{name: "first deploy", env: other, wantKeygen: true, wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-new\n", wantOut: "fingerprint fp-new"},
+		{name: "first deploy, env.example's empty line", env: "LEADHOUND_MAILBOX_PUBLIC_KEY=\n" + other, wantKeygen: true, wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-new\n", wantOut: "fingerprint fp-new"},
+		{name: "key kept, line missing", key: "PRIVATE-old\n", env: other, wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "wrote the mailbox public key"},
+		{name: "key kept, line stale", key: "PRIVATE-old\n", env: "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-stale\n" + other, wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "wrote the mailbox public key"},
+		{name: "key kept, two lines, the last right", key: "PRIVATE-old\n", env: "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-stale\n" + other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "wrote the mailbox public key"},
+		{name: "key kept, line right", key: "PRIVATE-old\n", env: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "holds the mailbox public key"},
+		{name: "key unreadable", key: "PRIVATE-old\n", env: other, pubFail: true, wantFail: true, wantOut: "could not be read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			key, env, log := filepath.Join(tmp, "mailbox.key"), filepath.Join(tmp, "env"), filepath.Join(tmp, "leadhound.log")
+			if tc.key != "" {
+				if err := os.WriteFile(key, []byte(tc.key), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(env, []byte(tc.env), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(sh, script, key, env, bin) // #nosec G204 -- the test's own script
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"LEADHOUND_LOG="+log, "FAKE_KEY=new", "FAKE_PUBKEY_FAIL=")
+			if tc.pubFail {
+				cmd.Env = append(cmd.Env, "FAKE_PUBKEY_FAIL=1")
+			}
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != tc.wantFail {
+				t.Fatalf("mailbox_key: err = %v, want failure %t\n%s", err, tc.wantFail, out)
+			}
+			if !strings.Contains(string(out), tc.wantOut) {
+				t.Errorf("output lacks %q:\n%s", tc.wantOut, out)
+			}
+			for _, secret := range []string{"PRIVATE", "pub-"} {
+				if strings.Contains(string(out), secret) {
+					t.Errorf("output shows key material %q:\n%s", secret, out)
+				}
+			}
+			calls, _ := os.ReadFile(log) // #nosec G304 -- the test's own temp file
+			if got := strings.Contains(string(calls), "keygen"); got != tc.wantKeygen {
+				t.Errorf("keygen ran = %t, want %t; calls:\n%s", got, tc.wantKeygen, calls)
+			}
+			gotKey, err := os.ReadFile(key) // #nosec G304 -- the test's own temp file
+			switch {
+			case err != nil:
+				t.Errorf("no key file after mailbox_key: %v", err)
+			case tc.key != "" && string(gotKey) != tc.key:
+				t.Errorf("the existing key was overwritten: %q, want %q", gotKey, tc.key)
+			}
+			wantEnv := tc.wantEnv
+			if wantEnv == "" {
+				wantEnv = tc.env
+			}
+			gotEnv, err := os.ReadFile(env) // #nosec G304 -- the test's own temp file
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(gotEnv) != wantEnv {
+				t.Errorf("env file:\n%s\nwant:\n%s", gotEnv, wantEnv)
+			}
+			if fi, err := os.Stat(env); err != nil || fi.Mode().Perm() != 0o600 {
+				t.Errorf("env file mode %v (%v), want 0600", fi.Mode().Perm(), err)
+			}
+			if leftovers, _ := filepath.Glob(env + ".*"); len(leftovers) > 0 {
+				t.Errorf("temporary files left: %q", leftovers)
+			}
+		})
 	}
 }
