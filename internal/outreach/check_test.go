@@ -86,6 +86,17 @@ func TestCheckEachRuleFails(t *testing.T) {
 			d.Slots.OptOutLine = Slot{}
 			return d, 0
 		}, RuleOptOut},
+		// FO2.4: our text may hold an opt-out word only in the opt-out line.
+		{"opt-out word in the subject", func(d Draft, _ *leadconfig.Config) (Draft, int) {
+			d.Subject = "Drupal 7: unsubscribe anytime"
+			return d, 0
+		}, RuleOptOutWord},
+		{"opt-out word outside the opt-out line", func(d Draft, _ *leadconfig.Config) (Draft, int) {
+			return checkInsert(d, " You can opt out at any time."), 0
+		}, RuleOptOutWord},
+		{"Romanian opt-out word outside the opt-out line", func(d Draft, _ *leadconfig.Config) (Draft, int) {
+			return checkInsert(d, " Dezabonare oricând."), 0
+		}, RuleOptOutWord},
 		{"identity line missing", func(d Draft, _ *leadconfig.Config) (Draft, int) {
 			d.Body = strings.ReplaceAll(d.Body, d.Slots.IdentityLine.Value, "")
 			return d, 0

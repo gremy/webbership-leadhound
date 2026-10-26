@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
@@ -67,6 +69,15 @@ func TestClassifyFetched(t *testing.T) {
 	if in.Kind != mailbox.KindOptOut || in.Matched == nil || in.FromDomain != "acme.example" || domain != "acme.example" || in.UID != 5 {
 		t.Errorf("opt-out: %+v %q", in, domain)
 	}
+	// A reply quoting our email, our opt-out line included, is a reply (FO2, FO3).
+	ownLine := `Not relevant? Reply "unsubscribe" and I won't write again.`
+	m.ownLines = []string{ownLine, mailbox.SelftestLine}
+	in, _ = classifyFetched(mailbox.Fetched{UID: 8, Header: []byte("From: A <a" + "@" + "mail.acme.example>\r\nSubject: Re: hi\r\n" +
+		"In-Reply-To: <a1" + "@" + "sender.example>\r\n\r\n"),
+		FirstText: []byte("Thanks, call me Tuesday.\r\n\r\n" + "From: Sam\r\nSent: Monday, 26 October 2026 18:10\r\n\r\nHello,\r\n" + ownLine + "\r\n")}, m)
+	if in.Kind != mailbox.KindReply || in.Matched == nil {
+		t.Errorf("quoted reply: %+v", in)
+	}
 	in, _ = classifyFetched(mailbox.Fetched{UID: 6, Header: []byte("From: Daemon <mailer-daemon@mx.other.example>\r\nReturn-Path: <>\r\n\r\n")}, m)
 	if in.Kind != mailbox.KindUnmatched || in.Matched != nil {
 		t.Errorf("a bounce of nothing of ours: %+v", in)
@@ -119,5 +130,26 @@ func TestSendMailboxWords(t *testing.T) {
 	r.print(&b)
 	if !strings.Contains(b.String(), "Held for a later run: its mailbox cannot send now 2.") {
 		t.Errorf("report:\n%s", b.String())
+	}
+}
+
+// TestSelftestBodyHasNoOptOutWord (FO3): once our own lines are taken out, the selftest body
+// holds no opt-out word, so a reply quoting it, in any client's quote shape, is a reply.
+func TestSelftestBodyHasNoOptOutWord(t *testing.T) {
+	var cfg leadconfig.Config
+	cfg.Sender.OptOutLines = map[string]string{"en": `Not relevant? Reply "unsubscribe" and I won't write again.`,
+		"ro": "Nu vă interesează? Răspundeți cu „dezabonare” și nu vă mai scriu."}
+	lines := optOutLinesOf(cfg)
+	if !slices.Equal(lines[:2], []string{cfg.Sender.OptOutLines["en"], cfg.Sender.OptOutLines["ro"]}) ||
+		!slices.Contains(lines, mailbox.SelftestLine) || !slices.Contains(lines, mailbox.OldSelftestLine) {
+		t.Fatalf("optOutLinesOf = %q", lines)
+	}
+	body := selftestBody(time.Date(2026, 10, 26, 18, 10, 0, 0, time.UTC))
+	if !strings.Contains(body, mailbox.SelftestLine) {
+		t.Fatalf("the selftest body does not carry mailbox.SelftestLine: %q", body)
+	}
+	own, tail := mailbox.OwnText([]byte(body), false, lines)
+	if mailbox.HasOptOutWord(string(own)) || mailbox.HasOptOutWord(string(tail)) {
+		t.Fatalf("the selftest body holds an opt-out word outside our lines: %q", own)
 	}
 }

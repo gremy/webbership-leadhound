@@ -124,7 +124,7 @@ func TestClassify(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := Classify(h, []byte(c.text), ours, contacted)
+			got := Classify(h, []byte(c.text), nil, ours, contacted)
 			want := Result{Kind: c.want, MatchedMessageID: c.wantID, FromDomain: c.wantDom, FinalRecipient: c.wantFinal}
 			if got != want {
 				t.Fatalf("got %+v, want %+v", got, want)
@@ -139,7 +139,7 @@ func TestClassifyBounceReadsTheReportParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Classify(h, first, ours, contacted)
+	got := Classify(h, first, nil, ours, contacted)
 	want := Result{Kind: KindBounce, MatchedMessageID: ourID, FromDomain: "sender.example", FinalRecipient: leadAddr}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -147,13 +147,13 @@ func TestClassifyBounceReadsTheReportParts(t *testing.T) {
 
 	// Without the parts the first 600 bytes alone cannot match it.
 	h, _ = ParseHeader(raw, nil)
-	if got := Classify(h, first, ours, contacted); got.MatchedMessageID != "" || got.FinalRecipient != "" || got.Kind != KindBounce {
+	if got := Classify(h, first, nil, ours, contacted); got.MatchedMessageID != "" || got.FinalRecipient != "" || got.Kind != KindBounce {
 		t.Fatalf("without the report parts: %+v", got)
 	}
 
 	// A report that is not ours keeps its final recipient and carries no match.
 	h, _ = ParseHeader(raw, report)
-	if got := Classify(h, first, func(string) bool { return false }, contacted); got.MatchedMessageID != "" || got.FinalRecipient != leadAddr {
+	if got := Classify(h, first, nil, func(string) bool { return false }, contacted); got.MatchedMessageID != "" || got.FinalRecipient != leadAddr {
 		t.Fatalf("a foreign report: %+v", got)
 	}
 }
@@ -166,14 +166,14 @@ func TestClassifyBounceByContentTypeOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Classify(h, nil, ours, contacted)
+	got := Classify(h, nil, nil, ours, contacted)
 	if got.Kind != KindBounce || got.FinalRecipient != leadAddr {
 		t.Fatalf("got %+v", got)
 	}
 	// Another report type (a read receipt) is not a bounce.
 	raw = hdr("From", stranger, "Content-Type", `multipart/report; report-type=disposition-notification; boundary=x`)
 	h, _ = ParseHeader(raw, nil)
-	if got := Classify(h, nil, ours, contacted); got.Kind == KindBounce {
+	if got := Classify(h, nil, nil, ours, contacted); got.Kind == KindBounce {
 		t.Fatalf("a disposition notification classified as a bounce: %+v", got)
 	}
 }
@@ -181,7 +181,7 @@ func TestClassifyBounceByContentTypeOnly(t *testing.T) {
 func TestClassifyReturnsNoAddressOrText(t *testing.T) {
 	raw := hdr("From", "Ana <"+leadAddr+">", "Subject", "Re: Drupal 7", "In-Reply-To", "<"+ourID+">")
 	h, _ := ParseHeader(raw, nil)
-	got := Classify(h, []byte("secret body words"), ours, contacted)
+	got := Classify(h, []byte("secret body words"), nil, ours, contacted)
 	for _, f := range []string{got.MatchedMessageID, got.FromDomain, got.FinalRecipient, string(got.Kind)} {
 		if strings.Contains(f, "contact") || strings.Contains(f, "secret") || strings.Contains(f, "@northwind") {
 			t.Fatalf("result carries an address or body text: %+v", got)
@@ -253,7 +253,7 @@ func TestClassifyEncodedDSN(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := Classify(h, first, ours, contacted)
+			got := Classify(h, first, nil, ours, contacted)
 			want := Result{Kind: KindBounce, MatchedMessageID: ourID, FromDomain: "sender.example", FinalRecipient: leadAddr}
 			if got != want {
 				t.Fatalf("got %+v, want %+v", got, want)
@@ -277,5 +277,187 @@ func TestDecodePart(t *testing.T) {
 	}
 	if got := decodePart([]byte("!!!! ####"), "base64"); len(got) != 0 {
 		t.Fatalf("garbage base64: %q", got)
+	}
+}
+
+// replyHdr is a reply to our message from the lead, with extra header fields.
+func replyHdr(subject string, kv ...string) []byte {
+	return hdr(append([]string{"From", "Ana <" + leadAddr + ">", "Subject", subject, "In-Reply-To", "<" + ourID + ">"}, kv...)...)
+}
+
+func TestClassifyOwnText(t *testing.T) {
+	selftestReply := "Got it.\n\n" + attrEN + "\n" + quote(oldSelftest, 1)
+	cases := []struct {
+		name  string
+		raw   []byte
+		text  string
+		lines []string
+		want  MessageKind
+	}{
+		// The live incident of 26 Oct 2026 (red on the old code: it read an opt-out).
+		{"live selftest reply", replyHdr("Re: Leadhound selftest"), selftestReply, testOwnLines, KindReply},
+		{"live selftest reply, quote stripping alone", replyHdr("Re: Leadhound selftest"), selftestReply, nil, KindReply},
+		{"reply quoting our en line", replyHdr("Re: Drupal 7"), "Got it, thanks.\n\n" + attrEN + "\n" + quote(ourBody+enLine, 1),
+			testOwnLines, KindReply},
+		{"reply quoting our en line, quote stripping alone", replyHdr("Re: Drupal 7"),
+			"Got it, thanks.\n\n" + attrEN + "\n" + quote(ourBody+enLine, 1), nil, KindReply},
+		// Red on the old code: the base64 part hid the words.
+		{"Gmail base64 multipart Romanian opt-out", replyHdr("Re: Drupal 7", "Content-Type", `multipart/alternative; boundary="b1"`),
+			gmailAlternative("Dezabonare, vă rog.\r\n", "<div>Dezabonare, vă rog.</div>"), testOwnLines, KindOptOut},
+		{"Outlook top-post reply", replyHdr("Re: Drupal 7"), "Thanks, interesting.\n\n" + outlookHeader + ourBody + enLine + "\n",
+			testOwnLines, KindReply},
+		{"subject wins over a quote-only body", replyHdr("unsubscribe"), "Got it.\n\n" + attrEN + "\n" + quote(ourBody, 1),
+			testOwnLines, KindOptOut},
+		// FO7: our line soft-wrapped in a quoted-printable part, unquoted.
+		{"QP part with our line soft-wrapped", replyHdr("Re: Drupal 7", "Content-Type", `multipart/alternative; boundary="b1"`),
+			"--b1\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" +
+				"Thanks.\r\n\r\nNot relevant? Reply =E2=80=9Cunsub=\r\nscribe=E2=80=9D and I won=E2=80=99t write again.\r\n--b1--\r\n",
+			testOwnLines, KindReply},
+		// FO7: a short plain part, then a Gmail HTML part quoting our line, inside the peek.
+		{"plain part then HTML quoting our line", replyHdr("Re: Drupal 7", "Content-Type", `multipart/alternative; boundary="b1"`),
+			"--b1\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nThanks.\r\n" +
+				"--b1\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<div>Thanks.</div><div class=\"gmail_quote\"><blockquote>" +
+				"Not relevant? Reply &quot;unsubscribe&quot; and I won&#39;t write again.</blockquote></div>\r\n--b1--\r\n",
+			testOwnLines, KindReply},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if len(c.text) > FirstTextBytes {
+				t.Fatalf("fixture is %d bytes, more than the %d-byte peek", len(c.text), FirstTextBytes)
+			}
+			h, err := ParseHeader(c.raw, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Classify(h, []byte(c.text), c.lines, ours, contacted); got.Kind != c.want {
+				t.Fatalf("got %s, want %s (OptOutIn: %q)", got.Kind, c.want, OptOutIn(h.Fields, []byte(c.text), c.lines))
+			}
+		})
+	}
+}
+
+// wrappedMessage is a fixture as a whole message: header and first text.
+type wrappedMessage struct {
+	name string
+	raw  []byte
+	text []byte
+	want verdict
+}
+
+// wrapFixture wraps one hand-tagged text as the ways a client sends it: as it is, base64
+// single part, a base64 part of a multipart/alternative, and a quoted-printable part.
+func wrapFixture(t *testing.T, name, subject, text string, html bool, want verdict) []wrappedMessage {
+	t.Helper()
+	ctype := "text/plain"
+	if html {
+		ctype = "text/html"
+	}
+	crlf := strings.ReplaceAll(text, "\n", "\r\n")
+	var qp bytes.Buffer
+	w := quotedprintable.NewWriter(&qp)
+	if _, err := w.Write([]byte(crlf)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	part := func(cte, body string) []byte {
+		return []byte("This is a multi-part message in MIME format.\r\n\r\n--b1\r\nContent-Type: " + ctype + "; charset=UTF-8\r\n" +
+			"Content-Transfer-Encoding: " + cte + "\r\n\r\n" + body + "\r\n--b1--\r\n")
+	}
+	multi := []string{"Content-Type", `multipart/alternative; boundary="b1"`}
+	return []wrappedMessage{
+		{name + "/plain", replyHdr(subject, "Content-Type", ctype+"; charset=UTF-8"), []byte(crlf), want},
+		{name + "/base64", replyHdr(subject, "Content-Type", ctype+"; charset=UTF-8", "Content-Transfer-Encoding", "base64"),
+			encodeB64(crlf), want},
+		{name + "/base64 part", replyHdr(subject, multi...), part("base64", string(encodeB64(crlf))), want},
+		{name + "/quoted-printable part", replyHdr(subject, multi...), part("quoted-printable", qp.String()), want},
+	}
+}
+
+// verdictMessages is every hand-tagged fixture wrapped as whole messages (FO5): the
+// OwnText shapes, TestClassify's opt-out and stop cases, and the MIME cases.
+func verdictMessages(t *testing.T) []wrappedMessage {
+	t.Helper()
+	var all []wrappedMessage
+	for _, c := range ownTextFixtures {
+		all = append(all, wrapFixture(t, c.name, "Re: Drupal 7", c.text, c.html, c.want)...)
+	}
+	for _, c := range []struct {
+		subject, text string
+		want          verdict
+	}{
+		{"unsubscribe", "", realOptOut},
+		{"=?utf-8?q?Dezabonare_v=C4=83_rog?=", "", realOptOut},
+		{" STOP ", "", realOptOut},
+		{"Re: stop the Drupal 7 work?", "", notOptOut},
+		{"Re: Drupal 7", "Please remove   me from your list.", realOptOut},
+		{"Re: Drupal 7", "Dezabonare, vă rog.", realOptOut},
+		{"Re: Drupal 7", "Vă rog să mă dezabonați.", realOptOut},
+		{"Re: Drupal 7", "Bitte abmelden.", realOptOut},
+		{"Re: Drupal 7", "Graag afmelden.", realOptOut},
+		{"Re: Drupal 7", "Please unsubscribe me.", realOptOut},
+		{"Re: Drupal 7", "Mulțumim, nu mai avem pe nimeni pe Drupal.", notOptOut},
+		{"Re: Drupal 7", "We will stop using Drupal 7 next year.", notOptOut},
+		{"Re: Drupal 7", "Sounds good, call me.", notOptOut},
+	} {
+		all = append(all, wrapFixture(t, "classify "+c.subject+" "+c.text, c.subject, c.text, false, c.want)...)
+	}
+	return all
+}
+
+// TestOptOutInVerdicts (FO5): every hand-tagged fixture, in every wrapping, reads as its
+// tag says. realOptOut must be subject or text; notOptOut must be quoted or none.
+func TestOptOutInVerdicts(t *testing.T) {
+	for _, m := range verdictMessages(t) {
+		t.Run(m.name, func(t *testing.T) {
+			h, err := ParseHeader(m.raw, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := OptOutIn(h.Fields, m.text, testOwnLines)
+			opt := got == OptOutSubject || got == OptOutText
+			if opt != (m.want == realOptOut) {
+				t.Fatalf("want %s, OptOutIn says %q\ntext: %q", m.want, got, m.text)
+			}
+		})
+	}
+}
+
+// TestClassifyAgreesWithOptOutIn: Classify's opt_out and OptOutIn never drift apart.
+func TestClassifyAgreesWithOptOutIn(t *testing.T) {
+	for _, m := range verdictMessages(t) {
+		h, err := ParseHeader(m.raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, lines := range [][]string{testOwnLines, nil} {
+			where := OptOutIn(h.Fields, m.text, lines)
+			got := Classify(h, m.text, lines, ours, contacted)
+			if (got.Kind == KindOptOut) != (where == OptOutSubject || where == OptOutText) {
+				t.Fatalf("%s: Classify %s, OptOutIn %q", m.name, got.Kind, where)
+			}
+		}
+	}
+}
+
+func TestOptOutInWhere(t *testing.T) {
+	h, _ := ParseHeader(replyHdr("Re: Drupal 7"), nil)
+	for _, c := range []struct {
+		text string
+		want OptOutWhere
+	}{
+		{"Got it.\n\n" + attrEN + "\n" + quote(ourBody+enLine, 1), OptOutQuoted},
+		{"Thanks.", OptOutNone},
+		{"Please unsubscribe me.", OptOutText},
+		{"stop!", OptOutText},
+	} {
+		if got := OptOutIn(h.Fields, []byte(c.text), testOwnLines); got != c.want {
+			t.Fatalf("%q: got %q, want %q", c.text, got, c.want)
+		}
+	}
+	h, _ = ParseHeader(replyHdr("Unsubscribe"), nil)
+	if got := OptOutIn(h.Fields, nil, nil); got != OptOutSubject {
+		t.Fatalf("subject: got %q", got)
 	}
 }

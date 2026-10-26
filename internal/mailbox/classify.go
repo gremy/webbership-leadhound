@@ -70,17 +70,22 @@ type Result struct {
 }
 
 var (
-	optOutWords = regexp.MustCompile(`(?i)\b(unsubscribe|remove\s+me|dezabonare|dezabona|abmelden|afmelden)\b`)
+	// optOutWords (RA5, FO1): Go's \b is ASCII-only, so the Romanian forms that end in a
+	// letter with a diacritic (dezabonează, dezabonați) are matched by their stem, with no
+	// boundary after it (it errs toward opt-out).
+	optOutWords = regexp.MustCompile(`(?i)\b(unsubscribe|remove\s+me|dezabonare|dezabona|dezabonez|dezabonati|abmelden|afmelden|abbestellen|austragen|opt[\s-]?out)\b|(?i)\b(dezaboneaz[aă]|dezabona[tț]i)`)
 	msgIDRe     = regexp.MustCompile(`<([^<>\s]+)>`)
 	wordDecoder = new(mime.WordDecoder)
 )
 
 // Classify sorts one message, in this order: bounce, auto_reply, opt_out, reply,
 // unmatched. firstText is at most the first 600 bytes of the text; it is read and
-// dropped. ourIDs says whether a Message-ID is one we sent; contactedDomain whether a
+// dropped. ownLines are our own opt-out lines (sender.opt_out_lines and the selftest
+// sentence), taken out of the text before the opt-out words are matched (FO3).
+// ourIDs says whether a Message-ID is one we sent; contactedDomain whether a
 // registrable domain is one we wrote to. An opt-out acts only when it is matched to us,
 // so an unmatched one is unmatched.
-func Classify(h Header, firstText []byte, ourIDs func(id string) bool, contactedDomain func(domain string) bool) Result {
+func Classify(h Header, firstText []byte, ownLines []string, ourIDs func(id string) bool, contactedDomain func(domain string) bool) Result {
 	f := h.Fields
 	if f == nil {
 		f = mail.Header{}
@@ -108,7 +113,7 @@ func Classify(h Header, firstText []byte, ourIDs func(id string) bool, contacted
 	case !matched:
 		res.Kind = KindUnmatched
 		res.MatchedMessageID = ""
-	case isOptOut(f, firstText):
+	case isOptOut(f, firstText, ownLines):
 		res.Kind = KindOptOut
 	default:
 		res.Kind = KindReply
@@ -155,22 +160,59 @@ func isAutomatic(f mail.Header) bool {
 	return false
 }
 
-// isOptOut (RA5): an opt-out word anywhere in the subject or the first text, or a subject
-// that is just "stop".
-func isOptOut(f mail.Header, firstText []byte) bool {
+// OptOutWhere is where OptOutIn found an opt-out.
+type OptOutWhere string
+
+const (
+	// OptOutNone: no opt-out word anywhere.
+	OptOutNone OptOutWhere = ""
+	// OptOutSubject: the subject asks to hear no more.
+	OptOutSubject OptOutWhere = "subject"
+	// OptOutText: the sender's own words ask to hear no more (FO1).
+	OptOutText OptOutWhere = "text"
+	// OptOutQuoted: an opt-out word is in the text, but only in quoted text or in our own
+	// lines: the old rule (RA5) would have read it as an opt-out; it is a reply.
+	OptOutQuoted OptOutWhere = "quoted"
+)
+
+// OptOutIn says where a message asks to hear no more. The subject rules come first (RA5,
+// unchanged): an opt-out word in the decoded subject, or a subject that is just "stop".
+// Then the text, decided on decoded text only (FO7): the first text part of a multipart
+// (FO4), or a single part decoded by its top-level Content-Transfer-Encoding; the text as
+// it came only when nothing decoded. An opt-out word in the sender's own words, above or
+// below a quote (OwnText: FO2 quotes out, FO3 our lines out), or own words that are just
+// "stop", is OptOutText. A word found only in the raw views the old rule read, or in the
+// decoded text before quotes were taken out, is OptOutQuoted.
+func OptOutIn(f mail.Header, firstText []byte, ownLines []string) OptOutWhere {
 	subject := f.Get("Subject")
 	if dec, err := wordDecoder.DecodeHeader(subject); err == nil {
 		subject = dec
 	}
 	if strings.EqualFold(strings.TrimSpace(subject), "stop") || optOutWords.MatchString(subject) {
-		return true
+		return OptOutSubject
 	}
-	for _, text := range textViews(firstText, f.Get("Content-Transfer-Encoding")) {
+	cte := f.Get("Content-Transfer-Encoding")
+	body, html := firstTextPart(firstText, f.Get("Content-Type"), cte)
+	if len(bytes.TrimSpace(body)) == 0 {
+		body, html = firstText, false
+	}
+	own, tail := OwnText(body, html, ownLines)
+	if optOutWords.Match(own) || optOutWords.Match(tail) || isJustStop(own) {
+		return OptOutText
+	}
+	for _, text := range append(textViews(firstText, cte), body) {
 		if optOutWords.Match(text) {
-			return true
+			return OptOutQuoted
 		}
 	}
-	return false
+	return OptOutNone
+}
+
+// isOptOut (RA5, FO1-FO3): the subject asks to hear no more, or the sender's own words do;
+// an opt-out word that sits only in quoted text or in our own opt-out line is not one.
+func isOptOut(f mail.Header, firstText []byte, ownLines []string) bool {
+	where := OptOutIn(f, firstText, ownLines)
+	return where == OptOutSubject || where == OptOutText
 }
 
 // textViews returns the first text as it came and, decoded, as quoted-printable and (when

@@ -356,3 +356,63 @@ func TestSyncAllPausesOnce(t *testing.T) {
 		t.Errorf("held state rows %q, want the operator's domain pause alone", rows)
 	}
 }
+
+// TestSyncQuotedReplyIsAReply (FO2, FO3): the live incident of 26 Oct 2026. The operator
+// replied to a selftest sent before FO3, quoting its body (and its word "unsubscribe") under
+// a Gmail attribution; that is a reply, and nothing is suppressed.
+func TestSyncQuotedReplyIsAReply(t *testing.T) {
+	w := newSendWorld(t, true, 20)
+	t.Setenv("LEADHOUND_OUTREACH", "live")
+	w.mustRun(t, "leads", "selftest", "--to", testOperator)
+	selfID := w.str(t, `SELECT m.message_id FROM outreach_message m JOIN lead l ON l.id = m.lead_id WHERE l.kind = 'selftest'`)
+	// The old selftest body, as sent before this change, quoted the way Gmail quotes.
+	quoted := "Got it.\n\nOn Mon, 26 Oct 2026 at 18:10, Sam <" + testUser + "> wrote:\n" +
+		"> Leadhound selftest, 26 Oct 2026 18:10 EET.\n>\n" +
+		"> Reply to this message to test the reply sync; a reply with the word unsubscribe tests the opt-out.\n"
+	w.box.deliver("INBOX", "From: Me <"+testOperator+">\r\nSubject: Re: Leadhound selftest\r\nIn-Reply-To: <"+selfID+">\r\n\r\n", quoted)
+
+	out := w.mustRun(t, "leads", "sync")
+	wantLines(t, "sync", out, "1 reply to read in the outreach mailbox: your selftest")
+	if strings.Contains(out, "opt-out") {
+		t.Errorf("a quoted reply was reported as an opt-out:\n%s", out)
+	}
+	if n := w.count(t, `SELECT count(*) FROM mailbox_event WHERE kind = 'reply'`); n != 1 {
+		t.Errorf("%d reply events, want 1", n)
+	}
+	if n := w.count(t, `SELECT count(*) FROM mailbox_event WHERE kind = 'opt_out'`); n != 0 {
+		t.Errorf("%d opt-out events, want 0", n)
+	}
+	if n := w.count(t, `SELECT count(*) FROM suppression`); n != 0 {
+		t.Errorf("%d suppressions, want 0", n)
+	}
+}
+
+// TestSyncRealOptOutStillSuppresses (FO1): a lead's own "unsubscribe" above the quote of
+// our email is an opt-out, on the first sync of a fresh mailbox cursor (cold start).
+func TestSyncRealOptOutStillSuppresses(t *testing.T) {
+	w := newSendWorld(t, true, 20)
+	w.batch(t, false, map[int64]string{w.lead(t, "optout.example"): "optout.example"})
+	w.mustRun(t, "leads", "send")
+	firstID := w.firstMessageID(t, "optout.example")
+	w.box.deliver("INBOX", replyHeader("optout.example", firstID, "Re: hello"),
+		"unsubscribe\n\nOn Mon, 26 Oct 2026 at 18:10, Sam <"+testUser+"> wrote:\n> Hello,\n> "+
+			`Not relevant? Reply "unsubscribe" and I won't write again.`+"\n")
+	ownerExec(t, `DELETE FROM mailbox_cursor`) // the first sync of a fresh cursor
+	byDate := w.box.byDate
+
+	out := w.mustRun(t, "leads", "sync")
+	wantLines(t, "sync", out, "1 reply to read in the outreach mailbox: optout.example", "Of those, 1 is an opt-out, now suppressed.")
+	if w.box.byDate != byDate+2 { // INBOX and Junk
+		t.Errorf("the fresh cursors were not read by date (%d → %d)", byDate, w.box.byDate)
+	}
+	if n := w.count(t, `SELECT count(*) FROM mailbox_event WHERE kind = 'opt_out'`); n != 1 {
+		t.Errorf("%d opt-out events, want 1", n)
+	}
+	if n := w.count(t, `SELECT count(*) FROM suppression WHERE value IN ($1, $2) AND reason = 'opt_out'`,
+		"info"+"@"+"optout.example", "optout.example"); n != 2 {
+		t.Errorf("%d opt-out suppressions, want the address and the domain", n)
+	}
+	if s := w.leadState(t, "optout.example"); s != "opted_out" {
+		t.Errorf("lead %s, want opted_out", s)
+	}
+}

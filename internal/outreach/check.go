@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/mailbox"
 )
 
 // MaxSubjectRunes is the longest subject Check passes.
@@ -22,6 +23,7 @@ const (
 	RuleSource        = "source"         // a slot the text uses names no stored row
 	RuleBanned        = "banned-word"    // a copy.banned_words entry appears
 	RuleOptOut        = "opt-out"        // the opt-out line is missing from the email
+	RuleOptOutWord    = "opt-out-word"   // an opt-out word appears outside the opt-out line
 	RuleIdentity      = "identity"       // the identity line is missing from the email
 	RuleNumber        = "number"         // a number traces to neither the template nor a slot
 	RuleSubjectLength = "subject-length" // the subject is over MaxSubjectRunes
@@ -40,7 +42,8 @@ func (p Problem) String() string { return p.Rule + ": " + p.Detail }
 // Check fact-checks a rendered draft against the drafting rules. step is the email's place
 // in the sequence (0 is the first email); it is ignored for a form or LinkedIn text.
 //
-// Every text gets the placeholder, empty-slot, source, banned-word, number and URL rules.
+// Every text gets the placeholder, empty-slot, source, banned-word, opt-out-word, number and
+// URL rules.
 // An email also gets the step, word-bound, subject and footer (opt-out and identity) rules;
 // a form or LinkedIn text has no subject or footer and is not held to an email's length.
 //
@@ -94,6 +97,20 @@ func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
 		if checkWordRe(w).MatchString(text) {
 			add(RuleBanned, "the text uses %q", w)
 		}
+	}
+
+	// FO2.4: a reply carries "Re: <our subject>" and may answer inline under our quoted
+	// body, which the sync reads as the sender's own words; so our text may hold an opt-out
+	// word only in the opt-out line, or a reply would read as an opt-out.
+	body := d.Body
+	if line := d.Slots.OptOutLine.Value; strings.TrimSpace(line) != "" {
+		body = strings.ReplaceAll(body, line, " ")
+	}
+	switch {
+	case mailbox.HasOptOutWord(d.Subject):
+		add(RuleOptOutWord, "the subject holds an opt-out word")
+	case mailbox.HasOptOutWord(body):
+		add(RuleOptOutWord, "the text holds an opt-out word outside the opt-out line")
 	}
 
 	allowed := map[string]bool{}

@@ -88,6 +88,9 @@ type matcher struct {
 	byID     map[string]leadstore.SentRef
 	byTo     map[string]leadstore.SentRef
 	byDomain map[string]leadstore.SentRef // never a selftest: those match by Message-ID only (RA24)
+	// ownLines are our own opt-out lines, taken out of a reply before its opt-out words are
+	// matched (FO3); set by syncAll from leads.yaml.
+	ownLines []string
 }
 
 func newMatcher(refs []leadstore.SentRef) matcher {
@@ -110,6 +113,19 @@ func newMatcher(refs []leadstore.SentRef) matcher {
 		}
 	}
 	return m
+}
+
+// optOutLinesOf (FO3) is every line of ours a reply may quote: the opt-out line of each
+// language (sorted by language, so the order is fixed), then the selftest sentence and the
+// one sent before it (replies to old selftests still quote it).
+func optOutLinesOf(cfg leadconfig.Config) []string {
+	var lines []string
+	for _, lang := range slices.Sorted(maps.Keys(cfg.Sender.OptOutLines)) {
+		if line, ok := cfg.Sender.OptOutLine(lang); ok {
+			lines = append(lines, line)
+		}
+	}
+	return append(lines, mailbox.SelftestLine, mailbox.OldSelftestLine)
 }
 
 func (m matcher) ourID(id string) bool         { _, ok := m.byID[id]; return ok }
@@ -255,6 +271,7 @@ func syncAll(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, 
 		return nil, fmt.Errorf("leads sync: %w", err)
 	}
 	match := newMatcher(refs)
+	match.ownLines = optOutLinesOf(cfg)
 	out := map[int64]mailboxSync{}
 	for _, mb := range boxes {
 		if mb.State == leadstore.MailboxRetired {
@@ -352,7 +369,7 @@ func classifyFetched(f mailbox.Fetched, match matcher) (leadstore.Incoming, stri
 	if err != nil {
 		h = mailbox.Header{Fields: mail.Header{}}
 	}
-	res := mailbox.Classify(h, f.FirstText, match.ourID, match.contacted)
+	res := mailbox.Classify(h, f.FirstText, match.ownLines, match.ourID, match.contacted)
 	in.Kind, in.FromDomain = res.Kind, res.FromDomain
 	in.Matched = match.resolve(res)
 	if in.Matched == nil && res.Kind != mailbox.KindAutoReply {

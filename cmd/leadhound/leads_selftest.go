@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 )
 
@@ -53,6 +54,13 @@ func selftestAllowed(setup leadsSetup, to string) error {
 	return usageError("--to is not one of sender.operator_addresses in leads.yaml; a selftest only writes to your own address")
 }
 
+// selftestBody is the selftest message's text. Its instruction is mailbox.SelftestLine,
+// which holds no opt-out word and which the sync removes from replies (FO3), so a reply
+// that quotes it is a reply.
+func selftestBody(at time.Time) string {
+	return fmt.Sprintf("Leadhound selftest, %s.\n\n%s\n", at.Format("2 Jan 2006 15:04 MST"), mailbox.SelftestLine)
+}
+
 // createSelftest writes the selftest's rows in one transaction, its message from mb (its
 // Message-ID on mb's domain, its From name mb's or sender.name) due now.
 func (r *sendRun) createSelftest(ctx context.Context, now time.Time, mb *sendMailbox) (leadstore.Selftest, error) {
@@ -64,10 +72,9 @@ func (r *sendRun) createSelftest(ctx context.Context, now time.Time, mb *sendMai
 	err = leadsInTx(ctx, r.s.Pool(), func(tq leadstore.Queries) error {
 		var err error
 		st, err = tq.CreateSelftest(ctx, leadstore.SelftestDraft{
-			To:      r.opts.selftestTo,
-			Subject: "Leadhound selftest",
-			Body: fmt.Sprintf("Leadhound selftest, %s.\n\nReply to this message to test the reply sync; "+
-				"a reply with the word unsubscribe tests the opt-out.\n", now.In(r.loc).Format("2 Jan 2006 15:04 MST")),
+			To:        r.opts.selftestTo,
+			Subject:   "Leadhound selftest",
+			Body:      selftestBody(now.In(r.loc)),
 			MessageID: msgID,
 			Due:       now,
 			MailboxID: mb.ID,
