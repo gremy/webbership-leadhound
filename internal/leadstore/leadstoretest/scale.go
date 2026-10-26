@@ -21,7 +21,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v2"
+	scaleLeadsVersion = "v3"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -42,10 +42,13 @@ const (
 	scaleLeads       = 5_000
 	scaleBatches     = 400 // the first scaleShadow shadow, the rest live, 50 messages each
 	scaleShadow      = 60
+	scaleMailboxes   = 10 // sending mailboxes, two on each of scaleMailDomains reserved domains
+	scaleMailDomains = 5
 )
 
 // leadsTables are the tables of the leads migration set, emptied before a reseed.
 var leadsTables = []string{
+	"mailbox_check", "mailbox_state", "sender_mailbox",
 	"lead_priority", "priority_profile", "send_pause", "sender_check", "mailbox_cursor",
 	"mailbox_event", "suppression", "outreach_message", "outreach_batch", "lead_event", "lead",
 	"contact_attempt", "agency_finding", "contact_route", "org", "fetch_header", "site_probe", "site",
@@ -252,6 +255,20 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			SELECT id, state, 'seeded', CASE WHEN state = 'skipped' THEN 'gremy' ELSE 'system' END, state_at
 			FROM lead WHERE state <> 'new'
 			ORDER BY 1, 5`, nil},
+		// The sending mailboxes: outN@mailD.example, two on each domain, every one checked
+		// and passed the day before Day. The sealed bytes are a placeholder no key opens.
+		{"sender_mailbox", `INSERT INTO sender_mailbox (id, address, domain, login, smtp_addr, imap_addr, dkim_selector,
+			  from_name, password_sealed, sealed_by, created_at)
+			SELECT n, 'out' || n || '@' || d.domain, d.domain, 'out' || n || '@' || d.domain,
+			       'smtp.' || d.domain || ':465', 'imap.' || d.domain || ':993', 'lh', '',
+			       convert_to('placeholder, sealed by no key', 'UTF8'), 'placeholder', $1::timestamptz - interval '401 days'
+			FROM generate_series(1, ` + fmt.Sprint(scaleMailboxes) + `) n
+			CROSS JOIN LATERAL (SELECT 'mail' || (1 + (n - 1) % ` + fmt.Sprint(scaleMailDomains) + `) || '.example' AS domain) d`, []any{day}},
+		{"mailbox_check", `INSERT INTO mailbox_check (mailbox_id, requested_at, actor, checked_at, smtp_ok, imap_ok, folders_ok,
+			  spf, dkim, dmarc, outcome)
+			SELECT id, $1::timestamptz - interval '1 day', 'operator', $1::timestamptz - interval '1 day' + interval '1 minute',
+			       true, true, true, true, true, true, 'passed'
+			FROM sender_mailbox ORDER BY id`, []any{day}},
 		// Batch b drafted 401-b days before Day and approved the same day: the first 60 the
 		// shadow week, the rest live.
 		{"outreach_batch", `INSERT INTO outreach_batch (id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256)
@@ -284,9 +301,9 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			           ELSE 'cancelled' END AS state
 			  FROM m
 			)
-			INSERT INTO outreach_message (id, batch_id, lead_id, step, channel, to_address, subject, body_text, message_id,
+			INSERT INTO outreach_message (id, batch_id, lead_id, mailbox_id, step, channel, to_address, subject, body_text, message_id,
 			  slots, approved_sha256, state, due_at, sent_at, cancel_reason, created_at)
-			SELECT s.id, s.b, s.lead_id, s.step, s.channel,
+			SELECT s.id, s.b, s.lead_id, 1 + s.lead_id % ` + fmt.Sprint(scaleMailboxes) + `, s.step, s.channel,
 			       CASE WHEN s.channel = 'email' THEN 'info@' || o.domain ELSE '' END,
 			       CASE WHEN s.channel = 'email' THEN 'Your Drupal site' ELSE '' END,
 			       repeat('A seeded outreach message body. ', 20),
@@ -318,18 +335,25 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			         (` + fmt.Sprint(scaleShadow) + ` + 1 + i % ` + fmt.Sprint(scaleBatches-scaleShadow-1) + ` - 1) * 50 + 3 * (i % 16) + 1 AS msg
 			  FROM generate_series(1, 4000) i
 			)
-			INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at)
-			SELECT CASE WHEN e.kind = 'unmatched' AND e.i % 3 = 0 THEN 'Junk' ELSE 'INBOX' END, 1, e.i, e.kind,
+			INSERT INTO mailbox_event (mailbox_id, mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at)
+			SELECT m.mailbox_id, CASE WHEN e.kind = 'unmatched' AND e.i % 3 = 0 THEN 'Junk' ELSE 'INBOX' END, 1, e.i, e.kind,
 			       CASE WHEN e.kind = 'unmatched' THEN 'other' || e.i || '.example' ELSE o.domain END,
 			       CASE WHEN e.kind <> 'unmatched' THEN m.id END, CASE WHEN e.kind <> 'unmatched' THEN m.lead_id END,
 			       $1::timestamptz - (e.i % 365) * interval '1 day' + (e.i % 86400) * interval '1 second'
 			FROM e JOIN outreach_message m ON m.id = e.msg JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 			ORDER BY e.i`, []any{day}},
-		{"mailbox_cursor", `INSERT INTO mailbox_cursor (mailbox, uidvalidity, last_uid, synced_at)
-			VALUES ('INBOX', 1, 4000, $1::timestamptz - interval '1 hour'), ('Junk', 1, 3999, $1::timestamptz - interval '1 hour')`, []any{day}},
-		{"sender_check", `INSERT INTO sender_check (domain_sha256, spf, dkim, dmarc, note, checked_at)
-			SELECT $2::bytea, true, i % 50 <> 0, true, '', $1::timestamptz - i * interval '1 day' + interval '6 hours'
+		{"mailbox_cursor", `INSERT INTO mailbox_cursor (mailbox_id, mailbox, uidvalidity, last_uid, synced_at)
+			VALUES (1, 'INBOX', 1, 4000, $1::timestamptz - interval '1 hour'), (1, 'Junk', 1, 3999, $1::timestamptz - interval '1 hour')`, []any{day}},
+		{"sender_check", `INSERT INTO sender_check (domain_sha256, selector, spf, dkim, dmarc, note, checked_at)
+			SELECT $2::bytea, 'lh', true, i % 50 <> 0, true, '', $1::timestamptz - i * interval '1 day' + interval '6 hours'
 			FROM generate_series(0, 364) i`, []any{day, senderSHA[:]}},
+		// Each mailbox domain's daily check with the mailboxes' selector, a pass on Day among
+		// them (sha256 of the domain, as leadstore.SenderDomainSHA256 hashes it).
+		{"sender_check mailboxes", `INSERT INTO sender_check (domain_sha256, selector, spf, dkim, dmarc, note, checked_at)
+			SELECT sha256(convert_to('mail' || d || '.example', 'UTF8')), 'lh', true, i % 50 <> 7, true, '',
+			       $1::timestamptz - i * interval '1 day' + interval '6 hours'
+			FROM generate_series(1, ` + fmt.Sprint(scaleMailDomains) + `) d CROSS JOIN generate_series(0, 364) i
+			ORDER BY i DESC, d`, []any{day}},
 		// Paused and resumed three times; sending is on.
 		{"send_pause", `INSERT INTO send_pause (paused, reason, actor, at)
 			SELECT i % 2 = 1, CASE WHEN i % 2 = 1 THEN 'seeded pause' ELSE '' END, 'gremy',
@@ -358,7 +382,7 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 	}
 	// The explicit ids above leave their sequences behind; a test's own insert must not
 	// collide with them.
-	for _, tbl := range []string{"run", "http_fetch", "site", "site_probe", "org", "lead", "outreach_batch", "outreach_message"} {
+	for _, tbl := range []string{"run", "http_fetch", "site", "site_probe", "org", "lead", "outreach_batch", "outreach_message", "sender_mailbox"} {
 		if _, err := conn.Exec(ctx,
 			fmt.Sprintf("SELECT setval(pg_get_serial_sequence('%s', 'id'), (SELECT max(id) FROM %s))", tbl, tbl)); err != nil {
 			return fmt.Errorf("seed leads: sequence %s: %w", tbl, err)

@@ -74,7 +74,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
-    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256) ON public.outreach_message TO leadhound_app;
+    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256, hard_bounce) ON public.outreach_message TO leadhound_app;
   END IF;
   IF to_regclass('public.lead_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_event FROM leadhound_app;
@@ -98,6 +98,20 @@ BEGIN
   END IF;
   IF to_regclass('public.lead_priority') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_priority FROM leadhound_app;
+  END IF;
+  -- The sending mailboxes (00007): sender_mailbox and mailbox_check take UPDATE on their
+  -- pointer columns only (a mailbox's address is fixed), mailbox_state is append-only, and
+  -- outreach_message.hard_bounce joins that table's pointers above.
+  IF to_regclass('public.sender_mailbox') IS NOT NULL THEN
+    REVOKE UPDATE ON public.sender_mailbox FROM leadhound_app;
+    GRANT UPDATE (login, smtp_addr, imap_addr, dkim_selector, from_name, password_sealed, sealed_by) ON public.sender_mailbox TO leadhound_app;
+  END IF;
+  IF to_regclass('public.mailbox_state') IS NOT NULL THEN
+    REVOKE UPDATE ON public.mailbox_state FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.mailbox_check') IS NOT NULL THEN
+    REVOKE UPDATE ON public.mailbox_check FROM leadhound_app;
+    GRANT UPDATE (checked_at, smtp_ok, imap_ok, folders_ok, spf, dkim, dmarc, fix, outcome) ON public.mailbox_check TO leadhound_app;
   END IF;
 END
 $$;

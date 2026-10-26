@@ -518,3 +518,96 @@ func TestStartDateFirstSend(t *testing.T) {
 	_, err = Load(dir)
 	wantProblem(t, err, "caps.start_date", "first-send")
 }
+
+// TestDomainCapsAndHealthDefaults: a file without caps.domain_per_day,
+// caps.mailboxes_per_domain or a health block loads with the defaults, as the operator's own
+// file does before it names them.
+func TestDomainCapsAndHealthDefaults(t *testing.T) {
+	if HardDomainDailyCeiling != 100 || HardMailboxesPerDomain != 5 {
+		t.Fatalf("ceilings = %d, %d, want 100, 5", HardDomainDailyCeiling, HardMailboxesPerDomain)
+	}
+	dir := demoDir(t)
+	replaceIn(t, dir, FileName, "  domain_per_day: 50", "")
+	replaceIn(t, dir, FileName, "  mailboxes_per_domain: 2", "")
+	replaceIn(t, dir, FileName, "health:", "")
+	replaceIn(t, dir, FileName, "  bounce_pause: {bounces: 2, within_sends: 50}", "")
+	b, err := os.ReadFile(filepath.Join(dir, FileName)) // #nosec G304 -- test data in a temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"domain_per_day", "mailboxes_per_domain", "health", "bounce_pause"} {
+		if strings.Contains(string(b), key) {
+			t.Fatalf("the trimmed file still names %s", key)
+		}
+	}
+	for name, load := range map[string]func(string) (Config, error){"Load": Load, "LoadForProbe": LoadForProbe} {
+		cfg, err := load(dir)
+		if err != nil {
+			t.Fatalf("%s without the new keys: %v", name, err)
+		}
+		if cfg.Caps.DomainPerDay != DefaultDomainPerDay || cfg.Caps.MailboxesPerDomain != DefaultMailboxesPerDomain {
+			t.Errorf("%s caps = %d, %d, want %d, %d", name, cfg.Caps.DomainPerDay, cfg.Caps.MailboxesPerDomain, DefaultDomainPerDay, DefaultMailboxesPerDomain)
+		}
+		if bp := cfg.Health.BouncePause; bp.Bounces != DefaultBouncePauseBounces || bp.WithinSends != DefaultBouncePauseWithinSends {
+			t.Errorf("%s bounce_pause = %+v, want %d within %d", name, bp, DefaultBouncePauseBounces, DefaultBouncePauseWithinSends)
+		}
+	}
+	if DefaultDomainPerDay != 50 || DefaultMailboxesPerDomain != 2 || DefaultBouncePauseBounces != 2 || DefaultBouncePauseWithinSends != 50 {
+		t.Error("the defaults moved from 50, 2, 2 and 50")
+	}
+
+	demo, err := Load(examplesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if demo.Caps.DomainPerDay != 50 || demo.Caps.MailboxesPerDomain != 2 || demo.Health.BouncePause != (BouncePause{Bounces: 2, WithinSends: 50}) {
+		t.Errorf("demo caps %+v health %+v", demo.Caps, demo.Health)
+	}
+}
+
+// TestDomainCapsAndHealthBounds: each new value is checked against its bounds, the ceilings
+// included; a value at a bound loads.
+func TestDomainCapsAndHealthBounds(t *testing.T) {
+	bad := []struct{ old, new, want string }{
+		{"domain_per_day: 50", "domain_per_day: 101", "caps.domain_per_day"},
+		{"domain_per_day: 50", "domain_per_day: -1", "caps.domain_per_day"},
+		{"mailboxes_per_domain: 2", "mailboxes_per_domain: 6", "caps.mailboxes_per_domain"},
+		{"mailboxes_per_domain: 2", "mailboxes_per_domain: -1", "caps.mailboxes_per_domain"},
+		{"bounces: 2,", "bounces: 11,", "health.bounce_pause.bounces"},
+		{"bounces: 2,", "bounces: -1,", "health.bounce_pause.bounces"},
+		{"within_sends: 50}", "within_sends: 9}", "health.bounce_pause.within_sends"},
+		{"within_sends: 50}", "within_sends: 501}", "health.bounce_pause.within_sends"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.new, func(t *testing.T) {
+			dir := demoDir(t)
+			replaceIn(t, dir, FileName, tc.old, tc.new)
+			_, err := Load(dir)
+			wantProblem(t, err, tc.want)
+			if _, perr := LoadForProbe(dir); perr != nil {
+				t.Errorf("LoadForProbe checked a field outside its set: %v", perr)
+			}
+		})
+	}
+	good := []struct{ old, new string }{
+		{"domain_per_day: 50", "domain_per_day: 100"},
+		{"domain_per_day: 50", "domain_per_day: 1"},
+		{"mailboxes_per_domain: 2", "mailboxes_per_domain: 5"},
+		{"mailboxes_per_domain: 2", "mailboxes_per_domain: 1"},
+		{"bounces: 2,", "bounces: 1,"},
+		{"bounces: 2,", "bounces: 10,"},
+		{"within_sends: 50}", "within_sends: 10}"},
+		{"within_sends: 50}", "within_sends: 500}"},
+	}
+	for _, tc := range good {
+		dir := demoDir(t)
+		replaceIn(t, dir, FileName, tc.old, tc.new)
+		if _, err := Load(dir); err != nil {
+			t.Errorf("%s refused: %v", tc.new, err)
+		}
+	}
+	dir := demoDir(t)
+	replaceIn(t, dir, FileName, "health:", "health:\n  bounce_pase: {}")
+	_, err := Load(dir)
+	wantProblem(t, err, "bounce_pase")
+}

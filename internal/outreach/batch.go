@@ -20,6 +20,7 @@ type PlanItem struct {
 	Loc       *time.Location // the recipient country's zone; it sets business hours only
 	DueAt     time.Time      // the zero time is never due
 	Selftest  bool           // to the operator's own address: bypasses the cap, counts toward it
+	MailboxID int64          // the sending mailbox, set at batch creation; PlanMailboxes reads it
 }
 
 // HoldReason says why Plan left a due message for a later run.
@@ -50,12 +51,22 @@ const (
 // recipient's zone at now is held whatever its due_at (RA8); selftests keep that rule too.
 // Held messages claim no domain. The input slice is not changed.
 func Plan(due []PlanItem, sentToday, capToday int, now time.Time, bh leadconfig.BusinessHours) (send []PlanItem, held map[HoldReason]int) {
+	count := sentToday
+	return planWalk(due, now, bh,
+		func(PlanItem) bool { return count < capToday },
+		func(PlanItem) { count++ })
+}
+
+// planWalk is Plan's walk: it orders due as Plan says and applies the not-due, hours and
+// one-per-domain rules, then asks room whether a non-selftest message still fits; take is
+// called for every message picked (selftests included), and only for those, so a held
+// message never uses up a place. The input slice is not changed.
+func planWalk(due []PlanItem, now time.Time, bh leadconfig.BusinessHours, room func(PlanItem) bool, take func(PlanItem)) (send []PlanItem, held map[HoldReason]int) {
 	order := slices.Clone(due)
 	slices.SortStableFunc(order, planCompare)
 	held = map[HoldReason]int{}
 	send = []PlanItem{}
 	domains := map[string]bool{}
-	count := sentToday
 	for _, it := range order {
 		domain := planDomain(it.Domain)
 		loc := it.Loc
@@ -69,12 +80,12 @@ func Plan(due []PlanItem, sentToday, capToday int, now time.Time, bh leadconfig.
 			held[HoldHours]++
 		case domains[domain]:
 			held[HoldDomain]++
-		case !it.Selftest && count >= capToday:
+		case !it.Selftest && !room(it):
 			held[HoldCap]++
 		default:
 			send = append(send, it)
 			domains[domain] = true
-			count++
+			take(it)
 		}
 	}
 	return send, held

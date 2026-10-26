@@ -81,7 +81,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // it must not have: every write on the leads version table, and UPDATE on the append-only
 // lead tables (send_pause and the priority tables among them). On org, lead, outreach_batch
 // and outreach_message it swaps the table-wide UPDATE for UPDATE on their state-pointer
-// columns only (00002, 00003 and 00004 name them);
+// columns only (00002, 00003 and 00004 name them); sender_mailbox and mailbox_check get the
+// same, outreach_message gains hard_bounce, and mailbox_state is append-only (00007);
 // mailbox_cursor keeps its table-wide UPDATE, every column of it being a pointer. It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
 // same, so either may run last. Each statement is skipped when the app role or its table
 // does not exist.
@@ -122,7 +123,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
-    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256) ON public.outreach_message TO leadhound_app;
+    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256, hard_bounce) ON public.outreach_message TO leadhound_app;
   END IF;
   IF to_regclass('public.lead_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_event FROM leadhound_app;
@@ -144,6 +145,17 @@ BEGIN
   END IF;
   IF to_regclass('public.lead_priority') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_priority FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.sender_mailbox') IS NOT NULL THEN
+    REVOKE UPDATE ON public.sender_mailbox FROM leadhound_app;
+    GRANT UPDATE (login, smtp_addr, imap_addr, dkim_selector, from_name, password_sealed, sealed_by) ON public.sender_mailbox TO leadhound_app;
+  END IF;
+  IF to_regclass('public.mailbox_state') IS NOT NULL THEN
+    REVOKE UPDATE ON public.mailbox_state FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.mailbox_check') IS NOT NULL THEN
+    REVOKE UPDATE ON public.mailbox_check FROM leadhound_app;
+    GRANT UPDATE (checked_at, smtp_ok, imap_ok, folders_ok, spf, dkim, dmarc, fix, outcome) ON public.mailbox_check TO leadhound_app;
   END IF;
 END
 $$`

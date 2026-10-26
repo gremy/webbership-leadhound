@@ -38,3 +38,7 @@ caps:
   start_date: 2026-11-16
   ramp: [{from_day: 0, per_day: 5}, {from_day: 7, per_day: 12}, {from_day: 14, per_day: 25}]
   batch_size: 10
+  domain_per_day: 50 # live sends per sending domain per day, over all its mailboxes (at most 100)
+  mailboxes_per_domain: 2 # mailboxes the operator may add on one sending domain (at most 5)
+health:
+  bounce_pause: {bounces: 2, within_sends: 50} # a mailbox pauses itself at this many hard bounces in its last N live sends

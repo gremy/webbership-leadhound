@@ -458,3 +458,43 @@ func TestSMTPSenderPrintsNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+// SendError carries the reply's parsed enhanced status code, so callers read a field, not text.
+func TestSMTPSendErrorEnhanced(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		f    *fake
+		want [3]int
+	}{
+		{"rcpt 5.7.1", &fake{rcpt: func(string) error {
+			return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "policy"}
+		}}, [3]int{5, 7, 1}},
+		{"rcpt 5.1.1", &fake{rcpt: func(string) error {
+			return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "no such user"}
+		}}, [3]int{5, 1, 1}},
+		{"auth 5.7.8", &fake{auth: func(string, string) error {
+			return &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "bad credentials"}
+		}}, [3]int{5, 7, 8}},
+		{"no enhanced code", &fake{rcpt: func(string) error {
+			return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.NoEnhancedCode, Message: "no"}
+		}}, [3]int{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := send(t, tc.f.start(t, true))
+			if se := kindOf(t, err); se.Enhanced != tc.want {
+				t.Errorf("Enhanced = %v, want %v", se.Enhanced, tc.want)
+			}
+		})
+	}
+	// A deadline has no reply, so no code.
+	release := make(chan struct{})
+	f := &fake{mail: func(string) error { <-release; return nil }}
+	s := f.start(t, true)
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := s.Send(ctx, testUser, testTo, testRaw)
+	if se := kindOf(t, err); se.Enhanced != [3]int{} {
+		t.Errorf("deadline: Enhanced = %v", se.Enhanced)
+	}
+}

@@ -36,6 +36,32 @@ const FileName = "leads.yaml"
 // HardDailyCeiling is the most sends per mailbox per day; no config value lifts it.
 const HardDailyCeiling = 40
 
+// HardDomainDailyCeiling is the most sends per sending domain per day, over all of its
+// mailboxes; no config value lifts it. Providers judge reputation by domain, so this is the
+// real safety line.
+const HardDomainDailyCeiling = 100
+
+// HardMailboxesPerDomain is the most mailboxes the operator may add on one sending domain; no
+// config value lifts it.
+const HardMailboxesPerDomain = 5
+
+// Defaults for the domain caps and the health rules when leads.yaml leaves them out (or
+// writes 0).
+const (
+	DefaultDomainPerDay           = 50
+	DefaultMailboxesPerDomain     = 2
+	DefaultBouncePauseBounces     = 2
+	DefaultBouncePauseWithinSends = 50
+)
+
+// Bounds of health.bounce_pause, inclusive.
+const (
+	MinBouncePauseBounces     = 1
+	MaxBouncePauseBounces     = 10
+	MinBouncePauseWithinSends = 10
+	MaxBouncePauseWithinSends = 500
+)
+
 // DefaultDKIMSelector is sender.dkim_selector when the file leaves it out.
 const DefaultDKIMSelector = "default"
 
@@ -85,6 +111,7 @@ type Config struct {
 	Copy                 Copy               `yaml:"copy"`
 	Schedule             Schedule           `yaml:"schedule"`
 	Caps                 Caps               `yaml:"caps"`
+	Health               Health             `yaml:"health"`
 
 	// Templates is filled by Load; LoadForProbe leaves it empty.
 	Templates Templates `yaml:"-"`
@@ -190,6 +217,24 @@ type Caps struct {
 	StartDate Date   `yaml:"start_date"`
 	Ramp      []Ramp `yaml:"ramp"`
 	BatchSize int    `yaml:"batch_size"`
+	// DomainPerDay caps live sends per sending domain per day, over all of its mailboxes
+	// (default DefaultDomainPerDay, at most HardDomainDailyCeiling).
+	DomainPerDay int `yaml:"domain_per_day"`
+	// MailboxesPerDomain caps how many mailboxes the operator may add on one sending domain
+	// (default DefaultMailboxesPerDomain, at most HardMailboxesPerDomain).
+	MailboxesPerDomain int `yaml:"mailboxes_per_domain"`
+}
+
+// Health holds the rules by which a mailbox pauses itself; only the operator resumes it.
+type Health struct {
+	BouncePause BouncePause `yaml:"bounce_pause"`
+}
+
+// BouncePause pauses a mailbox when Bounces hard bounces fall within its last WithinSends
+// live sends (defaults DefaultBouncePauseBounces and DefaultBouncePauseWithinSends).
+type BouncePause struct {
+	Bounces     int `yaml:"bounces"`
+	WithinSends int `yaml:"within_sends"`
 }
 
 // FirstSend is the caps.start_date word that makes day 0 of the ramp the day of the first
@@ -279,7 +324,18 @@ func read(dataDir string) (Config, error) {
 	if cfg.Sender.DKIMSelector == "" {
 		cfg.Sender.DKIMSelector = DefaultDKIMSelector
 	}
+	defaultInt(&cfg.Caps.DomainPerDay, DefaultDomainPerDay)
+	defaultInt(&cfg.Caps.MailboxesPerDomain, DefaultMailboxesPerDomain)
+	defaultInt(&cfg.Health.BouncePause.Bounces, DefaultBouncePauseBounces)
+	defaultInt(&cfg.Health.BouncePause.WithinSends, DefaultBouncePauseWithinSends)
 	return cfg, nil
+}
+
+// defaultInt sets *v to def when the file left it out (or wrote 0).
+func defaultInt(v *int, def int) {
+	if *v == 0 {
+		*v = def
+	}
 }
 
 // AgencyFinding returns the compiled agency_finding_pattern (nil before a successful load).
@@ -485,6 +541,11 @@ func (cfg *Config) checkRest() []string {
 	if cfg.Caps.BatchSize < 1 {
 		p = append(p, "caps.batch_size must be at least 1")
 	}
+	p = append(p, bounded("caps.domain_per_day", cfg.Caps.DomainPerDay, 1, HardDomainDailyCeiling, " (the ceiling per sending domain per day)")...)
+	p = append(p, bounded("caps.mailboxes_per_domain", cfg.Caps.MailboxesPerDomain, 1, HardMailboxesPerDomain, " (the ceiling of mailboxes per sending domain)")...)
+	bp := cfg.Health.BouncePause
+	p = append(p, bounded("health.bounce_pause.bounces", bp.Bounces, MinBouncePauseBounces, MaxBouncePauseBounces, "")...)
+	p = append(p, bounded("health.bounce_pause.within_sends", bp.WithinSends, MinBouncePauseWithinSends, MaxBouncePauseWithinSends, "")...)
 	return p
 }
 
@@ -495,6 +556,14 @@ func (d Date) check(field string, or ...string) []string {
 		return []string{field + " is missing"}
 	case d.IsZero():
 		return []string{fmt.Sprintf("%s: %q is not a date like 2026-01-31%s", field, d.raw, strings.Join(or, ""))}
+	}
+	return nil
+}
+
+// bounded reports v outside lo..hi; note says what hi is, when it is a ceiling.
+func bounded(field string, v, lo, hi int, note string) []string {
+	if v < lo || v > hi {
+		return []string{fmt.Sprintf("%s must be from %d to %d%s, not %d", field, lo, hi, note, v)}
 	}
 	return nil
 }

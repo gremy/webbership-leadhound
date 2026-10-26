@@ -79,8 +79,14 @@ type SendError struct {
 	// at RCPT whose enhanced status code is 5.1.x (bad address, RFC 3463). Any other 5xx at
 	// RCPT refuses this message only.
 	Bounce bool
-	Text   string
-	cause  error // the context's error when the deadline or a cancel ended the exchange
+	// Enhanced is the reply's enhanced status code (RFC 3463), such as {5, 7, 1}; all zero
+	// when the reply had none or there was no reply.
+	Enhanced [3]int
+	Text     string
+	cause    error // the context's error when the deadline or a cancel ended the exchange
+	// cert: the server's certificate did not verify, so the connection was dropped
+	// before any credential was sent.
+	cert bool
 }
 
 func (e *SendError) Error() string {
@@ -97,61 +103,23 @@ func (e *SendError) Unwrap() error { return e.cause }
 // to the one recipient to, and returns the server's reply to the final dot. The whole
 // exchange ends within 30 s, sooner if ctx ends first.
 func (s *SMTPSender) Send(ctx context.Context, from, to string, raw []byte) (reply string, err error) {
-	host, port, splitErr := net.SplitHostPort(s.Addr)
-	if splitErr != nil || host == "" {
-		return "", fmt.Errorf("%w: address is not host:port", ErrSMTPConfig)
-	}
-	if port != "465" && port != "587" {
-		return "", fmt.Errorf("%w: port %s (465 or 587 only)", ErrSMTPConfig, port)
-	}
-	user, pass := s.User.Reveal(), s.Password.Reveal()
-	if user == "" || pass == "" {
-		return "", fmt.Errorf("%w: no credentials", ErrSMTPConfig)
+	host, port, user, pass, err := s.settings()
+	if err != nil {
+		return "", err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, smtpTimeout)
 	defer cancel()
 
-	plain := base64.StdEncoding.EncodeToString([]byte("\x00" + user + "\x00" + pass))
-	hidden := []string{pass, user, to, from, plain,
-		base64.StdEncoding.EncodeToString([]byte(user)), base64.StdEncoding.EncodeToString([]byte(pass))}
-	stage := "connect"
-	fail := func(err error) error { return classify(ctx, stage, err, hidden) }
-
-	dial := s.dial
-	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
-	}
-	conn, err := dial(ctx, "tcp", s.Addr)
+	hidden := append(credentialForms(user, pass), to, from)
+	c, done, err := s.login(ctx, host, port, user, pass, hidden)
 	if err != nil {
-		return "", fail(err)
+		return "", err
 	}
-	// Closing the connection is what ends a blocked read or write at the deadline.
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-	defer func() { _ = conn.Close() }()
+	defer done()
 
-	tlsConf := &tls.Config{ServerName: host, RootCAs: s.RootCAs, MinVersion: tls.VersionTLS12}
-	var c *smtp.Client
-	if port == "465" {
-		tc := tls.Client(conn, tlsConf)
-		if err := tc.HandshakeContext(ctx); err != nil {
-			return "", fail(err)
-		}
-		c = smtp.NewClient(tc)
-	} else {
-		if c, err = smtp.NewClientStartTLS(conn, tlsConf); err != nil {
-			return "", fail(err)
-		}
-	}
-	defer func() { _ = c.Close() }()
-	c.CommandTimeout, c.SubmissionTimeout = smtpTimeout, smtpTimeout
-
-	stage = "auth"
-	if err := c.Auth(sasl.NewPlainClient("", user, pass)); err != nil {
-		return "", fail(err)
-	}
-	stage = "mail"
+	stage := "mail"
+	fail := func(err error) error { return classify(ctx, stage, err, hidden) }
 	if err := c.Mail(from, nil); err != nil {
 		return "", fail(err)
 	}
@@ -175,6 +143,80 @@ func (s *SMTPSender) Send(ctx context.Context, from, to string, raw []byte) (rep
 	return scrub(resp.StatusText, hidden...), nil
 }
 
+// settings checks the sender's address and credentials before anything reaches a server.
+func (s *SMTPSender) settings() (host, port, user, pass string, err error) {
+	host, port, splitErr := net.SplitHostPort(s.Addr)
+	if splitErr != nil || host == "" {
+		return "", "", "", "", fmt.Errorf("%w: address is not host:port", ErrSMTPConfig)
+	}
+	if port != "465" && port != "587" {
+		return "", "", "", "", fmt.Errorf("%w: port %s (465 or 587 only)", ErrSMTPConfig, port)
+	}
+	user, pass = s.User.Reveal(), s.Password.Reveal()
+	if user == "" || pass == "" {
+		return "", "", "", "", fmt.Errorf("%w: no credentials", ErrSMTPConfig)
+	}
+	return host, port, user, pass, nil
+}
+
+// credentialForms is every form the credentials can take in a server's reply: as given,
+// base64 on their own, and as the AUTH PLAIN token.
+func credentialForms(user, pass string) []string {
+	plain := base64.StdEncoding.EncodeToString([]byte("\x00" + user + "\x00" + pass))
+	return []string{pass, user, plain,
+		base64.StdEncoding.EncodeToString([]byte(user)), base64.StdEncoding.EncodeToString([]byte(pass))}
+}
+
+// login dials, verifies the certificate (implicit TLS on 465, STARTTLS on 587) and
+// authenticates. Every failure is a classified *SendError at stage connect or auth. done
+// closes the client and the connection; ctx ending closes the connection too.
+func (s *SMTPSender) login(ctx context.Context, host, port, user, pass string, hidden []string) (c *smtp.Client, done func(), err error) {
+	stage := "connect"
+	fail := func(err error) error { return classify(ctx, stage, err, hidden) }
+
+	dial := s.dial
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	conn, err := dial(ctx, "tcp", s.Addr)
+	if err != nil {
+		return nil, nil, fail(err)
+	}
+	// Closing the connection is what ends a blocked read or write at the deadline.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	closeConn := func() {
+		_ = conn.Close()
+		stop()
+	}
+
+	tlsConf := &tls.Config{ServerName: host, RootCAs: s.RootCAs, MinVersion: tls.VersionTLS12}
+	if port == "465" {
+		tc := tls.Client(conn, tlsConf)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			closeConn()
+			return nil, nil, fail(err)
+		}
+		c = smtp.NewClient(tc)
+	} else {
+		if c, err = smtp.NewClientStartTLS(conn, tlsConf); err != nil {
+			closeConn()
+			return nil, nil, fail(err)
+		}
+	}
+	done = func() {
+		_ = c.Close()
+		closeConn()
+	}
+	c.CommandTimeout, c.SubmissionTimeout = smtpTimeout, smtpTimeout
+
+	stage = "auth"
+	if err := c.Auth(sasl.NewPlainClient("", user, pass)); err != nil {
+		done()
+		return nil, nil, fail(err)
+	}
+	return c, done, nil
+}
+
 // classify turns a failure at stage into a *SendError. Once DATA has been sent every
 // failure is Uncertain. Before it: any reply code at AUTH but 421 (the server closing, which
 // says nothing of the account), or a 5xx at MAIL FROM, is Account; a 5xx at RCPT is Refused (Bounce only for 550/551/553 with enhanced code 5.1.x);
@@ -188,9 +230,11 @@ func classify(ctx context.Context, stage string, err error, hidden []string) *Se
 		e.Text = ctx.Err().Error()
 	case errors.As(err, &se):
 		e.Code = se.Code
+		e.Enhanced = [3]int(se.EnhancedCode)
 		e.Text = se.Message
 	default:
 		e.Text = err.Error()
+		e.cert = isCertError(err)
 	}
 	switch {
 	case stage == "data":
@@ -210,6 +254,17 @@ func classify(ctx context.Context, stage string, err error, hidden []string) *Se
 		e.Text = string(rs[:maxSMTPErrText])
 	}
 	return e
+}
+
+// isCertError: err is a failed certificate check.
+func isCertError(err error) bool {
+	var (
+		verr *tls.CertificateVerificationError
+		ua   x509.UnknownAuthorityError
+		he   x509.HostnameError
+		ci   x509.CertificateInvalidError
+	)
+	return errors.As(err, &verr) || errors.As(err, &ua) || errors.As(err, &he) || errors.As(err, &ci)
 }
 
 // scrub replaces each non-empty value in s, in any letter case, with "[redacted]".
