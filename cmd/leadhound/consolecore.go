@@ -220,25 +220,19 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 	if err != nil {
 		return console.LeadsPage{}, err
 	}
-	shadow, _ := batchMode(setup.env)
 	p := console.LeadsPage{Day: startOfDay(now, b.loc), Replies: sec.Replies, Other: sec.Other}
 	if pr := sec.Probe; pr != nil {
 		p.Checked, p.Drupal = pr.Checked, pr.Drupal
 	}
-	sn := console.Sending{SetUp: !shadow, SentYesterday: sec.Sent, Bounced: sec.Bounced, OptedOut: sec.OptedOut, Stopped: sec.Paused}
+	sn := console.Sending{SetUp: setup.env.Live(), SentYesterday: sec.Sent, Bounced: sec.Bounced, OptedOut: sec.OptedOut, Stopped: sec.Paused}
 	if sn.Paused, sn.PauseReason, sn.PausedAt, err = lq.SendPaused(ctx); err != nil {
 		return console.LeadsPage{}, err
 	}
 	if sn.SentToday, err = lq.SentSince(ctx, startOfDay(now, b.loc)); err != nil {
 		return console.LeadsPage{}, err
 	}
-	if sn.CapToday, err = rampToday(ctx, lq, setup.leads, b.loc, now); err != nil {
+	if sn.CapToday, sn.DNS, err = mailboxesSending(ctx, lq, b.s.Pool(), setup.leads, b.loc, now); err != nil {
 		return console.LeadsPage{}, err
-	}
-	if dom, ok := sendingDomain(setup.env); ok {
-		if sn.DNS, err = latestSenderCheck(ctx, b.s.Pool(), leadstore.SenderDomainSHA256(dom)); err != nil {
-			return console.LeadsPage{}, err
-		}
 	}
 	p.Sending = sn
 	if p.Batches, err = waitingBatches(ctx, b.s.Pool()); err != nil {
@@ -268,30 +262,72 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 	return p, nil
 }
 
-// rampToday is today's send cap: the ramp's step for today, its day 0 the first live send
-// when the ramp starts at the first send (as leads send reads it).
-func rampToday(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, loc *time.Location, now time.Time) (int, error) {
-	var firstSend *time.Time
-	if cfg.Caps.StartDate.IsFirstSend() {
-		fs, err := lq.FirstLiveSend(ctx)
-		if err != nil {
-			return 0, err
+// mailboxesSending is the Leads page's sending totals over the stored mailboxes, read from
+// the start of the operator's day: capToday sums today's cap of every mailbox ready for new
+// leads (readyForLeads), each domain's share at most outreach.DomainCap; dns is shown as
+// passed only when every active mailbox's domain and selector passed today (then the
+// earliest of those passes), else today's latest failed check of the first one that did not
+// pass, and nil when one has no check today or no mailbox is active. It reads stored rows
+// only: the console never reaches the network.
+func mailboxesSending(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg leadconfig.Config, loc *time.Location, now time.Time) (capToday int, dns *console.SenderCheck, err error) {
+	today := startOfDay(now, loc)
+	mbs, err := lq.Mailboxes(ctx, today)
+	if err != nil {
+		return 0, nil, err
+	}
+	byDomain := map[string]int{}
+	var pairs [][2]string
+	seen := map[[2]string]bool{}
+	for _, m := range mbs {
+		if m.State != leadstore.MailboxActive {
+			continue
 		}
-		if fs != nil {
-			t := fs.In(loc)
-			firstSend = &t
+		domain := strings.ToLower(strings.TrimSpace(m.Domain))
+		if readyForLeads(m) {
+			ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain}
+			if cfg.Caps.StartDate.IsFirstSend() && m.FirstLiveSend != nil {
+				fs := m.FirstLiveSend.In(loc)
+				ml.FirstSend = &fs
+			}
+			byDomain[domain] += outreach.MailboxCap(cfg, ml, now.In(loc))
+		}
+		pair := [2]string{m.Domain, strings.TrimSpace(m.DKIMSelector)}
+		if !seen[pair] {
+			seen[pair] = true
+			pairs = append(pairs, pair)
 		}
 	}
-	return outreach.CapOn(cfg, firstSend, now.In(loc)), nil
+	for _, n := range byDomain {
+		capToday += min(n, outreach.DomainCap(cfg))
+	}
+	for _, pair := range pairs {
+		c, err := senderCheckSince(ctx, db, leadstore.SenderDomainSHA256(pair[0]), pair[1], today)
+		if err != nil {
+			return 0, nil, err
+		}
+		switch {
+		case c == nil:
+			return capToday, nil, nil
+		case !c.SPF || !c.DKIM || !c.DMARC:
+			if dns == nil || dns.SPF && dns.DKIM && dns.DMARC {
+				dns = c
+			}
+		case dns == nil || dns.SPF && dns.DKIM && dns.DMARC && c.At.Before(dns.At):
+			dns = c
+		}
+	}
+	return capToday, dns, nil
 }
 
-// latestSenderCheck is the latest check of the sending domain whose hash is domainSHA, nil
-// when it was never checked.
-func latestSenderCheck(ctx context.Context, db store.DBTX, domainSHA []byte) (*console.SenderCheck, error) {
+// senderCheckSince is the latest check of the domain whose hash is domainSHA with DKIM
+// selector selector made at or after since, nil when there is none. A row with no selector
+// (the single-mailbox check) never counts, as in leadstore's LatestSenderCheckSelector.
+func senderCheckSince(ctx context.Context, db store.DBTX, domainSHA []byte, selector string, since time.Time) (*console.SenderCheck, error) {
 	var c console.SenderCheck
 	err := db.QueryRow(ctx,
-		`SELECT checked_at, spf, dkim, dmarc FROM sender_check WHERE domain_sha256 = $1
-		 ORDER BY checked_at DESC, id DESC LIMIT 1`, domainSHA).Scan(&c.At, &c.SPF, &c.DKIM, &c.DMARC)
+		`SELECT checked_at, spf, dkim, dmarc FROM sender_check
+		 WHERE domain_sha256 = $1 AND selector = $2 AND selector <> '' AND checked_at >= $3
+		 ORDER BY checked_at DESC, id DESC LIMIT 1`, domainSHA, selector, since).Scan(&c.At, &c.SPF, &c.DKIM, &c.DMARC)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, nil
