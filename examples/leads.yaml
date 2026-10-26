@@ -13,7 +13,7 @@ agency_finding_pattern: '(?i)drupal\s*(7|8|9|10|11)|upgrade|migrat'
 sender:
   name: "Demo Sender"
   identity_line: "Demo Ltd, 1 Example Street, Example City"
-  dkim_selector: sel1 # your mail provider's DKIM selector (the name before ._domainkey); set yours
+  dkim_selector: sel1 # the DKIM selector (the name before ._domainkey) for a mailbox added without a preset or its own
   operator_addresses: [operator@sender.example]
   site_url: https://sender.example/
   opt_out_lines: # language -> the opt-out line; every language an email country uses needs one
@@ -36,7 +36,7 @@ schedule:
   spacing_minutes: [3, 9]
 caps:
   start_date: 2026-11-16
-  ramp: [{from_day: 0, per_day: 5}, {from_day: 7, per_day: 12}, {from_day: 14, per_day: 25}]
+  ramp: [{from_day: 0, per_day: 5}, {from_day: 7, per_day: 12}, {from_day: 14, per_day: 25}] # per mailbox (at most 40); with start_date: first-send, from each mailbox's own first send
   batch_size: 10
   domain_per_day: 50 # live sends per sending domain per day, over all its mailboxes (at most 100)
   mailboxes_per_domain: 2 # mailboxes the operator may add on one sending domain (at most 5)

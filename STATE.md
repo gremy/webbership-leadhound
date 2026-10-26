@@ -1,6 +1,15 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Mailboxes are built (2026-10-26, on local main, not yet pushed or deployed; plan `leadhound-mailboxes`):
+- Any number of sending mailboxes live in the database and the console's Mailboxes page (add, check, pause, resume, retire), with the same verbs in `leads mailboxes`; the four old env mailbox lines are no longer read.
+- Each password is sealed with a public key at entry; only the send, sync and mailbox-check jobs get the private key (`/etc/leadhound/mailbox.key`, a systemd credential), and the console never can open one.
+- A guided check (both sign-ins, the Sent and Junk folders, SPF, DKIM, DMARC on the address's own host) runs in `leadhound-mailbox-check.service`, started by a `.path` watcher; nothing is sent.
+- Each mailbox has its own ramp under the 40 ceiling; each registrable domain a daily limit (50) and a mailbox limit (2); new leads go to the ready mailbox with the most room, follow-ups from the same one.
+- Health pauses: hard bounces, a refused login, an unusable password; a policy block refuses that email and pauses the domain.
+- Docs: "Mailboxes" in `deploy/README.md`. Next: the security review, the local walk, then push and deploy.
+
+The Run now card is built (2026-10-26, not yet deployed):
 The Run now card is built (2026-10-26, not yet deployed):
 - The console dashboard can ask for four runs: show results now, fetch new jobs then show, send today's email now (only while today is unsent), and the nightly ATS collect behind a confirm.
 - The console only writes a request file under `/opt/leadhound/data/run/`; one systemd `.path` unit per action starts its fixed service, so the console gains no privilege.
@@ -58,13 +67,15 @@ Hand the leads over to the operator: finding first, sending once the mailbox pas
 
 ## Next
 Run now, after its deploy:
-- [ ] `systemctl list-units 'leadhound-*.path'` shows four watchers waiting; press Show results now and see a `preview` run and the results page; press Fetch new jobs and see collect, score, preview in that order.
+- [ ] `systemctl list-units 'leadhound-*.path'` shows five watchers active and waiting (the four Run now ones and, after the mailboxes deploy, `leadhound-mailbox-check.path`); press Show results now and see a `preview` run and the results page; press Fetch new jobs and see collect, score, preview in that order.
 
 Waiting for the operator:
 - [ ] The warm-contact suppressions: suppress the addresses and domains of people already known, before any finding or sending.
 - [ ] Turn finding on (`LEADHOUND_LEADS_TIMERS=on`), then check the first probe and contacts runs.
-- [ ] Write the mailbox settings on the server and send the selftest (`leads selftest --to ADDRESS`).
-- [ ] Turn sending on (`LEADHOUND_LEADS_SEND=on` with `LEADHOUND_OUTREACH=live`) and restart the console.
+- [ ] After the mailboxes deploy: copy `/etc/leadhound/mailbox.key` off the server by hand (losing it means re-entering every mailbox password).
+- [ ] Add the outreach mailbox on the console's Mailboxes page and get a passed check.
+- [ ] Add `LEADHOUND_OUTREACH=live` (sending timers stay off), then send the selftest: `leads selftest --to ADDRESS --mailbox ID`.
+- [ ] Turn sending on (`LEADHOUND_LEADS_SEND=on`, beside `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live`) and restart the console.
 - [ ] Read and approve the first batch in the console.
 
 Known follow-ups:
@@ -73,6 +84,8 @@ Known follow-ups:
 - [ ] The app role can still `UPDATE description_clean` directly, outside the trim function.
 - [ ] The leads timers have not yet run on the server.
 - [ ] The connection worst case at the 15:00 trim is 24 (the afternoon collect and its score can overlap it), within the 32 limit.
+- [ ] The brief says "recheck not run" when the recheck ran with nothing due (`internal/brief/compose.go:751`, `cmd/leadhound/recheck.go:52`).
+- [ ] Rename `actor` `gremy` to `operator` in the existing lead tables (a migration over append-only tables, as owner); the mailbox tables already use `operator | system`.
 - [ ] CP6e/6f/6b: remote-job sites, more sources (each checked for permission first), the employer's own apply route.
 
 ## Key files

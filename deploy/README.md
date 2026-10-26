@@ -87,7 +87,7 @@ The brief and ATS buttons start the timed units unchanged, so a run from the con
 A press while the same service is starting or running would be merged into that run by systemd, so the console refuses it and says when the running one started.
 `PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
 
-Check the watchers with `systemctl list-units 'leadhound-*.path'` (each should be active, waiting) and a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
+Check the watchers with `systemctl list-units 'leadhound-*.path'`: each of the five, these four and the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)), should be `active` and `waiting`; check a run with a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
 The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
 
 **A watcher stops when its service hits its start limit.**
@@ -97,8 +97,8 @@ The console then shows the action as stuck: asked and not started.
 Reset both units and arm the watcher again, here for the brief:
 
 ```sh
-systemctl reset-failed leadhound-brief.path leadhound-brief.service
-systemctl start leadhound-brief.path
+sudo systemctl reset-failed leadhound-brief.path leadhound-brief.service
+sudo systemctl start leadhound-brief.path
 ```
 
 ## Layout on the server
@@ -107,9 +107,10 @@ systemctl start leadhound-brief.path
 | --- | --- | --- |
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
-| `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
-| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, one file per action, read by the `leadhound-*.path` watchers |
+| `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` and `leads-templates/` (root:leadhound 0640, from `make deploy-data`), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests and its mailbox check requests (`run/mailbox-check`), one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
+| `/etc/leadhound/mailbox.key` | root, 0600 | the mailboxes' private key, made by the first deploy; see [Mailboxes](#mailboxes) |
 | `/etc/leadhound/migrate.env` | root, 0600, enforced | the owner role's URL, for `migrate` only (`deploy/migrate.env.example`) |
 | `/etc/systemd/system/leadhound-*` | root, 0644 | the units and timers, the Run now watchers, the console's included |
 | `/var/backups/leadhound/` | postgres, 0700 | the nightly dumps |
@@ -193,14 +194,18 @@ Run these on the server as root, in order.
     The 15:00 trim can overlap the afternoon collect, the leads probe, send and sync, and the console (24).
   - `leadhound_owner` has no statement timeout, so a migration's index build may take as long as it needs.
   Locally `make db-local` applies the same file, then lifts the connection limit so parallel test runs can share the role.
-- `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml` and `ats-boards.yaml` from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`) after checking the profile loads; run it after you edit either file.
+- `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` and the `leads-templates/` directory from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`), after `score --check-config` and `leads check-config` pass on them; run it after you edit any of them.
+  All five must exist, or it stops before copying anything; a template you deleted locally is deleted on the server too.
+  For a first `leads.yaml`, start from `examples/leads.yaml` (a demo with reserved names) and set your own sender, addresses and templates.
   It copies nothing else: the title screen is part of `leadhound.yaml`, and the eval golden set, the privacy denylist and the board seed lists are never needed on the server.
 - `make remote HOST=… ARGS='track list'` runs one command on the server as the `leadhound` user with the units' environment.
-  `track list`, `rules list` and `boards list` run freely; every other command writes or reaches the network (`collect`, `canary`, `brief`, `score`, `migrate`, `recheck`, `probe`, `track <n> …`, `rules add`, `boards import` …) and needs `CONFIRM=1`.
+  `track list`, `rules list`, `boards list`, `leads suppress list|check`, `leads batch show` and `leads mailboxes list` run freely; every other command writes or reaches the network (`collect`, `canary`, `brief`, `score`, `migrate`, `recheck`, `probe`, `track <n> …`, `rules add`, `boards import` …) and needs `CONFIRM=1`.
   `ARGS` is split into words by your own shell, as on a command line, and each word reaches `leadhound` whole: the server's shell never reinterprets it.
 - `remote` runs without the units' hardening, memory ceiling and timeouts.
   It does take the units' locks, without waiting: `collect linkedin`, `canary`, `brief` and `preview` take the LinkedIn lock and `score` the score lock, and when a timer's run holds one, `remote` exits 75 and runs nothing; try again when it has finished (`systemctl list-units 'leadhound-*'`).
   Even so, prefer to run collects and briefs by hand only while no timer is due.
+- `remote` starts each run with `systemd-run -p EnvironmentFile=/etc/leadhound/env`, so it reads the env file afresh every time; a running unit, the console's included, reads it only when it starts.
+- On the server, a `systemctl` line that starts, stops, enables, disables or restarts a unit needs root, so this file writes it with `sudo`; `systemctl list-units`, `list-timers` and `journalctl` read only and need no `sudo`.
 - `deploy`, `deploy-data` and `remote` run their `sudo` steps over `ssh -t`, so `sudo` can ask for its password at your terminal.
   Run without a terminal (from a script), ssh warns that it allocates none, and the steps then need `sudo` without a password for the ssh user.
 - `deploy` and `deploy-data` refuse to run, even as `make -n`, without `HOST` and `CONFIRM=1`; `remote` refuses without `HOST`, and without `CONFIRM=1` for anything but the read-only lists.
@@ -224,7 +229,9 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
   They start unattended reads of public sites: up to 10,000 homepages a day, and up to 300 organisations searched for a published contact a day, each site's robots file read and honoured first.
   They share a fetch lock in the data directory, `/opt/leadhound/data/.leads-fetch.lock`, without waiting: a run that finds it held exits 75, which the unit counts as done.
 - The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
-  The send sends only approved messages, each in its recipient's business hours (the send hours cover the working day in the UK, Ireland and central Europe), and the sync reads the mailbox for replies, opt-outs and bounces.
+  The send sends only approved messages, each in its recipient's business hours (the send hours cover the working day in the UK, Ireland and central Europe), and the sync reads every mailbox that is not retired for replies, opt-outs and bounces.
+  When one mailbox cannot be read, the others still sync and `leads sync` exits 1, so the sync unit shows as failed in `systemctl` and the journal names the mailbox.
+  `leads send --max 25` is the most sent in one run over all mailboxes together; with several mailboxes, raise it in `leadhound-leads-send.service`.
   Send and sync take no file lock: their database locks keep them apart.
   The send and sync timers are not persistent, so a run missed while the server was down is never caught up outside its hours.
 - No leads unit reads `/etc/leadhound/migrate.env`; they hold only the app role.
@@ -232,16 +239,187 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 Every deploy installs the units and decides the timers from `/etc/leadhound/env`, the last line for each name counting, as for the units:
 
 - With `LEADHOUND_LEADS_TIMERS=on`, the probe and contacts timers are enabled; otherwise they are disabled and stopped.
-- With that, `LEADHOUND_LEADS_SEND=on`, `LEADHOUND_OUTREACH=live`, and a `LEADHOUND_OUTREACH_USER` and a `LEADHOUND_IMAP_ADDR` that are not empty, the batch, send and sync timers are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch and never syncs without a mailbox.
+- With that, `LEADHOUND_LEADS_SEND=on` and `LEADHOUND_OUTREACH=live`, the batch, send and sync timers are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch.
+  The mailboxes live in the database, not in this file: a run with no ready mailbox sends nothing and says so.
 - The deploy prints which leads timers are on, and for those that are off, which lines are missing.
 
-To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer` (or deploy).
-To turn sending on, write the mailbox lines (`LEADHOUND_SMTP_ADDR`, `LEADHOUND_IMAP_ADDR`, `LEADHOUND_OUTREACH_USER`, `LEADHOUND_OUTREACH_PASSWORD`, typed into the file on the server) and `LEADHOUND_OUTREACH=live`, then `LEADHOUND_LEADS_SEND=on`, run `systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`, and restart the console so it reads the new settings: `systemctl restart leadhound-console.service`.
+To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `sudo systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer` (or deploy).
+To turn sending on, first add a mailbox and send its test, as [Mailboxes](#mailboxes) says; then, with `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` already in the file, add `LEADHOUND_LEADS_SEND=on`, run `sudo systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`, and restart the console so it reads the new settings: `sudo systemctl restart leadhound-console.service`.
+Without `LEADHOUND_LEADS_TIMERS=on` the next deploy disables the sending timers again, even with the other two lines set.
 A unit reads the env file only when it starts.
 
 To pause sending, use the pause switch on the console's Leads page: the send timer keeps running and sends nothing until you resume, and nothing on the server changes.
-To stop everything, remove the two switch lines (or set them to anything but `on`) and run `systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
-A run already in progress finishes; `systemctl stop leadhound-leads-<name>.service` ends it at once.
+To stop everything, remove the two switch lines (or set them to anything but `on`) and run `sudo systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
+A run already in progress finishes; `sudo systemctl stop leadhound-leads-<name>.service` ends it at once.
+
+## Mailboxes
+
+A mailbox is one email account the leads are sent from: an address, its login and password, its sending (SMTP) and reading (IMAP) servers, and its DKIM selector.
+You can have as many as you like, each with its own warm-up, and you add, check, pause, resume and retire them on the console's Mailboxes page (in the top menu).
+The same verbs run from the command line: `leadhound leads mailboxes list | add | check | pause | resume | retire`; editing a mailbox is in the console only.
+On the server, add mailboxes through the console: `make remote` hands the command a pipe, not a terminal, so `leads mailboxes add` could not ask for the password without showing it; keep the command-line add for local use.
+A new lead goes to the ready mailbox with the most room left, and its follow-ups always go from the same mailbox, in the same thread.
+Every batch shows each message's From address before you approve it.
+
+### The key
+
+Each mailbox password is sealed the moment you enter it, with a public key, and only the jobs that send, sync and check a mailbox hold the private key that opens it.
+The console never has the private key: it can store a new password but never read one back, so a console that was broken into still cannot give a password away.
+
+- The first deploy makes the key pair, after the new binary is in place: the private key at `/etc/leadhound/mailbox.key` (`root:root 0600`), and the public key as the `LEADHOUND_MAILBOX_PUBLIC_KEY=` line in `/etc/leadhound/env`.
+  That deploy prints `install: new mailbox key at /etc/leadhound/mailbox.key, fingerprint …`; later deploys print no fingerprint, because they never make a new key.
+- An existing key is never overwritten.
+  Every deploy reads the public key from the key file again and rewrites the env line if it differs, so the two always match; leave the line empty in your copy of `deploy/env.example`.
+- The key reaches only the send, sync and mailbox check units, as a systemd credential (`LoadCredential=`), and every other unit, the console's included, has `/run/credentials` walled off.
+  `make remote` hands it on the same way, and only to `leads selftest`, `leads send`, `leads sync` and `leads mailboxes check`.
+- `LEADHOUND_MAILBOX_KEY_FILE` is for local runs only; never set it on the server.
+  The console refuses to start when it is set to anything (the empty line in `deploy/env.example` is fine).
+- **Back the key up by hand.**
+  The nightly backup dumps the database, not `/etc`, and a sealed password cannot be opened without the key that sealed it.
+  Copy `/etc/leadhound/mailbox.key`, as root, to somewhere safe off the server, such as your password manager, and never into a repository.
+  To restore it, put it back at the same path, `root:root 0600`, before the next deploy.
+- If the key is lost, the next deploy makes a new one, and each mailbox pauses itself the first time a job opens its password, with "re-enter the password: it was saved under a different key".
+  Open each mailbox, choose Edit its settings, enter its password again, save, and resume it.
+
+### Adding your first mailbox
+
+Before you start: the leads settings are on the server (`make deploy-data`), the console is set up (see [Console](#console)), the check's watcher is armed (`systemctl list-units 'leadhound-mailbox-check.path'` shows it `active` and `waiting`; every deploy arms it), and you have the mailbox's address and password from your mail provider.
+
+1. In the console, open Mailboxes and follow the Add a mailbox link.
+   If the page says "the mailbox key is not set up", the deploy has not made the key yet: deploy again and read its `install:` lines.
+2. Under Provider, choose your provider's preset in Fill in the servers for, and press Fill in: it fills the sending server, the reading server and the DKIM selector.
+   If your provider has no preset, choose Other (it fills nothing) and type them yourself: the sending server as `host:port` with port 465 or 587, the reading server with port 993, and the DKIM selector as the name before `._domainkey` in your domain's DKIM record.
+3. Type the address and the password.
+   Leave Login blank when you sign in with the address; leave From name blank to use the sender name in `leads.yaml`.
+   Some providers need an app password instead of your normal one.
+4. Press Add and check it.
+   The mailbox page opens with a Check card that says "Checking…" and updates by itself, usually within a minute.
+   The check signs in to both servers, looks for the Sent and Junk folders and reads the domain's records; it never sends an email.
+   On the server, `leadhound-mailbox-check.path` starts the check job when the console asks; locally nothing watches for that, so run `make mailbox-check-local` (see below).
+5. The card shows one tick or cross per step, and under a cross the first thing to fix:
+
+| Line on the card | What a cross means | What to do |
+| --- | --- | --- |
+| SMTP sign-in | the sending server could not be reached, refused the login, or its certificate did not check out | check the server name and port and the password (or app password) |
+| IMAP sign-in | the same, for the reading server | the same |
+| Sent and Junk folders | signed in, but the Sent or Junk folder was not found, so replies sorted into Junk would be missed | turn on or create those folders with your provider |
+| SPF, DKIM, DMARC | that DNS record is missing for the address's domain | add the record the fix names, with your DNS provider, then press Check now |
+
+The three records are TXT records in your domain's DNS that tell receiving servers your mail is genuine: SPF lists who may send for the domain, DKIM publishes the key your provider signs each message with, and DMARC says what to do with mail that fails the other two.
+Your mail provider's own help pages give the exact values for its service.
+
+"Could not run" means the password could not be used, for example after a key change or after the servers changed since it was saved; the fix says to enter the password again.
+Press Check now whenever you have fixed something.
+
+Locally, the same add is `leadhound leads mailboxes add --address A --preset NAME` (or `--smtp H:P --imap H:P --selector S`), which asks for the password twice at the terminal without showing it, and never takes it from the command line; `leads mailboxes check ID` runs a check at once.
+`leads mailboxes list` shows each mailbox's number, state, latest check, today's records and today's sends:
+
+```
+1  outreach@sender.example · active · check passed · DNS today pass · sent today 0
+2  hello@sender.example · paused: the server refused the login · check failed: The server refused the login. Check the password (some providers need an app password). · DNS today fail or not run · sent today 0
+```
+
+The records are checked on the address's own host (the part after the `@`), with that mailbox's own selector.
+The daily domain limit, the number of mailboxes and the domain pauses count by the registrable domain: an address at `out.sender.example` counts toward `sender.example`.
+`leads senders check` checks the records of every mailbox that is not retired, one line per host and selector; with no mailbox it says so and exits 0.
+
+### When a mailbox is given leads and sends
+
+- **New leads** go only to a mailbox that is active, whose latest check passed, and whose records passed today.
+  The 06:15 batch checks today's records itself before it drafts.
+  The console's New batch never reaches the network, so before 06:15 it says "Today's domain check has not run for … yet": press Check now on the mailbox's page, or wait for the morning batch.
+  With no mailbox at all, a batch is refused with "Add a mailbox first".
+- **Each send** also needs that mailbox's reply sync to have just succeeded; the send run syncs first.
+- A follow-up whose mailbox is paused waits; a retired mailbox's unsent follow-ups are cancelled, since a thread must come from the same address.
+
+### Limits
+
+| Limit | Default | At most | Setting in `leads.yaml` |
+| --- | --- | --- | --- |
+| Sends per mailbox per day | the warm-up ramp: in `examples/leads.yaml` 5 a day from day 0, 12 from day 7, 25 from day 14 (calendar days); with `caps.start_date: first-send` each mailbox counts from its own first real send, so a new one starts at day 0 (the example has a fixed date instead) | 40 | `ramp` and `start_date` under `caps:` |
+| Sends per sending domain per day, over all its mailboxes | 50 | 100 | `caps.domain_per_day` |
+| Mailboxes on one sending domain | 2 | 5 | `caps.mailboxes_per_domain` |
+
+The domain limit is the real safety line: the large mail providers judge reputation by the sending domain, not the single inbox, and none publishes a per-inbox number for cold email (the sources are in the README's Drupal leads section).
+A second mailbox on the same domain spreads the sending, but does not double what the domain may send.
+Adding one mailbox more than `caps.mailboxes_per_domain` is refused with a sentence naming the setting.
+
+### Pauses and how to resume
+
+A mailbox pauses itself, and the page says why, when:
+
+- 2 hard bounces (an address that does not exist) fall within its last 50 real sends (`health.bounce_pause` in `leads.yaml`);
+- its server refuses the login;
+- its password cannot be opened, or was saved for other settings ("re-enter the password: …").
+
+A **policy block**, a receiving server refusing a recipient with a code `5.7.x`, refuses that one email and pauses every active mailbox on its domain.
+A `5.7.x` that arrives only after the message was handed over counts as uncertain (`leads resolve`) and does not pause anything.
+Spam complaints have no automatic feed at this volume: pause a mailbox or a domain yourself, with a reason.
+
+Only you resume.
+On a mailbox's page press Resume this mailbox (or Pause this mailbox, with an optional reason); a domain is paused with Pause every mailbox on <domain> and resumed with Resume <domain> on the Mailboxes page, which resumes only the mailboxes that pause stopped (one you paused on its own stays paused).
+From the command line: `leadhound leads mailboxes pause ID|--domain D [--reason R]` and `leadhound leads mailboxes resume ID|--domain D`.
+A resumed mailbox sends again once its check has passed and its records have passed today.
+Retire this mailbox… on its page (tick I understand, retire it, then press Retire <address>), or `leads mailboxes retire ID --confirm`, retires a mailbox for good; to send from another address, add a new mailbox.
+The pause switch on the Leads page stays the master switch above every mailbox.
+
+### Sending a test, then turning sending on
+
+1. Add `LEADHOUND_OUTREACH=live` to `/etc/leadhound/env`, without `LEADHOUND_LEADS_SEND=on` yet, so the sending timers stay off, then deploy or run `sudo systemctl restart leadhound-console.service`.
+   The console reads the env file only when it starts, and until it sees live mode it treats sending as not set up and never drafts a batch; `make remote` reads the file afresh on every run, so the next steps need no restart.
+2. Find the mailbox's number, then send one test email from it to one of your own addresses, `sender.operator_addresses` in `leads.yaml`:
+
+   ```sh
+   make remote HOST=<ssh host> ARGS='leads mailboxes list'
+   make remote HOST=<ssh host> CONFIRM=1 ARGS='leads selftest --to <your address> --mailbox <its number>'
+   ```
+
+   `--mailbox` takes the number or the address, and is needed when more than one mailbox is not retired.
+   The test runs the send's own order first: it stops while the pause switch on the Leads page is on, and it needs the key, a passed check, today's records and a reply sync of that mailbox, or it says "No selftest: mailbox N is not ready to send." and sends nothing.
+   It ignores business hours and the daily limit, though its one email counts toward that day's sends, and it does not start the mailbox's warm-up ramp: only a real lead's send does.
+   If the server refuses the login, the mailbox pauses itself as in any send, the test email is cancelled, and the command exits 1.
+3. Reply to the test email from your own address; the reply lands in the mailbox's inbox, where it stays.
+   The sync timer is still off, so read it by hand:
+
+   ```sh
+   make remote HOST=<ssh host> CONFIRM=1 ARGS='leads sync'
+   ```
+
+   It prints one line per mailbox, the findings indented under it, for example:
+
+   ```
+   Mailbox 1: synced.
+     1 reply to read in the outreach mailbox: your selftest
+   ```
+
+   "Mailbox 1: synced, nothing new." means the reply has not arrived yet; "Mailbox 1: not synced: …" names what failed, and the command exits 1.
+   Repeat steps 2 and 3 for each mailbox.
+4. Turn sending on as [Leads on the server](#leads-on-the-server) says: `LEADHOUND_LEADS_TIMERS=on`, `LEADHOUND_OUTREACH=live` and `LEADHOUND_LEADS_SEND=on` all in the file, the three timers enabled, and a console restart.
+   Every batch still waits for you to read and approve it.
+
+### Locally
+
+1. `make mailbox-key` writes a key pair to `data/mailbox.key` (never overwritten) and prints two lines; add them to your `.env` by hand.
+2. `make console-local` serves the console without the key file variable, as on the server.
+3. Add the mailbox in the console; then, in a second terminal, `make mailbox-check-local` runs the waiting check.
+
+Without `LEADHOUND_OUTREACH=live`, a send writes each message to the outbox, with the mailbox's address as its From, and nothing leaves your machine.
+
+### Moving from the old env mailbox
+
+The four old lines, `LEADHOUND_SMTP_ADDR`, `LEADHOUND_IMAP_ADDR`, `LEADHOUND_OUTREACH_USER` and `LEADHOUND_OUTREACH_PASSWORD`, are no longer read.
+`leads check-config` and the Mailboxes page say so while any is set: add the mailbox in the console, then delete the lines.
+
+If your install sent or synced through the old env mailbox, the migration moves those messages and their read mail to a placeholder mailbox, `legacy@legacy.invalid`, retired, which nothing sends through or reads.
+When you add the same account as a mailbox, its first sync reads the last 30 days of its mail again, as a new mailbox's first sync always does.
+Old replies, bounces and opt-outs found that way are matched to your old messages and applied again:
+
+- a lead still batched or contacted moves to replied, bounced or opted out, as the old sync did;
+- a suppression you removed by hand since then comes back, and any unsent follow-ups of that lead are cancelled;
+- the reply, bounce and opt-out counts for that day can include those old ones, since they are recorded when read.
+
+Nothing is sent because of it, and the new mailbox's bounce pause counts only its own sends.
+Look over the Leads page after that first sync; a fresh install has no such rows and sees none of this.
 
 ## Console
 
@@ -288,7 +466,7 @@ It listens on loopback only and refuses any other address, so Caddy on the same 
 Sessions live in memory, so every restart signs you out, and every deploy restarts the console: sign in again after a deploy.
 Sign-in allows five tries a minute from one address, and stops everyone after 100 failed tries in 15 minutes; a device that has signed in before can still sign in during such a flood (it keeps the five-a-minute limit).
 
-To reset the password, run `make console-password` again, replace the `LEADHOUND_CONSOLE_PASSWORD_HASH` line on the server with the new hash, and restart the console: `systemctl restart leadhound-console.service`.
+To reset the password, run `make console-password` again, replace the `LEADHOUND_CONSOLE_PASSWORD_HASH` line on the server with the new hash, and restart the console: `sudo systemctl restart leadhound-console.service`.
 A new password forgets every device that signed in with the old one.
 Its log is `journalctl -u leadhound-console.service`.
 
