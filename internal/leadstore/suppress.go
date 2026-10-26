@@ -45,8 +45,8 @@ type Suppressed struct {
 }
 
 // Suppress records that kind value (lower-cased; a domain reduced to its registrable
-// domain) must never be written to again, once per
-// kind, value and reason, and applies it (the grid's suppress column): every lead it
+// domain) must never be written to again, once per kind, value and reason among the active
+// suppressions (after a lift the next one records again, FO6), and applies it (the grid's suppress column): every lead it
 // reaches (its route address, its org's domain, or a pending message's recipient, a
 // domain reaching its subdomains too) has its pending messages cancelled, and a lead in
 // state new or batched moves to suppressed. A lead in another state keeps it. Run it in a
@@ -77,7 +77,7 @@ func (q Queries) Suppress(ctx context.Context, kind, value, reason, source strin
 	tag, err := q.db.Exec(ctx,
 		`INSERT INTO suppression (kind, value, reason, source)
 		 SELECT $1::text, $2::text, $3::text, $4::text
-		 WHERE NOT EXISTS (SELECT 1 FROM suppression WHERE kind = $1 AND value = $2 AND reason = $3)`,
+		 WHERE NOT EXISTS (SELECT 1 FROM suppression_active WHERE kind = $1 AND value = $2 AND reason = $3)`,
 		kind, v, reason, source)
 	if err != nil {
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
@@ -85,23 +85,9 @@ func (q Queries) Suppress(ctx context.Context, kind, value, reason, source strin
 	res := Suppressed{Recorded: tag.RowsAffected() == 1}
 
 	// The leads this one suppression reaches, locked.
-	var match string
-	if kind == SuppressAddress {
-		match = `(r.kind = 'email' AND r.value = $1)
-		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
-		    AND m.state IN ('draft', 'approved') AND lower(m.to_address) = $1)`
-	} else {
-		match = `o.domain = $1 OR right(o.domain, length($1) + 1) = '.' || $1
-		  OR (r.kind = 'email' AND (split_part(r.value, '@', 2) = $1
-		    OR right(split_part(r.value, '@', 2), length($1) + 1) = '.' || $1))
-		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
-		    AND m.state IN ('draft', 'approved')
-		    AND (lower(split_part(m.to_address, '@', 2)) = $1
-		      OR right(lower(split_part(m.to_address, '@', 2)), length($1) + 1) = '.' || $1))`
-	}
 	ids, err := collect(ctx, q.db, pgx.RowTo[int64],
 		`SELECT l.id FROM lead l JOIN org o ON o.id = l.org_id LEFT JOIN contact_route r ON r.id = l.route_id
-		 WHERE `+match+` ORDER BY l.id FOR UPDATE OF l`, v)
+		 WHERE `+reachSQL(kind)+` ORDER BY l.id FOR UPDATE OF l`, v)
 	if err != nil {
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
 	}
@@ -129,6 +115,27 @@ func (q Queries) Suppress(ctx context.Context, kind, value, reason, source strin
 	return res, nil
 }
 
+// reachSQL is the SQL condition on lead l (org o, route r) that is true when a suppression of
+// kind on $1 reaches it: an address suppression reaches its route address or a pending
+// message's recipient; a domain suppression reaches the org's domain, the route address's
+// domain or a pending message's recipient domain, or a subdomain of any of them. Suppress
+// (which leads to stop) and LiftSuppression (which leads it had stopped) share it, so the two
+// cannot drift.
+func reachSQL(kind string) string {
+	if kind == SuppressAddress {
+		return `((r.kind = 'email' AND r.value = $1)
+		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
+		    AND m.state IN ('draft', 'approved') AND lower(m.to_address) = $1))`
+	}
+	return `(o.domain = $1 OR right(o.domain, length($1) + 1) = '.' || $1
+		  OR (r.kind = 'email' AND (split_part(r.value, '@', 2) = $1
+		    OR right(split_part(r.value, '@', 2), length($1) + 1) = '.' || $1))
+		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
+		    AND m.state IN ('draft', 'approved')
+		    AND (lower(split_part(m.to_address, '@', 2)) = $1
+		      OR right(lower(split_part(m.to_address, '@', 2)), length($1) + 1) = '.' || $1)))`
+}
+
 // Suppressions is every suppressed address and domain, lower case, sorted, each once
 // (outreach.NewSuppressionSet takes the two lists).
 type Suppressions struct {
@@ -136,14 +143,14 @@ type Suppressions struct {
 	Domains   []string
 }
 
-// SuppressionSet returns every suppression, whatever its reason.
+// SuppressionSet returns every active suppression (none lifted, FO6), whatever its reason.
 func (q Queries) SuppressionSet(ctx context.Context) (Suppressions, error) {
 	type row struct {
 		Kind  string `db:"kind"`
 		Value string `db:"value"`
 	}
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[row],
-		`SELECT DISTINCT kind, value FROM suppression ORDER BY kind, value`)
+		`SELECT DISTINCT kind, value FROM suppression_active ORDER BY kind, value`)
 	if err != nil {
 		return Suppressions{}, fmt.Errorf("leadstore: suppression set: %w", err)
 	}

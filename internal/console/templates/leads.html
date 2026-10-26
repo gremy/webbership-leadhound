@@ -157,13 +157,30 @@
       </select>
       <button type="submit">Suppress</button>
     </form>
-    <p class="hint">A suppression is never lifted: nothing is written to it again.</p>
-    {{if or .Domains .Addresses}}
+    <p class="hint">A suppression stops all writing to that address or domain. Lift one only when it was recorded by mistake: the lift is kept with its reason, and a new opt-out suppresses again.</p>
+    {{if .Rows}}
     <details>
-      <summary>The list ({{plural (len .Domains) "domain" "domains"}}, {{plural (len .Addresses) "address" "addresses"}})</summary>
-      <ul class="plain">{{range .Domains}}<li>domain {{.}}</li>{{end}}{{range .Addresses}}<li>address {{.}}</li>{{end}}</ul>
+      <summary>The list ({{plural (len .Rows) "suppression" "suppressions"}}{{if .More}}, {{.More}} more not shown{{end}})</summary>
+      <ul class="plain">{{range .Rows}}<li>#{{.ID}} {{.Kind}} {{.Value}} · {{.Reason}} · {{.Source}} · {{day .At}}</li>{{end}}</ul>
     </details>
     {{end}}
+    {{if .Lifted}}
+    <details>
+      <summary>Lifted ({{len .Lifted}})</summary>
+      <ul class="plain">{{range .Lifted}}<li>#{{.ID}} {{.Kind}} {{.Value}} · lifted {{with .LiftedAt}}{{day .}}{{end}} ({{.LiftSource}}) · {{.LiftReason}}</li>{{end}}</ul>
+    </details>
+    {{end}}
+    <h3>Lift a suppression</h3>
+    <form method="post" action="/leads/suppressions/lift" class="stack">
+      <label for="lift-id">Number</label>
+      <input id="lift-id" name="id" inputmode="numeric" required>
+      <label for="lift-domain">Domain</label>
+      <input id="lift-domain" name="domain" required maxlength="253" aria-describedby="lift-domain-hint">
+      <p class="hint" id="lift-domain-hint">the domain shown in the list, to confirm</p>
+      <label for="lift-reason">Reason</label>
+      <input id="lift-reason" name="reason" required minlength="3" maxlength="300">
+      <button type="submit">Lift</button>
+    </form>
     {{end}}
   </section>
 </div>

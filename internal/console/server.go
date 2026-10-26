@@ -95,6 +95,7 @@ var routes = []route{
 	{"POST /leads/messages/{id}/resolve", "/leads/messages/9/resolve", false, (*server).resolveMessage},
 	{"POST /leads/items/{id}/done", "/leads/items/9/done", false, (*server).itemDone},
 	{"POST /leads/suppress", "/leads/suppress", false, (*server).suppress},
+	{"POST /leads/suppressions/lift", "/leads/suppressions/lift", false, (*server).liftSuppression},
 	{"POST /leads/contacted", "/leads/contacted", false, (*server).contacted},
 	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
 	{"POST /leads/next/{lead}/{action}", "/leads/next/5/pin", false, (*server).steerLead},

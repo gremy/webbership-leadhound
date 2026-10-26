@@ -67,11 +67,11 @@ func reservedDomainRE() string {
 	return `\.(` + strings.Join(ReservedTLDs, "|") + `)$`
 }
 
-// suppressedSQL is a SQL condition that is true when a suppression row blocks the address
+// suppressedSQL is a SQL condition that is true when an active suppression (FO6) blocks the address
 // addr (an SQL expression, empty for none) or the domain dom: the address itself, or a domain
 // suppression on dom, on the address's domain, or on a parent of either.
 func suppressedSQL(dom, addr string) string {
-	return fmt.Sprintf(`EXISTS (SELECT 1 FROM suppression x WHERE
+	return fmt.Sprintf(`EXISTS (SELECT 1 FROM suppression_active x WHERE
 	  (x.kind = 'address' AND x.value = lower(%[2]s))
 	  OR (x.kind = 'domain' AND (
 	    x.value = lower(%[1]s) OR right(lower(%[1]s), length(x.value) + 1) = '.' || x.value
@@ -361,9 +361,9 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     WHERE i > 1
 		   ) k
 		 ), blocked AS (
-		   SELECT c.lead_id FROM c JOIN suppression x ON x.kind = 'address' AND x.value = c.laddr
+		   SELECT c.lead_id FROM c JOIN suppression_active x ON x.kind = 'address' AND x.value = c.laddr
 		   UNION
-		   SELECT k.lead_id FROM domain_keys k JOIN suppression x ON x.kind = 'domain' AND x.value = k.key
+		   SELECT k.lead_id FROM domain_keys k JOIN suppression_active x ON x.kind = 'domain' AND x.value = k.key
 		   UNION
 		   SELECT c.lead_id FROM c JOIN reached x ON x.d = c.domain AND x.lead_id <> c.lead_id
 		   UNION

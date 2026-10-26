@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
@@ -47,6 +49,10 @@ const (
 	RefuseSuppressReason                         // suppressAdd: the kind or reason is not one the store knows
 	RefuseNotRegistrable                         // suppressAdd: Value has no registrable domain
 	RefuseBadValue                               // suppressAdd: Value is not a usable address or domain
+	RefuseNoSuppression                          // liftSuppression: SuppressionID does not exist
+	RefuseAlreadyLifted                          // liftSuppression: SuppressionID was lifted before (Lifted holds when and where)
+	RefuseLiftDomain                             // liftSuppression: Value, the domain typed to confirm, is not the suppression's
+	RefuseLiftReason                             // liftSuppression: the reason is not 3 to 300 characters on one line without an @
 	RefuseRuleInvalid                            // ruleAdd, ruleDisable: Detail says what is wrong
 	RefuseRuleNotFound                           // ruleDisable: RuleID does not exist
 	RefuseRuleDisabled                           // ruleDisable: RuleID is already disabled
@@ -58,11 +64,15 @@ type LeadRefusal struct {
 	BatchID   int64
 	MessageID int64
 	RuleID    int64
-	Items     int         // RefuseBadSkip: the batch's items
-	Value     string      // what was given, for the value refusals
-	Detail    string      // RefuseRuleInvalid: the store's reason
-	Sizing    BatchSizing // RefuseNoRoom
-	err       error       // the store's error, when one caused it
+	// SuppressionID is the suppression a lift refusal is about.
+	SuppressionID int64
+	// Lifted is the suppression as it stands, for RefuseAlreadyLifted's words.
+	Lifted leadstore.SuppressionRow
+	Items  int         // RefuseBadSkip: the batch's items
+	Value  string      // what was given, for the value refusals
+	Detail string      // RefuseRuleInvalid: the store's reason
+	Sizing BatchSizing // RefuseNoRoom
+	err    error       // the store's error, when one caused it
 }
 
 func (r *LeadRefusal) Error() string {
@@ -800,6 +810,112 @@ func suppressAdd(ctx context.Context, s *store.Store, kind, value, reason, sourc
 		return res, &LeadRefusal{Kind: RefuseBadValue, Value: value, err: err}
 	}
 	return res, err
+}
+
+// liftSuppression records that suppression id was recorded by mistake (FO6): one
+// suppression_lift row with reason, confirmed by domain (the suppression's domain, or its
+// address's). source is leadstore.LiftFromCLI or leadstore.LiftFromConsole. It is the one
+// core the CLI and the console both call; liftWords says what it did, or why it did nothing.
+// Lead states are never changed.
+func liftSuppression(ctx context.Context, s *store.Store, id int64, domain, reason, source string) (leadstore.Lifted, error) {
+	var res leadstore.Lifted
+	err := leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
+		var err error
+		res, err = lq.LiftSuppression(ctx, id, domain, reason, source)
+		return err
+	})
+	switch {
+	case errors.Is(err, leadstore.ErrLiftReason):
+		return res, &LeadRefusal{Kind: RefuseLiftReason, SuppressionID: id, err: err}
+	case errors.Is(err, leadstore.ErrNoSuppression):
+		return res, &LeadRefusal{Kind: RefuseNoSuppression, SuppressionID: id, err: err}
+	case errors.Is(err, leadstore.ErrLiftDomainMismatch):
+		return res, &LeadRefusal{Kind: RefuseLiftDomain, SuppressionID: id, Value: strings.ToLower(strings.TrimSpace(domain)), err: err}
+	case errors.Is(err, leadstore.ErrAlreadyLifted):
+		return res, &LeadRefusal{Kind: RefuseAlreadyLifted, SuppressionID: id, Lifted: res.Row, err: err}
+	}
+	return res, err
+}
+
+// wordsFor is who a core's words are for: the CLI may name its own commands; the console
+// never names a CLI command.
+type wordsFor int
+
+const (
+	forCLI wordsFor = iota
+	forConsole
+)
+
+// liftWords is what a lift did, or why it did nothing, in the plain sentences the CLI prints
+// and the console flashes, so the two never word it differently. Only two things differ by
+// audience, and only where the CLI names a command: the wrong-domain refusal's ending, and a
+// success's lead-state hint (two lines for the CLI; one line for the console, the hint folded
+// into its last sentence as "; lead states are unchanged."). Addresses are always masked; a
+// domain typed to confirm that holds an @ is masked too. An error that is not a lift refusal
+// has no words here ("").
+func liftWords(res leadstore.Lifted, err error, to wordsFor) string {
+	if err != nil {
+		r := asRefusal(err)
+		if r == nil {
+			return ""
+		}
+		switch r.Kind {
+		case RefuseNoSuppression:
+			return fmt.Sprintf("No suppression %d.", r.SuppressionID)
+		case RefuseAlreadyLifted:
+			if r.Lifted.LiftedAt == nil {
+				return fmt.Sprintf("Suppression %d was already lifted.", r.SuppressionID)
+			}
+			return fmt.Sprintf("Suppression %d was already lifted on %s (%s).", r.SuppressionID, leadsDay(*r.Lifted.LiftedAt), r.Lifted.LiftSource)
+		case RefuseLiftDomain:
+			typed := r.Value
+			if strings.Contains(typed, "@") {
+				typed = maskAddress(typed)
+			}
+			check := "Check the id with leads suppress list."
+			if to == forConsole {
+				check = "Check the number in the list."
+			}
+			return fmt.Sprintf("Suppression %d is not on %s: nothing was lifted. %s", r.SuppressionID, typed, check)
+		case RefuseLiftReason:
+			return "A lift needs a reason, 3 to 300 characters on one line, with no address in it."
+		}
+		return ""
+	}
+	row := res.Row
+	then := "It may be written to again"
+	if len(res.StillBlockedBy) > 0 {
+		by := make([]string, len(res.StillBlockedBy))
+		for i, b := range res.StillBlockedBy {
+			by[i] = fmt.Sprintf("#%d (%s %s, %s)", b.ID, b.Kind, shown(b.Kind, b.Value), b.Reason)
+		}
+		then = "It is still blocked by " + strings.Join(by, ", ")
+	}
+	line := fmt.Sprintf("Lifted suppression %d: %s %s (%s, from %s). %s", row.ID, row.Kind, shown(row.Kind, row.Value), row.Reason, row.Source, then)
+	if to == forConsole {
+		return line + "; lead states are unchanged."
+	}
+	line += "."
+	hint := "Lead states are unchanged."
+	if res.LeadsSuppressed > 0 {
+		value := "…"
+		if row.Kind == leadstore.SuppressDomain {
+			value = row.Value
+		}
+		hint = fmt.Sprintf("Lead states are unchanged (%s suppressed or opted_out); to block it again: leads suppress add %s %s --reason manual.",
+			plural(res.LeadsSuppressed, "lead still reads", "leads still read"), row.Kind, value)
+	}
+	return line + "\n" + hint
+}
+
+// leadsDay is t's date in the operator's zone (LEADHOUND_TZ, or the default zone).
+func leadsDay(t time.Time) string {
+	cfg, _ := config.Load(os.Getenv)
+	loc, err := time.LoadLocation(cfg.TZ)
+	if err != nil {
+		loc = time.UTC
+	}
+	return t.In(loc).Format(time.DateOnly)
 }
 
 // markContacted records that the operator reached domain by hand (RA15), so no batch drafts

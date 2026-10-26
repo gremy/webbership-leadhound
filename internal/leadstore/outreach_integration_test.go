@@ -570,6 +570,28 @@ func TestSuppressGrid(t *testing.T) {
 			if !reflect.DeepEqual(set, want) {
 				t.Errorf("suppression set = %+v, want %+v", set, want)
 			}
+			// A lifted suppression is not in the set (FO6): lift one of the two replied rows,
+			// whose value stays through the other, and one value's only row, which goes.
+			lift := func(kind, value, reason, confirm string) {
+				var id int64
+				if err := f.owner.QueryRow(ctx, "SELECT id FROM suppression WHERE kind = $1 AND value = $2 AND reason = $3",
+					kind, value, reason).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.q.LiftSuppression(ctx, id, confirm, "recorded by mistake", leadstore.LiftFromCLI); err != nil {
+					t.Fatalf("lift %s: %v", value, err)
+				}
+			}
+			lift(leadstore.SuppressDomain, "replied.localhost", leadstore.ReasonManual, "replied.localhost")
+			lift(leadstore.SuppressDomain, "skipped.localhost", leadstore.ReasonManual, "skipped.localhost")
+			set, err = f.q.SuppressionSet(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want.Domains = []string{"batched.localhost", "replied.localhost"}
+			if !reflect.DeepEqual(set, want) {
+				t.Errorf("suppression set after lifts = %+v, want %+v", set, want)
+			}
 			for _, bad := range [][3]string{
 				{"address", "no-at.localhost", "manual"}, {"domain", "a@b.localhost", "manual"},
 				{"address", " ", "manual"}, {"phone", "x", "manual"}, {"domain", "x.localhost", "angry"},

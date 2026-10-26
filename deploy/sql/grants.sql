@@ -88,6 +88,16 @@ BEGIN
   IF to_regclass('public.suppression') IS NOT NULL THEN
     REVOKE UPDATE ON public.suppression FROM leadhound_app;
   END IF;
+  -- suppression_lift (00009) is append-only like suppression. The default privileges and the
+  -- blanket grant above reach views too, and suppression_active is a simple, auto-updatable
+  -- view that runs with the owner's rights on suppression: left granted, the app could UPDATE
+  -- suppression through it. So the view is read-only to the app.
+  IF to_regclass('public.suppression_lift') IS NOT NULL THEN
+    REVOKE UPDATE ON public.suppression_lift FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.suppression_active') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE ON public.suppression_active FROM leadhound_app;
+  END IF;
   IF to_regclass('public.mailbox_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.mailbox_event FROM leadhound_app;
   END IF;

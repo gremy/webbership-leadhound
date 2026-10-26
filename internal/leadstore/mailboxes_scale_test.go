@@ -11,13 +11,13 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 )
 
-// TestScaleMailboxSeed: the v3 scale seed holds ten ready mailboxes over five domains, and
+// TestScaleMailboxSeed: the v4 scale seed holds ten ready mailboxes over five domains, and
 // every seeded message, mailbox event and cursor names a mailbox (what the later NOT NULL
 // needs); the per-mailbox reads stay within budget on a year of outreach.
 func TestScaleMailboxSeed(t *testing.T) {
 	q, s, now, loc := scaleLeads(t)
-	if info := leadstoretest.ScaleSeeded(t); info.Leads != "v3" {
-		t.Fatalf("leads seed = %q, want v3", info.Leads)
+	if info := leadstoretest.ScaleSeeded(t); info.Leads != "v4" {
+		t.Fatalf("leads seed = %q, want v4", info.Leads)
 	}
 	ctx := context.Background()
 	since := time.Date(now.In(loc).Year(), now.In(loc).Month(), now.In(loc).Day(), 0, 0, 0, 0, loc)

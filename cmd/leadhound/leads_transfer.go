@@ -788,11 +788,12 @@ func (ex *exporter) events(ctx context.Context, w *jsonlWriter, leadIDs []int64,
 	return nil
 }
 
-// suppressions writes every suppression but those on a reserved TLD and a selftest's own
-// address.
+// suppressions writes every active suppression but those on a reserved TLD and a selftest's
+// own address. Lifts are not transferred (FO6): a lifted suppression is left behind, so it can
+// never come back blocking on the target, and the target's own lifts stay its own.
 func (ex *exporter) suppressions(ctx context.Context, w *jsonlWriter) error {
 	return each(ctx, ex.tx, "suppressions", `SELECT x.kind, x.value, x.reason, x.source, x.created_at
-		FROM suppression x
+		FROM suppression_active x
 		WHERE CASE WHEN x.kind = 'domain' THEN x.value ELSE split_part(x.value, '@', 2) END !~ $1
 		  AND NOT (x.kind = 'address' AND EXISTS (
 		    SELECT 1 FROM outreach_message m JOIN lead l ON l.id = m.lead_id
@@ -1067,7 +1068,8 @@ func matchIDs(ctx context.Context, db store.DBTX, what, sql string, args ...any)
 }
 
 // The natural-key matches, one per kind. Each joins a batch of keys to the table through
-// its key's index.
+// its key's index. A suppression is known only when the target holds it active: one the
+// target lifted is recorded again, so the source's suppression wins (FO6).
 const (
 	matchProbesSQL = `SELECT t.i, p.id FROM unnest($1::text[], $2::timestamptz[]) WITH ORDINALITY AS t(d, at, i)
 		JOIN site s ON s.domain = t.d JOIN site_probe p ON p.site_id = s.id AND p.created_at = t.at`
@@ -1084,7 +1086,7 @@ const (
 	matchEventsSQL = `SELECT t.i, e.id FROM unnest($1::bigint[], $2::timestamptz[], $3::text[]) WITH ORDINALITY AS t(l, at, st, i)
 		JOIN lead_event e ON e.lead_id = t.l AND e.at = t.at AND e.state = t.st`
 	matchSuppressionsSQL = `SELECT t.i, x.id FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS t(k, v, r, i)
-		JOIN suppression x ON x.kind = t.k AND x.value = t.v AND x.reason = t.r`
+		JOIN suppression_active x ON x.kind = t.k AND x.value = t.v AND x.reason = t.r`
 )
 
 func probeArgs(batch []tProbe) []any {

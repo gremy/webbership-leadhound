@@ -41,6 +41,7 @@ const (
 	LeadResolve      = "resolve"          // ID message, Sent
 	LeadDone         = "done"             // ID message
 	LeadSuppress     = "suppress"         // Kind, Value, Reason
+	LeadLift         = "lift"             // ID, Value (the domain typed to confirm), Reason
 	LeadContacted    = "contacted"        // Value (a domain), Note
 	LeadPause        = "pause"            // Reason
 	LeadResume       = "resume"           //
@@ -137,9 +138,23 @@ type CheckItem struct {
 }
 
 // Suppressions is the suppression list: counts by kind and reason, addresses masked.
+// Rows are the active ones, newest first, capped (More counts the rest); Lifted are the
+// lifted ones, newest lift first (FO6).
 type Suppressions struct {
-	Counts             []SuppressionCount
-	Addresses, Domains []string
+	Counts []SuppressionCount
+	Rows   []SuppressionRow
+	More   int
+	Lifted []SuppressionRow
+}
+
+// SuppressionRow is one suppression as the page lists it. Value is already masked by the
+// backend; LiftedAt is nil while the suppression is active.
+type SuppressionRow struct {
+	ID                          int64
+	Kind, Value, Reason, Source string
+	At                          time.Time
+	LiftedAt                    *time.Time
+	LiftReason, LiftSource      string
 }
 
 // SuppressionCount is the suppressions of one kind and reason.
@@ -476,6 +491,23 @@ func (s *server) suppress(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.PostForm
 	s.leadsAct(w, r, LeadAction{Do: LeadSuppress, Kind: f.Get("kind"), Value: strings.TrimSpace(f.Get("value")), Reason: f.Get("reason")},
+		leadsPath, s.backToLeads)
+}
+
+// liftSuppression is POST /leads/suppressions/lift: the suppression's number, its domain
+// typed to confirm, and why it was wrong (FO6). The backend checks the domain and reason.
+func (s *server) liftSuppression(w http.ResponseWriter, r *http.Request) {
+	if !leadsForm(w, r) {
+		return
+	}
+	f := r.PostForm
+	id, err := strconv.ParseInt(strings.TrimSpace(f.Get("id")), 10, 64)
+	if err != nil || id < 1 {
+		s.leadsLog(LeadLift, "refused")
+		s.renderLeads(w, r, http.StatusUnprocessableEntity, "Give the number of the suppression to lift.", true)
+		return
+	}
+	s.leadsAct(w, r, LeadAction{Do: LeadLift, ID: id, Value: strings.TrimSpace(f.Get("domain")), Reason: strings.TrimSpace(f.Get("reason"))},
 		leadsPath, s.backToLeads)
 }
 

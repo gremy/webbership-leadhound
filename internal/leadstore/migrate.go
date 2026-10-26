@@ -83,7 +83,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // and outreach_message it swaps the table-wide UPDATE for UPDATE on their state-pointer
 // columns only (00002, 00003 and 00004 name them); sender_mailbox and mailbox_check get the
 // same, outreach_message gains hard_bounce, and mailbox_state is append-only (00007);
-// mailbox_cursor keeps its table-wide UPDATE, every column of it being a pointer. It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
+// mailbox_cursor keeps its table-wide UPDATE, every column of it being a pointer.
+// suppression_lift is append-only and the suppression_active view takes no INSERT or UPDATE
+// (00009: an auto-updatable view would let the app UPDATE suppression through it). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
 // same, so either may run last. Each statement is skipped when the app role or its table
 // does not exist.
 const revokeLeadsSQL = `DO $$
@@ -130,6 +132,12 @@ BEGIN
   END IF;
   IF to_regclass('public.suppression') IS NOT NULL THEN
     REVOKE UPDATE ON public.suppression FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.suppression_lift') IS NOT NULL THEN
+    REVOKE UPDATE ON public.suppression_lift FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.suppression_active') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE ON public.suppression_active FROM leadhound_app;
   END IF;
   IF to_regclass('public.mailbox_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.mailbox_event FROM leadhound_app;

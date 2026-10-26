@@ -523,6 +523,102 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLeadsTransferLiftedSuppressions (FO6): a lifted suppression is never exported, and a
+// file row the target holds only lifted is recorded again, active (the source's suppression
+// wins, erring toward not writing).
+func TestLeadsTransferLiftedSuppressions(t *testing.T) {
+	leadstoretest.Reset(t)
+	t.Setenv("LEADHOUND_DATABASE_URL", storetest.AppDSN())
+	saved := transferReservedTLDs
+	transferReservedTLDs = []string{"invalid"} // .example stands for real domains here
+	t.Cleanup(func() { transferReservedTLDs = saved })
+	ctx := context.Background()
+	kept, lifted := "kept-"+"optout.example", "lifted-"+"optout.example"
+
+	conn := storetest.AppConn(t)
+	suppress := func(value string) int64 {
+		t.Helper()
+		if _, err := leadstore.NewQueries(conn).Suppress(ctx, leadstore.SuppressDomain, value, leadstore.ReasonManual, "cli"); err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `SELECT max(id) FROM suppression WHERE value = $1`, value).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	lift := func(id int64, domain string) {
+		t.Helper()
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := leadstore.NewQueries(tx).LiftSuppression(ctx, id, domain, "recorded by mistake", leadstore.LiftFromCLI); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(q string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := conn.QueryRow(ctx, q, args...).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return n
+	}
+
+	suppress(kept)
+	lift(suppress(lifted), lifted)
+
+	dir := filepath.Join(t.TempDir(), "transfer")
+	code, out, errOut := leadsRun(t, "leads", "transfer", "export", dir)
+	if code != 0 {
+		t.Fatalf("export exited %d: %s", code, errOut)
+	}
+	wantLines(t, "export", out, "suppressions 1")
+	body, err := os.ReadFile(filepath.Join(dir, tfSuppressions)) // #nosec G304 -- the test's temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), kept) || strings.Contains(string(body), lifted) {
+		t.Errorf("suppressions file holds the lifted row or lacks the active one:\n%s", body)
+	}
+
+	// The target holds the kept value too, but lifted: the import records it again, active.
+	leadstoretest.Reset(t)
+	lift(suppress(kept), kept)
+	code, out, errOut = leadsRun(t, "leads", "transfer", "import", dir)
+	if code != 0 {
+		t.Fatalf("import exited %d: %s", code, errOut)
+	}
+	wantLines(t, "import", out, "suppressions: 1 added · 0 already there")
+	if n := count(`SELECT count(*) FROM suppression_active WHERE value = $1`, kept); n != 1 {
+		t.Errorf("active %s rows on the target: %d, want 1", kept, n)
+	}
+	if n := count(`SELECT count(*) FROM suppression WHERE value = $1`, kept); n != 2 {
+		t.Errorf("%s rows on the target: %d, want 2 (the lifted one kept, a new active one)", kept, n)
+	}
+	if n := count(`SELECT count(*) FROM suppression WHERE value = $1`, lifted); n != 0 {
+		t.Errorf("the lifted suppression reached the target: %d rows", n)
+	}
+	if !slices.Contains(mustSuppressionSet(t, conn), kept) {
+		t.Errorf("SuppressionSet on the target lacks %s", kept)
+	}
+}
+
+// mustSuppressionSet is the target's active suppressed domains.
+func mustSuppressionSet(t *testing.T, conn *pgx.Conn) []string {
+	t.Helper()
+	set, err := leadstore.NewQueries(conn).SuppressionSet(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set.Domains
+}
+
 func mapsEqual(a, b map[string]int) bool {
 	if len(a) != len(b) {
 		return false

@@ -21,7 +21,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v3"
+	scaleLeadsVersion = "v4"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -50,7 +50,7 @@ const (
 var leadsTables = []string{
 	"mailbox_check", "mailbox_state", "sender_mailbox",
 	"lead_priority", "priority_profile", "send_pause", "sender_check", "mailbox_cursor",
-	"mailbox_event", "suppression", "outreach_message", "outreach_batch", "lead_event", "lead",
+	"mailbox_event", "suppression_lift", "suppression", "outreach_message", "outreach_batch", "lead_event", "lead",
 	"contact_attempt", "agency_finding", "contact_route", "org", "fetch_header", "site_probe", "site",
 }
 
@@ -328,6 +328,12 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			       CASE WHEN i % 4 = 3 THEN 'cli' ELSE 'mailbox:INBOX:' || i END,
 			       $1::timestamptz - (i % 365) * interval '1 day'
 			FROM generate_series(1, 2000) i`, []any{day}},
+		// 50 of them lifted (one in forty, ids 40..2,000), so suppression_active is measured with
+		// lifts present.
+		{"suppression_lift", `INSERT INTO suppression_lift (suppression_id, reason, actor, source, lifted_at)
+			SELECT 40 * i, 'seeded lift: recorded by mistake', 'operator', (ARRAY['cli', 'console'])[1 + i % 2],
+			       $1::timestamptz - (i % 30) * interval '1 day'
+			FROM generate_series(1, 50) i`, []any{day}},
 		// 4,000 mailbox messages over the year, about eleven a day; seven in ten matched
 		// to a live first email.
 		{"mailbox_event", `WITH e AS (

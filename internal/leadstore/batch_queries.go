@@ -225,21 +225,30 @@ func (q Queries) MarkDone(ctx context.Context, id int64, actor string) (Done, er
 	return d, nil
 }
 
-// SuppressionCount is how many suppression rows have one kind and reason.
+// SuppressionCount is how many active suppression rows have one kind and reason.
 type SuppressionCount struct {
 	Kind   string `db:"kind"`
 	Reason string `db:"reason"`
 	N      int    `db:"n"`
 }
 
-// SuppressionCounts counts the suppression rows by kind, then reason.
+// SuppressionCounts counts the active suppression rows (none lifted, FO6) by kind, then reason.
 func (q Queries) SuppressionCounts(ctx context.Context) ([]SuppressionCount, error) {
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[SuppressionCount],
-		`SELECT kind, reason, count(*)::int AS n FROM suppression GROUP BY kind, reason ORDER BY kind, reason`)
+		`SELECT kind, reason, count(*)::int AS n FROM suppression_active GROUP BY kind, reason ORDER BY kind, reason`)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: suppression counts: %w", err)
 	}
 	return rows, nil
+}
+
+// LiftedCount is how many suppressions have been lifted (FO6).
+func (q Queries) LiftedCount(ctx context.Context) (int, error) {
+	var n int
+	if err := q.db.QueryRow(ctx, `SELECT count(*)::int FROM suppression_lift`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("leadstore: lifted count: %w", err)
+	}
+	return n, nil
 }
 
 // batchNewLockKey is the transaction-level advisory lock one batch new holds from its guard

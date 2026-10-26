@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -12,9 +13,10 @@ import (
 
 func init() { leadsCommands["suppress"] = runLeadsSuppress }
 
-const leadsSuppressUsage = "usage: leadhound leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no] | list | check VALUE"
+const leadsSuppressUsage = "usage: leadhound leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no] | list | check VALUE | lift ID --domain DOMAIN --reason TEXT"
 
-// runLeadsSuppress is `leads suppress add|list|check`. A suppression is never lifted.
+// runLeadsSuppress is `leads suppress add|list|check|lift`. A suppression is lifted only by
+// the operator, by id, with a reason (FO6).
 func runLeadsSuppress(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usageError(leadsSuppressUsage)
@@ -26,6 +28,8 @@ func runLeadsSuppress(ctx context.Context, args []string) error {
 		return runSuppressList(ctx, args[1:])
 	case "check":
 		return runSuppressCheck(ctx, args[1:])
+	case "lift":
+		return runSuppressLift(ctx, args[1:])
 	}
 	return usageError("unknown suppress subcommand %q; %s", args[0], leadsSuppressUsage)
 }
@@ -106,25 +110,64 @@ func runSuppressList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	set, err := lq.SuppressionSet(ctx)
+	active, lifted, err := lq.SuppressionRows(ctx, 0)
 	if err != nil {
 		return err
 	}
 	if len(counts) == 0 {
 		_, _ = fmt.Fprintln(stdout, "No suppressions.")
-		return nil
+	} else {
+		parts := make([]string, len(counts))
+		for i, c := range counts {
+			parts[i] = fmt.Sprintf("%s %s %d", c.Kind, c.Reason, c.N)
+		}
+		_, _ = fmt.Fprintf(stdout, "Suppressions: %s\n", strings.Join(parts, " · "))
 	}
-	parts := make([]string, len(counts))
-	for i, c := range counts {
-		parts[i] = fmt.Sprintf("%s %s %d", c.Kind, c.Reason, c.N)
+	for _, r := range active {
+		_, _ = fmt.Fprintf(stdout, "  #%d %s %s %s %s %s\n", r.ID, r.Kind, shown(r.Kind, r.Value), r.Reason, r.Source, leadsDay(r.CreatedAt))
 	}
-	_, _ = fmt.Fprintf(stdout, "Suppressions: %s\n", strings.Join(parts, " · "))
-	for _, a := range set.Addresses {
-		_, _ = fmt.Fprintf(stdout, "  address %s\n", maskAddress(a))
+	// The lifted ones whatever the active count: with everything lifted they are still shown.
+	if len(lifted) > 0 {
+		_, _ = fmt.Fprintf(stdout, "Lifted (%d):\n", len(lifted))
+		for _, r := range lifted {
+			_, _ = fmt.Fprintf(stdout, "  #%d %s %s %s · lifted %s (%s): %s\n", r.ID, r.Kind, shown(r.Kind, r.Value), r.Reason,
+				leadsDay(*r.LiftedAt), r.LiftSource, r.LiftReason)
+		}
 	}
-	for _, d := range set.Domains {
-		_, _ = fmt.Fprintf(stdout, "  domain %s\n", d)
+	return nil
+}
+
+// runSuppressLift is `leads suppress lift ID --domain DOMAIN --reason TEXT` (FO6): it records
+// that suppression ID was wrong, confirmed by its domain, with the operator's reason. The
+// words, success or refusal, are liftWords'; a refusal exits 2.
+func runSuppressLift(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("leads suppress lift", flag.ContinueOnError)
+	domain := fs.String("domain", "", "the suppression's domain (an address suppression's part after the @), to confirm")
+	reason := fs.String("reason", "", "why the suppression was wrong: 3 to 300 characters, one line, no address")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
 	}
+	if len(pos) != 1 || strings.TrimSpace(*domain) == "" || strings.TrimSpace(*reason) == "" {
+		return usageError(leadsSuppressUsage)
+	}
+	id, err := strconv.ParseInt(pos[0], 10, 64)
+	if err != nil || id <= 0 {
+		return usageError("%q is not a suppression number; %s", pos[0], leadsSuppressUsage)
+	}
+	s, _, err := leadsOpen(ctx, leadsForProbe)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	res, err := liftSuppression(ctx, s, id, *domain, *reason, leadstore.LiftFromCLI)
+	if asRefusal(err) != nil {
+		return usageError("%s", liftWords(res, err, forCLI))
+	}
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stdout, liftWords(res, nil, forCLI))
 	return nil
 }
 

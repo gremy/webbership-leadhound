@@ -153,8 +153,9 @@ func TestScaleLeadsSend(t *testing.T) {
 	})
 	within(t, "SuppressionSet", time.Second, func() error {
 		set, err := q.SuppressionSet(ctx)
-		if err == nil && len(set.Addresses)+len(set.Domains) != 2000 {
-			t.Errorf("suppressions = %d, want 2000", len(set.Addresses)+len(set.Domains))
+		// 2,000 seeded, 50 of them lifted (FO6): the view leaves those out.
+		if err == nil && len(set.Addresses)+len(set.Domains) != 1950 {
+			t.Errorf("active suppressions = %d, want 1950", len(set.Addresses)+len(set.Domains))
 		}
 		return err
 	})

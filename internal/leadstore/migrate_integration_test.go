@@ -147,8 +147,18 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 	if !appHas(t, owner, "mailbox_cursor", "UPDATE") || !appHas(t, owner, "mailbox_cursor", "INSERT") {
 		t.Errorf("%s: leadhound_app lacks INSERT or UPDATE on mailbox_cursor (every column a pointer)", when)
 	}
+	// suppression_lift (00009) is append-only like suppression; the suppression_active view is
+	// read-only to the app, or it could UPDATE suppression through it (an auto-updatable view).
+	if appHas(t, owner, "suppression_lift", "UPDATE") || !appHas(t, owner, "suppression_lift", "INSERT") ||
+		!appHas(t, owner, "suppression_lift", "SELECT") {
+		t.Errorf("%s: leadhound_app on suppression_lift: want SELECT and INSERT, no UPDATE", when)
+	}
+	if !appHas(t, owner, "suppression_active", "SELECT") || appHas(t, owner, "suppression_active", "INSERT") ||
+		appHas(t, owner, "suppression_active", "UPDATE") {
+		t.Errorf("%s: leadhound_app on suppression_active: want SELECT only", when)
+	}
 	for _, table := range []string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
-		"mailbox_event", "mailbox_cursor", "sender_check"} {
+		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check"} {
 		if appHas(t, owner, table, "DELETE") || appHas(t, owner, table, "TRUNCATE") {
 			t.Errorf("%s: leadhound_app may DELETE or TRUNCATE %s", when, table)
 		}
@@ -314,6 +324,8 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM outreach_batch",
 		"DELETE FROM outreach_message",
 		"DELETE FROM suppression",
+		"DELETE FROM suppression_lift",
+		"DELETE FROM suppression_active",
 		"DELETE FROM mailbox_event",
 		"DELETE FROM mailbox_cursor",
 		"DELETE FROM sender_check",
@@ -342,6 +354,10 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE org SET name = ''",
 		"UPDATE lead_event SET reason = ''",
 		"UPDATE suppression SET reason = 'manual'",
+		"UPDATE suppression_lift SET reason = 'rewritten'",
+		// An auto-updatable view would write suppression with the owner's rights.
+		"UPDATE suppression_active SET reason = 'manual'",
+		"INSERT INTO suppression_active (kind, value, reason) VALUES ('domain', 'view.invalid', 'manual')",
 		"UPDATE mailbox_event SET kind = 'reply'",
 		"UPDATE sender_check SET spf = true",
 		"UPDATE outreach_message SET body_text = ''",

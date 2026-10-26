@@ -256,15 +256,33 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 	for _, c := range counts {
 		p.Suppressions.Counts = append(p.Suppressions.Counts, console.SuppressionCount{Kind: c.Kind, Reason: c.Reason, N: c.N})
 	}
-	set, err := lq.SuppressionSet(ctx)
+	active, lifted, err := lq.SuppressionRows(ctx, consoleSuppressionRows)
 	if err != nil {
 		return console.LeadsPage{}, err
 	}
-	p.Suppressions.Domains = set.Domains
-	for _, a := range set.Addresses {
-		p.Suppressions.Addresses = append(p.Suppressions.Addresses, maskAddress(a))
+	for _, r := range active {
+		p.Suppressions.Rows = append(p.Suppressions.Rows, suppressionRow(r))
 	}
+	for _, r := range lifted {
+		p.Suppressions.Lifted = append(p.Suppressions.Lifted, suppressionRow(r))
+	}
+	// More is the active ones past the cap: the counts hold every active suppression.
+	total := 0
+	for _, c := range counts {
+		total += c.N
+	}
+	p.Suppressions.More = max(total-len(active), 0)
 	return p, nil
+}
+
+// consoleSuppressionRows caps each of the Leads page's suppression lists.
+const consoleSuppressionRows = 200
+
+// suppressionRow is a suppression as the Leads page lists it, its value shown as
+// `leads suppress list` shows it (addresses masked).
+func suppressionRow(r leadstore.SuppressionRow) console.SuppressionRow {
+	return console.SuppressionRow{ID: r.ID, Kind: r.Kind, Value: shown(r.Kind, r.Value), Reason: r.Reason, Source: r.Source,
+		At: r.CreatedAt, LiftedAt: r.LiftedAt, LiftReason: r.LiftReason, LiftSource: r.LiftSource}
 }
 
 // mailboxesSending is the Leads page's sending card over the stored mailboxes, read from
@@ -808,6 +826,8 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 		return b.done(ctx, a.ID)
 	case console.LeadSuppress:
 		return b.suppress(ctx, a)
+	case console.LeadLift:
+		return b.lift(ctx, a)
 	case console.LeadContacted:
 		return b.contacted(ctx, a)
 	case console.LeadPause, console.LeadResume:
@@ -1007,6 +1027,18 @@ func (b *backend) suppress(ctx context.Context, a console.LeadAction) (console.L
 	return console.LeadOutcome{Message: fmt.Sprintf("Suppressed %s %s (%s): %s · %s reached, %d moved to suppressed, %s cancelled.",
 		a.Kind, shown(a.Kind, value), a.Reason, rec, plural(res.Leads, "lead", "leads"), res.Moved,
 		plural(int(res.Cancelled), "pending message", "pending messages"))}, nil
+}
+
+// lift is liftSuppression from the console (FO6), worded by liftWords as the CLI words it.
+func (b *backend) lift(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
+	res, err := liftSuppression(ctx, b.s, a.ID, a.Value, a.Reason, leadstore.LiftFromConsole)
+	if asRefusal(err) != nil {
+		return console.LeadOutcome{}, refused("%s", liftWords(res, err, forConsole))
+	}
+	if err != nil {
+		return console.LeadOutcome{}, err
+	}
+	return console.LeadOutcome{Message: liftWords(res, nil, forConsole)}, nil
 }
 
 func (b *backend) contacted(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {

@@ -105,14 +105,18 @@ func richLeads(text string) LeadsPage {
 		Day: testDay,
 		Sending: Sending{SetUp: true, SentToday: 2, CapToday: 4, SentYesterday: 3, Bounced: 1, OptedOut: 1, Stopped: text,
 			DNS: &SenderCheck{At: testSent, SPF: true, DKIM: true, DMARC: false}},
-		Batches:      []WaitingBatch{{ID: 3, CreatedAt: testSent, Leads: 4, Emails: 3, Forms: 1}},
-		Manual:       []ManualItem{{MessageID: 9, BatchID: 2, Domain: text, Channel: "form", Route: text}},
-		CheckByHand:  []CheckItem{{MessageID: 11, Domain: text, Step: 1, State: "maybe_sent", At: &at}},
-		Replies:      []string{text},
-		Other:        2,
-		Checked:      40,
-		Drupal:       12,
-		Suppressions: Suppressions{Counts: []SuppressionCount{{Kind: "domain", Reason: text, N: 1}}, Domains: []string{text}, Addresses: []string{"j***@" + text}},
+		Batches:     []WaitingBatch{{ID: 3, CreatedAt: testSent, Leads: 4, Emails: 3, Forms: 1}},
+		Manual:      []ManualItem{{MessageID: 9, BatchID: 2, Domain: text, Channel: "form", Route: text}},
+		CheckByHand: []CheckItem{{MessageID: 11, Domain: text, Step: 1, State: "maybe_sent", At: &at}},
+		Replies:     []string{text},
+		Other:       2,
+		Checked:     40,
+		Drupal:      12,
+		Suppressions: Suppressions{Counts: []SuppressionCount{{Kind: "domain", Reason: text, N: 1}},
+			Rows: []SuppressionRow{{ID: 2, Kind: "address", Value: "j***@" + text, Reason: "opt_out", Source: "mailbox:1:INBOX:3", At: testSent}},
+			More: 3,
+			Lifted: []SuppressionRow{{ID: 1, Kind: "domain", Value: text, Reason: "opt_out", Source: "mailbox:1:INBOX:2", At: testSent,
+				LiftedAt: &at, LiftReason: "quoted our opt-out line", LiftSource: "console"}}},
 	}
 }
 
@@ -144,6 +148,8 @@ func leadsPosts() []leadsRoute {
 		{"/leads/items/9/done", url.Values{}, "/leads", LeadAction{Do: LeadDone, ID: 9}},
 		{"/leads/suppress", url.Values{"kind": {"domain"}, "value": {" northwind.example "}, "reason": {"manual"}}, "/leads",
 			LeadAction{Do: LeadSuppress, Kind: "domain", Value: "northwind.example", Reason: "manual"}},
+		{"/leads/suppressions/lift", url.Values{"id": {" 2 "}, "domain": {" domain.example "}, "reason": {" quoted our line "}}, "/leads",
+			LeadAction{Do: LeadLift, ID: 2, Value: "domain.example", Reason: "quoted our line"}},
 		{"/leads/contacted", url.Values{"domain": {"northwind.example"}, "note": {"called"}}, "/leads",
 			LeadAction{Do: LeadContacted, Value: "northwind.example", Note: "called"}},
 		{"/leads/sending", url.Values{"do": {"pause"}, "reason": {"holiday"}}, "/leads", LeadAction{Do: LeadPause, Reason: "holiday"}},
@@ -228,6 +234,11 @@ func TestLeadsFormsRefusedBeforeTheBackend(t *testing.T) {
 		{"/leads/next/0/pin", url.Values{}, http.StatusNotFound},
 		{"/leads/batches/x/approve", url.Values{}, http.StatusNotFound},
 		{"/leads/priorities", url.Values{"do": {"drop"}}, http.StatusUnprocessableEntity},
+		{"/leads/suppressions/lift", url.Values{"domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
+		{"/leads/suppressions/lift", url.Values{"id": {"0"}, "domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
+		{"/leads/suppressions/lift", url.Values{"id": {"-2"}, "domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
+		{"/leads/suppressions/lift", url.Values{"id": {"#2"}, "domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
+		{"/leads/suppressions/lift", url.Values{"id": {"2.5"}, "domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
 	}
 	for _, c := range cases {
 		b := richBackend("x")
@@ -561,5 +572,92 @@ func TestLeadsEscaping(t *testing.T) {
 		if strings.Contains(body, "<script>alert") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 			t.Errorf("%s does not escape backend text", p)
 		}
+	}
+}
+
+// TestLiftSuppression (FO6): the lift form needs a session and a same-origin POST, refuses a
+// number it cannot read before the backend, hands the backend the trimmed id, domain and
+// reason, shows the flash it returns, and logs only "lift" and the outcome.
+func TestLiftSuppression(t *testing.T) {
+	const domain, reason = "domain.example", "quoted our opt-out line back"
+	form := url.Values{"id": {"2"}, "domain": {domain}, "reason": {reason}}
+
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	if w := h.do(post("/leads/suppressions/lift", form)); w.Code == http.StatusSeeOther && w.Header().Get("Location") == "/leads" {
+		t.Errorf("a lift without a session went through")
+	}
+	c := h.session(t)
+	cross := post("/leads/suppressions/lift", form, c)
+	cross.Header.Set("Sec-Fetch-Site", "cross-site")
+	if w := h.do(cross); w.Code != http.StatusForbidden {
+		t.Errorf("cross-site lift: %d, want 403", w.Code)
+	}
+	if n := b.n("LeadAct"); n != 0 {
+		t.Fatalf("LeadAct called %d times before a good POST", n)
+	}
+
+	w := h.do(post("/leads/suppressions/lift", url.Values{"id": {"two"}, "domain": {domain}, "reason": {reason}}, c))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "Give the number of the suppression to lift.") {
+		t.Errorf("bad id: %d %s", w.Code, w.Body.String())
+	}
+	if n := b.n("LeadAct"); n != 0 {
+		t.Errorf("a bad id reached the backend %d times", n)
+	}
+
+	const flash = "Lifted suppression 2: address e***@domain.example (opt_out, from mailbox:1:INBOX:3). It may be written to again; lead states are unchanged."
+	b.leadOut = LeadOutcome{Message: flash}
+	w = h.do(post("/leads/suppressions/lift", url.Values{"id": {"2"}, "domain": {"  " + domain + " "}, "reason": {" " + reason + "  "}}, c))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads" {
+		t.Fatalf("lift: %d to %q", w.Code, w.Header().Get("Location"))
+	}
+	want := LeadAction{Do: "lift", ID: 2, Value: domain, Reason: reason}
+	if !sameAction(b.lastLead, want) {
+		t.Errorf("asked %+v, want %+v", b.lastLead, want)
+	}
+	page := h.do(get("/leads", c, cookieNamed(w, "__Host-lh_flash"))).Body.String()
+	if !strings.Contains(page, template.HTMLEscapeString(flash)) {
+		t.Errorf("the leads page does not show the lift's outcome: %s", page)
+	}
+
+	logs := h.logs.String()
+	if !strings.Contains(logs, "action=lift") || !strings.Contains(logs, "outcome=ok") || !strings.Contains(logs, "outcome=refused") {
+		t.Errorf("the log lacks the lift and its outcomes: %s", logs)
+	}
+	if strings.Contains(logs, domain) || strings.Contains(logs, "quoted our") {
+		t.Errorf("the log holds the submitted domain or reason: %s", logs)
+	}
+}
+
+// TestSuppressionsCard: the card lists active suppressions with their numbers, the lifted
+// ones in their own section, the lift form, and the hint that a lift is kept.
+func TestSuppressionsCard(t *testing.T) {
+	h := newHarness(t, richBackend("domain.example"), false)
+	body := h.do(get("/leads", h.session(t))).Body.String()
+	for _, want := range []string{
+		"#2 address j***@domain.example · opt_out · mailbox:1:INBOX:3 · Saturday 24 October",
+		"1 suppression, 3 more not shown",
+		"<summary>Lifted (1)</summary>",
+		"#1 domain domain.example · lifted Saturday 24 October (console) · quoted our opt-out line",
+		`action="/leads/suppressions/lift"`,
+		`<input id="lift-id" name="id" inputmode="numeric" required>`,
+		`<input id="lift-domain" name="domain" required maxlength="253" aria-describedby="lift-domain-hint">`,
+		`<input id="lift-reason" name="reason" required minlength="3" maxlength="300">`,
+		"the domain shown in the list, to confirm",
+		"Lift one only when it was recorded by mistake: the lift is kept with its reason, and a new opt-out suppresses again.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/leads lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "never lifted") {
+		t.Error("/leads still says a suppression is never lifted")
+	}
+
+	b := richBackend("domain.example")
+	b.leads.Suppressions.Lifted = nil
+	eh := newHarness(t, b, false)
+	if body := eh.do(get("/leads", eh.session(t))).Body.String(); strings.Contains(body, "Lifted (") {
+		t.Error("an empty Lifted section is shown")
 	}
 }
