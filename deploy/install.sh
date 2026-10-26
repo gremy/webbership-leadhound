@@ -52,18 +52,21 @@ leads_timers() {
 
 # mailbox_key KEY ENV: the mailboxes' key pair. The private key KEY (root:root 0600) is
 # generated once, by the binary just moved into place, only when KEY is missing; an existing
-# key is never overwritten, because every saved mailbox password is sealed to it. Then the
-# public key is always derived from KEY and written to ENV as LEADHOUND_MAILBOX_PUBLIC_KEY=
-# (replacing a line that differs, appended when there is none), so ENV never holds a public
-# key that does not match the private one. Only the fingerprint is printed.
+# key is never overwritten, because every saved mailbox password is sealed to it, only made
+# root:root 0600 again (a restored copy may not be). Then the public key is always derived
+# from KEY and written to ENV as LEADHOUND_MAILBOX_PUBLIC_KEY= (replacing a line that
+# differs, appended when there is none), so ENV never holds a public key that does not match
+# the private one. Only the fingerprint is printed.
 mailbox_key() {
 	if [ ! -e "$1" ]; then
 		out=$("$bin/leadhound" leads mailboxes keygen --out "$1") ||
 			fail "the mailbox key could not be generated at $1"
-		chown root:root "$1"
-		chmod 0600 "$1"
 		echo "install: new mailbox key at $1, fingerprint $(printf '%s\n' "$out" | sed -n 's/^Fingerprint: //p')"
 	fi
+	# A key the operator restored from a backup may come back with another owner or mode,
+	# which pubkey refuses; it is root's alone, generated or kept.
+	chown root:root "$1"
+	chmod 0600 "$1"
 	line=$("$bin/leadhound" leads mailboxes pubkey --key "$1") ||
 		fail "the public key could not be read from $1 (it must be root:root 0600)"
 	case $line in

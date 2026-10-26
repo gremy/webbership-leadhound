@@ -117,3 +117,64 @@ func TestCheckDNSNoteNeverHoldsTheLookupError(t *testing.T) {
 		t.Fatalf("note carries the resolver's error: %q", got.Note)
 	}
 }
+
+// TestCheckDNSOrgDMARC: a host below its registrable domain whose own _dmarc name holds no
+// DMARC record passes on the organisational domain's record (RFC 7489 §6.6.3), and the note
+// says so; SPF and DKIM are still read on the host only.
+func TestCheckDNSOrgDMARC(t *testing.T) {
+	const host = "mail." + dnsDomain
+	records := func() map[string][]string {
+		return map[string][]string{
+			host:                      {"v=spf1 -all"},
+			"sel1._domainkey." + host: {"v=DKIM1; p=MIIB"},
+			"_dmarc." + dnsDomain:     {"v=DMARC1; p=none"},
+		}
+	}
+	t.Run("org record passes", func(t *testing.T) {
+		got := CheckDNS(context.Background(), fakeResolver{txt: records()}, host, "sel1")
+		if !got.OK() {
+			t.Fatalf("got %+v, want all pass", got)
+		}
+		if !strings.Contains(got.Note, "organisational domain") {
+			t.Fatalf("note %q does not say the record is at the organisational domain", got.Note)
+		}
+		if strings.Contains(got.Note, "sender") || strings.Contains(got.Note, ".example") {
+			t.Fatalf("the note names the domain: %q", got.Note)
+		}
+	})
+	t.Run("host record wins", func(t *testing.T) {
+		m := records()
+		m["_dmarc."+host] = []string{"v=DMARC1; p=reject"}
+		got := CheckDNS(context.Background(), fakeResolver{txt: m}, host, "sel1")
+		if !got.OK() || got.Note != "" {
+			t.Fatalf("got %+v, want all pass with no note", got)
+		}
+	})
+	t.Run("neither", func(t *testing.T) {
+		m := records()
+		delete(m, "_dmarc."+dnsDomain)
+		got := CheckDNS(context.Background(), fakeResolver{txt: m}, host, "sel1")
+		if got.DMARC || !strings.Contains(got.Note, "dmarc") {
+			t.Fatalf("got %+v, want dmarc fail", got)
+		}
+	})
+	t.Run("spf and dkim stay on the host", func(t *testing.T) {
+		m := records()
+		delete(m, host)
+		delete(m, "sel1._domainkey."+host)
+		m[dnsDomain] = []string{"v=spf1 -all"}
+		m["sel1._domainkey."+dnsDomain] = []string{"v=DKIM1; p=MIIB"}
+		got := CheckDNS(context.Background(), fakeResolver{txt: m}, host, "sel1")
+		if got.SPF || got.DKIM || !got.DMARC {
+			t.Fatalf("got %+v, want spf and dkim fail, dmarc pass", got)
+		}
+	})
+	t.Run("registrable host has no fallback", func(t *testing.T) {
+		m := goodRecords()
+		delete(m, "_dmarc."+dnsDomain)
+		got := CheckDNS(context.Background(), fakeResolver{txt: m}, dnsDomain, "sel1")
+		if got.DMARC {
+			t.Fatalf("got %+v", got)
+		}
+	})
+}

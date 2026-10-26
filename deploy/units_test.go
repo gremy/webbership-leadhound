@@ -1685,13 +1685,14 @@ keygen)
 	;;
 pubkey)
 	[ -z "${FAKE_PUBKEY_FAIL:-}" ] || exit 2
+	[ -n "$(find "$5" -perm 600)" ] || { echo "$5 is not 0600" >&2; exit 2; }
 	k=$(cat "$5")
 	echo "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-${k#PRIVATE-}"
 	;;
 *) exit 9 ;;
 esac
 `
-	for name, body := range map[string]string{"leadhound": fake, "chown": "#!/bin/sh\nexit 0\n"} {
+	for name, body := range map[string]string{"leadhound": fake, "chown": "#!/bin/sh\necho \"chown $*\" >>\"$LEADHOUND_LOG\"\n"} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil { // #nosec G306 -- an executable stub in a test temp dir
 			t.Fatal(err)
 		}
@@ -1699,7 +1700,8 @@ esac
 	const other = "LEADHOUND_DATABASE_URL=postgres://app@localhost/leadhound\nLEADHOUND_TZ=Europe/Bucharest\n"
 	for _, tc := range []struct {
 		name       string
-		key        string // the key file's contents; empty is no file
+		key        string      // the key file's contents; empty is no file
+		keyMode    os.FileMode // the existing key file's mode; 0 is 0600
 		env        string
 		pubFail    bool
 		wantFail   bool
@@ -1714,6 +1716,7 @@ esac
 		{name: "key kept, two lines, the last right", key: "PRIVATE-old\n", env: "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-stale\n" + other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "wrote the mailbox public key"},
 		{name: "key kept, line right", key: "PRIVATE-old\n", env: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "holds the mailbox public key"},
 		{name: "key unreadable", key: "PRIVATE-old\n", env: other, pubFail: true, wantFail: true, wantOut: "could not be read"},
+		{name: "key restored 0644", key: "PRIVATE-old\n", keyMode: 0o644, env: other, wantEnv: other + "LEADHOUND_MAILBOX_PUBLIC_KEY=pub-old\n", wantOut: "wrote the mailbox public key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmp := t.TempDir()
@@ -1721,6 +1724,11 @@ esac
 			if tc.key != "" {
 				if err := os.WriteFile(key, []byte(tc.key), 0o600); err != nil {
 					t.Fatal(err)
+				}
+				if tc.keyMode != 0 {
+					if err := os.Chmod(key, tc.keyMode); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			if err := os.WriteFile(env, []byte(tc.env), 0o600); err != nil {
@@ -1768,6 +1776,12 @@ esac
 			}
 			if fi, err := os.Stat(env); err != nil || fi.Mode().Perm() != 0o600 {
 				t.Errorf("env file mode %v (%v), want 0600", fi.Mode().Perm(), err)
+			}
+			if fi, err := os.Stat(key); err != nil || fi.Mode().Perm() != 0o600 {
+				t.Errorf("key file mode %v (%v), want 0600", fi.Mode().Perm(), err)
+			}
+			if chowned, _ := os.ReadFile(log); !strings.Contains(string(chowned), "chown root:root "+key) { // #nosec G304 -- the test's own temp file
+				t.Errorf("the key was not made root:root; calls:\n%s", chowned)
 			}
 			if leftovers, _ := filepath.Glob(env + ".*"); len(leftovers) > 0 {
 				t.Errorf("temporary files left: %q", leftovers)

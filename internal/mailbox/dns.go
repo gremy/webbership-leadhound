@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Resolver looks up TXT records; *net.Resolver is one.
@@ -25,6 +27,10 @@ func (r DNSResult) OK() bool { return r.SPF && r.DKIM && r.DMARC }
 // CheckDNS looks up the sending domain's SPF (a TXT on the domain starting v=spf1), DKIM
 // (a TXT on <selector>._domainkey.<domain> starting v=DKIM1; a key split over several
 // strings is joined) and DMARC (a TXT on _dmarc.<domain> starting v=DMARC1) records.
+// When domain sits below its registrable domain and _dmarc.<domain> holds no DMARC record,
+// the DMARC record is looked up at the organisational domain, _dmarc.<registrable domain>
+// (RFC 7489 §6.6.3), and the note says it was found there. SPF and DKIM are read on domain
+// only.
 func CheckDNS(ctx context.Context, r Resolver, domain, selector string) DNSResult {
 	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 	selector = strings.TrimSpace(selector)
@@ -39,26 +45,41 @@ func CheckDNS(ctx context.Context, r Resolver, domain, selector string) DNSResul
 	}
 	var res DNSResult
 	var notes []string
-	check := func(name, label, prefix string, joined bool) bool {
+	// lookup is whether name holds a TXT record starting prefix, or why not.
+	lookup := func(name, label, prefix string, joined bool) (bool, string) {
 		txt, err := r.LookupTXT(ctx, name)
 		if err != nil {
-			notes = append(notes, label+": "+lookupProblem(ctx, err))
-			return false
+			return false, label + ": " + lookupProblem(ctx, err)
 		}
 		for _, t := range txt {
 			if hasPrefixFold(t, prefix) {
-				return true
+				return true, ""
 			}
 		}
 		if joined && hasPrefixFold(strings.Join(txt, ""), prefix) {
-			return true
+			return true, ""
 		}
-		notes = append(notes, label+": no TXT record starting "+prefix)
-		return false
+		return false, label + ": no TXT record starting " + prefix
+	}
+	check := func(name, label, prefix string, joined bool) bool {
+		ok, note := lookup(name, label, prefix, joined)
+		if !ok {
+			notes = append(notes, note)
+		}
+		return ok
 	}
 	res.SPF = check(domain, "spf", "v=spf1", false)
 	res.DKIM = check(selector+"._domainkey."+domain, "dkim", "v=DKIM1", true)
-	res.DMARC = check("_dmarc."+domain, "dmarc", "v=DMARC1", false)
+	var note string
+	res.DMARC, note = lookup("_dmarc."+domain, "dmarc", "v=DMARC1", false)
+	if org, err := publicsuffix.EffectiveTLDPlusOne(domain); !res.DMARC && ctx.Err() == nil && err == nil && org != domain {
+		if res.DMARC, _ = lookup("_dmarc."+org, "dmarc", "v=DMARC1", false); res.DMARC {
+			note = "dmarc: found at the organisational domain, not the address's own host"
+		}
+	}
+	if note != "" {
+		notes = append(notes, note)
+	}
 	res.Note = strings.Join(notes, "; ")
 	return res
 }

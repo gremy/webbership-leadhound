@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
@@ -306,6 +307,13 @@ func editMailbox(ctx context.Context, lq leadstore.Queries, pub secretbox.Public
 			return false, needPassword
 		}
 		return false, err
+	}
+	if connChanged || m.DKIMSelector != st.DKIMSelector {
+		// Where a mailbox signs in and sends from is the one change that can redirect its
+		// mail, so the operator can read every such change back; never the password or seal.
+		slog.Default().Info("mailbox connection changed", "mailbox", id,
+			"login_was", st.Login, "login", m.Login, "smtp_addr_was", st.SMTPAddr, "smtp_addr", m.SMTPAddr,
+			"imap_addr_was", st.IMAPAddr, "imap_addr", m.IMAPAddr, "selector_was", st.DKIMSelector, "selector", m.DKIMSelector)
 	}
 	if !newPassword && !connChanged && m.DKIMSelector == st.DKIMSelector {
 		return false, nil

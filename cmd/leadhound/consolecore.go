@@ -1123,13 +1123,18 @@ func (b *backend) mailboxRow(cfg leadconfig.Config, m leadstore.MailboxStatus, n
 	return r
 }
 
-// mailboxCheckView is m's latest check as its card shows it.
+// mailboxCheckView is m's latest check as its card shows it. A check still requested
+// console.CheckNotStartedAfter after it was asked for is NotStarted: its request file was
+// missed (written just after the worker's last look), so the card offers Check now, which
+// writes it again. requested_at is the database's clock, so it is compared with the
+// machine's clock, never the operator's day.
 func mailboxCheckView(m leadstore.MailboxStatus) console.MailboxCheckView {
 	v := console.MailboxCheckView{MailboxID: m.ID, Retired: m.State == leadstore.MailboxRetired}
 	if c := m.LastCheck; c != nil {
 		at := c.RequestedAt
 		v.Outcome, v.RequestedAt, v.CheckedAt, v.Fix = c.Outcome, &at, c.CheckedAt, c.Fix
 		v.SMTPOK, v.IMAPOK, v.FoldersOK, v.SPF, v.DKIM, v.DMARC = c.SMTPOK, c.IMAPOK, c.FoldersOK, c.SPF, c.DKIM, c.DMARC
+		v.NotStarted = c.Outcome == leadstore.CheckRequested && time.Since(at) > console.CheckNotStartedAfter
 	}
 	return v
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -371,9 +372,14 @@ func TestRequestCheckCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The request file is written again even when the check already waits, so Check now on
+	// a check whose first request was missed starts it.
+	if err := os.Remove(filepath.Join(w.dir, runRequestDir, mailboxCheckAction)); err != nil {
+		t.Fatal(err)
+	}
 	id2, err := requestCheck(ctx, w.lq, w.dir, w.now, m.ID)
 	if err != nil || id1 != id2 || w.requestFile(t) == "" {
-		t.Errorf("requests = %d, %d, %v", id1, id2, err)
+		t.Errorf("requests = %d, %d, %v; request file %q", id1, id2, err, w.requestFile(t))
 	}
 	if _, err := requestCheck(ctx, w.lq, w.dir, w.now, 999); !strings.Contains(refusalWords(t, err), "No mailbox 999") {
 		t.Errorf("missing: %v", err)
@@ -588,5 +594,79 @@ func TestMailboxesCheckNeedsKey(t *testing.T) {
 	}
 	if left, _ := w.lq.RequestedChecks(context.Background()); len(left) != 1 {
 		t.Errorf("%d requested, want 1 left waiting", len(left))
+	}
+}
+
+// TestRunChecksOrgDMARC: a mailbox on a subdomain whose DMARC record is published only at
+// the organisational domain (RFC 7489 §6.6.3) passes its check and becomes ready; SPF and
+// DKIM are still read on its own host.
+func TestRunChecksOrgDMARC(t *testing.T) {
+	w := newCoreWorld(t)
+	ctx := context.Background()
+	const host = "mail.brand" + ".example"
+	m := seedMailbox(t, w.lq, "x@"+host)
+	leadsMail.resolver = fakeResolver{
+		host:                        {"v=spf1 -all"},
+		"sel1._domainkey." + host:   {"v=DKIM1; p=MIIB"},
+		"_dmarc.brand" + ".example": {"v=DMARC1; p=none"},
+	}
+	if _, err := w.lq.RequestCheck(ctx, m.ID, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runChecks(ctx, w.lq, w.key, w.now); err != nil {
+		t.Fatal(err)
+	}
+	st := w.status(t, m.ID)
+	if st.LastCheck == nil || st.LastCheck.Outcome != leadstore.CheckPassed {
+		t.Fatalf("check %+v, want passed", st.LastCheck)
+	}
+	if !st.DNSPassedToday {
+		t.Error("the subdomain mailbox with an organisational DMARC record is not ready")
+	}
+}
+
+// TestEditMailboxLogsConnectionChange: an edit that changes the login, a server or the
+// selector logs one line with the mailbox id and the previous and new values of each, and
+// never the password or its seal; an edit of the From name alone logs no such line.
+func TestEditMailboxLogsConnectionChange(t *testing.T) {
+	w := newCoreWorld(t)
+	ctx := context.Background()
+	logs, _ := captureLogs(t)
+	m := seedMailbox(t, w.lq, "edit@"+testSenderDomain)
+	if _, err := editMailbox(ctx, w.lq, w.key.Public(), w.dir, w.now, m.ID, MailboxInput{FromName: "Desk"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "mailbox connection changed") {
+		t.Errorf("a From name edit logged a connection change:\n%s", logs)
+	}
+	const newPassword = "pw-" + "edit-log-never-shown"
+	in := MailboxInput{Login: "new-login", SMTPAddr: "smtp.moved.example:587", IMAPAddr: "imap.moved.example:993", Selector: "s9",
+		FromName: "Desk", Password: config.Secret(newPassword)}
+	if _, err := editMailbox(ctx, w.lq, w.key.Public(), w.dir, w.now, m.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, l := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(l, "mailbox connection changed") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("%d connection lines, want 1:\n%s", len(lines), logs)
+	}
+	for _, want := range []string{
+		"mailbox=" + strconv.FormatInt(m.ID, 10),
+		"login_was=" + m.Login, "login=new-login",
+		"smtp_addr_was=" + m.SMTPAddr, "smtp_addr=smtp.moved.example:587",
+		"imap_addr_was=" + m.IMAPAddr, "imap_addr=imap.moved.example:993",
+		"selector_was=" + m.DKIMSelector, "selector=s9",
+	} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("the line lacks %q: %s", want, lines[0])
+		}
+	}
+	if strings.Contains(logs.String(), newPassword) || strings.Contains(logs.String(), testPassword) ||
+		strings.Contains(logs.String(), "sealed") {
+		t.Errorf("the log holds the password or its seal:\n%s", logs)
 	}
 }

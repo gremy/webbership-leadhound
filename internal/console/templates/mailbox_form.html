@@ -44,7 +44,7 @@
     <p class="hint">The name you sign in with; blank when it is the address.</p>
 
     <label for="mb-password">Password</label>
-    <input id="mb-password" name="password" type="password" autocomplete="new-password" maxlength="{{maxMailbox}}"{{if not $f.Edit}} required{{end}}>
+    <input id="mb-password" name="password" type="password" autocomplete="new-password"{{if not $f.Edit}} required{{end}}>
     <p class="hint">{{if $f.Edit}}Optional: blank keeps the saved password. Changing the login or a server needs the password again.{{else}}Saved sealed: the console can store it but never read it back.{{end}}</p>
 
     <label for="mb-smtp">Sending server</label>

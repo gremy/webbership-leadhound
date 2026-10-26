@@ -516,3 +516,65 @@ func TestMailboxPasswordNeverLeaks(t *testing.T) {
 		t.Errorf("a command's output holds the password:\n%s", strings.Join(w.outs, "\n"))
 	}
 }
+
+// TestConsoleMailboxLongPassword: a password far longer than any other field (600
+// characters) is taken whole: the add form's password field has no length limit, and the
+// console's add seals exactly what was typed, so the seal opens to the full password.
+func TestConsoleMailboxLongPassword(t *testing.T) {
+	leadsScene(t)
+	allowReservedNames(t)
+	sealWithTestKey(t)
+	_, logger := captureLogs(t)
+	c := newConsoleClient(t, leadsBackend(t), logger)
+	page := c.get("/mailboxes/new", false).Body.String()
+	i := strings.Index(page, `<input id="mb-password"`)
+	if i < 0 {
+		t.Fatalf("no password field:\n%s", page)
+	}
+	if field := page[i : i+strings.Index(page[i:], ">")]; strings.Contains(field, "maxlength") {
+		t.Errorf("the password field is capped: %s", field)
+	}
+	long := strings.Repeat("pw-0123456789-", 43)[:600]
+	if w := c.post("/mailboxes", mailboxForm("desk@other.example", "smtp.other.example:465", "s2", "Desk", long)); w.Code != http.StatusSeeOther {
+		t.Fatalf("add %d:\n%s", w.Code, w.Body.String())
+	}
+	var sealed []byte
+	if err := storetest.OwnerConn(t).QueryRow(context.Background(),
+		`SELECT password_sealed FROM sender_mailbox WHERE address = 'desk@other.example'`).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := secretbox.Open(currentTestKey(t), sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := creds.Password.Reveal(); got != long {
+		t.Errorf("the seal opens to %d characters, want the 600 typed", len(got))
+	}
+}
+
+// TestConsoleMailboxCheckNotStarted: a requested check that has waited more than
+// console.CheckNotStartedAfter is shown as not started (the card stops polling and offers
+// Check now); a fresh request is still checking.
+func TestConsoleMailboxCheckNotStarted(t *testing.T) {
+	leadsScene(t)
+	ctx := context.Background()
+	lq := leadstoretest.Q(t)
+	m := seedMailbox(t, lq, "late@"+testSenderDomain)
+	if _, err := lq.RequestCheck(ctx, m.ID, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	b := leadsBackend(t)
+	card, err := b.MailboxCheckCard(ctx, m.ID)
+	if err != nil || card.Outcome != console.MailboxCheckRequested || card.NotStarted {
+		t.Fatalf("a fresh request: %+v, %v", card, err)
+	}
+	ownerExec(t, `UPDATE mailbox_check SET requested_at = now() - interval '6 minutes' WHERE mailbox_id = $1`, m.ID)
+	card, err = b.MailboxCheckCard(ctx, m.ID)
+	if err != nil || !card.NotStarted {
+		t.Errorf("a request 6 minutes old: %+v, %v", card, err)
+	}
+	page, err := b.Mailbox(ctx, m.ID)
+	if err != nil || !page.Check.NotStarted {
+		t.Errorf("the mailbox page's card: %+v, %v", page.Check, err)
+	}
+}

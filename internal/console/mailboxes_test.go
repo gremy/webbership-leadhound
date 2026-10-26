@@ -462,6 +462,39 @@ func TestMailboxCheckCard(t *testing.T) {
 	}
 }
 
+// TestMailboxCheckCardNotStarted: a check asked for over five minutes ago that has still
+// not started (its request file was missed) stops the card polling, says so and offers
+// Check now again, which asks the backend for a check.
+func TestMailboxCheckCardNotStarted(t *testing.T) {
+	b := richBackend("x")
+	b.mbCard = requestedCard()
+	b.mbCard.NotStarted = true
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	for _, path := range []string{"/mailboxes/1/check", "/mailboxes/1"} {
+		if path == "/mailboxes/1" {
+			b.mailbox.Check = b.mbCard
+		}
+		r := get(path, c)
+		if path == "/mailboxes/1/check" {
+			r = hx(r)
+		}
+		body := h.do(r).Body.String()
+		if strings.Contains(body, `hx-trigger="every 5s"`) || strings.Contains(body, "Checking…") {
+			t.Errorf("%s: a check that has not started still polls:\n%s", path, body)
+		}
+		for _, want := range []string{"The check has not started.", `action="/mailboxes/1/check"`, "Check now"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s lacks %q:\n%s", path, want, body)
+			}
+		}
+	}
+	b.mbOut = MailboxOutcome{Message: "Check asked for."}
+	if w := h.do(hx(post("/mailboxes/1/check", url.Values{}, c))); w.Code != http.StatusOK || b.lastMailbox.Do != MailboxCheck {
+		t.Errorf("Check now on a check not started: %d, asked %+v", w.Code, b.lastMailbox)
+	}
+}
+
 // TestMailboxDetail: the detail page carries the mailbox's settings, the check card and
 // the switches for its state; a retired mailbox offers none.
 func TestMailboxDetail(t *testing.T) {

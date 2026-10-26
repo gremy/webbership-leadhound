@@ -265,6 +265,9 @@ Every batch shows each message's From address before you approve it.
 
 Each mailbox password is sealed the moment you enter it, with a public key, and only the jobs that send, sync and check a mailbox hold the private key that opens it.
 The console never has the private key: it can store a new password but never read one back, so a console that was broken into still cannot give a password away.
+The console and the jobs share one database login, so someone who takes over the console can point a mailbox at another server with a password of their own, but can never read a password already saved.
+Every such change of login, server or selector is logged with the old and new values; a console edit lands in `journalctl -u leadhound-console.service`.
+Someone with a shell as the service user is outside what the key protects against.
 
 - The first deploy makes the key pair, after the new binary is in place: the private key at `/etc/leadhound/mailbox.key` (`root:root 0600`), and the public key as the `LEADHOUND_MAILBOX_PUBLIC_KEY=` line in `/etc/leadhound/env`.
   That deploy prints `install: new mailbox key at /etc/leadhound/mailbox.key, fingerprint …`; later deploys print no fingerprint, because they never make a new key.
@@ -277,7 +280,7 @@ The console never has the private key: it can store a new password but never rea
 - **Back the key up by hand.**
   The nightly backup dumps the database, not `/etc`, and a sealed password cannot be opened without the key that sealed it.
   Copy `/etc/leadhound/mailbox.key`, as root, to somewhere safe off the server, such as your password manager, and never into a repository.
-  To restore it, put it back at the same path, `root:root 0600`, before the next deploy.
+  To restore it, put it back at the same path before the next deploy, which makes it `root:root 0600` again.
 - If the key is lost, the next deploy makes a new one, and each mailbox pauses itself the first time a job opens its password, with "re-enter the password: it was saved under a different key".
   Open each mailbox, choose Edit its settings, enter its password again, save, and resume it.
 
@@ -310,6 +313,7 @@ Your mail provider's own help pages give the exact values for its service.
 
 "Could not run" means the password could not be used, for example after a key change or after the servers changed since it was saved; the fix says to enter the password again.
 Press Check now whenever you have fixed something.
+A check that has not started five minutes after it was asked for says "The check has not started"; press Check now to ask again.
 
 Locally, the same add is `leadhound leads mailboxes add --address A --preset NAME` (or `--smtp H:P --imap H:P --selector S`), which asks for the password twice at the terminal without showing it, and never takes it from the command line; `leads mailboxes check ID` runs a check at once.
 `leads mailboxes list` shows each mailbox's number, state, latest check, today's records and today's sends:
@@ -320,6 +324,7 @@ Locally, the same add is `leadhound leads mailboxes add --address A --preset NAM
 ```
 
 The records are checked on the address's own host (the part after the `@`), with that mailbox's own selector.
+DMARC is the one exception: when the host has no DMARC record of its own, the one at the registrable domain counts, as receiving servers read it.
 The daily domain limit, the number of mailboxes and the domain pauses count by the registrable domain: an address at `out.sender.example` counts toward `sender.example`.
 `leads senders check` checks the records of every mailbox that is not retired, one line per host and selector; with no mailbox it says so and exits 0.
 

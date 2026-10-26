@@ -143,7 +143,14 @@ type MailboxCheckView struct {
 	SMTPOK, IMAPOK, FoldersOK, SPF, DKIM, DMARC *bool
 	Fix                                         string
 	Retired                                     bool // no new check can be asked for
+	// NotStarted: the check was asked for more than CheckNotStartedAfter ago and has still
+	// not started (its request was missed), so the card stops polling and offers Check now.
+	NotStarted bool
 }
+
+// CheckNotStartedAfter is how long a requested check may wait before its card says it has
+// not started; a check normally starts within seconds and ends within a minute.
+const CheckNotStartedAfter = 5 * time.Minute
 
 // SendingMailbox is one mailbox on the Leads page's sending card.
 type SendingMailbox struct {
@@ -217,8 +224,11 @@ type mailboxCheckView struct {
 	Error   bool
 }
 
-// Polling reports whether the check waits or runs, so the card asks for itself again.
-func (v mailboxCheckView) Polling() bool { return v.Card.Outcome == MailboxCheckRequested }
+// Polling reports whether the check waits or runs, so the card asks for itself again; a
+// check that has not started in time stops it.
+func (v mailboxCheckView) Polling() bool {
+	return v.Card.Outcome == MailboxCheckRequested && !v.Card.NotStarted
+}
 
 // checkTick is one step of a finished check: ok, bad or none (never ran).
 type checkTick struct{ Label, State string }
