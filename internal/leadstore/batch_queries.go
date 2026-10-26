@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/mailbox"
 )
 
 var (
@@ -346,4 +349,22 @@ func (q Queries) DiscardBatch(ctx context.Context, id int64) (Discard, error) {
 		return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
 	}
 	return d, nil
+}
+
+// LatestSenderCheckSelector is the latest check of the domain whose hash is domainSHA with
+// DKIM selector selector made at or after since; ok is false when there is none. A row with
+// no selector (the single-mailbox check) never counts, as in SenderCheckPassedSinceSelector.
+func (q Queries) LatestSenderCheckSelector(ctx context.Context, domainSHA []byte, selector string, since time.Time) (r mailbox.DNSResult, ok bool, err error) {
+	err = q.db.QueryRow(ctx,
+		`SELECT spf, dkim, dmarc, note FROM sender_check
+		 WHERE domain_sha256 = $1 AND selector = $2 AND selector <> '' AND checked_at >= $3
+		 ORDER BY checked_at DESC, id DESC LIMIT 1`,
+		domainSHA, strings.TrimSpace(selector), since).Scan(&r.SPF, &r.DKIM, &r.DMARC, &r.Note)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailbox.DNSResult{}, false, nil
+	}
+	if err != nil {
+		return mailbox.DNSResult{}, false, fmt.Errorf("leadstore: latest sender check: %w", err)
+	}
+	return r, true, nil
 }

@@ -2,17 +2,20 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -96,7 +99,8 @@ type BatchSizing struct {
 	Room      int  // Ramp - Waiting, never below 0
 	Steps     int  // emails per lead: the first and its follow-ups
 	Size      int  // the most leads asked for (--size, or caps.batch_size)
-	Leads     int  // min(Room / Steps, Size)
+	Leads     int  // min(Room / Steps, Size); over mailboxes, the leads Assign can place
+	Mailboxes int  // the mailboxes ready for new leads the room is counted over (0: one, before mailboxes)
 }
 
 // Words says the sizing rule in plain words, for the CLI and the console alike.
@@ -106,6 +110,9 @@ func (z BatchSizing) Words() string {
 		days = fmt.Sprintf("the next %d business days from tomorrow (today's sending is over)", z.Days)
 	}
 	room := fmt.Sprintf("room for %s over %s", plural(z.Room, "email", "emails"), days)
+	if z.Mailboxes > 1 {
+		room += fmt.Sprintf(" on %d mailboxes", z.Mailboxes)
+	}
 	var why []string
 	if z.Waiting > 0 || (z.Today && z.SentToday > 0) {
 		ramp := fmt.Sprintf("%d by the warm-up ramp", z.Ramp)
@@ -171,6 +178,45 @@ func batchSizing(cfg leadconfig.Config, ld sizingLoad, now time.Time, size int) 
 	return z
 }
 
+// mailboxSizing is batchSizing over the sending mailboxes (decision 7): each mailbox's room
+// over the same days is outreach.RoomOver (its own ramp from its own first send, then the
+// domain's caps.domain_per_day), and the leads are those outreach.Assign can place, steps
+// each. A mailbox that is not Ready gets no room. Ramp is the room before the waiting mail;
+// Waiting, SentToday and ToCheck (toCheck, the store's count of mail to check by hand) are
+// the ready mailboxes'. With exactly one ready mailbox it is batchSizing for that mailbox's
+// load, field for field, Mailboxes aside (MB-R7). It returns each mailbox's room too.
+func mailboxSizing(cfg leadconfig.Config, mbs []outreach.MailboxLoad, toCheck int, now time.Time, size int) (BatchSizing, map[int64]int) {
+	var ld sizingLoad
+	ready := 0
+	bare := slices.Clone(mbs)
+	for i, m := range mbs {
+		bare[i].Waiting = 0
+		if m.Ready {
+			ready++
+			ld.sentToday += m.SentToday
+			ld.approved += m.Waiting
+		}
+	}
+	ld.toCheck = min(max(toCheck, 0), ld.approved)
+	ld.approved -= ld.toCheck
+	// The days counted, the steps and the waiting mail, as the single-mailbox sizing has them.
+	z := batchSizing(cfg, ld, now, size)
+	z.Mailboxes, z.Ramp, z.Room = ready, 0, 0
+	for _, r := range outreach.RoomOver(cfg, bare, now, sizingDays, cfg.Schedule.BusinessHours) {
+		z.Ramp += r
+	}
+	room := outreach.RoomOver(cfg, mbs, now, sizingDays, cfg.Schedule.BusinessHours)
+	for _, r := range room {
+		z.Room += r
+	}
+	leads := make([]int64, max(size, 0))
+	for i := range leads {
+		leads[i] = int64(i + 1)
+	}
+	z.Leads = len(outreach.Assign(leads, room, z.Steps))
+	return z, room
+}
+
 // todayOpen reports whether a send could still go out on the operator's calendar day of
 // now: whether the next business slot (outreach.NextSlot, the window leads send obeys per
 // recipient) of any email country's zone starts before the operator's day ends. That is the
@@ -208,17 +254,17 @@ func leadsZone() (*time.Location, error) {
 	return loc, nil
 }
 
-// batchSetup is what newBatch drafts with.
+// batchSetup is what newBatch drafts with. Each draft's Message-ID ends in its mailbox's
+// domain.
 type batchSetup struct {
-	leads    leadconfig.Config
-	shadow   bool           // batchMode: the batch would be shadow
-	idDomain string         // the domain its Message-IDs end in
-	loc      *time.Location // the operator's zone (LEADHOUND_TZ): the days the ramp counts
+	leads  leadconfig.Config
+	shadow bool           // batchMode: the batch would be shadow
+	loc    *time.Location // the operator's zone (LEADHOUND_TZ): the days the ramp counts
 }
 
 func newBatchSetup(setup leadsSetup, loc *time.Location) batchSetup {
-	shadow, idDomain := batchMode(setup.env)
-	return batchSetup{leads: setup.leads, shadow: shadow, idDomain: idDomain, loc: loc}
+	shadow, _ := batchMode(setup.env)
+	return batchSetup{leads: setup.leads, shadow: shadow, loc: loc}
 }
 
 // NewBatchRequest is one `batch new`.
@@ -250,14 +296,20 @@ type NewBatchOutcome struct {
 	Leads   int
 	Counts  BatchCounts
 	Dropped []DroppedLead
-	Sizing  *BatchSizing // a live batch's sizing; nil for shadow
+	Sizing  *BatchSizing  // a live batch's sizing; nil for shadow
+	Rooms   map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
 }
 
 // newBatch drafts the next batch with lq, which the caller runs in one transaction: it
 // waits for no other batch new (LockBatchNew), refuses while a batch of the same kind waits
-// for approval, takes the candidates in order, sizes a live batch to what the ramp can send
-// (batchSizing), drafts the whole sequence for each lead, drops a lead whose drafts fail
-// Check, and writes the batch. It never approves anything.
+// for approval, refuses with no active mailbox, takes the candidates in order, sizes a live
+// batch to what the ready mailboxes can send (mailboxSizing), gives each lead the mailbox
+// with the most room left (outreach.Assign; its follow-ups inherit it, decision 6), drafts
+// the whole sequence for each lead, drops a lead whose drafts fail Check, and writes the
+// batch. It never approves anything, never reaches the network (the console calls it) and
+// never opens a password; a live batch reads only the DNS checks already recorded today
+// (runBatchNew runs them first). A shadow batch reads no readiness: every active mailbox
+// takes leads.
 func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, req NewBatchRequest) (NewBatchOutcome, error) {
 	out := NewBatchOutcome{Shadow: bs.shadow}
 	if bs.shadow && req.LiveOnly {
@@ -275,22 +327,44 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if n <= 0 {
 		n = bs.leads.Caps.BatchSize
 	}
+	mbs, err := lq.Mailboxes(ctx, startOfDay(now, bs.loc))
+	if err != nil {
+		return out, err
+	}
+	byID := map[int64]leadstore.MailboxStatus{}
+	for _, m := range mbs {
+		if m.State == leadstore.MailboxActive {
+			byID[m.ID] = m
+		}
+	}
+	if len(byID) == 0 {
+		return out, refused("Add a mailbox first: Mailboxes in the console, or leads mailboxes add.")
+	}
+	steps := 1 + len(bs.leads.Schedule.FollowupBusinessDays)
 	cands, err := lq.CandidateLeads(ctx, leadstore.CandidateOptions{
 		KindsPriority: bs.leads.KindsPriority, Profile: bs.leads.PriorityProfile(), Today: now.In(bs.loc), IncludeReserved: bs.shadow || leadsMail.allowReserved,
 	})
 	if err != nil || len(cands) == 0 {
 		return out, err
 	}
-	if !bs.shadow {
-		z, err := liveSizing(ctx, lq, bs, now, n)
+	room := map[int64]int{}
+	if bs.shadow {
+		for id := range byID {
+			room[id] = n * steps
+		}
+	} else {
+		z, r, err := liveSizing(ctx, lq, bs, now, n, mbs)
 		if err != nil {
 			return out, err
 		}
-		out.Sizing = &z
+		if z.Mailboxes == 0 {
+			return out, notReadyRefusal(ctx, lq, mbs, startOfDay(now, bs.loc))
+		}
+		out.Sizing, out.Rooms = &z, r
 		if z.Leads < 1 {
 			return out, &LeadRefusal{Kind: RefuseNoRoom, Sizing: z}
 		}
-		n = z.Leads
+		room, n = maps.Clone(r), z.Leads
 	}
 	var drafts []leadstore.DraftRow
 	for start := 0; start < len(cands) && out.Leads < n; start += evidenceSpan {
@@ -307,11 +381,21 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			if out.Leads >= n {
 				break
 			}
-			ds, err := draftLead(c, ev[c.LeadID], bs.leads, bs.idDomain, rand.Reader)
+			id, ok := outreach.Assign([]int64{c.LeadID}, room, steps)[c.LeadID]
+			if !ok {
+				break // no mailbox has room for one more lead
+			}
+			mb := byID[id]
+			ds, err := draftLead(c, ev[c.LeadID], bs.leads, outreach.MessageIDDomain(mb.Address), rand.Reader)
 			if err != nil {
 				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: err.Error()})
 				continue
 			}
+			from := cmp.Or(strings.TrimSpace(mb.FromName), bs.leads.Sender.Name)
+			for i := range ds {
+				ds[i].MailboxID, ds[i].FromName = mb.ID, from
+			}
+			room[id] -= steps
 			drafts = append(drafts, ds...)
 			out.Leads++
 		}
@@ -327,30 +411,89 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	return out, nil
 }
 
-// liveSizing reads what batchSizing needs from the store: the waiting emails, today's
-// sends as leads send counts them for its cap, and the first live send.
-func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, size int) (BatchSizing, error) {
+// readyForLeads is decision 5's readiness to be given new leads: active, its latest check
+// passed, and a DNS pass today for its domain and selector (mbs was read from the start of
+// the operator's day).
+func readyForLeads(m leadstore.MailboxStatus) bool {
+	return m.State == leadstore.MailboxActive && m.LastCheck != nil && m.LastCheck.Outcome == leadstore.CheckPassed && m.DNSPassedToday
+}
+
+// liveSizing sizes a live batch over mbs (every mailbox, so a paused one's sends today still
+// count toward its domain): each mailbox's waiting emails, today's sends as leads send counts
+// them for its cap and, with caps.start_date first-send, its first live send; only those
+// readyForLeads get room. It reads the store only.
+func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, size int, mbs []leadstore.MailboxStatus) (BatchSizing, map[int64]int, error) {
 	now = now.In(bs.loc)
-	var (
-		ld  sizingLoad
-		err error
-	)
-	if ld.approved, ld.toCheck, err = lq.WaitingEmails(ctx); err != nil {
-		return BatchSizing{}, err
+	_, toCheck, err := lq.WaitingEmails(ctx)
+	if err != nil {
+		return BatchSizing{}, nil, err
 	}
-	if ld.sentToday, err = lq.SentSince(ctx, startOfDay(now, bs.loc)); err != nil {
-		return BatchSizing{}, err
+	waiting, err := lq.WaitingByMailbox(ctx)
+	if err != nil {
+		return BatchSizing{}, nil, err
 	}
-	if bs.leads.Caps.StartDate.IsFirstSend() {
-		if ld.firstSend, err = lq.FirstLiveSend(ctx); err != nil {
-			return BatchSizing{}, err
+	loads := make([]outreach.MailboxLoad, 0, len(mbs))
+	for _, m := range mbs {
+		ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain, SentToday: m.SentToday, Waiting: waiting[m.ID], Ready: readyForLeads(m)}
+		if bs.leads.Caps.StartDate.IsFirstSend() && m.FirstLiveSend != nil {
+			fs := m.FirstLiveSend.In(bs.loc)
+			ml.FirstSend = &fs
 		}
-		if ld.firstSend != nil {
-			fs := ld.firstSend.In(bs.loc)
-			ld.firstSend = &fs
-		}
+		loads = append(loads, ml)
 	}
-	return batchSizing(bs.leads, ld, now, size), nil
+	z, room := mailboxSizing(bs.leads, loads, toCheck, now, size)
+	return z, room, nil
+}
+
+// notReadyRefusal says why no active mailbox in mbs is ready for new leads (decision 5),
+// from what is recorded since today (the start of the operator's day): for each domain and
+// selector whose DNS check has not passed today, that today's check has not run, or what
+// today's latest check found missing; otherwise that no mailbox's latest check passed.
+func notReadyRefusal(ctx context.Context, lq leadstore.Queries, mbs []leadstore.MailboxStatus, today time.Time) error {
+	var why []string
+	seen := map[string]bool{}
+	for _, m := range mbs {
+		if m.State != leadstore.MailboxActive || m.DNSPassedToday {
+			continue
+		}
+		key := m.Domain + "\x00" + m.DKIMSelector
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		r, ok, err := lq.LatestSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Domain), m.DKIMSelector, today)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			why = append(why, fmt.Sprintf("Today's domain check has not run for %s yet: press Check on its mailbox, or wait for the morning batch.", m.Domain))
+			continue
+		}
+		why = append(why, fmt.Sprintf("Today's domain check failed for %s: %s.", m.Domain, missingRecords(r, m.DKIMSelector)))
+	}
+	if len(why) == 0 {
+		return refused("No mailbox is ready for new leads: its latest check has not passed. Press Check on its mailbox.")
+	}
+	return refused("%s", strings.Join(why, " "))
+}
+
+// missingRecords names the records a failed DNS check did not find: "missing SPF, DKIM
+// (selector s1)"; the check's own note when it names none.
+func missingRecords(r mailbox.DNSResult, selector string) string {
+	var miss []string
+	if !r.SPF {
+		miss = append(miss, "SPF")
+	}
+	if !r.DKIM {
+		miss = append(miss, fmt.Sprintf("DKIM (selector %s)", selector))
+	}
+	if !r.DMARC {
+		miss = append(miss, "DMARC")
+	}
+	if len(miss) == 0 {
+		return cmp.Or(strings.TrimSpace(r.Note), "the records did not pass")
+	}
+	return "missing " + strings.Join(miss, ", ")
 }
 
 // makeBatch is one batch new with its run row: newBatch in one transaction, the run noted

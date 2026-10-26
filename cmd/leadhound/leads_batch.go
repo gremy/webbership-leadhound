@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -62,15 +63,21 @@ func runLeadsBatch(ctx context.Context, args []string) error {
 // batchMode is whether a new batch is shadow, and the domain its Message-IDs end in. A
 // batch is shadow unless LEADHOUND_OUTREACH is live and LEADHOUND_OUTREACH_USER names a
 // mailbox (RA1).
-func batchMode(env leadconfig.Env) (shadow bool, idDomain string) {
+//
+// The batch's Message-IDs now end in each draft's mailbox domain, so idDomain is unused; the
+// signature stays until the old single-mailbox settings go (plan Task 2.6).
+func batchMode(env leadconfig.Env) (shadow bool, idDomain string) { //nolint:unparam // kept until Task 2.6 removes it
 	idDomain = outreach.MessageIDDomain(env.User.Reveal())
 	return !env.Live() || idDomain == outreach.ShadowDomain, idDomain
 }
 
 // runBatchNew is `leads batch new [--size N]`: newBatch, which drafts the whole sequence
 // for the top candidate leads (kinds_priority, then list rank), a live batch sized to what
-// the ramp can send, drops a lead whose draft fails Check and writes the batch; never while
-// another batch of its kind waits for approval.
+// the ready mailboxes can send, drops a lead whose draft fails Check and writes the batch;
+// never while another batch of its kind waits for approval. Before a live batch, and
+// outside its transaction, it runs today's DNS check of every active mailbox's domain and
+// selector that has no pass today (decision 5: the 06:15 timer runs before any send run),
+// which newBatch itself never does.
 func runBatchNew(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads batch new", flag.ContinueOnError)
 	size := fs.Int("size", 0, "most leads in the batch (default caps.batch_size)")
@@ -92,9 +99,18 @@ func runBatchNew(ctx context.Context, args []string) error {
 	}
 	bs := newBatchSetup(setup, loc)
 	if setup.env.Live() && bs.shadow {
-		_, _ = fmt.Fprintln(stdout, "LEADHOUND_OUTREACH is live but LEADHOUND_OUTREACH_USER names no mailbox: this batch is shadow.")
+		_, _ = fmt.Fprintln(stdout, "LEADHOUND_OUTREACH is live but no mailbox sends for it: this batch is shadow. Add a mailbox first: leadhound leads mailboxes add.")
 	}
-	out, err := makeBatch(ctx, s, bs, leadsNow(), NewBatchRequest{Size: *size})
+	now := leadsNow()
+	if !bs.shadow {
+		if err := checkMailboxDomains(ctx, leadstore.NewQueries(s.Pool()), loc, now); err != nil {
+			return err
+		}
+	}
+	out, err := makeBatch(ctx, s, bs, now, NewBatchRequest{Size: *size})
+	if errors.Is(err, console.ErrUserFixable) {
+		return usageError("%s", strings.TrimPrefix(err.Error(), console.ErrUserFixable.Error()+": "))
+	}
 	if r := asRefusal(err); r != nil {
 		switch r.Kind {
 		case RefuseBatchWaiting:
@@ -124,6 +140,28 @@ func runBatchNew(ctx context.Context, args []string) error {
 		out.BatchID, batchKind(out.Shadow), out.Counts, out.BatchID)
 	if out.Sizing != nil {
 		_, _ = fmt.Fprintf(stdout, "Sizing: %s.\n", out.Sizing.Words())
+	}
+	return nil
+}
+
+// checkMailboxDomains runs and records today's DNS check (checkSenderFor) once for each
+// domain and selector of an active mailbox that has no pass since the start of the
+// operator's day. A failed check is recorded too, so newBatch can say what is missing.
+func checkMailboxDomains(ctx context.Context, lq leadstore.Queries, loc *time.Location, now time.Time) error {
+	mbs, err := lq.Mailboxes(ctx, startOfDay(now, loc))
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, m := range mbs {
+		key := m.Domain + "\x00" + m.DKIMSelector
+		if m.State != leadstore.MailboxActive || m.DNSPassedToday || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if _, err := checkSenderFor(ctx, lq, m.Domain, m.DKIMSelector, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -454,6 +492,9 @@ func printBatch(w io.Writer, v BatchView, only int) {
 		printEvidence(w, ev[it.Lead.ID])
 		for _, m := range it.Msgs {
 			p("\n   -- %s --\n", messageLabel(m, len(it.Msgs)))
+			if m.Channel == "email" && m.FromAddress != "" {
+				p("   From: %s\n", fromLine(m.FromName, m.FromAddress))
+			}
 			switch {
 			case m.ToAddress != "":
 				p("   To: %s\n", m.ToAddress)
@@ -485,6 +526,14 @@ func printBatch(w io.Writer, v BatchView, only int) {
 	default:
 		p("Approve: leadhound leads batch approve %d --hash %s\n", b.ID, v.HashPrefix())
 	}
+}
+
+// fromLine is "Name <address>", or the bare address with no name.
+func fromLine(name, address string) string {
+	if name = strings.TrimSpace(name); name == "" {
+		return address
+	}
+	return name + " <" + address + ">"
 }
 
 func messageLabel(m leadstore.Message, n int) string {

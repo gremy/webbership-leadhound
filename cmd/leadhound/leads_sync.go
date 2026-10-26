@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
+	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
 )
 
@@ -199,14 +202,33 @@ func syncMailbox(ctx context.Context, pool *pgxpool.Pool, env leadconfig.Env, wa
 	return sum, nil
 }
 
-// syncOne reads one mailbox.
+// syncOne reads one mailbox of the outreach mailbox the variables name.
 func syncOne(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, name string, match matcher, sum *syncSummary) error {
+	return syncFolder(ctx, pool, r, folderOf{}, name, match, sum)
+}
+
+// folderOf says whose folder syncFolder reads: a sending mailbox (mailboxID, with the health
+// rules of cfg), or, with mailboxID 0, the outreach mailbox the variables name.
+type folderOf struct {
+	mailboxID int64
+	cfg       leadconfig.Config
+}
+
+// syncFolder reads folder name. For a sending mailbox, its cursor and events carry the
+// mailbox, and a bounce matched to one of our messages marks that message a hard bounce and
+// checks the health of the mailbox it went from.
+func syncFolder(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, of folderOf, name string, match matcher, sum *syncSummary) error {
 	lq := leadstore.NewQueries(pool)
 	validity, err := r.Select(name)
 	if err != nil {
 		return err
 	}
-	cur, _, err := lq.MailboxCursor(ctx, name)
+	var cur mailbox.Cursor
+	if of.mailboxID != 0 {
+		cur, _, err = lq.MailboxCursorFor(ctx, of.mailboxID, name)
+	} else {
+		cur, _, err = lq.MailboxCursor(ctx, name)
+	}
 	if err != nil {
 		return err
 	}
@@ -233,12 +255,27 @@ func syncOne(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, name str
 			in, domain := classifyFetched(f, match)
 			in.Mailbox, in.UIDValidity, in.At = name, validity, leadsNow()
 			var a leadstore.Applied
+			hard := false
 			if err := leadsInTx(ctx, pool, func(tq leadstore.Queries) error {
 				var err error
-				a, err = tq.ApplyIncoming(ctx, in)
-				return err
+				if of.mailboxID == 0 {
+					a, err = tq.ApplyIncoming(ctx, in)
+					return err
+				}
+				if a, err = tq.ApplyIncomingFor(ctx, of.mailboxID, in); err != nil {
+					return err
+				}
+				if hard = in.Kind == mailbox.KindBounce && in.Matched != nil && !a.Duplicate; hard {
+					return tq.MarkHardBounce(ctx, in.Matched.ID)
+				}
+				return nil
 			}); err != nil {
 				return err
+			}
+			if hard && in.Matched.MailboxID != 0 {
+				if _, err := checkBounceHealth(ctx, lq, of.cfg, in.Matched.MailboxID); err != nil {
+					return err
+				}
 			}
 			sum.add(in.Kind, domain, a)
 		}
@@ -248,7 +285,132 @@ func syncOne(ctx context.Context, pool *pgxpool.Pool, r mailbox.Reader, name str
 		last = cur.LastUID
 	}
 	// Records the sync time; a mailbox with no new mail keeps its place.
+	if of.mailboxID != 0 {
+		return lq.AdvanceCursorFor(ctx, of.mailboxID, name, validity, last, leadsNow())
+	}
 	return lq.AdvanceCursor(ctx, name, validity, last, leadsNow())
+}
+
+// mailboxSync is how one sending mailbox's sync went.
+type mailboxSync struct {
+	OK      bool   // every folder was read to the end; when false, its sending waits for a good sync
+	Note    string // why it is not OK, in plain words; never a password or an address
+	Summary syncSummary
+}
+
+// syncAll reads every sending mailbox that is not retired (a paused one still syncs: replies
+// keep coming) under the sync lock, taken once and waited for up to wait (errSyncRunning
+// after that). Each mailbox logs in with its own sealed password, opened with key; one
+// mailbox's failure is its own entry (not OK, with a note) and never stops the others.
+// Matching is global: a reply in one mailbox stops a lead written to from another.
+func syncAll(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, cfg leadconfig.Config, wait time.Duration) (map[int64]mailboxSync, error) {
+	lock, err := lockWait(ctx, pool, leadstore.SyncLockKey, wait)
+	if errors.Is(err, leadstore.ErrLockHeld) {
+		return nil, errSyncRunning
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
+
+	lq := leadstore.NewQueries(pool)
+	boxes, err := lq.Mailboxes(ctx, leadsNow())
+	if err != nil {
+		return nil, fmt.Errorf("leads sync: %w", err)
+	}
+	refs, err := lq.SentRefs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("leads sync: %w", err)
+	}
+	match := newMatcher(refs)
+	out := map[int64]mailboxSync{}
+	for _, mb := range boxes {
+		if mb.State == leadstore.MailboxRetired {
+			continue
+		}
+		out[mb.ID] = syncSendingMailbox(ctx, pool, key, cfg, mb.Mailbox, match)
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+// syncSendingMailbox reads INBOX and the \Junk mailbox of mb, as syncMailbox reads the
+// outreach mailbox.
+func syncSendingMailbox(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, cfg leadconfig.Config, mb leadstore.Mailbox, match matcher) mailboxSync {
+	res := mailboxSync{Summary: syncSummary{ByKind: map[mailbox.MessageKind]int{}}}
+	creds, err := mailboxCreds(ctx, leadstore.NewQueries(pool), key, mb)
+	if err != nil {
+		res.Note = err.Error()
+		return res
+	}
+	r, err := leadsMail.readerFor(ctx, creds.IMAPAddr, config.Secret(creds.Login), creds.Password)
+	if err != nil {
+		res.Note = "the mailbox could not be read: " + err.Error()
+		return res
+	}
+	defer func() { _ = r.Close() }()
+	boxes, err := r.ListMailboxes()
+	if err != nil {
+		res.Note = "the mailbox's folders could not be listed: " + err.Error()
+		return res
+	}
+	names := []string{cmpOr(boxes.Inbox, "INBOX")}
+	if boxes.Junk != "" && boxes.Junk != names[0] {
+		names = append(names, boxes.Junk)
+		res.Summary.Junk = true
+	}
+	for _, name := range names {
+		if err := syncFolder(ctx, pool, r, folderOf{mailboxID: mb.ID, cfg: cfg}, name, match, &res.Summary); err != nil {
+			res.Note = "the mailbox's sync stopped part way: " + err.Error()
+			return res
+		}
+	}
+	res.OK = true
+	return res
+}
+
+// checkBounceHealth pauses mailbox mailboxID (actor system) when health.bounce_pause.bounces
+// hard bounces fall within its last health.bounce_pause.within_sends live sends. paused
+// reports whether the mailbox is paused after the check: newly by this rule, or already
+// (then no second state row is written). A retired mailbox is never paused. Only the
+// operator resumes a mailbox.
+func checkBounceHealth(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, mailboxID int64) (paused bool, err error) {
+	bp := cfg.Health.BouncePause
+	bounces := min(max(cmp.Or(bp.Bounces, leadconfig.DefaultBouncePauseBounces), leadconfig.MinBouncePauseBounces), leadconfig.MaxBouncePauseBounces)
+	within := min(max(cmp.Or(bp.WithinSends, leadconfig.DefaultBouncePauseWithinSends), leadconfig.MinBouncePauseWithinSends), leadconfig.MaxBouncePauseWithinSends)
+	n, err := lq.HardBouncesInLastSends(ctx, mailboxID, within)
+	if err != nil {
+		return false, err
+	}
+	if n < bounces {
+		return false, nil
+	}
+	all, err := lq.Mailboxes(ctx, leadsNow())
+	if err != nil {
+		return false, err
+	}
+	for _, mb := range all {
+		if mb.ID != mailboxID {
+			continue
+		}
+		switch mb.State {
+		case leadstore.MailboxPaused:
+			return true, nil
+		case leadstore.MailboxRetired:
+			return false, nil
+		}
+	}
+	reason := fmt.Sprintf("%d hard bounces in its last %d live sends", n, within)
+	err = lq.SetMailboxState(ctx, mailboxID, leadstore.MailboxPaused, reason, leadstore.ScopeMailbox, leadstore.ActorSystem)
+	if errors.Is(err, leadstore.ErrMailboxRetired) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // classifyFetched classifies one peeked message and drops its text; it returns the record

@@ -127,6 +127,48 @@ func (q Queries) AdvanceCursor(ctx context.Context, name string, uidValidity, la
 	return nil
 }
 
+// errNoMailbox: a per-mailbox write was given no mailbox.
+var errNoMailbox = errors.New("leadstore: no mailbox given")
+
+// MailboxCursorFor returns how far folder name of sending mailbox mailboxID has been read;
+// ok is false before that mailbox's first sync of it. The row's key is still the folder name
+// alone, so a row written for another mailbox, or by the old path with no mailbox, is not
+// this mailbox's and reads as no cursor (a first sync rescans).
+func (q Queries) MailboxCursorFor(ctx context.Context, mailboxID int64, name string) (c mailbox.Cursor, ok bool, err error) {
+	var v, last int64
+	err = q.db.QueryRow(ctx, `SELECT uidvalidity, last_uid FROM mailbox_cursor WHERE mailbox = $1 AND mailbox_id = $2`,
+		name, mailboxID).Scan(&v, &last)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailbox.Cursor{}, false, nil
+	}
+	if err != nil {
+		return mailbox.Cursor{}, false, fmt.Errorf("leadstore: mailbox cursor: %w", err)
+	}
+	return mailbox.Cursor{UIDValidity: uint32(v), LastUID: uint32(last)}, true, nil // #nosec G115 -- written from uint32 values
+}
+
+// AdvanceCursorFor is AdvanceCursor for folder name of sending mailbox mailboxID: the row
+// records the mailbox. Under the same mailbox and UIDVALIDITY the cursor only moves forward;
+// a new UIDVALIDITY, or a row of another mailbox (or of none), is replaced.
+func (q Queries) AdvanceCursorFor(ctx context.Context, mailboxID int64, name string, uidValidity, lastUID uint32, at time.Time) error {
+	if mailboxID == 0 {
+		return fmt.Errorf("leadstore: advance cursor: %w", errNoMailbox)
+	}
+	if _, err := q.db.Exec(ctx,
+		`INSERT INTO mailbox_cursor (mailbox, mailbox_id, uidvalidity, last_uid, synced_at) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (mailbox) DO UPDATE SET
+		   last_uid = CASE WHEN mailbox_cursor.uidvalidity = EXCLUDED.uidvalidity
+		       AND mailbox_cursor.mailbox_id IS NOT DISTINCT FROM EXCLUDED.mailbox_id
+		     THEN greatest(mailbox_cursor.last_uid, EXCLUDED.last_uid) ELSE EXCLUDED.last_uid END,
+		   uidvalidity = EXCLUDED.uidvalidity,
+		   mailbox_id = EXCLUDED.mailbox_id,
+		   synced_at = EXCLUDED.synced_at`,
+		name, mailboxID, int64(uidValidity), int64(lastUID), at); err != nil {
+		return fmt.Errorf("leadstore: advance cursor: %w", err)
+	}
+	return nil
+}
+
 // SentRef is one email we sent (or may have sent) from a live batch: what sync matches an
 // incoming message against.
 type SentRef struct {
@@ -136,6 +178,7 @@ type SentRef struct {
 	ToAddress string `db:"to_address"`
 	OrgDomain string `db:"org_domain"`
 	LeadKind  string `db:"lead_kind"`
+	MailboxID int64  `db:"mailbox_id"` // the sending mailbox it went from; 0 when none was recorded
 }
 
 // Selftest reports whether the message went to the operator's own address (RA24).
@@ -145,7 +188,8 @@ func (r SentRef) Selftest() bool { return r.LeadKind == LeadSelftest }
 // first.
 func (q Queries) SentRefs(ctx context.Context) ([]SentRef, error) {
 	refs, err := collect(ctx, q.db, pgx.RowToStructByName[SentRef],
-		`SELECT m.id, m.message_id, m.lead_id, lower(m.to_address) AS to_address, o.domain AS org_domain, l.kind AS lead_kind
+		`SELECT m.id, m.message_id, m.lead_id, lower(m.to_address) AS to_address, o.domain AS org_domain, l.kind AS lead_kind,
+		   COALESCE(m.mailbox_id, 0) AS mailbox_id
 		 FROM outreach_message m
 		 JOIN outreach_batch b ON b.id = m.batch_id
 		 JOIN lead l ON l.id = m.lead_id
@@ -191,35 +235,58 @@ type Applied struct {
 // A message already recorded (the same mailbox, UIDVALIDITY and UID) changes nothing but the
 // cursor. mailbox_event keeps the registrable From domain only: no address, no body.
 func (q Queries) ApplyIncoming(ctx context.Context, in Incoming) (Applied, error) {
+	return q.applyIncoming(ctx, nil, in)
+}
+
+// ApplyIncomingFor is ApplyIncoming for a message read from sending mailbox mailboxID: the
+// event and the cursor record the mailbox, and a suppression's source is
+// mailbox:<id>:<folder>:<uid>. Matching stays global: in.Matched may have gone from any
+// mailbox.
+func (q Queries) ApplyIncomingFor(ctx context.Context, mailboxID int64, in Incoming) (Applied, error) {
+	if mailboxID == 0 {
+		return Applied{}, fmt.Errorf("leadstore: apply incoming: %w", errNoMailbox)
+	}
+	return q.applyIncoming(ctx, &mailboxID, in)
+}
+
+// applyIncoming is ApplyIncoming (mailboxID nil) and ApplyIncomingFor.
+func (q Queries) applyIncoming(ctx context.Context, mailboxID *int64, in Incoming) (Applied, error) {
 	var res Applied
 	var msgID, leadID *int64
 	if in.Matched != nil {
 		msgID, leadID = &in.Matched.ID, &in.Matched.LeadID
 	}
 	tag, err := q.db.Exec(ctx,
-		`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at, mailbox_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 ON CONFLICT (mailbox, uidvalidity, uid) DO NOTHING`,
-		in.Mailbox, int64(in.UIDValidity), int64(in.UID), string(in.Kind), in.FromDomain, msgID, leadID, in.At)
+		in.Mailbox, int64(in.UIDValidity), int64(in.UID), string(in.Kind), in.FromDomain, msgID, leadID, in.At, mailboxID)
 	if err != nil {
 		return Applied{}, fmt.Errorf("leadstore: apply incoming: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		res.Duplicate = true
 	} else if in.Matched != nil {
-		if err := q.applyEffects(ctx, in, &res); err != nil {
+		source := fmt.Sprintf("mailbox:%s:%d", in.Mailbox, in.UID)
+		if mailboxID != nil {
+			source = fmt.Sprintf("mailbox:%d:%s:%d", *mailboxID, in.Mailbox, in.UID)
+		}
+		if err := q.applyEffects(ctx, in, source, &res); err != nil {
 			return Applied{}, fmt.Errorf("leadstore: apply incoming: %w", err)
 		}
 	}
-	if err := q.AdvanceCursor(ctx, in.Mailbox, in.UIDValidity, in.UID, in.At); err != nil {
+	advance := func() error { return q.AdvanceCursor(ctx, in.Mailbox, in.UIDValidity, in.UID, in.At) }
+	if mailboxID != nil {
+		advance = func() error { return q.AdvanceCursorFor(ctx, *mailboxID, in.Mailbox, in.UIDValidity, in.UID, in.At) }
+	}
+	if err := advance(); err != nil {
 		return Applied{}, err
 	}
 	return res, nil
 }
 
-func (q Queries) applyEffects(ctx context.Context, in Incoming, res *Applied) error {
+func (q Queries) applyEffects(ctx context.Context, in Incoming, source string, res *Applied) error {
 	m := in.Matched
-	source := fmt.Sprintf("mailbox:%s:%d", in.Mailbox, in.UID)
 	var (
 		to     string
 		from   []string

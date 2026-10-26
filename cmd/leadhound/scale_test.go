@@ -333,7 +333,7 @@ func TestScaleLeadsBuildAndBatch(t *testing.T) {
 	saved := leadsMail
 	t.Cleanup(func() { leadsMail = saved })
 	leadsMail.allowReserved = true
-	bs := batchSetup{leads: cfg, idDomain: "sender.example", loc: info.Loc}
+	bs := batchSetup{leads: cfg, loc: info.Loc} // the v3 scale seed holds ready mailboxes
 	var out NewBatchOutcome
 	peak, took = measure(t, func() error {
 		return rolledBack(func(lq leadstore.Queries) error {

@@ -84,6 +84,12 @@ type DraftRow struct {
 	MessageID string          `json:"message_id"`
 	InReplyTo string          `json:"in_reply_to"`
 	Slots     json.RawMessage `json:"slots"` // slot name → {value, source table, source id}
+	// The sending mailbox and the From name frozen with it (decision 6): both are in the
+	// content hash, and omitted from its JSON when unset, so a batch drafted before
+	// mailboxes hashes as it did. A zero MailboxID inserts NULL; a later step with none
+	// inherits its lead's step 0.
+	MailboxID int64  `json:"mailbox_id,omitempty"`
+	FromName  string `json:"from_name,omitempty"`
 }
 
 // canonicalDrafts returns drafts sorted by lead then step, with each Slots re-encoded with
@@ -158,6 +164,9 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 	if err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
 	}
+	if err := inheritMailbox(c); err != nil {
+		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
+	}
 	contentSHA, err = ContentSHA256(c)
 	if err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
@@ -202,9 +211,10 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 	for _, d := range c {
 		if _, err := q.db.Exec(ctx,
 			`INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, subject, body_text,
-			   message_id, in_reply_to, slots)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			batchID, d.LeadID, d.Step, d.Channel, d.To, d.Subject, d.Body, d.MessageID, d.InReplyTo, string(d.Slots)); err != nil {
+			   message_id, in_reply_to, slots, mailbox_id, from_name)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, nullif($11::bigint, 0), $12)`,
+			batchID, d.LeadID, d.Step, d.Channel, d.To, d.Subject, d.Body, d.MessageID, d.InReplyTo, string(d.Slots),
+			d.MailboxID, d.FromName); err != nil {
 			return 0, nil, fmt.Errorf("leadstore: create batch: lead %d step %d: %w", d.LeadID, d.Step, err)
 		}
 	}
@@ -217,6 +227,29 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 		}
 	}
 	return batchID, contentSHA, nil
+}
+
+// inheritMailbox gives each later step of a lead (c sorted by lead then step) its step 0's
+// mailbox and From name when it has none, and refuses a lead whose steps name two
+// mailboxes or two From names: a thread comes from one address. A From name with a line
+// break is refused (it would be a header injection).
+func inheritMailbox(c []DraftRow) error {
+	for i := range c {
+		if strings.ContainsAny(c[i].FromName, "\r\n") {
+			return fmt.Errorf("%w: lead %d step %d: the From name has a line break", ErrBadMailbox, c[i].LeadID, c[i].Step)
+		}
+		if i == 0 || c[i].LeadID != c[i-1].LeadID {
+			continue
+		}
+		first := c[i-1] // already settled: the lead's step 0, or a step that inherited it
+		if c[i].MailboxID == 0 && c[i].FromName == "" {
+			c[i].MailboxID, c[i].FromName = first.MailboxID, first.FromName
+		}
+		if c[i].MailboxID != first.MailboxID || c[i].FromName != first.FromName {
+			return fmt.Errorf("%w: lead %d step %d is not on its first step's mailbox", ErrBadMailbox, c[i].LeadID, c[i].Step)
+		}
+	}
+	return nil
 }
 
 type leadStatus struct {
@@ -266,11 +299,17 @@ type Message struct {
 	SMTPReply      string          `db:"smtp_reply"`
 	CancelReason   string          `db:"cancel_reason"`
 	CreatedAt      time.Time       `db:"created_at"`
+	MailboxID      int64           `db:"mailbox_id"`   // 0: drafted before mailboxes
+	FromName       string          `db:"from_name"`    // frozen at batch creation
+	FromAddress    string          `db:"from_address"` // the mailbox's address, for reading; "" when none
 }
 
+// messageCols reads mailbox_id through COALESCE while the column is nullable (Task 2.7
+// makes it NOT NULL); from_address is the mailbox's address, which is fixed for the app.
 const messageCols = `m.id, m.batch_id, m.lead_id, m.step, m.channel, m.to_address, m.subject, m.body_text,
   m.message_id, m.in_reply_to, m.slots, m.approved_sha256, m.state, m.due_at, m.sent_at, m.smtp_reply,
-  m.cancel_reason, m.created_at`
+  m.cancel_reason, m.created_at, COALESCE(m.mailbox_id, 0) AS mailbox_id, m.from_name,
+  COALESCE((SELECT fa.address FROM sender_mailbox fa WHERE fa.id = m.mailbox_id), '') AS from_address`
 
 // Batch is one outreach_batch row.
 type Batch struct {
@@ -330,6 +369,7 @@ func DraftsOf(ms []Message) []DraftRow {
 		out = append(out, DraftRow{
 			LeadID: m.LeadID, Step: m.Step, Channel: m.Channel, To: m.ToAddress, Subject: m.Subject,
 			Body: m.BodyText, MessageID: m.MessageID, InReplyTo: m.InReplyTo, Slots: m.Slots,
+			MailboxID: m.MailboxID, FromName: m.FromName,
 		})
 	}
 	return out
