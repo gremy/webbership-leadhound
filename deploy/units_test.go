@@ -171,6 +171,31 @@ var daemons = map[string]struct{ exec string }{
 	"leadhound-console": {exec: "/opt/leadhound/bin/leadhound serve"},
 }
 
+// triggered are the services the console's Run now card starts through a same-named .path
+// watcher rather than a timer: their one ExecStart line, and the Wants= and After= units they
+// must name (the fetch pulls in the timed LinkedIn collect whole and follows it).
+var triggered = map[string]struct {
+	exec         string
+	wants, after []string
+}{
+	"leadhound-preview": {
+		exec:  linkedinLock + "1800 --conflict-exit-code 75 " + linkedinLockPath + " /opt/leadhound/bin/leadhound preview",
+		after: []string{"network-online.target", "postgresql.service"},
+	},
+	"leadhound-fetch": {
+		exec:  linkedinLock + "1800 --conflict-exit-code 75 " + linkedinLockPath + " /opt/leadhound/bin/leadhound preview --after-fetch",
+		wants: []string{"leadhound-collect.service"},
+		after: []string{"network-online.target", "postgresql.service", "leadhound-collect.service"},
+	},
+}
+
+// runActions are the Run now actions: each has a request file /opt/leadhound/data/run/<action>
+// and a watcher leadhound-<action>.path that starts leadhound-<action>.service.
+var runActions = []string{"preview", "fetch", "brief", "ats"}
+
+// runDir is where the console writes the Run now requests.
+const runDir = "/opt/leadhound/data/run"
+
 // hardening is the sandbox every leadhound service but the backup shares.
 var hardening = map[string]string{
 	"User":            "leadhound",
@@ -236,28 +261,49 @@ func TestTimers(t *testing.T) {
 
 func TestServices(t *testing.T) {
 	services := units(t, "*.service")
-	if len(services) != len(schedule)+len(daemons) {
-		t.Errorf("%d services, want %d", len(services), len(schedule)+len(daemons))
+	if want := len(schedule) + len(daemons) + len(triggered); len(services) != want {
+		t.Errorf("%d services, want %d", len(services), want)
 	}
 	for path, u := range services {
 		name := base(path)
 		if _, ok := daemons[name]; ok {
 			continue // TestConsoleService
 		}
-		want, ok := schedule[name]
-		if !ok {
-			t.Errorf("%s: not in the schedule", path)
-			continue
-		}
-		if _, err := os.Stat(name + ".timer"); err != nil {
-			t.Errorf("%s: no matching %s.timer", path, name)
+		var wantExec []string
+		if tr, ok := triggered[name]; ok {
+			// Started by the console's Run now card through its watcher, never by a timer.
+			if _, err := os.Stat(name + ".path"); err != nil {
+				t.Errorf("%s: no matching %s.path", path, name)
+			}
+			if _, err := os.Stat(name + ".timer"); err == nil {
+				t.Errorf("%s: has a matching .timer; it runs only when the console asks", path)
+			}
+			for key, want := range map[string][]string{"Wants": tr.wants, "After": tr.after} {
+				got := strings.Fields(strings.Join(u["Unit"][key], " "))
+				for _, w := range want {
+					if !slices.Contains(got, w) {
+						t.Errorf("%s: %s = %q, want it to include %s", path, key, got, w)
+					}
+				}
+			}
+			wantExec = []string{tr.exec}
+		} else {
+			want, ok := schedule[name]
+			if !ok {
+				t.Errorf("%s: not in the schedule", path)
+				continue
+			}
+			if _, err := os.Stat(name + ".timer"); err != nil {
+				t.Errorf("%s: no matching %s.timer", path, name)
+			}
+			wantExec = want.exec
 		}
 		if got := u.one(t, path, "Service", "Type"); got != "oneshot" {
 			t.Errorf("%s: Type = %s, want oneshot", path, got)
 		}
 		exec := u["Service"]["ExecStart"]
-		if !slices.Equal(exec, want.exec) {
-			t.Errorf("%s: ExecStart = %q, want %q", path, exec, want.exec)
+		if !slices.Equal(exec, wantExec) {
+			t.Errorf("%s: ExecStart = %q, want %q", path, exec, wantExec)
 		}
 		// A failed step never stops a later one: every step but the last ignores its exit
 		// status, and the last one's is the unit's.
@@ -582,7 +628,7 @@ var (
 // fileSuffixes are the last labels of the file and unit names these files mention.
 var fileSuffixes = []string{
 	"yaml", "yml", "sql", "sh", "service", "timer", "target", "example", "env", "md", "dump",
-	"csv", "lock", "new", "part", "txt", "json", "go",
+	"csv", "lock", "new", "part", "txt", "json", "go", "path",
 }
 
 // TestNoHostsOrAddresses: nothing in deploy/ names a real host or address. The only host
@@ -795,7 +841,7 @@ func TestLinkedInLock(t *testing.T) {
 	seen := 0
 	for path, u := range units(t, "*.service") {
 		for _, e := range u["Service"]["ExecStart"] {
-			if !strings.Contains(e, " collect linkedin") && !strings.Contains(e, " canary linkedin") && !strings.Contains(e, " brief") {
+			if !strings.Contains(e, " collect linkedin") && !strings.Contains(e, " canary linkedin") && !strings.Contains(e, " brief") && !strings.Contains(e, " preview") {
 				continue
 			}
 			seen++
@@ -812,12 +858,13 @@ func TestLinkedInLock(t *testing.T) {
 			}
 		}
 	}
-	if seen != 3 {
-		t.Errorf("%d LinkedIn steps, want 3 (collect, canary, brief)", seen)
+	if seen != 5 {
+		t.Errorf("%d LinkedIn steps, want 5 (collect, canary, brief, preview, fetch's preview)", seen)
 	}
 	for name, want := range map[string][]string{
 		"leadhound-brief":    {"leadhound-collect.service", "leadhound-prebrief.service"},
 		"leadhound-prebrief": {"leadhound-collect.service"},
+		"leadhound-fetch":    {"leadhound-collect.service"},
 	} {
 		after := strings.Fields(strings.Join(readUnit(t, name+".service")["Unit"]["After"], " "))
 		for _, w := range want {
@@ -866,6 +913,8 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-console":        {"300M", "200MiB"},
 	"leadhound-brief":          {"600M", "450MiB"},
 	"leadhound-prebrief":       {"600M", "450MiB"},
+	"leadhound-preview":        {"600M", "450MiB"},
+	"leadhound-fetch":          {"600M", "450MiB"},
 	"leadhound-collect":        {"1G", "850MiB"},
 	"leadhound-ats":            {"1200M", "900MiB"},
 	"leadhound-trim":           {"300M", "200MiB"},
@@ -1104,7 +1153,7 @@ func TestNoUnitLoadsOwnerEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range paths {
-		if ext := filepath.Ext(path); ext != ".service" && ext != ".timer" {
+		if ext := filepath.Ext(path); ext != ".service" && ext != ".timer" && ext != ".path" {
 			continue
 		}
 		b, err := os.ReadFile(path) // #nosec G304 -- the test's own deploy files
@@ -1356,5 +1405,111 @@ if [ -n "${STUB_DUMP_FAIL:-}" ]; then exit 1; fi
 				t.Errorf("left %q, want %q\n%s", got, want, out)
 			}
 		})
+	}
+}
+
+// TestPaths: the Run now watchers are exactly one per action, each watching only its own
+// request file with PathChanged= (fires on a new write, never while an old file merely
+// exists), starting only its same-named service (no Unit=), and armed at boot.
+func TestPaths(t *testing.T) {
+	paths := units(t, "*.path")
+	var names, want []string
+	for path := range paths {
+		names = append(names, base(path))
+	}
+	for _, a := range runActions {
+		want = append(want, "leadhound-"+a)
+	}
+	slices.Sort(names)
+	slices.Sort(want)
+	if !slices.Equal(names, want) {
+		t.Errorf(".path units %q, want %q", names, want)
+	}
+	for path, u := range paths {
+		name := base(path)
+		action := strings.TrimPrefix(name, "leadhound-")
+		if got := u.one(t, path, "Path", "PathChanged"); got != runDir+"/"+action {
+			t.Errorf("%s: PathChanged = %s, want %s/%s", path, got, runDir, action)
+		}
+		for section, keys := range u {
+			for key := range keys {
+				if section == "Path" && key != "PathChanged" {
+					t.Errorf("%s: [Path] %s is set; a watcher has PathChanged= alone (no Unit=: it starts its same-named service)", path, key)
+				}
+			}
+		}
+		if got := u.one(t, path, "Install", "WantedBy"); got != "paths.target" {
+			t.Errorf("%s: WantedBy = %s, want paths.target", path, got)
+		}
+		if _, err := os.Stat(name + ".service"); err != nil {
+			t.Errorf("%s: no matching %s.service", path, name)
+		}
+	}
+}
+
+// TestInstallArmsEveryPath: make deploy copies the watchers, install.sh installs them, creates
+// the request directory for the console's user before arming them, and arms every one on
+// every deploy.
+func TestInstallArmsEveryPath(t *testing.T) {
+	steps := installSteps(t)
+	var watchers []string
+	for path := range units(t, "*.path") {
+		watchers = append(watchers, filepath.Base(path))
+	}
+	slices.Sort(watchers)
+	pathName := regexp.MustCompile(`leadhound-[a-z-]+\.path`)
+	arm := slices.IndexFunc(steps, func(l string) bool {
+		return strings.HasPrefix(l, "systemctl enable --now ") && pathName.MatchString(l)
+	})
+	if arm < 0 {
+		t.Fatal("install.sh has no systemctl enable --now for the .path watchers")
+	}
+	if strings.Contains(installFunc(t, "leads_timers"), ".path") {
+		t.Error("install.sh arms a watcher inside leads_timers, not on every deploy")
+	}
+	armed := pathName.FindAllString(steps[arm], -1)
+	slices.Sort(armed)
+	if !slices.Equal(armed, watchers) {
+		t.Errorf("install.sh arms %q, want %q", armed, watchers)
+	}
+	if reload := firstLine(steps, "systemctl daemon-reload"); reload < 0 || arm < reload {
+		t.Error("install.sh arms the watchers before systemctl daemon-reload")
+	}
+	copyLoop := firstLine(steps, "for f in", `"$stage"/leadhound-*.path`)
+	if copyLoop < 0 {
+		t.Error(`install.sh does not install "$stage"/leadhound-*.path`)
+	} else if copyLoop > arm {
+		t.Error("install.sh arms the watchers before it installs them")
+	}
+	mkdir := slices.IndexFunc(steps, func(l string) bool {
+		f := strings.Fields(l)
+		return len(f) > 0 && f[0] == "install" && slices.Contains(f, "-d") && slices.Contains(f, `"$data/run"`)
+	})
+	switch {
+	case mkdir < 0:
+		t.Error(`install.sh does not create "$data/run"`)
+	case !strings.Contains(steps[mkdir], "-o leadhound -g leadhound -m 0700"):
+		t.Errorf(`install.sh creates "$data/run" as %q, want -o leadhound -g leadhound -m 0700`, steps[mkdir])
+	case mkdir > arm:
+		t.Error(`install.sh creates "$data/run" after arming the watchers`)
+	}
+
+	b, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, copies := false, false
+	for line := range strings.Lines(string(b)) {
+		switch {
+		case strings.HasPrefix(line, "deploy:"):
+			in = true
+		case in && strings.HasPrefix(line, "\t"):
+			copies = copies || (strings.Contains(line, "$(SCP)") && slices.Contains(strings.Fields(line), "deploy/leadhound-*.path"))
+		case in:
+			in = false
+		}
+	}
+	if !copies {
+		t.Error("make deploy does not copy deploy/leadhound-*.path to the stage")
 	}
 }

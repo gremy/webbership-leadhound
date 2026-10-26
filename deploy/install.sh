@@ -63,6 +63,9 @@ chmod 0600 /etc/leadhound/env /etc/leadhound/migrate.env
 
 install -d -o root -g root -m 0755 /opt/leadhound "$bin"
 install -d -o leadhound -g leadhound -m 0750 "$data"
+# The console's Run now card writes its requests here, and the leadhound-*.path watchers
+# read them; created before the watchers are armed (deploy/README.md, Run now).
+install -d -o leadhound -g leadhound -m 0700 "$data/run"
 install -d -o postgres -g postgres -m 0700 /var/backups/leadhound
 
 # The per-role limits (sql/limits.sql) are re-applied on every deploy. root opens the file and
@@ -82,13 +85,17 @@ fi
 # A rename, so a run in progress keeps its own binary.
 mv -f "$bin/.leadhound.new" "$bin/leadhound"
 install -o root -g root -m 0755 "$stage/leadhound-backup.sh" "$bin/leadhound-backup"
-for f in "$stage"/leadhound-*.service "$stage"/leadhound-*.timer; do
+for f in "$stage"/leadhound-*.service "$stage"/leadhound-*.timer "$stage"/leadhound-*.path; do
 	install -o root -g root -m 0644 "$f" /etc/systemd/system/
 done
 
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer
+# The Run now watchers: the console's Run now card asks through these, and each starts only
+# its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
+# a request file left from before cannot fire on a deploy.
+systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path
 leads_timers /etc/leadhound/env
 systemctl list-timers 'leadhound-*' --no-pager
 rm -rf -- "$stage"

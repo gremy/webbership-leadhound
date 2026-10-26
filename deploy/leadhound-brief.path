@@ -1,0 +1,21 @@
+# Run now: the console's Run now card writes the request time to /opt/leadhound/data/run/brief,
+# and this watcher starts leadhound-brief.service: today's brief email, early, so the 07:50
+# timer then finds the day sent and does nothing.
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A press while the service is already starting or
+# running is merged into that run by systemd, so the console refuses it first.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset. A start from here counts toward the brief's own StartLimitBurst=3 in 4h,
+# so a press after two failed tries can trip it (deploy/README.md, Run now):
+#   systemctl reset-failed leadhound-brief.path leadhound-brief.service
+#   systemctl start leadhound-brief.path
+[Unit]
+Description=leadhound run now: brief
+
+[Path]
+PathChanged=/opt/leadhound/data/run/brief
+
+[Install]
+WantedBy=paths.target

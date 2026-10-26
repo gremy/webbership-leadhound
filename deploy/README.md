@@ -22,6 +22,7 @@ The five leads timers are installed on every deploy but run only when `/etc/lead
 
 The console, `leadhound-console.service`, has no timer: it runs all the time once it is configured, and restarts five seconds after a crash, but never after bad config (exit 2).
 See [Console](#console).
+`leadhound-preview.service` and `leadhound-fetch.service` have no timer either: the console's Run now card starts them through their watchers, see [Run now](#run-now).
 
 Every command exits 0 once it has recorded its outcome, a stop such as `throttled`, `budget`, `parser_broke` or `spend_cap` included, because the brief reports it.
 A non-zero exit means a crash or bad configuration.
@@ -50,7 +51,7 @@ Each one also sets `GOMEMLIMIT` below its ceiling, so Go collects garbage harder
 | Service | `MemoryMax` | `GOMEMLIMIT` |
 | --- | --- | --- |
 | `leadhound-console` | 300M | 200MiB |
-| `leadhound-brief`, `leadhound-prebrief` | 600M | 450MiB |
+| `leadhound-brief`, `leadhound-prebrief`, `leadhound-preview`, `leadhound-fetch` | 600M | 450MiB |
 | `leadhound-collect` | 1G | 850MiB |
 | `leadhound-ats` | 1200M | 900MiB |
 | `leadhound-trim` | 300M | 200MiB |
@@ -59,16 +60,51 @@ Each one also sets `GOMEMLIMIT` below its ceiling, so Go collects garbage harder
 A LinkedIn collect has peaked near 530 MB and is not streamed, and the ATS run's peak has not been measured, so those two keep the highest ceilings.
 The two collect units and the five leads units also run at `CPUWeight=50`.
 
+### Run now
+
+The console's dashboard has a Run now card, so you can see results before the 07:50 email without an ssh session.
+The console asks and systemd runs: the console stays in its sandbox and never starts a unit itself.
+A button writes the request time to a file in `/opt/leadhound/data/run/`, and one `.path` watcher per action sees the write (`PathChanged=`) and starts its one fixed unit:
+
+| Button | Request file | Watcher | Starts | What runs |
+| --- | --- | --- | --- | --- |
+| Show results now | `run/preview` | `leadhound-preview.path` | `leadhound-preview.service` | `preview` under the LinkedIn lock: the brief's jobs part, rechecked and ranked, written to `preview.json` |
+| Fetch new jobs, then show | `run/fetch` | `leadhound-fetch.path` | `leadhound-fetch.service` | `leadhound-collect.service` whole (`Wants=`, `After=`), then `preview --after-fetch` |
+| Send today's email now | `run/brief` | `leadhound-brief.path` | `leadhound-brief.service` | `brief --send`, early; the 07:50 timer then finds the day sent |
+| Run the nightly ATS collect now | `run/ats` | `leadhound-ats.path` | `leadhound-ats.service` | `collect ats`, then `score` |
+
+Each watcher has the same name as its service, so it can start nothing else, and the console can only write the four request times.
+The preview never emails, never writes the day's brief and never shortlists; its recheck refreshes listing status as the brief's would.
+The fetch pulls in the timed collect unit itself, so a collect already running is joined, not repeated, and the preview starts once it has finished.
+The brief and ATS buttons start the timed units unchanged, so a run from the console is the timed run.
+A press while the same service is starting or running would be merged into that run by systemd, so the console refuses it and says when the running one started.
+`PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
+
+Check the watchers with `systemctl list-units 'leadhound-*.path'` (each should be active, waiting) and a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
+The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
+
+**A watcher stops when its service hits its start limit.**
+`man systemd.path` says the start-limit error of the service is propagated to the path unit, which fails too and no longer watches its path until it is restarted.
+Only the brief has a start limit (`StartLimitBurst=3` in 4 hours, its two retries included), and a start from the console counts toward it, so a press after two failed tries can trip it; the same holds for a watcher's own `TriggerLimitBurst=` (200 triggers in 2 seconds by default).
+The console then shows the action as stuck: asked and not started.
+Reset both units and arm the watcher again, here for the brief:
+
+```sh
+systemctl reset-failed leadhound-brief.path leadhound-brief.service
+systemctl start leadhound-brief.path
+```
+
 ## Layout on the server
 
 | Path | Owner, mode | What |
 | --- | --- | --- |
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
-| `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, the outbox of a brief that is not sent |
+| `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
 | `/etc/leadhound/migrate.env` | root, 0600, enforced | the owner role's URL, for `migrate` only (`deploy/migrate.env.example`) |
-| `/etc/systemd/system/leadhound-*` | root, 0644 | the units and timers, the console's included |
+| `/etc/systemd/system/leadhound-*` | root, 0644 | the units and timers, the Run now watchers, the console's included |
 | `/var/backups/leadhound/` | postgres, 0700 | the nightly dumps |
 
 `deploy/install.sh` sets both env files to `root:root 0600` on every deploy, before anything reads them.
@@ -136,7 +172,7 @@ Run these on the server as root, in order.
 
 ## Everyday
 
-- `make deploy HOST=… [ARCH=…] CONFIRM=1` ships a new release: it runs `make check`, builds a static Linux binary, copies it with `deploy/install.sh`, the backup script and the units, runs `migrate` with the new binary as the owner role, then puts the new binary and units in place, reloads systemd and enables the timers.
+- `make deploy HOST=… [ARCH=…] CONFIRM=1` ships a new release: it runs `make check`, builds a static Linux binary, copies it with `deploy/install.sh`, the backup script and the units, runs `migrate` with the new binary as the owner role, then puts the new binary and units in place, reloads systemd and enables the timers and the Run now watchers.
   A failed `migrate` stops the deploy with a non-zero exit and leaves the old binary and units running; the release stays in its temporary directory on the server.
   Once the console is configured, the deploy also restarts it on the new binary and waits up to 10 seconds for it to answer; if it does not, the deploy prints its last log lines and exits non-zero, with the timers already in place.
 - Every deploy re-applies `deploy/sql/limits.sql` as the Postgres superuser before it migrates; if that fails, the deploy stops with the old release running.
@@ -156,7 +192,7 @@ Run these on the server as root, in order.
   `track list`, `rules list` and `boards list` run freely; every other command writes or reaches the network (`collect`, `canary`, `brief`, `score`, `migrate`, `recheck`, `probe`, `track <n> …`, `rules add`, `boards import` …) and needs `CONFIRM=1`.
   `ARGS` is split into words by your own shell, as on a command line, and each word reaches `leadhound` whole: the server's shell never reinterprets it.
 - `remote` runs without the units' hardening, memory ceiling and timeouts.
-  It does take the units' locks, without waiting: `collect linkedin`, `canary` and `brief` take the LinkedIn lock and `score` the score lock, and when a timer's run holds one, `remote` exits 75 and runs nothing; try again when it has finished (`systemctl list-units 'leadhound-*'`).
+  It does take the units' locks, without waiting: `collect linkedin`, `canary`, `brief` and `preview` take the LinkedIn lock and `score` the score lock, and when a timer's run holds one, `remote` exits 75 and runs nothing; try again when it has finished (`systemctl list-units 'leadhound-*'`).
   Even so, prefer to run collects and briefs by hand only while no timer is due.
 - `deploy`, `deploy-data` and `remote` run their `sudo` steps over `ssh -t`, so `sudo` can ask for its password at your terminal.
   Run without a terminal (from a script), ssh warns that it allocates none, and the steps then need `sudo` without a password for the ssh user.

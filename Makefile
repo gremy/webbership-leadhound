@@ -53,7 +53,7 @@ endif
 # remote takes the lock the units take for the same work, without waiting: when a timer's
 # run holds it, flock exits 75 and nothing runs (deploy/README.md).
 REMOTE_LOCK :=
-ifneq ($(filter collect_linkedin canary canary_% brief brief_%,$(REMOTE_VERB)),)
+ifneq ($(filter collect_linkedin canary canary_% brief brief_% preview preview_%,$(REMOTE_VERB)),)
 REMOTE_LOCK := /usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.linkedin.lock
 endif
 ifneq ($(filter score score_%,$(REMOTE_VERB)),)
@@ -164,7 +164,7 @@ build-linux:
 deploy: check test-scale build-linux
 	@stage=$$($(SSH) $(HOST) mktemp -d) && \
 	$(SCP) $(LINUX_BINARY) $(HOST):$$stage/leadhound && \
-	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/sql/limits.sql deploy/leadhound-*.service deploy/leadhound-*.timer $(HOST):$$stage/ && \
+	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/sql/limits.sql deploy/leadhound-*.service deploy/leadhound-*.timer deploy/leadhound-*.path $(HOST):$$stage/ && \
 	$(SSH) -t $(HOST) sudo sh $$stage/install.sh $$stage
 
 ## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile and the leads config, then copy

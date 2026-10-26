@@ -1,0 +1,19 @@
+# Run now: the console's Run now card writes the request time to /opt/leadhound/data/run/ats,
+# and this watcher starts leadhound-ats.service (the nightly ATS collect and score, now).
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A press while the service is already starting or
+# running is merged into that run by systemd, so the console refuses it first.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset (deploy/README.md, Run now):
+#   systemctl reset-failed leadhound-ats.path leadhound-ats.service
+#   systemctl start leadhound-ats.path
+[Unit]
+Description=leadhound run now: ats
+
+[Path]
+PathChanged=/opt/leadhound/data/run/ats
+
+[Install]
+WantedBy=paths.target

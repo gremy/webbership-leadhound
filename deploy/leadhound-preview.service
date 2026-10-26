@@ -1,0 +1,61 @@
+# Results now: the brief's jobs part, rechecked and ranked as the brief does it, written to
+# LEADHOUND_DATA_DIR/preview.json for the console's results page. It never emails, never
+# writes the day's brief and never shortlists. Started by leadhound-preview.path when the
+# console's Run now card asks; it has no timer.
+[Unit]
+Description=leadhound results now (preview)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=leadhound
+Group=leadhound
+# root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
+EnvironmentFile=/etc/leadhound/env
+# The preview's recheck reaches LinkedIn, so it holds the LinkedIn lock every LinkedIn step
+# shares (leadhound-collect.service). It waits up to 30 minutes; past that flock exits 75 and
+# the run fails, which the console shows.
+ExecStart=/usr/bin/flock --wait 1800 --conflict-exit-code 75 /opt/leadhound/data/.linkedin.lock /opt/leadhound/bin/leadhound preview
+# No Restart=: a press that fails shows on the console's Run now card, and the operator
+# presses again. Only the brief retries.
+# The 30-minute lock wait and 30 minutes for the preview, whose recheck paces its LinkedIn
+# requests.
+TimeoutStartSec=1h
+# The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
+# neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit
+# throttled there hangs instead of failing. GOMEMLIMIT makes Go collect garbage harder
+# well before the ceiling.
+MemoryMax=600M
+Environment=GOMEMLIMIT=450MiB
+# Hardening. The whole file system is read-only to leadhound except the data directory
+# (LEADHOUND_DATA_DIR), where preview.json is written and the locks live. It needs the network
+# (LinkedIn for the recheck, the scoring API, Postgres) and nothing else.
+WorkingDirectory=/opt/leadhound
+ReadWritePaths=/opt/leadhound/data
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
