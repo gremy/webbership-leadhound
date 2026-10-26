@@ -136,7 +136,10 @@ var schedule = map[string]struct {
 	"leadhound-leads-contacts": {
 		[]string{"*-*-* 10:00:00 Europe/Bucharest"},
 		true,
-		[]string{leadsFetchLock + "/usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300"},
+		[]string{
+			"-" + leadsFetchLock + "/usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300",
+			"/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build",
+		},
 	},
 	"leadhound-leads-batch": {
 		[]string{"*-*-* 06:15:00 Europe/Bucharest"},
@@ -1165,6 +1168,20 @@ func TestLeadsUnits(t *testing.T) {
 	if fetches != len(leadsFinding) {
 		t.Errorf("%d leads units take the fetch lock, want %d (probe, contacts)", fetches, len(leadsFinding))
 	}
+}
+
+// TestLeadsBuiltWhileFinding: the lead list is rebuilt by a finding unit, so the console's
+// leads fill while only LEADHOUND_LEADS_TIMERS=on is set, never only once sending is on.
+func TestLeadsBuiltWhileFinding(t *testing.T) {
+	for _, timer := range leadsFinding {
+		name := strings.TrimSuffix(timer, ".timer")
+		for _, e := range schedule[name].exec {
+			if strings.HasSuffix(e, " /opt/leadhound/bin/leadhound leads build") {
+				return
+			}
+		}
+	}
+	t.Errorf("no finding unit (%q) runs leads build: leads would be built only once sending is on", leadsFinding)
 }
 
 // TestNoUnitLoadsOwnerEnv: no unit reads the owner role's environment; only install.sh's

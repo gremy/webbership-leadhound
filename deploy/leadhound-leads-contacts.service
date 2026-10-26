@@ -1,7 +1,10 @@
 # The daily contact search: up to 300 organisations searched for a published way to reach
-# them, each page with its robots file. Started by leadhound-leads-contacts.timer, which
-# install.sh enables only when /etc/leadhound/env has LEADHOUND_LEADS_TIMERS=on
-# (deploy/README.md, Leads on the server).
+# them, each page with its robots file, then the lead list rebuilt from the findings and
+# routes, so the console's leads keep up while only finding is on. Started by
+# leadhound-leads-contacts.timer, which install.sh enables only when /etc/leadhound/env has
+# LEADHOUND_LEADS_TIMERS=on (deploy/README.md, Leads on the server).
+#
+# Every step but the last is written ExecStart=-..., so a failed search never stops the build.
 [Unit]
 Description=leadhound leads contact search
 After=network-online.target postgresql.service
@@ -15,11 +18,13 @@ Group=leadhound
 EnvironmentFile=/etc/leadhound/env
 # The probe and the contact search share one fetch lock in the data directory, so two never
 # read the public web at once. A run that finds it held exits 75 at once and counts as done
-# (SuccessExitStatus); timeout ends one that hangs.
-ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300
+# (SuccessExitStatus); timeout ends one that hangs. The build reads no web page, so it runs
+# outside the lock.
+ExecStart=-/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300
+ExecStart=/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build
 SuccessExitStatus=75
-# Longer than the search's timeout and its kill grace together (2h05).
-TimeoutStartSec=2h30min
+# Longer than the search's and the build's timeouts and kill graces together (2h30).
+TimeoutStartSec=3h
 Nice=10
 IOSchedulingClass=idle
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a

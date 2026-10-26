@@ -301,6 +301,10 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 	if moved, err := f.q.SkipLead(ctx, b); err != nil || moved || f.leadState(t, b) != leadstore.LeadBatched {
 		t.Errorf("skip a batched lead: %v %v, state %s", moved, err, f.leadState(t, b))
 	}
+	// The build's skip is the same: a lead a batch took after the build read it stays batched.
+	if moved, err := f.q.SkipNewLead(ctx, b, "build: test"); err != nil || moved || f.leadState(t, b) != leadstore.LeadBatched {
+		t.Errorf("build skip of a batched lead: %v %v, state %s", moved, err, f.leadState(t, b))
+	}
 	var ev string
 	if err := f.owner.QueryRow(ctx, `SELECT reason || ' ' || actor FROM lead_event WHERE lead_id = $1 AND state = 'skipped'`, c).Scan(&ev); err != nil || ev != "skipped from the queue gremy" {
 		t.Errorf("skip event = %q, %v", ev, err)

@@ -163,6 +163,18 @@ func (q Queries) SetLeadState(ctx context.Context, leadID int64, state, reason, 
 	return nil
 }
 
+// SkipNewLead moves lead leadID from new to skipped by the system, with reason: the build's
+// move for a lead whose latest facts no longer make one. A lead past new (a batch, a
+// suppression or a hand mark may have taken it since the build read it) does not move:
+// moved is false.
+func (q Queries) SkipNewLead(ctx context.Context, leadID int64, reason string) (moved bool, err error) {
+	moved, err = q.setLeadStateFrom(ctx, leadID, []string{LeadNew}, LeadSkipped, reason, ActorSystem)
+	if err != nil {
+		return false, fmt.Errorf("leadstore: skip new lead: %w", err)
+	}
+	return moved, nil
+}
+
 // setLeadStateFrom moves lead leadID to state when its current state is one of from (any
 // state when from is nil), with its lead_event. It reports whether the lead moved.
 func (q Queries) setLeadStateFrom(ctx context.Context, leadID int64, from []string, state, reason, actor string) (bool, error) {

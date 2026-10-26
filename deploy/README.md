@@ -220,7 +220,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 | Timer | When | Runs | Switched on by |
 | --- | --- | --- | --- |
 | `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h` | `LEADHOUND_LEADS_TIMERS=on` |
-| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h` | `LEADHOUND_LEADS_TIMERS=on` |
+| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads build`, under `timeout 20m` | `LEADHOUND_LEADS_TIMERS=on` |
 | `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m` | sending on |
 | `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | sending on |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | sending on |
@@ -228,6 +228,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 - The probe and the contact search are the finding timers.
   They start unattended reads of public sites: up to 10,000 homepages a day, and up to 300 organisations searched for a published contact a day, each site's robots file read and honoured first.
   They share a fetch lock in the data directory, `/opt/leadhound/data/.leads-fetch.lock`, without waiting: a run that finds it held exits 75, which the unit counts as done.
+- After the contact search, the contacts unit runs `leads build`, which turns every organisation with a finding into a lead and reads no web page, so the console's Leads pages fill while only finding is on; the batch rebuilds the list again before drafting.
 - The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
   The send sends only approved messages, each in its recipient's business hours (the send hours cover the working day in the UK, Ireland and central Europe), and the sync reads every mailbox that is not retired for replies, opt-outs and bounces.
   When one mailbox cannot be read, the others still sync and `leads sync` exits 1, so the sync unit shows as failed in `systemctl` and the journal names the mailbox.

@@ -149,10 +149,18 @@ func buildLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 		if !ok {
 			sum.NoLead[reason]++
 			if o.LeadID != nil {
-				if err := lq.SetLeadState(ctx, *o.LeadID, leadstore.LeadSkipped, "build: "+reason, leadstore.ActorSystem); err != nil {
+				moved, err := lq.SkipNewLead(ctx, *o.LeadID, "build: "+reason)
+				if err != nil {
 					return sum, err
 				}
-				sum.Skipped++
+				if moved {
+					sum.Skipped++
+				} else {
+					// It left new after the read above: past new, left as it is.
+					sum.Kept++
+					sum.Leads++
+					sum.count(o.LeadKind, o.LeadChannel)
+				}
 			}
 			continue
 		}
