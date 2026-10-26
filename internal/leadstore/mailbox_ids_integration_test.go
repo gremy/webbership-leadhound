@@ -15,8 +15,7 @@ import (
 
 // TestCursorForMailbox: a cursor written for a mailbox carries its id and is that mailbox's
 // alone; it moves only forward under one UIDVALIDITY, and a new UIDVALIDITY replaces it.
-// The folder name stays the row's key until the cursor key is swapped, so the two mailboxes
-// here use different folder names.
+// Two mailboxes reading a folder of the same name keep a cursor each (00008's key).
 func TestCursorForMailbox(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
@@ -56,19 +55,17 @@ func TestCursorForMailbox(t *testing.T) {
 		t.Errorf("B-INBOX cursor's mailbox_id = %d (%v), want %d", id, err, b.ID)
 	}
 
-	// A row from before mailboxes (no mailbox) is taken over by the first per-mailbox write,
-	// which rescans rather than trusts a place it did not record.
-	if _, err := f.owner.Exec(ctx, `INSERT INTO mailbox_cursor (mailbox, uidvalidity, last_uid, synced_at) VALUES ('INBOX', 7, 40, $1)`, at); err != nil {
+	// The same folder name under both mailboxes: one cursor each, neither moves the other.
+	if err := f.q.AdvanceCursorFor(ctx, a.ID, "INBOX", 7, 40, at); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := f.q.MailboxCursorFor(ctx, a.ID, "INBOX"); err != nil || ok {
-		t.Errorf("a mailbox reads the old path's cursor: %v %v", ok, err)
-	}
-	if err := f.q.AdvanceCursorFor(ctx, a.ID, "INBOX", 7, 3, at); err != nil {
+	if err := f.q.AdvanceCursorFor(ctx, b.ID, "INBOX", 7, 3, at); err != nil {
 		t.Fatal(err)
 	}
-	if c, ok, err := f.q.MailboxCursorFor(ctx, a.ID, "INBOX"); err != nil || !ok || c.LastUID != 3 {
-		t.Errorf("after the take-over: %+v %v %v, want last UID 3", c, ok, err)
+	for mb, want := range map[int64]uint32{a.ID: 40, b.ID: 3} {
+		if c, ok, err := f.q.MailboxCursorFor(ctx, mb, "INBOX"); err != nil || !ok || c.LastUID != want {
+			t.Errorf("mailbox %d INBOX cursor %+v %v %v, want last UID %d", mb, c, ok, err, want)
+		}
 	}
 }
 
@@ -90,7 +87,7 @@ func TestApplyIncomingForMailbox(t *testing.T) {
 		t.Fatalf("sent refs = %+v, %v", refs, err)
 	}
 	for _, r := range refs {
-		want := int64(0)
+		want := f.mailbox(t)
 		if r.ID == ref.ID {
 			want = a.ID
 		}

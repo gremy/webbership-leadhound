@@ -608,8 +608,12 @@ func TestLeadsSelftestNeverCheckedByHand(t *testing.T) {
 	ctx := context.Background()
 	live, _ := liveMaybeSent(t, dir, false)
 	lq := leadstoretest.Q(t)
+	var mailboxID int64
+	if err := storetest.AppConn(t).QueryRow(ctx, `SELECT min(id) FROM sender_mailbox`).Scan(&mailboxID); err != nil {
+		t.Fatal(err)
+	}
 	st, err := lq.CreateSelftest(ctx, leadstore.SelftestDraft{To: "operator@" + "sender.example", Subject: "selftest", Body: "selftest",
-		MessageID: "<selftest.1@shadow.invalid>", Due: leadsTuesday})
+		MessageID: "<selftest.1@shadow.invalid>", Due: leadsTuesday, MailboxID: mailboxID})
 	if err != nil {
 		t.Fatal(err)
 	}

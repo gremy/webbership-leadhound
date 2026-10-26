@@ -86,8 +86,8 @@ type DraftRow struct {
 	Slots     json.RawMessage `json:"slots"` // slot name → {value, source table, source id}
 	// The sending mailbox and the From name frozen with it (decision 6): both are in the
 	// content hash, and omitted from its JSON when unset, so a batch drafted before
-	// mailboxes hashes as it did. A zero MailboxID inserts NULL; a later step with none
-	// inherits its lead's step 0.
+	// mailboxes hashes as it did. A later step with none inherits its lead's step 0; a draft
+	// left with none is refused (ErrBadMailbox).
 	MailboxID int64  `json:"mailbox_id,omitempty"`
 	FromName  string `json:"from_name,omitempty"`
 }
@@ -212,7 +212,7 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 		if _, err := q.db.Exec(ctx,
 			`INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, subject, body_text,
 			   message_id, in_reply_to, slots, mailbox_id, from_name)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, nullif($11::bigint, 0), $12)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			batchID, d.LeadID, d.Step, d.Channel, d.To, d.Subject, d.Body, d.MessageID, d.InReplyTo, string(d.Slots),
 			d.MailboxID, d.FromName); err != nil {
 			return 0, nil, fmt.Errorf("leadstore: create batch: lead %d step %d: %w", d.LeadID, d.Step, err)
@@ -231,8 +231,8 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 
 // inheritMailbox gives each later step of a lead (c sorted by lead then step) its step 0's
 // mailbox and From name when it has none, and refuses a lead whose steps name two
-// mailboxes or two From names: a thread comes from one address. A From name with a line
-// break is refused (it would be a header injection).
+// mailboxes or two From names: a thread comes from one address. A step left with no
+// mailbox, or a From name with a line break (it would be a header injection), is refused.
 func inheritMailbox(c []DraftRow) error {
 	for i := range c {
 		if strings.ContainsAny(c[i].FromName, "\r\n") {
@@ -247,6 +247,11 @@ func inheritMailbox(c []DraftRow) error {
 		}
 		if c[i].MailboxID != first.MailboxID || c[i].FromName != first.FromName {
 			return fmt.Errorf("%w: lead %d step %d is not on its first step's mailbox", ErrBadMailbox, c[i].LeadID, c[i].Step)
+		}
+	}
+	for _, d := range c {
+		if d.MailboxID == 0 {
+			return fmt.Errorf("%w: lead %d step %d has no mailbox", ErrBadMailbox, d.LeadID, d.Step)
 		}
 	}
 	return nil
@@ -299,17 +304,16 @@ type Message struct {
 	SMTPReply      string          `db:"smtp_reply"`
 	CancelReason   string          `db:"cancel_reason"`
 	CreatedAt      time.Time       `db:"created_at"`
-	MailboxID      int64           `db:"mailbox_id"`   // 0: drafted before mailboxes
+	MailboxID      int64           `db:"mailbox_id"`   // rows from before mailboxes name the retired placeholder (00008)
 	FromName       string          `db:"from_name"`    // frozen at batch creation
-	FromAddress    string          `db:"from_address"` // the mailbox's address, for reading; "" when none
+	FromAddress    string          `db:"from_address"` // the mailbox's address, for reading
 }
 
-// messageCols reads mailbox_id through COALESCE while the column is nullable (Task 2.7
-// makes it NOT NULL); from_address is the mailbox's address, which is fixed for the app.
+// messageCols: from_address is the mailbox's address, which is fixed for the app.
 const messageCols = `m.id, m.batch_id, m.lead_id, m.step, m.channel, m.to_address, m.subject, m.body_text,
   m.message_id, m.in_reply_to, m.slots, m.approved_sha256, m.state, m.due_at, m.sent_at, m.smtp_reply,
-  m.cancel_reason, m.created_at, COALESCE(m.mailbox_id, 0) AS mailbox_id, m.from_name,
-  COALESCE((SELECT fa.address FROM sender_mailbox fa WHERE fa.id = m.mailbox_id), '') AS from_address`
+  m.cancel_reason, m.created_at, m.mailbox_id, m.from_name,
+  (SELECT fa.address FROM sender_mailbox fa WHERE fa.id = m.mailbox_id) AS from_address`
 
 // Batch is one outreach_batch row.
 type Batch struct {

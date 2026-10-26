@@ -160,7 +160,7 @@ func (f outreachFixture) selftestMaybeSent(t *testing.T) int64 {
 	t.Helper()
 	ctx := context.Background()
 	st, err := f.q.CreateSelftest(ctx, leadstore.SelftestDraft{To: "operator@sender.localhost", Subject: "selftest", Body: "selftest",
-		MessageID: "<selftest.1@shadow.invalid>", Due: dueBase})
+		MessageID: "<selftest.1@shadow.invalid>", Due: dueBase, MailboxID: f.mailbox(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

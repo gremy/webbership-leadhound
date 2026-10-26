@@ -37,7 +37,7 @@ func transferFixture(t *testing.T) (homeURL string, homeAt time.Time, homeSHA []
 	ctx := context.Background()
 	conn := storetest.AppConn(t)
 	sq, lq := store.NewQueries(conn), leadstore.NewQueries(conn)
-	seedMailbox(t, lq, testUser)
+	mb := seedMailbox(t, lq, testUser)
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -144,11 +144,11 @@ func transferFixture(t *testing.T) (homeURL string, homeAt time.Time, homeSHA []
 	must(err)
 	// A live batch holding the agency lead: the batch stays behind, the lead arrives new.
 	_, _, err = lq.CreateBatch(ctx, false, []leadstore.DraftRow{{LeadID: agLead, Step: 0, Channel: leadstore.ChannelEmail,
-		To: "hello@agency.example", Subject: "Drupal", Body: "Hello", MessageID: "<m1@sender.example>", Slots: json.RawMessage(`{}`)}}, nil)
+		To: "hello@agency.example", Subject: "Drupal", Body: "Hello", MessageID: "<m1@sender.example>", Slots: json.RawMessage(`{}`), MailboxID: mb.ID}}, nil)
 	must(err)
 	must(lq.SetLeadState(ctx, agLead, leadstore.LeadBatched, "batch 1", leadstore.ActorSystem))
 	_, err = lq.CreateSelftest(ctx, leadstore.SelftestDraft{To: "operator@sender.example", Subject: "selftest", Body: "selftest",
-		MessageID: "<s1@sender.example>", Due: time.Now()})
+		MessageID: "<s1@sender.example>", Due: time.Now(), MailboxID: mb.ID})
 	must(err)
 	for _, s := range [][3]string{
 		{leadstore.SuppressDomain, "blocked.example", leadstore.ReasonManual},
@@ -374,6 +374,26 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 			t.Errorf("%s mode %v, want 0600", name, st.Mode().Perm())
 		}
 	}
+	// No mailbox crosses: a sealed password is useless under another server's key, and the
+	// sending addresses are the operator's own, never finding data.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "mailbox") {
+			t.Errorf("export holds %s", e.Name())
+		}
+		body, err := os.ReadFile(filepath.Join(dir, e.Name())) // #nosec G304 -- the test's temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range []string{testUser, testSenderDomain, "smtp.seed.invalid", "imap.seed.invalid", "sealed", "mailbox_id"} {
+			if strings.Contains(string(body), v) {
+				t.Errorf("export file %s holds %q", e.Name(), v)
+			}
+		}
+	}
 
 	// The target: empty lead tables, ids far from the source's, and a fetch of the server's
 	// own (not a transfer's) with the alpha homepage's very key, which must not be reused.
@@ -438,6 +458,8 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 		{"batched lead arrives new", `SELECT count(*) FROM lead l JOIN org o ON o.id = l.org_id WHERE o.domain = '` + batchedOrg + `' AND l.state = 'new'`, 1},
 		{"its move back to new", `SELECT count(*) FROM lead_event WHERE reason = '` + transferBatchedReason + `' AND state = 'new'`, 1},
 		{"no batches or messages", `SELECT (SELECT count(*) FROM outreach_batch) + (SELECT count(*) FROM outreach_message)`, 0},
+		{"no mailbox rows", `SELECT (SELECT count(*) FROM sender_mailbox) + (SELECT count(*) FROM mailbox_state)
+			+ (SELECT count(*) FROM mailbox_check) + (SELECT count(*) FROM mailbox_event) + (SELECT count(*) FROM mailbox_cursor)`, 0},
 		{"no reserved or selftest row", `SELECT (SELECT count(*) FROM site WHERE domain ~ '\.invalid$')
 			+ (SELECT count(*) FROM org WHERE kind = 'selftest' OR domain ~ '\.invalid$')
 			+ (SELECT count(*) FROM lead WHERE kind = 'selftest')

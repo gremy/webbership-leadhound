@@ -165,9 +165,10 @@ func TestFirstLiveSend(t *testing.T) {
 	batch := func(shadow bool) int64 {
 		return id(`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256) VALUES ($1, '\x00', '\x00')`, shadow)
 	}
+	mb := leadstoretest.SeedMailbox(t, q, "outreach@sender.localhost")
 	msg := func(b, l int64, state string, sent time.Time) {
-		id(`INSERT INTO outreach_message (batch_id, lead_id, step, channel, body_text, slots, state, sent_at)
-		    VALUES ($1, $2, 0, 'email', 'body', '{}', $3, $4)`, b, l, state, sent)
+		id(`INSERT INTO outreach_message (batch_id, lead_id, step, channel, body_text, slots, state, sent_at, mailbox_id)
+		    VALUES ($1, $2, 0, 'email', 'body', '{}', $3, $4, $5)`, b, l, state, sent, mb.ID)
 	}
 	if got, err := q.FirstLiveSend(ctx); err != nil || got != nil {
 		t.Fatalf("cold start: %v, %v", got, err)

@@ -15,10 +15,10 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 )
 
-// The per-mailbox sync (MB-R10, MB-R11). Until the cursor key is swapped to the mailbox,
-// mailbox_cursor and mailbox_event are keyed by the folder name alone, so the second mailbox
-// here names its folders B-INBOX and B-Junk (renamedReader) and two INBOX cursors never
-// share a row.
+// The per-mailbox sync (MB-R10, MB-R11). The second mailbox of most tests here names its
+// folders B-INBOX and B-Junk (renamedReader), so each folder's rows are told apart by name
+// too; TestSyncAllSameFolderTwoMailboxes reads INBOX in both, keyed by mailbox alone
+// (migration 00008).
 
 // renamedReader shows a reader's folders under prefix+name.
 type renamedReader struct {
@@ -287,5 +287,45 @@ func TestSyncAllLockHeld(t *testing.T) {
 	}
 	if n := len(w.mail.callsOf("reader")); n != 0 {
 		t.Errorf("%d reader calls under a held lock", n)
+	}
+}
+
+// TestSyncAllSameFolderTwoMailboxes: two mailboxes that both read INBOX, each holding a
+// message with UID 1 under the same UIDVALIDITY, keep one event and one cursor each.
+func TestSyncAllSameFolderTwoMailboxes(t *testing.T) {
+	w := newSyncWorld(t)
+	leadsMail.readerFor = w.mail.readerFor // B reads its folders under their own names
+	boxB := w.mail.boxOf(bLogin)
+	for _, box := range []*fakeBox{w.box, boxB} {
+		box.deliver("INBOX", "From: Shop <news@unrelated.example>\r\nSubject: Sale\r\n\r\n", "Big sale.")
+		box.deliver("Junk", "From: Shop <news@unrelated.example>\r\nSubject: Sale again\r\n\r\n", "Big sale.")
+	}
+
+	got := w.sync(t)
+	if !got[w.a.ID].OK || !got[w.b.ID].OK || got[w.a.ID].Summary.Messages != 2 || got[w.b.ID].Summary.Messages != 2 {
+		t.Fatalf("syncAll = %+v", got)
+	}
+	for _, mb := range []leadstore.Mailbox{w.a, w.b} {
+		for _, folder := range []string{"INBOX", "Junk"} {
+			if n := w.count(t, `SELECT count(*) FROM mailbox_event WHERE mailbox = $1 AND uid = 1 AND mailbox_id = $2`, folder, mb.ID); n != 1 {
+				t.Errorf("%s UID 1 of mailbox %d: %d events, want 1", folder, mb.ID, n)
+			}
+			c, ok, err := w.lq.MailboxCursorFor(context.Background(), mb.ID, folder)
+			if err != nil || !ok || c.LastUID != 1 {
+				t.Errorf("%s cursor of mailbox %d = %+v, %v, %v; want UID 1", folder, mb.ID, c, ok, err)
+			}
+		}
+	}
+	if n := w.count(t, `SELECT count(*) FROM mailbox_cursor WHERE mailbox = 'INBOX'`); n != 2 {
+		t.Errorf("%d INBOX cursors, want 2", n)
+	}
+
+	// Again: each reads from its own cursor and records nothing twice.
+	again := w.sync(t)
+	if again[w.a.ID].Summary.Messages != 0 || again[w.b.ID].Summary.Messages != 0 {
+		t.Errorf("second sync %+v", again)
+	}
+	if n := w.count(t, `SELECT count(*) FROM mailbox_event`); n != 4 {
+		t.Errorf("%d events after a second sync, want 4", n)
 	}
 }

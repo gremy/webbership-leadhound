@@ -40,9 +40,10 @@ var (
 )
 
 type fixture struct {
-	t     *testing.T
-	owner *pgx.Conn
-	run   int64
+	t       *testing.T
+	owner   *pgx.Conn
+	run     int64
+	mailbox int64 // the sending mailbox every message and event names (00008)
 }
 
 func (f fixture) id(sql string, args ...any) int64 {
@@ -74,16 +75,16 @@ func (f fixture) batch(shadow, approved bool) int64 {
 }
 
 func (f fixture) msg(batch, lead int64, step int, channel, to, state string, sent *time.Time) {
-	f.id(`INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, body_text, slots, state, sent_at)
-	      VALUES ($1, $2, $3, $4, $5, 'body', '{}', $6, $7)`, batch, lead, step, channel, to, state, sent)
+	f.id(`INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, body_text, slots, state, sent_at, mailbox_id)
+	      VALUES ($1, $2, $3, $4, $5, 'body', '{}', $6, $7, $8)`, batch, lead, step, channel, to, state, sent, f.mailbox)
 }
 
 var uid int64
 
 func (f fixture) event(kind string, lead *int64, fromDomain string, seen time.Time) {
 	uid++
-	f.id(`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, lead_id, seen_at) VALUES ('INBOX', 1, $1, $2, $3, $4, $5)`,
-		uid, kind, fromDomain, lead, seen)
+	f.id(`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, lead_id, seen_at, mailbox_id) VALUES ('INBOX', 1, $1, $2, $3, $4, $5, $6)`,
+		uid, kind, fromDomain, lead, seen, f.mailbox)
 }
 
 func (f fixture) probe(domain string, drupal bool, major int, when time.Time) {
@@ -98,6 +99,7 @@ func newFixture(t *testing.T) fixture {
 	t.Helper()
 	leadstoretest.Reset(t)
 	f := fixture{t: t, owner: storetest.OwnerConn(t)}
+	f.mailbox = leadstoretest.SeedMailbox(t, leadstoretest.Q(t), "outreach"+"@"+"sender.invalid").ID
 	f.run = f.id(`INSERT INTO run (command, source, started_at, finished_at, note) VALUES ('leads-send', 'outreach', $1, $2, $3)`,
 		at(10), at(10), "live · sent 0 · refused 0 · maybe_sent 0 · retry 0 · cancelled 0 · skipped 0 · notes dns")
 	f.id(`INSERT INTO sender_check (domain_sha256, spf, dkim, dmarc, checked_at) VALUES ('\x01', true, true, false, $1)`, at(9))

@@ -51,7 +51,7 @@ func (f outreachFixture) manualBatch(t *testing.T, shadow bool, lead int64) []le
 	t.Helper()
 	ctx := context.Background()
 	drafts := []leadstore.DraftRow{
-		{LeadID: lead, Step: 0, Channel: "form", Body: "form text", Slots: []byte(`{}`)},
+		{LeadID: lead, Step: 0, Channel: "form", Body: "form text", Slots: []byte(`{}`), MailboxID: f.mailbox(t)},
 		{LeadID: lead, Step: 1, Channel: "linkedin", Body: "note", Slots: []byte(`{}`)},
 	}
 	id, sum, err := f.q.CreateBatch(ctx, shadow, drafts, nil)
@@ -206,7 +206,7 @@ func TestMarkDone(t *testing.T) {
 	}
 	// A draft (not approved) form item is refused.
 	other := f.formLead(t, "tailspin.localhost")
-	did, _, err := f.q.CreateBatch(ctx, false, []leadstore.DraftRow{{LeadID: other, Step: 0, Channel: "form", Body: "x"}}, nil)
+	did, _, err := f.q.CreateBatch(ctx, false, []leadstore.DraftRow{{LeadID: other, Step: 0, Channel: "form", Body: "x", MailboxID: f.mailbox(t)}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

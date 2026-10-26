@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
@@ -102,10 +103,30 @@ func (f outreachFixture) lead(t *testing.T, l leadstore.LeadRow, email string) i
 	return id
 }
 
-// drafts returns steps 0 and 1 for every lead, to the lead's route address.
+// fixtureMailbox is the sending mailbox every fixture draft goes from (mailbox_id is
+// required, 00008).
+const fixtureMailbox = "outreach@fixture.localhost"
+
+// mailbox returns the id of fixtureMailbox, seeding it on first use.
+func (f outreachFixture) mailbox(t *testing.T) int64 {
+	t.Helper()
+	var id int64
+	err := f.owner.QueryRow(context.Background(), `SELECT id FROM sender_mailbox WHERE address = $1`, fixtureMailbox).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return leadstoretest.SeedMailbox(t, f.q, fixtureMailbox).ID
+	}
+	if err != nil {
+		t.Fatalf("fixture mailbox: %v", err)
+	}
+	return id
+}
+
+// drafts returns steps 0 and 1 for every lead, to the lead's route address, from the
+// fixture's mailbox.
 func (f outreachFixture) drafts(t *testing.T, leadIDs ...int64) []leadstore.DraftRow {
 	t.Helper()
 	var out []leadstore.DraftRow
+	mb := f.mailbox(t)
 	for _, id := range leadIDs {
 		var to string
 		if err := f.owner.QueryRow(context.Background(),
@@ -118,6 +139,7 @@ func (f outreachFixture) drafts(t *testing.T, leadIDs ...int64) []leadstore.Draf
 				Subject: fmt.Sprintf("Drupal upgrade %d", step), Body: fmt.Sprintf("Body %d of lead %d", step, id),
 				MessageID: fmt.Sprintf("<%d.%d@shadow.invalid>", id, step),
 				Slots:     []byte(`{"major": {"value": "7", "source": "site_probe"}, "domain": {"value": "x"}}`),
+				MailboxID: mb,
 			})
 		}
 	}

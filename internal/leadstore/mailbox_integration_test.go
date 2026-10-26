@@ -215,7 +215,7 @@ func TestCreateSelftestAndOptOut(t *testing.T) {
 	ctx := context.Background()
 	to := "operator" + "@" + "sender.localhost"
 	due := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
-	st, err := f.q.CreateSelftest(ctx, leadstore.SelftestDraft{To: to, Subject: "Leadhound selftest", Body: "Hello", MessageID: "abc@sender.localhost", Due: due})
+	st, err := f.q.CreateSelftest(ctx, leadstore.SelftestDraft{To: to, Subject: "Leadhound selftest", Body: "Hello", MessageID: "abc@sender.localhost", Due: due, MailboxID: f.mailbox(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestCreateSelftestAndOptOut(t *testing.T) {
 	if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM lead_event WHERE lead_id = $1 AND actor = 'gremy'`, st.LeadID).Scan(&gremy); err != nil || gremy != 1 {
 		t.Errorf("approval by gremy recorded %d times (%v)", gremy, err)
 	}
-	st2, err := f.q.CreateSelftest(ctx, leadstore.SelftestDraft{To: to, Subject: "s", Body: "b", MessageID: "def@sender.localhost", Due: due})
+	st2, err := f.q.CreateSelftest(ctx, leadstore.SelftestDraft{To: to, Subject: "s", Body: "b", MessageID: "def@sender.localhost", Due: due, MailboxID: f.mailbox(t)})
 	if err != nil || st2.N != 2 {
 		t.Fatalf("second selftest: %+v %v", st2, err)
 	}

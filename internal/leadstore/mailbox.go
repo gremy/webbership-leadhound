@@ -102,9 +102,8 @@ func (q Queries) SenderCheckPassedSince(ctx context.Context, domainSHA []byte, s
 var errNoMailbox = errors.New("leadstore: no mailbox given")
 
 // MailboxCursorFor returns how far folder name of sending mailbox mailboxID has been read;
-// ok is false before that mailbox's first sync of it. The row's key is still the folder name
-// alone, so a row written for another mailbox, or one from before mailboxes (no mailbox),
-// is not this mailbox's and reads as no cursor (a first sync rescans).
+// ok is false before that mailbox's first sync of it (a first sync rescans). The row's key
+// is the mailbox and the folder (00008).
 func (q Queries) MailboxCursorFor(ctx context.Context, mailboxID int64, name string) (c mailbox.Cursor, ok bool, err error) {
 	var v, last int64
 	err = q.db.QueryRow(ctx, `SELECT uidvalidity, last_uid FROM mailbox_cursor WHERE mailbox = $1 AND mailbox_id = $2`,
@@ -119,21 +118,18 @@ func (q Queries) MailboxCursorFor(ctx context.Context, mailboxID int64, name str
 }
 
 // AdvanceCursorFor records that folder name of sending mailbox mailboxID has been read up to
-// lastUID under uidValidity, at at; the row records the mailbox. Under the same mailbox and
-// UIDVALIDITY the cursor only moves forward; a new UIDVALIDITY, or a row of another mailbox
-// (or of none), is replaced.
+// lastUID under uidValidity, at at. Under the same UIDVALIDITY the cursor only moves
+// forward; a new UIDVALIDITY replaces it.
 func (q Queries) AdvanceCursorFor(ctx context.Context, mailboxID int64, name string, uidValidity, lastUID uint32, at time.Time) error {
 	if mailboxID == 0 {
 		return fmt.Errorf("leadstore: advance cursor: %w", errNoMailbox)
 	}
 	if _, err := q.db.Exec(ctx,
 		`INSERT INTO mailbox_cursor (mailbox, mailbox_id, uidvalidity, last_uid, synced_at) VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (mailbox) DO UPDATE SET
+		 ON CONFLICT (mailbox_id, mailbox) DO UPDATE SET
 		   last_uid = CASE WHEN mailbox_cursor.uidvalidity = EXCLUDED.uidvalidity
-		       AND mailbox_cursor.mailbox_id IS NOT DISTINCT FROM EXCLUDED.mailbox_id
 		     THEN greatest(mailbox_cursor.last_uid, EXCLUDED.last_uid) ELSE EXCLUDED.last_uid END,
 		   uidvalidity = EXCLUDED.uidvalidity,
-		   mailbox_id = EXCLUDED.mailbox_id,
 		   synced_at = EXCLUDED.synced_at`,
 		name, mailboxID, int64(uidValidity), int64(lastUID), at); err != nil {
 		return fmt.Errorf("leadstore: advance cursor: %w", err)
@@ -150,7 +146,7 @@ type SentRef struct {
 	ToAddress string `db:"to_address"`
 	OrgDomain string `db:"org_domain"`
 	LeadKind  string `db:"lead_kind"`
-	MailboxID int64  `db:"mailbox_id"` // the sending mailbox it went from; 0 when none was recorded
+	MailboxID int64  `db:"mailbox_id"` // the sending mailbox it went from
 }
 
 // Selftest reports whether the message went to the operator's own address (RA24).
@@ -161,7 +157,7 @@ func (r SentRef) Selftest() bool { return r.LeadKind == LeadSelftest }
 func (q Queries) SentRefs(ctx context.Context) ([]SentRef, error) {
 	refs, err := collect(ctx, q.db, pgx.RowToStructByName[SentRef],
 		`SELECT m.id, m.message_id, m.lead_id, lower(m.to_address) AS to_address, o.domain AS org_domain, l.kind AS lead_kind,
-		   COALESCE(m.mailbox_id, 0) AS mailbox_id
+		   m.mailbox_id
 		 FROM outreach_message m
 		 JOIN outreach_batch b ON b.id = m.batch_id
 		 JOIN lead l ON l.id = m.lead_id
@@ -207,7 +203,7 @@ type Applied struct {
 //
 // The event and the cursor record the mailbox, and a suppression's source is
 // mailbox:<id>:<folder>:<uid>. Matching stays global: in.Matched may have gone from any
-// mailbox. A message already recorded (the same folder, UIDVALIDITY and UID) changes nothing
+// mailbox. A message already recorded (the same mailbox, folder, UIDVALIDITY and UID) changes nothing
 // but the cursor. mailbox_event keeps the registrable From domain only: no address, no body.
 func (q Queries) ApplyIncomingFor(ctx context.Context, mailboxID int64, in Incoming) (Applied, error) {
 	if mailboxID == 0 {
@@ -221,7 +217,7 @@ func (q Queries) ApplyIncomingFor(ctx context.Context, mailboxID int64, in Incom
 	tag, err := q.db.Exec(ctx,
 		`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at, mailbox_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (mailbox, uidvalidity, uid) DO NOTHING`,
+		 ON CONFLICT (mailbox_id, mailbox, uidvalidity, uid) DO NOTHING`,
 		in.Mailbox, int64(in.UIDValidity), int64(in.UID), string(in.Kind), in.FromDomain, msgID, leadID, in.At, mailboxID)
 	if err != nil {
 		return Applied{}, fmt.Errorf("leadstore: apply incoming: %w", err)
@@ -427,8 +423,7 @@ type SelftestDraft struct {
 	Body      string
 	MessageID string
 	Due       time.Time
-	// MailboxID and FromName are the mailbox it goes from and the From name frozen with it;
-	// a zero MailboxID inserts NULL (a selftest drafted before mailboxes).
+	// MailboxID and FromName are the mailbox it goes from and the From name frozen with it.
 	MailboxID int64
 	FromName  string
 }
