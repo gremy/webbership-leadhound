@@ -3,6 +3,13 @@
 leadhound runs on one Linux server with systemd, from timers.
 Nothing in this directory names a server: the host is an ssh destination in your own ssh config, passed as `HOST=` on the command line, and every secret lives in files on the server.
 
+## Server
+
+Since 2026-10-26 production runs on a Hetzner CAX31 (arm64, 8 vCPU, 16 GiB), moved from the 2-vCPU CAX11 it shared with other services.
+Its Postgres 18 cluster is shared with one other service, whose pgBackRest stanza backs up the whole cluster, so the leadhound database also rides there, encrypted and off the server, besides its own nightly dumps (see [Backups and the storage budget](#backups-and-the-storage-budget)).
+Use the console's own DNS name as `HOST=`, so a deploy follows DNS; the server's name and address stay in the private notes.
+The units' `MemoryMax` and `CPUQuota` caps were sized for the old shared 2-vCPU box and are left as they are; retuning them is a separate decision.
+
 ## What runs when
 
 All times are Europe/Bucharest.
