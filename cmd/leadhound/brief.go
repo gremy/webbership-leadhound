@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
+	"github.com/gremy/webbership-leadhound/internal/candidate"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 	"github.com/gremy/webbership-leadhound/internal/mail"
@@ -131,26 +132,7 @@ func runBrief(ctx context.Context, args []string) error {
 		}
 	}
 
-	// LI4: recheck what is about to be listed, live only, then leave out what is still
-	// unchecked.
-	recheckOff := true
-	newClient, source, err := briefClients(cfg, fetchFlags{}, recheckBudgets(cfg))
-	switch {
-	case errors.Is(err, errLiveOff):
-	case err != nil:
-		return err
-	default:
-		recheckOff = false
-		if !refused {
-			out := recheckListed(ctx, s, cfg, prof, loc, day, *allowFake, newClient, source)
-			_, _ = fmt.Fprintln(notes, out.summary())
-		}
-		if _, err := leaveOutStale(ctx, q, prof, loc, day, *allowFake, source); err != nil {
-			return err
-		}
-	}
-
-	in, err := buildInput(ctx, q, prof, loc, day, *allowFake, recheckOff)
+	in, err := composeNow(ctx, s, cfg, prof, loc, day, *allowFake, !refused)
 	if err != nil {
 		return err
 	}
@@ -194,6 +176,34 @@ func runBrief(ctx context.Context, args []string) error {
 		return err
 	}
 	return sendBrief(ctx, s, cfg, b, &note)
+}
+
+// composeNow is the jobs part of day's brief as it would be composed now: when
+// LEADHOUND_LIVE allows LinkedIn it rechecks the jobs about to be listed (only when
+// recheck is set; a failed recheck is one notes line, not a stop) and leaves out any still
+// unchecked, then reads the input. Live off is no error: the input says the recheck was
+// off. The console URL and the leads section are left for the caller.
+func composeNow(ctx context.Context, s *store.Store, cfg config.Config, prof candidate.Config, loc *time.Location, day time.Time, allowFake, recheck bool) (brief.Input, error) {
+	q := s.Q()
+	// LI4: recheck what is about to be listed, live only, then leave out what is still
+	// unchecked.
+	recheckOff := true
+	newClient, source, err := briefClients(cfg, fetchFlags{}, recheckBudgets(cfg))
+	switch {
+	case errors.Is(err, errLiveOff):
+	case err != nil:
+		return brief.Input{}, err
+	default:
+		recheckOff = false
+		if recheck {
+			out := recheckListed(ctx, s, cfg, prof, loc, day, allowFake, newClient, source)
+			_, _ = fmt.Fprintln(notes, out.summary())
+		}
+		if _, err := leaveOutStale(ctx, q, prof, loc, day, allowFake, source); err != nil {
+			return brief.Input{}, err
+		}
+	}
+	return buildInput(ctx, q, prof, loc, day, allowFake, recheckOff)
 }
 
 // briefLeads is the brief's leads section, read only when the leads tables exist; nil
