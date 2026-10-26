@@ -74,7 +74,13 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
-    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256, hard_bounce) ON public.outreach_message TO leadhound_app;
+    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256) ON public.outreach_message TO leadhound_app;
+    -- hard_bounce comes with 00007; a database not yet migrated that far skips it, and the
+    -- next run after its migrate grants it.
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'outreach_message' AND column_name = 'hard_bounce') THEN
+      GRANT UPDATE (hard_bounce) ON public.outreach_message TO leadhound_app;
+    END IF;
   END IF;
   IF to_regclass('public.lead_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_event FROM leadhound_app;
