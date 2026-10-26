@@ -93,7 +93,7 @@ var schedule = map[string]struct {
 		true,
 		[]string{
 			"-/usr/bin/timeout --kill-after=5m 4h /opt/leadhound/bin/leadhound collect ats",
-			scoreLock + "/usr/bin/timeout --kill-after=2m 2h20m /opt/leadhound/bin/leadhound score --max-duration 2h",
+			scoreLock + "/usr/bin/timeout --kill-after=2m 140m /opt/leadhound/bin/leadhound score --max-duration 2h",
 		},
 	},
 	"leadhound-collect": {
@@ -148,7 +148,7 @@ var schedule = map[string]struct {
 	"leadhound-leads-send": {
 		[]string{"Mon..Fri *-*-* 10..19:00:00 Europe/Bucharest"},
 		false,
-		[]string{"/usr/bin/timeout --kill-after=5m 3h45m /opt/leadhound/bin/leadhound leads send --max 25"},
+		[]string{"/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --max 25"},
 	},
 	"leadhound-leads-sync": {
 		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
@@ -356,6 +356,81 @@ func systemdDuration(v string) (time.Duration, error) {
 		v += "s"
 	}
 	return time.ParseDuration(strings.ReplaceAll(v, "min", "m"))
+}
+
+// gnuDurationRE is the DURATION GNU coreutils timeout accepts (for the duration and for
+// --kill-after): one number with at most one suffix, s, m, h or d, seconds when bare. A
+// compound form Go's time.ParseDuration takes, such as "2h20m", makes timeout exit 125.
+var gnuDurationRE = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)([smhd]?)$`)
+
+// gnuDuration reads a /usr/bin/timeout DURATION, refusing what GNU timeout refuses, so no
+// test reads a timeout value more leniently than the server does.
+func gnuDuration(v string) (time.Duration, error) {
+	m := gnuDurationRE.FindStringSubmatch(v)
+	if m == nil {
+		return 0, fmt.Errorf("%q is not a GNU timeout duration (one number, one optional s|m|h|d suffix)", v)
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, err
+	}
+	unit := map[string]time.Duration{"": time.Second, "s": time.Second, "m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}[m[2]]
+	return time.Duration(n * float64(unit)), nil
+}
+
+// TestTimeoutDurationsAreGNU: every /usr/bin/timeout in every unit's ExecStart takes only
+// options GNU timeout knows here (--kill-after=DURATION) and a DURATION in GNU's syntax. Go's
+// time.ParseDuration accepts "2h20m"; GNU timeout does not, and the step never starts.
+func TestTimeoutDurationsAreGNU(t *testing.T) {
+	n := 0
+	for path, u := range units(t, "*.service") {
+		for _, e := range u["Service"]["ExecStart"] {
+			fields := strings.Fields(e)
+			for i, f := range fields {
+				if strings.TrimPrefix(f, "-") != "/usr/bin/timeout" {
+					continue
+				}
+				n++
+				j := i + 1
+				for ; j < len(fields) && strings.HasPrefix(fields[j], "-"); j++ {
+					v, ok := strings.CutPrefix(fields[j], "--kill-after=")
+					if !ok {
+						t.Errorf("%s: %q: timeout option %q, want only --kill-after=DURATION", path, e, fields[j])
+						continue
+					}
+					if !gnuDurationRE.MatchString(v) {
+						t.Errorf("%s: %q: --kill-after=%s is not a GNU timeout duration (one number, one optional s|m|h|d suffix)", path, e, v)
+					}
+				}
+				if j >= len(fields) {
+					t.Errorf("%s: %q: timeout has no DURATION", path, e)
+					continue
+				}
+				if !gnuDurationRE.MatchString(fields[j]) {
+					t.Errorf("%s: %q: timeout DURATION %s is not GNU syntax (one number, one optional s|m|h|d suffix)", path, e, fields[j])
+				}
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no /usr/bin/timeout found in any unit")
+	}
+}
+
+func TestGNUDuration(t *testing.T) {
+	for v, want := range map[string]time.Duration{
+		"140m": 140 * time.Minute, "225m": 225 * time.Minute, "4h": 4 * time.Hour,
+		"2.5h": 150 * time.Minute, "90": 90 * time.Second, "1d": 24 * time.Hour,
+	} {
+		if got, err := gnuDuration(v); err != nil || got != want {
+			t.Errorf("gnuDuration(%q) = %v, %v; want %v", v, got, err, want)
+		}
+	}
+	for _, v := range []string{"2h20m", "3h45m", "1h30m0s", "10min", "", "h", "-5m", "5ms"} {
+		if _, err := gnuDuration(v); err == nil {
+			t.Errorf("gnuDuration(%q) accepted; GNU timeout refuses it", v)
+		}
+	}
 }
 
 // TestInstallEnablesEveryTimer: deploy/install.sh names exactly the timers in deploy/, enables
@@ -770,7 +845,7 @@ func TestTimeoutsCoverWaits(t *testing.T) {
 					if d == "" {
 						continue
 					}
-					v, err := time.ParseDuration(d)
+					v, err := gnuDuration(d)
 					if err != nil {
 						t.Fatalf("%s: timeout %q: %v", path, d, err)
 					}
@@ -895,7 +970,7 @@ func TestScoreHasBudget(t *testing.T) {
 				t.Errorf("%s: %q: a score step runs as /usr/bin/timeout <D> ... leadhound score --max-duration <budget>", path, e)
 				continue
 			}
-			timeout, terr := time.ParseDuration(m[1])
+			timeout, terr := gnuDuration(m[1])
 			budget, berr := time.ParseDuration(m[2])
 			switch {
 			case terr != nil || berr != nil:
@@ -929,7 +1004,7 @@ func TestBudgetBelowTimeout(t *testing.T) {
 				t.Errorf("%s: %q: a budgeted step runs as /usr/bin/timeout <D> ... leadhound <cmd> --max-duration <budget>", path, e)
 				continue
 			}
-			timeout, terr := time.ParseDuration(m[1])
+			timeout, terr := gnuDuration(m[1])
 			budget, berr := time.ParseDuration(m[2])
 			switch {
 			case terr != nil || berr != nil:

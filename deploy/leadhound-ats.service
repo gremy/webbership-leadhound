@@ -22,7 +22,7 @@ ExecStart=-/usr/bin/timeout --kill-after=5m 4h /opt/leadhound/bin/leadhound coll
 # The score stops itself cleanly at its 2h budget; timeout ends one that hangs. The timeout
 # leaves 20 minutes over the budget because a stopped score still finishes its in-flight
 # job, records the run and makes its summary pass over every stored job.
-ExecStart=/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /usr/bin/timeout --kill-after=2m 2h20m /opt/leadhound/bin/leadhound score --max-duration 2h
+ExecStart=/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /usr/bin/timeout --kill-after=2m 140m /opt/leadhound/bin/leadhound score --max-duration 2h
 # The full registry takes hours to collect. Longer than the collect's timeout, the score's
 # 90-minute lock wait and the score's timeout together (7h57), so systemd never cuts the
 # score short.

@@ -39,7 +39,7 @@ Every step that reaches LinkedIn (`collect linkedin`, `canary linkedin` and `bri
 The lock timeout exits 75 rather than flock's default 1 so it is never confused with the program's own codes, and in particular never with 2, which `RestartPreventExitStatus=2` keeps for bad config.
 The brief is ordered `After=` the collect and the canary, and the canary `After=` the collect, so a persistent catch-up after downtime runs them in that order.
 `collect ats` runs under `timeout 4h` and `collect linkedin` under `timeout 2h`, so a hang never stops the `score` after it.
-Each `score` stops itself cleanly at its `--max-duration` budget, and runs under a `timeout` that ends a score that hangs (`2h20m` for the night's 2h, `1h` for the 45 minutes).
+Each `score` stops itself cleanly at its `--max-duration` budget, and runs under a `timeout` that ends a score that hangs (`140m` for the night's 2h, `1h` for the 45 minutes).
 The timeout sits 20 and 15 minutes over the budget because a stopped score still finishes its in-flight job, records the run and makes its summary pass over every stored job, which reads every description when a description rule is active.
 Each unit's `TimeoutStartSec` is longer than its lock waits and timeouts together: 8h15min for the ATS unit (4h05 + 1h30 + 2h22 = 7h57) and 5h30min for the LinkedIn one (30 minutes + 2h05 + 1h30 + 1h02 = 5h07).
 
@@ -174,7 +174,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 | `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h` | `LEADHOUND_LEADS_TIMERS=on` |
 | `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h` | `LEADHOUND_LEADS_TIMERS=on` |
 | `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m` | sending on |
-| `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 3h45m` | sending on |
+| `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | sending on |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | sending on |
 
 - The probe and the contact search are the finding timers.
