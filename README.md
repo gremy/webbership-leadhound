@@ -5,16 +5,30 @@
 - **How to run**: copy `.env.example` to `.env` and fill it in, then use the make targets.
   - `make check`: format check, vet, lint (when installed), unit tests and the tracked-file privacy check.
   - `make test-integration`: database tests against the local `leadhound_test`.
-  - `make db-local`: create the roles and the local dev and test databases.
+  - `make test-scale`: time and memory budgets on `leadhound_scale`, a local database the size of production: 450,000 jobs (`LEADHOUND_SCALE_JOBS`) and a year of lead finding and outreach (a million sites, 700,000 probed, 5,000 leads, 400 batches).
+    It is seeded once, about two minutes for the jobs, and reused; `make deploy` runs it and refuses to ship when a budget fails.
+  - `make db-local`: create the roles, their limits and the local dev, test and scale databases.
   - `make migrate`: apply migrations to the dev database as the owner role.
   - `make hooks`: install the pre-commit and commit-msg privacy hooks.
   - `make prepush`: the full gate before a push.
   - `make build-linux`: static Linux binary (`ARCH=arm64`, the default, or `amd64`).
   - `make deploy`, `make deploy-data`, `make remote`: run it on a server under systemd timers; see `deploy/README.md`.
 
-  Subcommands (planned for slice 1): `collect`, `score`, `routes`, `brief`, `track`, `rules`, `canary`, `recheck`, `eval`, `boards` (`verify`, `add`), `probe company` and `migrate`, run as `go run ./cmd/leadhound <subcommand>`.
+  Subcommands: `collect`, `score`, `brief`, `track`, `rules`, `canary`, `recheck`, `eval`, `boards` (`import`, `list`, `check`, `harvest`), `probe company`, `trim`, `leads`, `serve`, `console hash-password` and `migrate`, run as `go run ./cmd/leadhound <subcommand>`.
   Without `LEADHOUND_LIVE`, no command fetches from a job source.
-- **Console**: `leadhound serve` is a small web console for one operator, on loopback behind a reverse proxy: the day's health, the latest brief's jobs to mark applied, skip or maybe (the same writes as `track`), the tracked jobs, the runs and the rules.
+- **Scoring**: `score --max-duration D` stops cleanly before the next job once `D` has passed, with the stop reason `budget`, which the brief words as a paused day; the next run carries on with the backlog.
+  One scorer runs at a time across processes, through a database lock: a second run says so and records nothing.
+- **Storage**: every collector stops storing once the database passes `LEADHOUND_DB_MAX_BYTES` (default 8 GiB) or free disk falls under `LEADHOUND_DISK_MIN_FREE_PCT` (default 15).
+  Its run ends with the stop reason `disk_budget`, and the brief and the console's dashboard say so in one line; scoring, the brief and the console carry on with what is stored.
+  `leadhound trim` blanks the description text of postings rejected by a gate more than 7 days ago and expired more than 30 days ago, in batches of 5,000 within a 45-minute budget (`--rejected-after`, `--expired-after`, `--batch`, `--max-duration`); every row, verdict and id stays, and a job you acted on or that appeared in a brief is never trimmed.
+  On a server it runs daily as `leadhound-trim.timer`; how to recover from an over-budget database is in "Backups and the storage budget" and "The trim" in `deploy/README.md`.
+- **Console**: `leadhound serve` is a small web console for one operator, on loopback behind a reverse proxy, and every action in it runs the same code as the matching command.
+  - The dashboard: the day's health, funnel, cost, boards and runs, built in the background and served from the last snapshot, so a page never waits for the ranking.
+  - Jobs: the latest brief's jobs to mark applied, skip or maybe (the same writes as `track`), and a page per job (`/jobs/{id}`) with everything needed to apply and its own mark form; the tracked jobs, capped at 500 rows with the total shown; the runs.
+  - Rules: the list, with forms to add a rule and to disable one.
+  - Leads: the summary and the sending state with the pause switch; each batch waiting for approval read in full, with its approve form shown only while the messages still match their hash, and discard; replies with suppress, suppressions, manual items to mark done, mark contacted, and a message to check by hand as sent or not sent.
+    The queue (`/leads/next`) lists leads in drafting order with pin, push back and skip, and the priority profile (`/leads/priorities`) sets that order, with a preview.
+    The console never approves a batch on its own and never drafts a shadow batch.
   It signs in with an email and a bcrypt hash from the environment: `make console-password` writes the hash, and `make console-local` serves it locally in dev mode.
   A device that signed in before can still sign in during a flood of failed attempts, and a new password forgets every device.
   On a server it runs as `leadhound-console.service`; see the Console section of `deploy/README.md`.
@@ -36,11 +50,20 @@ Nothing is written by a model: every draft is a template filled with facts the p
   Only role addresses (the `role_local_parts` list) are stored; an address that looks like a person's is counted and dropped.
   `LEADHOUND_PROBE_CONCURRENCY` and `LEADHOUND_PROBE_RATE` set how many sites run at once and the requests per second across a run.
 - **The daily loop**: `leads sites probe` → `leads contacts` → `leads build` → `leads batch new [--size N]` → read `leads batch show N` → `leads batch approve N --hash H [--skip 3,5]` → `leads send [--max N]` → `leads sync`.
-  `batch show` prints the approve line with the batch's hash, and approval is refused if the messages changed since they were drafted.
-  Contact-form and LinkedIn items are done by hand and closed with `leads done MESSAGE`; `leads mark-contacted DOMAIN [--note TEXT]` records a lead reached some other way.
+  `batch show` prints the approve line with the batch's hash, and approval is refused if the messages changed since they were drafted; the console's Leads page shows and approves the same batches.
+  A new batch is refused while one of its kind waits, and a live batch is sized to what the warm-up ramp can send over the next three business days; `leads batch discard N` returns its leads to new.
+  The ramp starts on a fixed date or, with `caps.start_date: first-send`, on the first real send.
+  Contact-form and LinkedIn items are done by hand and closed with `leads done MESSAGE`; `leads mark-contacted DOMAIN [--note TEXT]` records a lead reached some other way, and `leads resolve MESSAGE sent|not-sent` settles a message whose send is uncertain, after checking the mailbox's Sent folder.
 - **Shadow and live**: without `LEADHOUND_OUTREACH=live`, `leads send` writes each complete message to `<data dir>/outreach-outbox/` and nothing leaves the machine.
-  With `LEADHOUND_OUTREACH=live` and a mailbox (`LEADHOUND_SMTP_ADDR`, `LEADHOUND_IMAP_ADDR`, `LEADHOUND_OUTREACH_USER`, `LEADHOUND_OUTREACH_PASSWORD`), a message is sent only from an approved batch, after the sending domain's DNS check passed today (`leads senders check`) and a reply sync has just succeeded.
+  With `LEADHOUND_OUTREACH=live` and a mailbox (`LEADHOUND_SMTP_ADDR`, `LEADHOUND_IMAP_ADDR`, `LEADHOUND_OUTREACH_USER`, `LEADHOUND_OUTREACH_PASSWORD`), a message is sent only from a batch the operator approved, after the sending domain's DNS check passed today (`leads senders check`) and a reply sync has just succeeded.
+  `leads send pause [--reason TEXT]` and `leads send resume`, or the pause switch in the console, stop and restart sending; the pause is checked before every message.
   `leads sync` reads replies, bounces and opt-outs from the mailbox and suppresses where they say so.
   `leads selftest --to ADDRESS` sends one real message to one of `sender.operator_addresses`.
 - **Suppression**: `leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no]`, `leads suppress list` and `leads suppress check VALUE`; a suppressed address or domain is never drafted or sent to.
+- **Settings and data**: `leads check-config [--agencies FILE]` checks `leads.yaml`, the templates and the agency list without printing any value; `make deploy-data` runs it, then copies `leads.yaml`, `agencies.yaml` and `leads-templates/` to the server with the jobs settings.
+  `leads transfer export DIR` and `leads transfer import DIR` move lead data from one database to another, re-keyed by natural keys so they never collide with the other side's ids; an import can run again safely, it is refused while a live message may be in flight, and both print counts only.
+- **On a server**: five leads timers run the loop (probe and contacts daily, the batch each morning, send hourly in business hours on weekdays, sync every 15 minutes); every deploy installs them, and each stays off until `/etc/leadhound/env` turns it on.
+  `LEADHOUND_LEADS_TIMERS=on` turns on finding (probe and contacts).
+  Sending (batch, send and sync) needs that, `LEADHOUND_LEADS_SEND=on`, `LEADHOUND_OUTREACH=live` and the mailbox settings; even then every batch is read and approved by the operator before anything is sent.
+  The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
 - **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set, then the leads set.
