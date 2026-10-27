@@ -469,6 +469,11 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 		if _, err := conn.Exec(ctx, s.sql, s.args...); err != nil {
 			return fmt.Errorf("seed leads %s: %w", s.name, err)
 		}
+		// Analysed at once, so the steps that read it plan on its real contents, not on the
+		// statistics a truncated table keeps.
+		if err := storetest.AnalyzeStep(ctx, conn, s.name); err != nil {
+			return fmt.Errorf("seed leads %s: %w", s.name, err)
+		}
 	}
 	// The operator's saved profile: 30 rules, scored in SQL for every candidate.
 	if _, err := leadstore.NewQueries(conn).SaveProfile(ctx, scaleProfile()); err != nil {

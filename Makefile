@@ -9,7 +9,7 @@ TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound
 TEST_SCALE_DSN                 ?= postgres://leadhound_app@localhost/leadhound_scale?sslmode=disable
 TEST_SCALE_MIGRATE_DSN         ?= postgres://leadhound_owner@localhost/leadhound_scale?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local mailbox-key mailbox-check-local
+.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local mailbox-key mailbox-check-local
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -70,6 +70,19 @@ REMOTE_KEY :=
 ifneq ($(filter leads_selftest leads_send leads_sync leads_mailboxes_check leads_suppress_review,$(REMOTE_VERB) $(REMOTE_VERB3)),)
 REMOTE_KEY := -p LoadCredential=mailbox-key:/etc/leadhound/mailbox.key
 endif
+# The gate's stamp: the commit the full gate last passed on, written only from a clean tree
+# (bin/ is ignored). deploy skips the gate when the stamp is HEAD and the tree is still clean.
+# "Clean" is git status --porcelain with nothing in it, untracked files included: an
+# untracked .go file is compiled in and an untracked deploy/leadhound-*.service is shipped,
+# so a tree with one is not the commit the stamp names. Read once, when make starts.
+GATE_STAMP ?= bin/gate-passed
+ifneq ($(filter gate deploy,$(MAKECMDGOALS)),)
+GATE_HEAD  := $(shell git rev-parse --verify -q HEAD 2>/dev/null)
+GATE_SHORT := $(shell git rev-parse --short HEAD 2>/dev/null)
+GATE_CLEAN := $(shell s=$$(git status --porcelain 2>/dev/null) && [ -z "$$s" ] && echo yes)
+GATE_SEEN  := $(shell cat '$(GATE_STAMP)' 2>/dev/null)
+GATE_OK    := $(and $(GATE_HEAD),$(GATE_CLEAN),$(filter $(GATE_HEAD),$(GATE_SEEN)),$(if $(filter-out $(GATE_HEAD),$(GATE_SEEN)),,yes))
+endif
 ifneq ($(filter $(ARCH),arm64 amd64),$(ARCH))
 $(error ARCH must be arm64 or amd64, not $(ARCH))
 endif
@@ -111,6 +124,27 @@ test-scale:
 
 ## check: everything a commit must pass
 check: fmt-check vet lint-if-present test privacy-tree
+
+## gate: everything a deploy must pass, in order: check, test-integration, test-scale, vet with the
+## integration and scale tags, the deploy tests; then, only from a clean tree, stamp HEAD in GATE_STAMP
+gate:
+	@rm -f '$(GATE_STAMP)'
+	@$(MAKE) --no-print-directory check
+	@$(MAKE) --no-print-directory test-integration
+	@$(MAKE) --no-print-directory test-scale
+	go vet -tags 'integration scale' ./...
+	go test ./deploy/ -race -count=1
+	@if [ -n '$(GATE_HEAD)' ] && [ '$(GATE_CLEAN)' = yes ] && [ "$$(git rev-parse --verify -q HEAD)" = '$(GATE_HEAD)' ] && \
+		[ -z "$$(git status --porcelain)" ]; then \
+		mkdir -p '$(dir $(GATE_STAMP))' && printf '%s\n' '$(GATE_HEAD)' > '$(GATE_STAMP)' && \
+		echo "gate: passed on $(GATE_SHORT); stamped $(GATE_STAMP)"; \
+	else \
+		echo "gate: passed, but the tree was not clean or HEAD moved (git status --porcelain, untracked files included), so nothing is stamped"; \
+	fi
+
+# gate-skip stands in for gate in deploy when GATE_STAMP already names HEAD on a clean tree.
+gate-skip:
+	@echo "deploy: the gate passed on $(GATE_SHORT); not running it again"
 
 ## db-local: create the roles, their limits, and the dev, test and scale databases on local Postgres (idempotent)
 db-local:
@@ -179,9 +213,10 @@ prepush: privacy-tree
 build-linux:
 	GOOS=linux GOARCH=$(ARCH) CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(LINUX_BINARY) $(CMD)
 
-## deploy: make deploy HOST=<ssh host> [ARCH=arm64|amd64] CONFIRM=1: check, the scale test, build,
-## copy the binary, backup script, role limits and units, migrate as the owner role, enable the timers
-deploy: check test-scale build-linux
+## deploy: make deploy HOST=<ssh host> [ARCH=arm64|amd64] CONFIRM=1: the gate (skipped when it already
+## passed on HEAD and the tree is clean), build, copy the binary, backup script, role limits and units,
+## migrate as the owner role, enable the timers
+deploy: $(if $(GATE_OK),gate-skip,gate) build-linux
 	@stage=$$($(SSH) $(HOST) mktemp -d) && \
 	$(SCP) $(LINUX_BINARY) $(HOST):$$stage/leadhound && \
 	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/sql/limits.sql deploy/leadhound-*.service deploy/leadhound-*.timer deploy/leadhound-*.path $(HOST):$$stage/ && \

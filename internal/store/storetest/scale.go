@@ -86,10 +86,11 @@ var (
 )
 
 // Seeded returns the scale database, migrated (core and leads) and seeded with ScaleJobs
-// jobs. A database whose marker names this seed version and job count is reused as it is;
-// any other is emptied (every table but goose's, as ResetDB) and seeded afresh as the owner,
-// then analysed, and the marker is written last, so a seed that failed part way is redone
-// on the next call. When the database is unavailable it skips, or fails under
+// jobs. A database whose marker names this seed version and job count, and that still holds
+// the seed's last job and brief, is reused as it is; any other is emptied (every table but
+// goose's, as ResetDB) and seeded afresh as the owner, each table analysed as soon as it is
+// filled, and the marker is written last, so a seed that failed part way is redone on the
+// next call. When the database is unavailable it skips, or fails under
 // TEST_DB_REQUIRED=1.
 func Seeded(t testing.TB) ScaleInfo {
 	t.Helper()
@@ -150,6 +151,14 @@ func seedScale(ctx context.Context, conn *pgx.Conn, jobs int) (ScaleInfo, error)
 		return ScaleInfo{}, fmt.Errorf("read marker: %w", err)
 	}
 	info, ok := parseMarker(comment, loc)
+	if ok && info.Jobs == jobs {
+		// The marker is only a comment: a test run that shares this database empties every
+		// table (ResetDB) and leaves it behind. The seed's last job and brief prove the
+		// tables still hold what it names.
+		if ok, err = seededRowsPresent(ctx, conn, jobs); err != nil {
+			return ScaleInfo{}, err
+		}
+	}
 	if !ok || info.Jobs != jobs {
 		now := time.Now().In(loc)
 		info = ScaleInfo{Jobs: jobs, Loc: loc, Day: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)}
@@ -385,6 +394,9 @@ func seed(ctx context.Context, conn *pgx.Conn, info ScaleInfo) error {
 		if _, err := conn.Exec(ctx, s.sql, s.args...); err != nil {
 			return fmt.Errorf("seed %s: %w", s.name, err)
 		}
+		if err := AnalyzeStep(ctx, conn, s.name); err != nil {
+			return fmt.Errorf("seed %s: %w", s.name, err)
+		}
 	}
 	// The explicit ids above leave their sequences behind; a test's own insert must not
 	// collide with them.
@@ -398,6 +410,31 @@ func seed(ctx context.Context, conn *pgx.Conn, info ScaleInfo) error {
 		return fmt.Errorf("seed: analyze: %w", err)
 	}
 	return nil
+}
+
+// AnalyzeStep analyses the table a seed step filled, named by the step name's first word,
+// as soon as the step is done. TRUNCATE keeps a table's planner statistics, so without it the
+// next step that reads the table plans on what the table held before (a few rows a test run
+// left behind on a shared database), and the decision step was seen to run over 40 minutes
+// on such statistics where it takes seconds on fresh ones.
+func AnalyzeStep(ctx context.Context, conn *pgx.Conn, step string) error {
+	table, _, _ := strings.Cut(step, " ")
+	if _, err := conn.Exec(ctx, "ANALYZE "+pgx.Identifier{table}.Sanitize()); err != nil {
+		return fmt.Errorf("analyze %s: %w", table, err)
+	}
+	return nil
+}
+
+// seededRowsPresent reports whether the seed's last job, as the seed shapes it, and its last
+// step's row (yesterday's seeded brief) are both in the database.
+func seededRowsPresent(ctx context.Context, conn *pgx.Conn, jobs int) (bool, error) {
+	var ok bool
+	if err := conn.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM job WHERE id = $1 AND url = 'https://jobs.example/' || source || '/' || id)
+		    AND EXISTS (SELECT 1 FROM brief_log WHERE provider_id = 'seeded')`, int64(jobs)).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check seeded rows: %w", err)
+	}
+	return ok, nil
 }
 
 // clearAndTruncate drops the marker, then empties every table but goose's and KeptTables, as
