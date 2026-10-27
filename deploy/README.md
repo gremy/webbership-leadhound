@@ -253,6 +253,19 @@ To pause sending, use the pause switch on the console's Leads page: the send tim
 To stop everything, remove the two switch lines (or set them to anything but `on`) and run `sudo systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
 A run already in progress finishes; `sudo systemctl stop leadhound-leads-<name>.service` ends it at once.
 
+### Enrichment
+
+After the contact search, the contacts unit runs `leads enrich --max 300`, under `timeout 60m` and the same fetch lock, before `leads build`.
+It takes up to 300 organisations with a lead that were not enriched in the last 30 days, newest lead first.
+It reads phone numbers, a description and links to social profiles from the pages already kept for each one: its homepage and the pages a contact route was read from.
+When none of those is a contact page, it fetches at most two contact links from the homepage, under the contact search's rules: robots.txt on the link and on the final URL, a 2xx answer on the organisation's own domain, public addresses only, and the same rate and budgets.
+A fetched page keeps its body only when it gave a new fact.
+A phone is a fact, never a contact route, so drafting and sending never use it.
+A LinkedIn link is kept only for a company page, and no fact ever holds an email address.
+The run prints one line, `orgs N · phones N · descriptions N · social N · requests N · stop <reason>`, where the counts are new facts and the stop is `none` or `disk_budget`.
+An enrichment cut short (no answer, a breaker stop, a cancel) records nothing, so that organisation is tried again on the next run.
+It needs `LEADHOUND_LIVE=1`, like the contact search; `leads enrich --dry-run --fixtures DIR` reads fixtures and only organisations on reserved names.
+
 ## Mailboxes
 
 A mailbox is one email account the leads are sent from: an address, its login and password, its sending (SMTP) and reading (IMAP) servers, and its DKIM selector.

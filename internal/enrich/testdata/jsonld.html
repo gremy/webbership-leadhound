@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {"@type": "Organization", "name": "Contoso Bakery", "telephone": "+44 20 7946 0234",
+     "contactPoint": {"@type": "ContactPoint", "telephone": ["+44 20 7946 0235", "not a number"]}},
+    {"@type": "Person", "name": "A Baker", "telephone": "+44 20 7946 0999"},
+    {"@type": ["Thing", "Person"], "telephone": "+44 20 7946 0998"}
+  ]
+}
+</script>
+<script type="application/ld+json">
+[{"@type": "LocalBusiness", "telephone": "0044 20 7946 0236"}]
+</script>
+<script type="application/ld+json">{ not json, "telephone": "+44 20 7946 0997" }</script>
+<script>var telephone = "+44 20 7946 0996";</script>
+</head>
+<body><p>Tel: +44 20 7946 0239</p></body>
+</html>

@@ -117,7 +117,7 @@ func Find(ctx context.Context, f Fetcher, robotsFor RobotsFor, org Org, home Pag
 			if out.Pages >= MaxPages || out.Stopped != nil {
 				break
 			}
-			p, ok := fetchPage(ctx, f, robotsFor, org, link, &out)
+			p, ok := FetchPage(ctx, f, robotsFor, org, link, &out)
 			if ok {
 				read(p)
 			}
@@ -137,10 +137,13 @@ func Find(ctx context.Context, f Fetcher, robotsFor RobotsFor, org Org, home Pag
 	return out, ev
 }
 
-// fetchPage fetches one contact link when robots.txt allows it, and returns it only when
+// FetchPage fetches one contact link when robots.txt allows it, and returns it only when
 // the answer is a 2xx whose final URL stays on the org's registrable domain and robots.txt
-// also allows.
-func fetchPage(ctx context.Context, f Fetcher, robotsFor RobotsFor, org Org, link string, out *Routes) (Page, bool) {
+// also allows. It is Find's own page step, for a caller that follows ContactLinks itself:
+// out counts what happened (RobotsSkipped, FetchFailed, OffDomain), and a context or
+// breaker stop sets out.Stopped and clears out.Complete, as a transport error clears
+// out.Complete; start out with Complete true. Only org.Domain and org.UserAgent are read.
+func FetchPage(ctx context.Context, f Fetcher, robotsFor RobotsFor, org Org, link string, out *Routes) (Page, bool) {
 	ua := org.UserAgent
 	u, err := url.Parse(link)
 	if err != nil {

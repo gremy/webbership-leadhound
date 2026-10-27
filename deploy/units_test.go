@@ -138,6 +138,7 @@ var schedule = map[string]struct {
 		true,
 		[]string{
 			"-" + leadsFetchLock + "/usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300",
+			"-" + leadsFetchLock + "/usr/bin/timeout --kill-after=5m 60m /opt/leadhound/bin/leadhound leads enrich --max 300",
 			"/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build",
 		},
 	},
