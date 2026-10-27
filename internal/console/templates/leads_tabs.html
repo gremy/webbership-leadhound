@@ -1,0 +1,12 @@
+{{define "leads_tabs"}}
+<nav class="filters leads-tabs" aria-label="Leads">
+  <ul>
+    <li><a href="/leads"{{if eq .Tab "list"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>List</a></li>
+    <li><a href="/leads/outreach"{{if eq .Tab "outreach"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Outreach</a></li>
+    <li><a href="/leads/priorities"{{if eq .Tab "settings"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Settings</a></li>
+  </ul>
+</nav>
+{{end}}
+
+{{/* lead_channels is how a lead of the list or the lead page can be reached, in words. */}}
+{{define "lead_channels"}}{{if or .HasEmail .HasForm .HasPhone}}{{if .HasEmail}}email{{end}}{{if and .HasEmail (or .HasForm .HasPhone)}} · {{end}}{{if .HasForm}}form{{end}}{{if and .HasForm .HasPhone}} · {{end}}{{if .HasPhone}}phone{{end}}{{else}}no way to reach yet{{end}}{{end}}

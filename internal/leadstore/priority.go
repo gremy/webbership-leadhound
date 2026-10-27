@@ -25,6 +25,24 @@ const (
 	PriorityClear = "clear"
 )
 
+// Reason is one rule that gave a lead points under a profile: Kind names the rule
+// (ReasonKind and the others), Label its subject (the lead kind, "7", "GB", "email", the
+// band bound), Points what it gave.
+type Reason struct {
+	Kind, Label string
+	Points      int
+}
+
+// The rules a Reason can name, in the order ScoreReasons emits them.
+const (
+	ReasonKind         = "kind"
+	ReasonMajor        = "major"
+	ReasonExactVersion = "exact_version"
+	ReasonCountry      = "country"
+	ReasonChannel      = "channel"
+	ReasonRankBand     = "rank_band"
+)
+
 // scoreSQL is a lead's score under the profile pf.pf (jsonb), over CandidateLeads' aliases:
 // l lead, o org, p site_probe, s site. Score is its Go twin; TestPriorityDrift holds the two
 // equal.
@@ -43,25 +61,56 @@ const scoreSQL = `coalesce((pf.pf->'kinds'->>l.kind)::int, 0)
 func Score(p leadconfig.Profile, c Candidate) (int, []string) {
 	var score int
 	var why []string
-	add := func(label string, points int) {
-		if points != 0 {
-			score += points
-			why = append(why, fmt.Sprintf("%s %+d", label, points))
-		}
-	}
-	add(strings.ReplaceAll(c.Kind, "_", " "), p.Kinds[c.Kind])
-	add("Drupal "+strconv.Itoa(c.Major), p.Majors[c.Major])
-	if c.ExactVersion != "" {
-		add("exact version", p.ExactVersion)
-	}
-	if c.Country != "" {
-		add(c.Country, p.Countries[c.Country])
-	}
-	add(c.Channel, p.Channels[c.Channel])
-	if band, ok := rankBand(p.RankBands, c.ListRank); ok {
-		add("rank under "+rankLabel(band.Under), band.Points)
+	for _, r := range ScoreReasons(p, c) {
+		score += r.Points
+		why = append(why, fmt.Sprintf("%s %+d", r.shortLabel(), r.Points))
 	}
 	return score, why
+}
+
+// ScoreReasons is every rule that gave c points under p, in Score's order, with its raw
+// subject as Label: the lead kind ("agency_partner"), the major ("7"), the exact version
+// ("7.98"), the country ("GB"), the channel ("email") and the band's bound ("10000"). A rule
+// that gave 0 points is left out. Score is the sum of their Points.
+func ScoreReasons(p leadconfig.Profile, c Candidate) []Reason {
+	var out []Reason
+	add := func(kind, label string, points int) {
+		if points != 0 {
+			out = append(out, Reason{Kind: kind, Label: label, Points: points})
+		}
+	}
+	add(ReasonKind, c.Kind, p.Kinds[c.Kind])
+	add(ReasonMajor, strconv.Itoa(c.Major), p.Majors[c.Major])
+	if c.ExactVersion != "" {
+		add(ReasonExactVersion, c.ExactVersion, p.ExactVersion)
+	}
+	if c.Country != "" {
+		add(ReasonCountry, c.Country, p.Countries[c.Country])
+	}
+	add(ReasonChannel, c.Channel, p.Channels[c.Channel])
+	if band, ok := rankBand(p.RankBands, c.ListRank); ok {
+		add(ReasonRankBand, strconv.Itoa(band.Under), band.Points)
+	}
+	return out
+}
+
+// shortLabel is r as Score words it: "agency partner", "Drupal 7", "exact version", "GB",
+// "email", "rank under 10k".
+func (r Reason) shortLabel() string {
+	switch r.Kind {
+	case ReasonKind:
+		return strings.ReplaceAll(r.Label, "_", " ")
+	case ReasonMajor:
+		return "Drupal " + r.Label
+	case ReasonExactVersion:
+		return "exact version"
+	case ReasonRankBand:
+		if n, err := strconv.Atoi(r.Label); err == nil {
+			return "rank under " + rankLabel(n)
+		}
+		return "rank under " + r.Label
+	}
+	return r.Label
 }
 
 // Offered reports whether p lets c be offered at all: its country is not excluded.

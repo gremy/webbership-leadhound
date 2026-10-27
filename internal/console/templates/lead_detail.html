@@ -1,0 +1,140 @@
+{{define "content"}}
+{{$v := .Data}}{{$d := $v.Data}}
+<div class="page-head">
+  <h1>{{or $d.Name $d.Domain}}</h1>
+  <p><a href="/leads">Back to the list</a></p>
+</div>
+{{template "leads_tabs" (leadsTab "list" false)}}
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+
+<article class="record lead-record" id="lead-{{$d.LeadID}}">
+  {{/* CP3: the star button goes here, next to the lead's facts. */}}
+  <dl class="fields">
+    <div><dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd></div>
+    <div><dt>Domain</dt><dd>{{$d.Domain}}</dd></div>
+    {{with $d.Country}}<div><dt>Country</dt><dd>{{.}}</dd></div>{{end}}
+    <div><dt>Kind</dt><dd>{{$d.Kind}}</dd></div>
+    <div><dt>State</dt><dd>{{$d.State}}</dd></div>
+    <div><dt>Relevance</dt><dd>{{or $d.Relevance "not rated yet"}}</dd></div>
+    <div><dt>Reach by</dt><dd>{{template "lead_channels" $d}}</dd></div>
+    <div><dt>Outreach order</dt><dd>{{with $d.Position}}number {{.}}{{else}}not in the order{{end}}</dd></div>
+    <div><dt>Starred</dt><dd>{{if $d.Starred}}yes{{else}}no{{end}}</dd></div>
+    {{if $d.SmallSite}}<div><dt>Size</dt><dd><span class="tag">small site</span></dd></div>{{end}}
+  </dl>
+
+  <section>
+    <h2>Finding</h2>
+    {{with $d.Finding}}<p>{{.}}</p>{{else}}<p class="muted">No finding on file.</p>{{end}}
+    {{if $d.Signals}}
+    <ul class="item-list">
+      {{range $d.Signals}}
+      <li>
+        <span class="item-head">{{.Name}}{{with .Value}}: {{.}}{{end}}</span>
+        {{with .FetchURL}}<span class="item-meta">Fetched {{template "lead_link" .}}</span>{{end}}
+        {{if and .FinalURL (ne .FinalURL .FetchURL)}}<span class="item-meta">Ended at {{template "lead_link" .FinalURL}}</span>{{end}}
+        {{if or .Status .FetchedAt}}<span class="item-meta">{{.Status}}{{if and .Status .FetchedAt}} · {{end}}{{with .FetchedAt}}{{when .}}{{end}}</span>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{end}}
+  </section>
+
+  <section>
+    <h2>Ways to reach them</h2>
+    {{if $d.Routes}}
+    <ul class="item-list">
+      {{range $d.Routes}}
+      <li>
+        <span class="item-head">{{.Kind}}: {{template "lead_link" .Value}}</span>
+        {{with .Note}}<span class="item-meta">{{.}}</span>{{end}}
+        {{if or .PageURL .FoundAt}}<span class="item-meta">{{with .PageURL}}Found on {{template "lead_link" .}}{{end}}{{if and .PageURL .FoundAt}} · {{end}}{{with .FoundAt}}{{when .}}{{end}}</span>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="muted">No email address or contact form found yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>From their site</h2>
+    <h3>Phone numbers</h3>
+    {{if $d.Phones}}<ul class="item-list">{{range $d.Phones}}{{template "lead_fact" .}}{{end}}</ul>{{else}}<p class="muted">None found.</p>{{end}}
+    <h3>Description</h3>
+    {{if $d.Descriptions}}
+    {{range $d.Descriptions}}
+    <div class="description">{{.Value}}</div>
+    {{if or .PageURL .FoundAt}}<p class="hint">{{with .PageURL}}From {{template "lead_link" .}}{{end}}{{if and .PageURL .FoundAt}} · {{end}}{{with .FoundAt}}{{when .}}{{end}}</p>{{end}}
+    {{end}}
+    {{else}}<p class="muted">None found.</p>{{end}}
+    <h3>Social links</h3>
+    {{if $d.Social}}<ul class="item-list">{{range $d.Social}}{{template "lead_fact" .}}{{end}}</ul>
+    <p class="hint">Shown as found on their pages; LeadHound never opens them.</p>
+    {{else}}<p class="muted">None found.</p>{{end}}
+  </section>
+
+  {{with $d.Agency}}
+  <section>
+    <h2>Agency page</h2>
+    <dl class="fields">
+      <div><dt>Page</dt><dd>{{template "lead_link" .URL}}</dd></div>
+      {{with .Phrase}}<div><dt>Says</dt><dd>“{{.}}”</dd></div>{{end}}
+      {{if and .FetchURL (ne .FetchURL .URL)}}<div><dt>Fetched</dt><dd>{{template "lead_link" .FetchURL}}</dd></div>{{end}}
+    </dl>
+  </section>
+  {{end}}
+
+  <section>
+    <h2>The site</h2>
+    <dl class="fields">
+      <div><dt>List rank</dt><dd>{{or $d.ListRank "unknown"}}</dd></div>
+      {{with $d.Origin}}<div><dt>Found through</dt><dd>{{.}}</dd></div>{{end}}
+      {{with $d.CountryPolicy}}<div><dt>Country</dt><dd>{{.}}</dd></div>{{end}}
+    </dl>
+  </section>
+
+  <section>
+    <h2>History</h2>
+    {{if $d.Events}}
+    <ul class="item-list">{{range $d.Events}}<li><span class="item-head">{{.State}}</span><span class="item-meta">{{when .At}}{{with .Actor}} · {{.}}{{end}}{{with .Reason}} · {{.}}{{end}}</span></li>{{end}}</ul>
+    {{else}}<p class="muted">No changes yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Place in the queue</h2>
+    {{with $d.Priority}}<p>{{.Words}}</p><p class="hint">{{when .At}}{{with .Actor}} · {{.}}{{end}}</p>{{else}}<p class="muted">Not steered: it takes its place by score.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Messages</h2>
+    {{if $d.Messages}}
+    {{range $d.Messages}}
+    <details class="lead-message">
+      <summary>{{.Label}}{{with .Channel}} · {{.}}{{end}}{{with .State}} · {{.}}{{end}}</summary>
+      <p class="message-head">In <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Due}} · due {{when .}}{{end}}{{with .Sent}} · sent {{when .}}{{end}}</p>
+      {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
+      <div class="message-body">{{.Body}}</div>
+    </details>
+    {{end}}
+    {{else}}<p class="muted">Nothing drafted for this lead yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Relevance</h2>
+    {{if $d.RelevanceHistory}}
+    <ul class="item-list">{{range $d.RelevanceHistory}}<li><span class="item-head">{{.Words}}</span><span class="item-meta">{{when .At}}</span></li>{{end}}</ul>
+    {{else}}<p class="muted">Not rated yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Why it ranks here</h2>
+    {{if $d.Why}}<ul class="evidence">{{range $d.Why}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">No reasons on file.</p>{{end}}
+  </section>
+</article>
+{{end}}
+
+{{/* lead_link shows a URL: a link only when it is http or https, else plain text. */}}
+{{define "lead_link"}}{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow">{{.}}</a>{{else}}{{.}}{{end}}{{end}}
+
+{{define "lead_fact"}}<li>
+  <span class="item-head">{{with .Label}}{{.}}: {{end}}{{template "lead_link" .Value}}</span>
+  {{if or .PageURL .FoundAt}}<span class="item-meta">{{with .PageURL}}On {{template "lead_link" .}}{{end}}{{if and .PageURL .FoundAt}} · {{end}}{{with .FoundAt}}{{when .}}{{end}}</span>{{end}}
+</li>{{end}}

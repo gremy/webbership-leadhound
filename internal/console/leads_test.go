@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -141,19 +142,19 @@ func leadsPosts() []leadsRoute {
 	return []leadsRoute{
 		{"/leads/batches/3/approve", url.Values{"hash": {"0123456789ab"}, "skip": {"2", "1"}}, "/leads/batches/3",
 			LeadAction{Do: LeadApprove, ID: 3, Hash: "0123456789ab", Skip: []int{1, 2}}},
-		{"/leads/batches/3/discard", url.Values{}, "/leads", LeadAction{Do: LeadDiscard, ID: 3}},
-		{"/leads/batches/new", url.Values{}, "/leads", LeadAction{Do: LeadNewBatch}},
-		{"/leads/messages/9/resolve", url.Values{"sent": {"not-sent"}}, "/leads", LeadAction{Do: LeadResolve, ID: 9}},
-		{"/leads/messages/9/resolve", url.Values{"sent": {"sent"}}, "/leads", LeadAction{Do: LeadResolve, ID: 9, Sent: true}},
-		{"/leads/items/9/done", url.Values{}, "/leads", LeadAction{Do: LeadDone, ID: 9}},
-		{"/leads/suppress", url.Values{"kind": {"domain"}, "value": {" northwind.example "}, "reason": {"manual"}}, "/leads",
+		{"/leads/batches/3/discard", url.Values{}, "/leads/outreach", LeadAction{Do: LeadDiscard, ID: 3}},
+		{"/leads/batches/new", url.Values{}, "/leads/outreach", LeadAction{Do: LeadNewBatch}},
+		{"/leads/messages/9/resolve", url.Values{"sent": {"not-sent"}}, "/leads/outreach", LeadAction{Do: LeadResolve, ID: 9}},
+		{"/leads/messages/9/resolve", url.Values{"sent": {"sent"}}, "/leads/outreach", LeadAction{Do: LeadResolve, ID: 9, Sent: true}},
+		{"/leads/items/9/done", url.Values{}, "/leads/outreach", LeadAction{Do: LeadDone, ID: 9}},
+		{"/leads/suppress", url.Values{"kind": {"domain"}, "value": {" northwind.example "}, "reason": {"manual"}}, "/leads/outreach",
 			LeadAction{Do: LeadSuppress, Kind: "domain", Value: "northwind.example", Reason: "manual"}},
-		{"/leads/suppressions/lift", url.Values{"id": {" 2 "}, "domain": {" domain.example "}, "reason": {" quoted our line "}}, "/leads",
+		{"/leads/suppressions/lift", url.Values{"id": {" 2 "}, "domain": {" domain.example "}, "reason": {" quoted our line "}}, "/leads/outreach",
 			LeadAction{Do: LeadLift, ID: 2, Value: "domain.example", Reason: "quoted our line"}},
-		{"/leads/contacted", url.Values{"domain": {"northwind.example"}, "note": {"called"}}, "/leads",
+		{"/leads/contacted", url.Values{"domain": {"northwind.example"}, "note": {"called"}}, "/leads/outreach",
 			LeadAction{Do: LeadContacted, Value: "northwind.example", Note: "called"}},
-		{"/leads/sending", url.Values{"do": {"pause"}, "reason": {"holiday"}}, "/leads", LeadAction{Do: LeadPause, Reason: "holiday"}},
-		{"/leads/sending", url.Values{"do": {"resume"}}, "/leads", LeadAction{Do: LeadResume}},
+		{"/leads/sending", url.Values{"do": {"pause"}, "reason": {"holiday"}}, "/leads/outreach", LeadAction{Do: LeadPause, Reason: "holiday"}},
+		{"/leads/sending", url.Values{"do": {"resume"}}, "/leads/outreach", LeadAction{Do: LeadResume}},
 		{"/leads/next/5/pin", url.Values{}, "/leads/next", LeadAction{Do: LeadPin, ID: 5}},
 		{"/leads/next/5/defer", url.Values{"until": {"2026-11-07"}}, "/leads/next", LeadAction{Do: LeadDefer, ID: 5, Until: "2026-11-07"}},
 		{"/leads/next/5/skip", url.Values{}, "/leads/next", LeadAction{Do: LeadSkip, ID: 5}},
@@ -281,7 +282,7 @@ func TestLeadsNotSetUp(t *testing.T) {
 	b.dash.Leads = nil
 	h := newHarness(t, b, false)
 	c := h.session(t)
-	for _, p := range []string{"/leads", "/leads/next", "/leads/priorities", "/leads/batches/3"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/priorities", "/leads/batches/3", "/leads/5"} {
 		w := h.do(get(p, c))
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), leadsNotSetUp) {
 			t.Errorf("%s: %d %s", p, w.Code, w.Body.String())
@@ -298,7 +299,7 @@ func TestLeadsNotSetUp(t *testing.T) {
 func TestLeadsNotFound(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)
-	for _, p := range []string{"/leads/batches/99", "/jobs/99"} {
+	for _, p := range []string{"/leads/batches/99", "/leads/99", "/jobs/99"} {
 		if w := h.do(get(p, c)); w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d", p, w.Code)
 		}
@@ -417,6 +418,11 @@ func TestNoLeadsWriteOnGet(t *testing.T) {
 			t.Errorf("a GET called %s %d times", name, n)
 		}
 	}
+	for _, name := range []string{"LeadList", "LeadDetail", "Leads"} {
+		if h.b.n(name) == 0 {
+			t.Errorf("the sweep never reached %s", name)
+		}
+	}
 }
 
 // TestJobPage: one article with every labelled field Claude in Chrome reads, the mark
@@ -521,10 +527,9 @@ func TestLeadsPages(t *testing.T) {
 	h := newHarness(t, richBackend("northwind.example"), false)
 	c := h.session(t)
 	pages := map[string][]string{
-		"/leads": {"Sending is on.", "2 of 4", "DMARC <span class=\"bad\">missing</span>", `href="/leads/batches/3"`,
+		"/leads/outreach": {"Sending is on.", "2 of 4", "DMARC <span class=\"bad\">missing</span>", `href="/leads/batches/3"`,
 			`action="/leads/batches/new"`, "Make the next batch now", `action="/leads/messages/11/resolve"`, `action="/leads/items/9/done"`,
 			`name="value" value="northwind.example"`, "Pause sending", `action="/leads/contacted"`, "j***@northwind.example"},
-		"/leads/next":       {"Score 55: northwind.example · GB &#43;20", `action="/leads/next/5/pin"`, `value="2026-11-07"`, `action="/leads/next/5/skip"`},
 		"/leads/priorities": {`name="kind.unsupported" value="20"`, "The defaults from the leads settings file.", "The top 20 now"},
 		"/leads/batches/3":  {"1. northwind.example", "To: northwind.example", "Subject: northwind.example", "Finding: northwind.example"},
 	}
@@ -543,10 +548,10 @@ func TestLeadsPages(t *testing.T) {
 	b.leads.Sending.Paused, b.leads.Sending.PausedAt, b.leads.Sending.PauseReason = true, testSent, "holiday"
 	b.leads.Sending.Stopped = ""
 	ph := newHarness(t, b, false)
-	body := ph.do(get("/leads", ph.session(t))).Body.String()
+	body := ph.do(get("/leads/outreach", ph.session(t))).Body.String()
 	for _, want := range []string{"Sending is paused (since Sat 24 Oct 04:50): holiday.", "Resume sending"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("paused /leads lacks %q", want)
+			t.Errorf("paused /leads/outreach lacks %q", want)
 		}
 	}
 	if strings.Contains(body, "Pause sending") {
@@ -554,24 +559,49 @@ func TestLeadsPages(t *testing.T) {
 	}
 	b.leads = LeadsPage{}
 	eh := newHarness(t, b, false)
-	body = eh.do(get("/leads", eh.session(t))).Body.String()
+	body = eh.do(get("/leads/outreach", eh.session(t))).Body.String()
 	for _, want := range []string{"Sending isn't set up on this server yet.", "No batch waits for approval.", "No replies since yesterday.",
 		"Nothing to check.", "None waiting.", "No suppressions.", "The sender's records have not been checked yet."} {
 		if !strings.Contains(body, want) {
-			t.Errorf("empty /leads lacks %q", want)
+			t.Errorf("empty /leads/outreach lacks %q", want)
+		}
+	}
+
+	// The queue's page is shown now only with a refusal from one of its POSTs.
+	b = richBackend("northwind.example")
+	b.leadErr = fmt.Errorf("%w: no", ErrUserFixable)
+	qh := newHarness(t, b, false)
+	body = qh.do(post("/leads/next/5/pin", url.Values{}, qh.session(t))).Body.String()
+	for _, want := range []string{"Score 55: northwind.example · GB &#43;20", `action="/leads/next/5/pin"`, `value="2026-11-07"`, `action="/leads/next/5/skip"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the queue lacks %q", want)
 		}
 	}
 }
 
+// TestLeadsEscaping: every leads page escapes what the backend gives it, a hostile site
+// name and description included, and a javascript: link is never a link.
 func TestLeadsEscaping(t *testing.T) {
 	const evil = "<script>alert(1)</script>"
-	h := newHarness(t, richBackend(evil), false)
+	const jsLink = "javascript:alert(1)"
+	b := richBackend(evil)
+	b.detail.Social = append(b.detail.Social, LeadFact{Label: evil, Value: jsLink, PageURL: jsLink})
+	b.detail.Signals[0].FetchURL = jsLink
+	h := newHarness(t, b, false)
 	c := h.session(t)
-	for _, p := range []string{"/leads", "/leads/next", "/leads/priorities", "/leads/batches/3", "/jobs/42"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/5", "/leads/priorities", "/leads/batches/3", "/jobs/42"} {
 		body := h.do(get(p, c)).Body.String()
 		if strings.Contains(body, "<script>alert") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 			t.Errorf("%s does not escape backend text", p)
 		}
+	}
+	body := h.do(get("/leads/5", c)).Body.String()
+	if strings.Contains(body, `href="javascript`) || strings.Contains(body, "ZgotmplZ") || !strings.Contains(body, jsLink) {
+		t.Errorf("a javascript: URL is a link, or is not shown: %s", body)
+	}
+	b.leadErr = fmt.Errorf("%w: no", ErrUserFixable)
+	if body := h.do(post("/leads/next/5/pin", url.Values{}, c)).Body.String(); strings.Contains(body, "<script>alert") {
+		t.Error("the queue does not escape backend text")
 	}
 }
 
@@ -584,7 +614,7 @@ func TestLiftSuppression(t *testing.T) {
 
 	b := richBackend("x")
 	h := newHarness(t, b, false)
-	if w := h.do(post("/leads/suppressions/lift", form)); w.Code == http.StatusSeeOther && w.Header().Get("Location") == "/leads" {
+	if w := h.do(post("/leads/suppressions/lift", form)); w.Code == http.StatusSeeOther && w.Header().Get("Location") == "/leads/outreach" {
 		t.Errorf("a lift without a session went through")
 	}
 	c := h.session(t)
@@ -608,14 +638,14 @@ func TestLiftSuppression(t *testing.T) {
 	const flash = "Lifted suppression 2: address e***@domain.example (opt_out, from mailbox:1:INBOX:3). It may be written to again; lead states are unchanged."
 	b.leadOut = LeadOutcome{Message: flash}
 	w = h.do(post("/leads/suppressions/lift", url.Values{"id": {"2"}, "domain": {"  " + domain + " "}, "reason": {" " + reason + "  "}}, c))
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads" {
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads/outreach" {
 		t.Fatalf("lift: %d to %q", w.Code, w.Header().Get("Location"))
 	}
 	want := LeadAction{Do: "lift", ID: 2, Value: domain, Reason: reason}
 	if !sameAction(b.lastLead, want) {
 		t.Errorf("asked %+v, want %+v", b.lastLead, want)
 	}
-	page := h.do(get("/leads", c, cookieNamed(w, "__Host-lh_flash"))).Body.String()
+	page := h.do(get("/leads/outreach", c, cookieNamed(w, "__Host-lh_flash"))).Body.String()
 	if !strings.Contains(page, template.HTMLEscapeString(flash)) {
 		t.Errorf("the leads page does not show the lift's outcome: %s", page)
 	}
@@ -633,7 +663,7 @@ func TestLiftSuppression(t *testing.T) {
 // ones in their own section, the lift form, and the hint that a lift is kept.
 func TestSuppressionsCard(t *testing.T) {
 	h := newHarness(t, richBackend("domain.example"), false)
-	body := h.do(get("/leads", h.session(t))).Body.String()
+	body := h.do(get("/leads/outreach", h.session(t))).Body.String()
 	for _, want := range []string{
 		"#2 address j***@domain.example · opt_out · mailbox:1:INBOX:3 · Saturday 24 October",
 		"1 suppression, 3 more not shown",
@@ -647,7 +677,7 @@ func TestSuppressionsCard(t *testing.T) {
 		"Lift one only when it was recorded by mistake: the lift is kept with its reason, and a new opt-out suppresses again.",
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("/leads lacks %q", want)
+			t.Errorf("/leads/outreach lacks %q", want)
 		}
 	}
 	if strings.Contains(body, "never lifted") {
@@ -657,7 +687,353 @@ func TestSuppressionsCard(t *testing.T) {
 	b := richBackend("domain.example")
 	b.leads.Suppressions.Lifted = nil
 	eh := newHarness(t, b, false)
-	if body := eh.do(get("/leads", eh.session(t))).Body.String(); strings.Contains(body, "Lifted (") {
+	if body := eh.do(get("/leads/outreach", eh.session(t))).Body.String(); strings.Contains(body, "Lifted (") {
 		t.Error("an empty Lifted section is shown")
+	}
+}
+
+func (f *fakeBackend) LeadList(_ context.Context, q LeadListQuery) (LeadListPage, error) {
+	f.count("LeadList")
+	f.mu.Lock()
+	f.listQ = q
+	f.mu.Unlock()
+	p := f.list
+	p.Filter = q // the backend echoes the filter it took
+	return p, f.leadsRead()
+}
+
+func (f *fakeBackend) LeadDetail(_ context.Context, id int64) (LeadDetailPage, error) {
+	f.count("LeadDetail")
+	if err := f.leadsRead(); err != nil {
+		return LeadDetailPage{}, err
+	}
+	if id != f.detail.LeadID {
+		return LeadDetailPage{}, ErrNotFound
+	}
+	return f.detail, nil
+}
+
+func richLeadList(text string) LeadListPage {
+	return LeadListPage{
+		Rows: []LeadListRow{{LeadID: 5, OrgID: 2, Name: text, Domain: text, Country: "GB", Kind: text, Finding: text,
+			Relevance: text, Position: "3", State: "new", HasEmail: true, HasPhone: true, Starred: true, SmallSite: true}},
+		Total: 120, TotalLeads: 130, Page: 2, PerPage: 50,
+		Options: LeadFilterOptions{
+			Kinds:     []FilterOption{{"d10", "Drupal 10"}, {"unsupported", text}},
+			Countries: []FilterOption{{"GB", "United Kingdom"}, {"DE", "Germany"}},
+			Channels:  []FilterOption{{"email", "Email"}, {"form", "Contact form"}},
+			Statuses:  []FilterOption{{"open", "Open"}, {"contacted", "Contacted"}, {"all", "All"}},
+			Sorts:     []FilterOption{{"relevance", "Relevance"}, {"newest", "Newest"}, {"order", "Outreach order"}},
+		},
+		Notes: []string{text},
+	}
+}
+
+func richLeadDetail(text string) LeadDetailPage {
+	at := testSent
+	return LeadDetailPage{
+		LeadListRow: LeadListRow{LeadID: 5, OrgID: 2, Name: text, Domain: text, Country: "GB", Kind: text, Finding: text,
+			Relevance: text, Position: "3", State: "new", HasEmail: true, HasForm: true},
+		Signals: []LeadSignal{{Name: "generator", Value: text, FetchURL: "https://northwind.example/",
+			FinalURL: "https://www.northwind.example/", Status: "200 OK", FetchedAt: &at}},
+		Routes: []LeadRoute{{Kind: "email", Value: "info@northwind.example", Note: "mail server found",
+			PageURL: "https://northwind.example/contact", FoundAt: &at}},
+		Phones:       []LeadFact{{Value: "+44 20 7946 0000", PageURL: "https://northwind.example/contact", FoundAt: &at}},
+		Descriptions: []LeadFact{{Value: text, PageURL: "https://northwind.example/"}},
+		Social:       []LeadFact{{Label: "LinkedIn", Value: "https://social.example/northwind", PageURL: "https://northwind.example/"}},
+		Agency:       &LeadAgency{URL: "https://agency.example/drupal", Phrase: text, FetchURL: "https://agency.example/drupal"},
+		ListRank:     "12,345", Origin: text, CountryPolicy: text,
+		Events:   []LeadEvent{{State: "new", Reason: text, Actor: "finder", At: testSent}},
+		Priority: &LeadPriority{Words: text, Actor: "operator", At: testSent},
+		Messages: []LeadDetailMessage{{BatchID: 3, Label: "email 1 of 3", Channel: "email", State: "draft", Subject: text,
+			Body: text + "\n\nBest", Due: &at}},
+		RelevanceHistory: []LeadRelevance{{Words: text, At: testSent}},
+		Why:              []string{text, "Runs Drupal 10: +30"},
+	}
+}
+
+// TestLeadListPage: the list shows each lead as a card at narrow widths and a table row at
+// wide ones, under the Leads sub-nav, with its pager; and the two empty states.
+func TestLeadListPage(t *testing.T) {
+	h := newHarness(t, richBackend("Northwind Trading"), false)
+	body := h.do(get("/leads", h.session(t))).Body.String()
+	for _, want := range []string{
+		`<a href="/leads" aria-current="page">Leads</a>`,
+		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`, `<a href="/leads/priorities">Settings</a>`,
+		`<form method="get" action="/leads" class="lead-filters">`,
+		`<ul class="item-list narrow-only">`, `<div class="table-wrap wide-only">`,
+		`<li id="lead-n-5">`, `<tr id="lead-w-5">`, `<a href="/leads/5">Northwind Trading</a>`,
+		"email · phone", "number 3 in the outreach order", `<td class="num">3</td>`,
+		`<span class="tag">starred</span>`, `<span class="tag">small site</span>`,
+		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
+		`<p class="hint">Northwind Trading</p>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/leads lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "No leads") || strings.Contains(body, `method="post"`) && strings.Contains(body, "/star") {
+		t.Error("a list with leads shows an empty state, or a star button before CP3")
+	}
+
+	b := richBackend("x")
+	b.list = LeadListPage{}
+	eh := newHarness(t, b, false)
+	body = eh.do(get("/leads", eh.session(t))).Body.String()
+	if !strings.Contains(body, "No leads yet. Finding builds them: on the server it is off until <code>LEADHOUND_LEADS_TIMERS=on</code>.") ||
+		strings.Contains(body, "No leads match these filters.") || strings.Contains(body, "<table") {
+		t.Errorf("no leads at all: %s", body)
+	}
+	b.list = LeadListPage{TotalLeads: 4, Page: 1, PerPage: 50}
+	body = eh.do(get("/leads?kind=d10", eh.session(t))).Body.String()
+	if !strings.Contains(body, "No leads match these filters.") || strings.Contains(body, "No leads yet.") || strings.Contains(body, "<table") {
+		t.Errorf("no leads match: %s", body)
+	}
+
+	// The first page has no previous page, the last no next page.
+	b.list = richLeadList("x")
+	b.list.Page = 1
+	if body := eh.do(get("/leads", eh.session(t))).Body.String(); strings.Contains(body, `rel="prev"`) || !strings.Contains(body, `rel="next"`) {
+		t.Error("the first page's pager")
+	}
+	b.list.Page = 3
+	if body := eh.do(get("/leads?page=3", eh.session(t))).Body.String(); !strings.Contains(body, `rel="prev"`) || strings.Contains(body, `rel="next"`) {
+		t.Error("the last page's pager")
+	}
+}
+
+// TestLeadListFiltersEchoed: the query reaches the backend trimmed and without empty
+// values, the form shows the filter the backend took, and the pager keeps it.
+func TestLeadListFiltersEchoed(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	target := "/leads?kind=d10&kind=+unsupported+&kind=&country=GB&channel=email&starred=yes&has_phone=1" +
+		"&min_relevance=+40&status=all&sort=newest&page=2"
+	body := h.do(get(target, h.session(t))).Body.String()
+	want := LeadListQuery{Kinds: []string{"d10", "unsupported"}, Countries: []string{"GB"}, Channels: []string{"email"},
+		Starred: "yes", HasPhone: "1", MinRelevance: "40", Status: "all", Sort: "newest", Page: "2"}
+	if fmt.Sprint(b.listQ) != fmt.Sprint(want) {
+		t.Errorf("asked %+v, want %+v", b.listQ, want)
+	}
+	for _, w := range []string{
+		`name="kind" value="d10" checked`, `name="kind" value="unsupported" checked`,
+		`name="country" value="GB" checked`, `name="country" value="DE"> Germany`,
+		`name="channel" value="email" checked`, `name="channel" value="form"> Contact form`,
+		`name="has_phone" value="1" checked`, `<option value="yes" selected>Starred</option>`,
+		`name="min_relevance" type="number" min="0" max="100" step="1" inputmode="numeric" value="40"`,
+		`<option value="all" selected>All</option>`, `<option value="newest" selected>Newest</option>`,
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("the form lacks %q", w)
+		}
+	}
+	next := leadListURL(want, 3)
+	prev := leadListURL(want, 1)
+	if !strings.Contains(next, "kind=d10&kind=unsupported") || !strings.Contains(next, "page=3") || strings.Contains(prev, "page=") {
+		t.Errorf("pager URLs %q %q", next, prev)
+	}
+	for _, u := range []string{next, prev} {
+		if !strings.Contains(body, `href="`+strings.ReplaceAll(u, "&", "&amp;")+`"`) {
+			t.Errorf("the pager lacks %q", u)
+		}
+	}
+	if got := leadListURL(LeadListQuery{}, 1); got != "/leads" {
+		t.Errorf("the plain list is %q", got)
+	}
+
+	many := url.Values{}
+	for i := range maxFilterValues + 10 {
+		many.Add("country", fmt.Sprint("C", i))
+	}
+	h.do(get("/leads?"+many.Encode(), h.session(t)))
+	if len(b.listQ.Countries) != maxFilterValues {
+		t.Errorf("%d countries reached the backend, want %d", len(b.listQ.Countries), maxFilterValues)
+	}
+}
+
+// TestLeadDetailPage: a lead's page shows every section in the Detail order; a fetched URL
+// is a link that sends no referrer and is not followed, and a message's body sits inside
+// its own details.
+func TestLeadDetailPage(t *testing.T) {
+	h := newHarness(t, richBackend("Northwind Trading"), false)
+	body := h.do(get("/leads/5", h.session(t))).Body.String()
+	last := -1
+	for _, section := range []string{"<h2>Finding</h2>", "<h2>Ways to reach them</h2>", "<h2>From their site</h2>",
+		"<h2>Agency page</h2>", "<h2>The site</h2>", "<h2>History</h2>", "<h2>Place in the queue</h2>", "<h2>Messages</h2>",
+		"<h2>Relevance</h2>", "<h2>Why it ranks here</h2>"} {
+		i := strings.Index(body, section)
+		if i < 0 || i < last {
+			t.Errorf("%s missing or out of order", section)
+		}
+		last = i
+	}
+	for _, want := range []string{
+		`<a href="/leads" aria-current="page">Leads</a>`, `<a href="/leads" aria-current="true">List</a>`,
+		`<article class="record lead-record" id="lead-5">`, "<h1>Northwind Trading</h1>",
+		"<dt>Relevance</dt><dd>Northwind Trading</dd>", "<dt>Reach by</dt><dd>email · form</dd>", "<dt>Outreach order</dt><dd>number 3</dd>",
+		"generator: Northwind Trading",
+		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow">https://northwind.example/</a>`,
+		`Ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
+		"email: info@northwind.example", "mail server found",
+		"&#43;44 20 7946 0000", `<div class="description">Northwind Trading</div>`,
+		`LinkedIn: <a href="https://social.example/northwind" rel="noopener noreferrer nofollow">https://social.example/northwind</a>`,
+		"LeadHound never opens them.",
+		`<a href="https://agency.example/drupal" rel="noopener noreferrer nofollow">`, "“Northwind Trading”",
+		"<dt>List rank</dt><dd>12,345</dd>", "<dt>Found through</dt><dd>Northwind Trading</dd>",
+		"finder · Northwind Trading", `In <a href="/leads/batches/3">batch 3</a> · due Sat 24 Oct 04:50`,
+		"Subject: Northwind Trading", "Runs Drupal 10: &#43;30",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the lead page lacks %q", want)
+		}
+	}
+	open := strings.Index(body, `<details class="lead-message">`)
+	msg := strings.Index(body, "<div class=\"message-body\">Northwind Trading\n\nBest</div>")
+	shut := strings.Index(body[max(open, 0):], "</details>") + max(open, 0)
+	if open < 0 || msg < open || msg > shut {
+		t.Error("the message body is not inside its details")
+	}
+}
+
+func TestLeadDetailNotFound(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(get("/leads/99", c))
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "There is no such item.") {
+		t.Errorf("no such lead: %d %s", w.Code, w.Body.String())
+	}
+	for _, p := range []string{"/leads/abc", "/leads/0", "/leads/-1", "/leads/5x"} {
+		if w := h.do(get(p, c)); w.Code != http.StatusNotFound {
+			t.Errorf("%s: %d", p, w.Code)
+		}
+	}
+	if n := b.n("LeadDetail"); n != 1 {
+		t.Errorf("LeadDetail called %d times; a path that is not an id must not reach it", n)
+	}
+}
+
+// numbered matches an id in a path, so paths of one route compare equal.
+var numbered = regexp.MustCompile(`/[0-9]+(/|$)`)
+
+// TestOutreachKeepsEveryAction: the Outreach page offers every POST the old /leads page
+// did, at the same paths, and each goes back to /leads/outreach.
+func TestOutreachKeepsEveryAction(t *testing.T) {
+	h := newHarness(t, richBackend("northwind.example"), false)
+	c := h.session(t)
+	body := h.do(get("/leads/outreach", c)).Body.String()
+	found := map[string]bool{}
+	for _, m := range regexp.MustCompile(`<form method="post" action="([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		found[m[1]] = true
+	}
+	want := []string{"/leads/sending", "/leads/batches/new", "/leads/suppress", "/leads/messages/11/resolve",
+		"/leads/items/9/done", "/leads/contacted", "/leads/suppressions/lift"}
+	if len(found) != len(want) {
+		t.Errorf("the page posts to %v, want %v", found, want)
+	}
+	for _, p := range want {
+		if !found[p] {
+			t.Errorf("the page lost its form to %s", p)
+		}
+		tried := 0
+		for _, rt := range leadsPosts() {
+			if numbered.ReplaceAllString(rt.path, "/N$1") != numbered.ReplaceAllString(p, "/N$1") {
+				continue
+			}
+			tried++
+			b := richBackend("x")
+			ph := newHarness(t, b, false)
+			w := ph.do(post(rt.path, rt.form, ph.session(t)))
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != leadsOutPath {
+				t.Errorf("%s: %d to %q, want 303 to %s", rt.path, w.Code, w.Header().Get("Location"), leadsOutPath)
+			}
+		}
+		if tried == 0 {
+			t.Errorf("no write test covers %s", p)
+		}
+	}
+	// A batch discarded from its own page goes back to the Outreach page too.
+	if w := h.do(post("/leads/batches/3/discard", url.Values{}, c)); w.Header().Get("Location") != leadsOutPath {
+		t.Errorf("discard went to %q", w.Header().Get("Location"))
+	}
+}
+
+// TestOldLeadsLinksPointToOutreach: every link that went to the old /leads page goes to
+// /leads/outreach; only the nav, the sub-nav and the list's own links still name /leads.
+func TestOldLeadsLinksPointToOutreach(t *testing.T) {
+	nav := regexp.MustCompile(`<a href="/leads"( aria-current="(page|true)")?>(Leads|List)</a>`)
+	b := richBackend("x")
+	b.dash.Leads = &LeadsSummary{}
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	off := richBackend("x")
+	off.leadsErr = ErrLeadsNotSetUp
+	oh := newHarness(t, off, false)
+	for name, body := range map[string]string{
+		"dashboard":  h.do(get("/", c)).Body.String(),
+		"batch":      h.do(get("/leads/batches/3", c)).Body.String(),
+		"mailboxes":  h.do(get("/mailboxes", c)).Body.String(),
+		"not set up": oh.do(get("/leads/outreach", oh.session(t))).Body.String(),
+		"outreach":   h.do(get("/leads/outreach", c)).Body.String(),
+		"priorities": h.do(get("/leads/priorities", c)).Body.String(),
+	} {
+		if !strings.Contains(body, `href="/leads/outreach"`) {
+			t.Errorf("%s has no link to /leads/outreach", name)
+		}
+		if strings.Contains(nav.ReplaceAllString(body, ""), `href="/leads"`) {
+			t.Errorf("%s still links to /leads outside the nav", name)
+		}
+	}
+	// In the templates, /leads is named only by the sub-nav and the list's own pages.
+	entries, err := templateFS.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		raw, err := templateFS.ReadFile("templates/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		has := strings.Contains(string(raw), `href="/leads"`)
+		if allowed := slices.Contains([]string{"leads_tabs.html", "leads_list.html", "lead_detail.html"}, e.Name()); has && !allowed {
+			t.Errorf("%s links to /leads", e.Name())
+		}
+	}
+	w := h.do(get("/leads/next", c))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads?sort=order" {
+		t.Errorf("/leads/next: %d to %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+// TestLeadsRoutesDoNotShadow: each literal /leads/... page reaches its own read, never the
+// lead page's; a path that is not an id reaches no read at all.
+func TestLeadsRoutesDoNotShadow(t *testing.T) {
+	cases := []struct {
+		path, read string
+		code       int
+	}{
+		{"/leads", "LeadList", http.StatusOK},
+		{"/leads/outreach", "Leads", http.StatusOK},
+		{"/leads/priorities", "LeadPriorities", http.StatusOK},
+		{"/leads/batches/3", "LeadBatch", http.StatusOK},
+		{"/leads/5", "LeadDetail", http.StatusOK},
+		{"/leads/next", "", http.StatusSeeOther},
+		{"/leads/batches", "", http.StatusNotFound},
+		{"/leads/settings", "", http.StatusNotFound},
+		{"/leads/5/star", "", http.StatusNotFound},
+	}
+	for _, c := range cases {
+		b := richBackend("x")
+		h := newHarness(t, b, false)
+		w := h.do(get(c.path, h.session(t)))
+		if w.Code != c.code {
+			t.Errorf("%s: %d, want %d", c.path, w.Code, c.code)
+		}
+		switch {
+		case c.read == "" && b.total() != 0:
+			t.Errorf("%s reached the backend %d times", c.path, b.total())
+		case c.read != "" && (b.n(c.read) != 1 || b.total() != 1):
+			t.Errorf("%s: %s called %d times, %d reads in all", c.path, c.read, b.n(c.read), b.total())
+		}
 	}
 }

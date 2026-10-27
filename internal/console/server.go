@@ -85,10 +85,13 @@ var routes = []route{
 	{"GET /rules", "/rules", false, (*server).rules},
 	{"POST /rules", "/rules", false, (*server).addRule},
 	{"POST /rules/{id}/disable", "/rules/7/disable", false, (*server).disableRule},
-	{"GET /leads", "/leads", false, (*server).leads},
+	{"GET /leads", "/leads", false, (*server).leadList},
+	{"GET /leads/outreach", "/leads/outreach", false, (*server).leadsOutreach},
 	{"GET /leads/next", "/leads/next", false, (*server).leadsNext},
 	{"GET /leads/priorities", "/leads/priorities", false, (*server).leadPriorities},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
+	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
+	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
 	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
 	{"POST /leads/batches/{id}/approve", "/leads/batches/3/approve", false, (*server).approveBatch},
 	{"POST /leads/batches/{id}/discard", "/leads/batches/3/discard", false, (*server).discardBatch},
@@ -254,14 +257,15 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 	return s.headers(cop.Handler(capBody(mux)))
 }
 
-// parseTemplates parses the layout, the job row, the Run now card and the mailbox check
-// card once, then each page over a copy of them.
+// parseTemplates parses the layout, the job row, the Run now card, the mailbox check card
+// and the Leads sub-nav once, then each page over a copy of them.
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
-		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html"))
+		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
+		"templates/leads_tabs.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
-		"leads", "leads_off", "lead_batch", "leads_next", "leads_priorities", "results",
+		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_next", "leads_priorities", "results",
 		"mailboxes", "mailbox", "mailbox_form"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
@@ -324,6 +328,9 @@ func (s *server) funcs() template.FuncMap {
 		"checkCard":    func(c MailboxCheckView) mailboxCheckView { return mailboxCheckView{Card: c} },
 		"mailboxState": mailboxState,
 		"maxMailbox":   func() int { return maxMailbox },
+		"leadsTab":     func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
+		"webURL":       webURL,
+		"in":           func(v string, list []string) bool { return slices.Contains(list, v) },
 		"laterThan": func(status string) []string {
 			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })
 		},

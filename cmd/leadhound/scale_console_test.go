@@ -18,11 +18,13 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
-// TestScaleConsolePages: the leads page, a batch's full page and a job's page, each read
+// TestScaleConsolePages: the Outreach page, a batch's full page and a job's page, each read
 // whole through the handler as the operator's browser reads it, on the jobs and leads scale
-// seeds as the app role, within a second each; the dashboard, which reads the leads card
-// live, within its half second with leads set up. The queue and priorities pages are timed
-// and logged: their cost is NextUp's, which the leads scale test budgets. Nothing is written.
+// seeds as the app role, within a second each; the Leads list and the page of the lead with
+// the most messages, end to end, within half a second each (D15: read live); the dashboard,
+// which reads the leads card live, within its half second with leads set up. The priorities
+// page is timed and logged: its cost is NextUp's, which the leads scale test budgets; the
+// old queue page answers with the list in the outreach order. Nothing is written.
 func TestScaleConsolePages(t *testing.T) {
 	info := leadstoretest.ScaleSeeded(t)
 	ctx := context.Background()
@@ -64,14 +66,21 @@ func TestScaleConsolePages(t *testing.T) {
 	if err := s.Pool().QueryRow(ctx, `SELECT max(job_id) FROM job_observation`).Scan(&jobID); err != nil {
 		t.Fatal(err)
 	}
+	var leadID int64
+	if err := s.Pool().QueryRow(ctx,
+		`SELECT lead_id FROM outreach_message GROUP BY lead_id ORDER BY count(*) DESC, lead_id LIMIT 1`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
 	for _, p := range []struct {
 		path, want string
 		budget     time.Duration // 0: timed and logged only
 	}{
-		{"/leads", "Batches waiting for approval", time.Second},
+		{"/leads/outreach", "Batches waiting for approval", time.Second},
 		{fmt.Sprintf("/leads/batches/%d", batchID), fmt.Sprintf("Batch %d", batchID), time.Second},
 		{fmt.Sprintf("/jobs/%d", jobID), "<dt>Apply link</dt>", time.Second},
-		{"/leads/next", "Next leads", 0},
+		{"/leads", `<tr id="lead-w-`, 500 * time.Millisecond},
+		{"/leads?status=all&sort=relevance&page=100", "Previous page", 500 * time.Millisecond},
+		{fmt.Sprintf("/leads/%d", leadID), "Why it ranks here", 500 * time.Millisecond},
 		{"/leads/priorities", "The top 20", 0},
 	} {
 		r := httptest.NewRequest(http.MethodGet, p.path, nil)
@@ -92,6 +101,15 @@ func TestScaleConsolePages(t *testing.T) {
 		if strings.HasPrefix(p.path, "/leads/batches/") {
 			t.Logf("%s holds %d messages", p.path, msgs)
 		}
+	}
+
+	// The old queue page is the list in the outreach order.
+	r := httptest.NewRequest(http.MethodGet, "/leads/next", nil)
+	r.Header.Set("Cookie", "lh_session="+token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads?sort=order" {
+		t.Errorf("/leads/next: %d to %q", w.Code, w.Header().Get("Location"))
 	}
 
 	// The dashboard with a snapshot in hand: its live parts, the leads card among them.

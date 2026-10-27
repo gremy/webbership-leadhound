@@ -198,3 +198,107 @@ func TestScaleLeadsSend(t *testing.T) {
 		return err
 	})
 }
+
+// scaleListContext is what the console weighs the list by on the scale seed: the saved
+// 30-rule profile (EffectiveProfile over the example file's), the small-site cut and the
+// trust gate as given.
+func scaleListContext(t *testing.T, q leadstore.Queries, trusted bool) (leadstore.ListContext, leadconfig.Profile) {
+	t.Helper()
+	cfg, err := leadconfig.Load("../../examples")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := q.EffectiveProfile(context.Background(), cfg.PriorityProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pf, err := leadstore.ListProfileJSON(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return leadstore.ListContext{ProfileJSON: pf, SkipRankOver: 100_000, SortByRelevance: trusted}, p
+}
+
+// TestScaleLeadList: the Leads list's reads (D15: live, no snapshot) on the scale seed's
+// 5,000 leads: the default page, each filter alone, the last page by relevance over every
+// lead with the trust gate passed, within 300 ms each; the outreach order within 200 ms.
+func TestScaleLeadList(t *testing.T) {
+	q, _, _, _ := scaleLeads(t)
+	ctx := context.Background()
+	untrusted, _ := scaleListContext(t, q, false)
+	trusted, _ := scaleListContext(t, q, true)
+	list := func(name string, budget time.Duration, f leadstore.ListFilter, c leadstore.ListContext) ([]leadstore.ListRow, int) {
+		t.Helper()
+		var rows []leadstore.ListRow
+		var total int
+		within(t, name, budget, func() (err error) {
+			rows, total, err = q.LeadList(ctx, f, c)
+			return err
+		})
+		return rows, total
+	}
+
+	if rows, total := list("LeadList(default)", 300*time.Millisecond, leadstore.ListFilter{}, untrusted); len(rows) != leadstore.ListPerPageDefault || total < 1000 {
+		t.Errorf("default page: %d rows of %d, want a full page of at least 1000", len(rows), total)
+	}
+	yes, no := true, false
+	for _, c := range []struct {
+		name string
+		f    leadstore.ListFilter
+	}{
+		{"kind d10", leadstore.ListFilter{Kinds: []string{leadstore.LeadD10}}},
+		{"country GB", leadstore.ListFilter{Countries: []string{"GB"}}},
+		{"channel email", leadstore.ListFilter{Channels: []string{leadstore.ListChannelEmail}}},
+		{"channel form", leadstore.ListFilter{Channels: []string{leadstore.ListChannelForm}}},
+		{"channel phone", leadstore.ListFilter{Channels: []string{leadstore.ListChannelPhone}}},
+		{"starred", leadstore.ListFilter{Starred: &yes}},
+		{"not starred", leadstore.ListFilter{Starred: &no}},
+		{"has phone", leadstore.ListFilter{HasPhone: true}},
+		{"relevance 50 and up", leadstore.ListFilter{MinRelevance: 50}},
+		{"status contacted", leadstore.ListFilter{Status: leadstore.ListContacted}},
+		{"status all", leadstore.ListFilter{Status: leadstore.ListAll}},
+		{"sort newest", leadstore.ListFilter{Sort: leadstore.SortNewest}},
+		{"every filter at once", leadstore.ListFilter{Kinds: []string{leadstore.LeadUnsupported, leadstore.LeadD10}, Countries: []string{"GB", "DE"},
+			Channels: []string{leadstore.ListChannelEmail, leadstore.ListChannelPhone}, Starred: &no, HasPhone: true, MinRelevance: 20,
+			Status: leadstore.ListAll}},
+	} {
+		if _, total := list("LeadList("+c.name+")", 300*time.Millisecond, c.f, untrusted); total == 0 {
+			t.Errorf("%s: no lead matches, so the read proves little", c.name)
+		}
+	}
+
+	all := leadstore.ListFilter{Status: leadstore.ListAll}
+	_, total := list("LeadList(all, by relevance, count)", 300*time.Millisecond, all, trusted)
+	all.Page = (total + leadstore.ListPerPageDefault - 1) / leadstore.ListPerPageDefault
+	if rows, _ := list("LeadList(last page by relevance)", 300*time.Millisecond, all, trusted); len(rows) == 0 {
+		t.Errorf("last page %d of %d leads is empty", all.Page, total)
+	}
+
+	if rows, total := list("LeadList(sort=order)", 200*time.Millisecond, leadstore.ListFilter{Sort: leadstore.SortOrder}, untrusted); len(rows) == 0 || total < 100 {
+		t.Errorf("outreach order: %d rows of %d, want the seed's starred leads", len(rows), total)
+	}
+}
+
+// TestScaleLeadDetail: one lead in full, the one with the most messages, its bodies
+// included, then weighed, within 150 ms.
+func TestScaleLeadDetail(t *testing.T) {
+	q, s, _, _ := scaleLeads(t)
+	ctx := context.Background()
+	_, profile := scaleListContext(t, q, false)
+	var leadID int64
+	if err := s.Pool().QueryRow(ctx,
+		`SELECT lead_id FROM outreach_message GROUP BY lead_id ORDER BY count(*) DESC, lead_id LIMIT 1`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+	var d leadstore.Detail
+	within(t, "LeadDetail", 150*time.Millisecond, func() (err error) {
+		d, err = q.LeadDetail(ctx, leadID)
+		if err == nil {
+			d.Weigh(profile, 100_000)
+		}
+		return err
+	})
+	if len(d.Messages) == 0 || len(d.Events) == 0 || len(d.Signals) == 0 || len(d.Reasons) == 0 {
+		t.Errorf("lead %d: %d messages, %d events, %d signals, %d reasons; want each", leadID, len(d.Messages), len(d.Events), len(d.Signals), len(d.Reasons))
+	}
+}

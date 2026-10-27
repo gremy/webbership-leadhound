@@ -2,8 +2,8 @@
 {{$v := .Data}}{{$p := $v.Data}}
 <div class="page-head">
   <h1>Lead priorities</h1>
-  <p><a href="/leads">Back to leads</a> · <a href="/leads/next">Next leads</a></p>
 </div>
+{{template "leads_tabs" (leadsTab "settings" true)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 <p class="lede">{{if $p.Edited}}Your edit, not saved yet.{{else if $p.FromDB}}Your saved priorities.{{else}}The defaults from the leads settings file.{{end}}
   A lead scores the sum of the points below; points run from -100 to 100, and a blank box is no rule.</p>

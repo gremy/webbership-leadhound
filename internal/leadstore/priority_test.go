@@ -1,6 +1,7 @@
 package leadstore
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -19,32 +20,35 @@ var demoProfile = leadconfig.Profile{
 	ExactVersion: 5, ExcludeCountries: []string{"DE"},
 }
 
+// scoreCases are TestScore's candidates under demoProfile; TestScoreReasonsMatchScore runs
+// over them too.
+var scoreCases = []struct {
+	name    string
+	c       Candidate
+	score   int
+	why     []string
+	offered bool
+}{
+	{"every rule", Candidate{Kind: LeadUnsupported, Major: 7, ExactVersion: "7.98", Country: "GB", Channel: ChannelEmail, ListRank: rank(9999)},
+		30 + 20 + 5 + 20 + 10 + 15 + 0, []string{"unsupported +20", "Drupal 7 +30", "exact version +5", "GB +20", "email +10", "rank under 10k +15"}, true},
+	{"second band", Candidate{Kind: LeadD10, Major: 10, Channel: ChannelForm, ListRank: rank(10000)},
+		10 + 10 + 8, []string{"d10 +10", "Drupal 10 +10", "rank under 100k +8"}, true},
+	{"beyond every band", Candidate{Kind: LeadD10, Major: 10, Channel: ChannelForm, ListRank: rank(100000)},
+		20, []string{"d10 +10", "Drupal 10 +10"}, true},
+	{"unranked", Candidate{Kind: LeadUnsupported, Major: 6, Channel: ChannelEmail},
+		35, []string{"unsupported +20", "Drupal 6 +5", "email +10"}, true},
+	{"negative country", Candidate{Kind: LeadAgencyPartner, Country: "NL", Channel: ChannelEmail},
+		15, []string{"agency partner +15", "NL -10", "email +10"}, true},
+	{"major not weighed", Candidate{Kind: LeadD10, Major: 11, Channel: ChannelForm},
+		10, []string{"d10 +10"}, true},
+	{"unlisted country", Candidate{Kind: LeadD10, Country: "FR", Channel: ChannelForm}, 10, []string{"d10 +10"}, true},
+	{"excluded", Candidate{Kind: LeadUnsupported, Major: 7, Country: "DE", Channel: ChannelEmail}, 60, nil, false},
+	{"agency lead has no major", Candidate{Kind: LeadAgencyPartner, Major: 0, Channel: ChannelForm, ListRank: rank(1)},
+		30, []string{"agency partner +15", "rank under 10k +15"}, true},
+}
+
 func TestScore(t *testing.T) {
-	cases := []struct {
-		name    string
-		c       Candidate
-		score   int
-		why     []string
-		offered bool
-	}{
-		{"every rule", Candidate{Kind: LeadUnsupported, Major: 7, ExactVersion: "7.98", Country: "GB", Channel: ChannelEmail, ListRank: rank(9999)},
-			30 + 20 + 5 + 20 + 10 + 15 + 0, []string{"unsupported +20", "Drupal 7 +30", "exact version +5", "GB +20", "email +10", "rank under 10k +15"}, true},
-		{"second band", Candidate{Kind: LeadD10, Major: 10, Channel: ChannelForm, ListRank: rank(10000)},
-			10 + 10 + 8, []string{"d10 +10", "Drupal 10 +10", "rank under 100k +8"}, true},
-		{"beyond every band", Candidate{Kind: LeadD10, Major: 10, Channel: ChannelForm, ListRank: rank(100000)},
-			20, []string{"d10 +10", "Drupal 10 +10"}, true},
-		{"unranked", Candidate{Kind: LeadUnsupported, Major: 6, Channel: ChannelEmail},
-			35, []string{"unsupported +20", "Drupal 6 +5", "email +10"}, true},
-		{"negative country", Candidate{Kind: LeadAgencyPartner, Country: "NL", Channel: ChannelEmail},
-			15, []string{"agency partner +15", "NL -10", "email +10"}, true},
-		{"major not weighed", Candidate{Kind: LeadD10, Major: 11, Channel: ChannelForm},
-			10, []string{"d10 +10"}, true},
-		{"unlisted country", Candidate{Kind: LeadD10, Country: "FR", Channel: ChannelForm}, 10, []string{"d10 +10"}, true},
-		{"excluded", Candidate{Kind: LeadUnsupported, Major: 7, Country: "DE", Channel: ChannelEmail}, 60, nil, false},
-		{"agency lead has no major", Candidate{Kind: LeadAgencyPartner, Major: 0, Channel: ChannelForm, ListRank: rank(1)},
-			30, []string{"agency partner +15", "rank under 10k +15"}, true},
-	}
-	for _, tc := range cases {
+	for _, tc := range scoreCases {
 		t.Run(tc.name, func(t *testing.T) {
 			score, why := Score(demoProfile, tc.c)
 			if score != tc.score {
@@ -81,5 +85,43 @@ func TestRankLabel(t *testing.T) {
 		if got := rankLabel(n); got != want {
 			t.Errorf("rankLabel(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// TestScoreReasonsMatchScore: over every TestScore candidate (and an empty profile), Score is the sum of
+// ScoreReasons' points and its reasons are theirs, one for one, so the two cannot drift.
+func TestScoreReasonsMatchScore(t *testing.T) {
+	for _, p := range []leadconfig.Profile{demoProfile, {}} {
+		for _, tc := range scoreCases {
+			c := tc.c
+			score, why := Score(p, c)
+			reasons := ScoreReasons(p, c)
+			sum := 0
+			for _, r := range reasons {
+				sum += r.Points
+				if r.Points == 0 {
+					t.Errorf("%+v: a reason with 0 points: %+v", c, r)
+				}
+			}
+			if sum != score {
+				t.Errorf("%+v: reasons sum to %d, Score %d", c, sum, score)
+			}
+			if len(why) != len(reasons) {
+				t.Fatalf("%+v: %d reasons, Score gave %q", c, len(reasons), why)
+			}
+			for i, r := range reasons {
+				if want := r.shortLabel() + " " + fmt.Sprintf("%+d", r.Points); why[i] != want {
+					t.Errorf("%+v: reason %d is %q, Score says %q", c, i, want, why[i])
+				}
+			}
+		}
+	}
+	got := ScoreReasons(demoProfile, scoreCases[0].c)
+	want := []Reason{
+		{ReasonKind, LeadUnsupported, 20}, {ReasonMajor, "7", 30}, {ReasonExactVersion, "7.98", 5},
+		{ReasonCountry, "GB", 20}, {ReasonChannel, ChannelEmail, 10}, {ReasonRankBand, "10000", 15},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("ScoreReasons = %+v, want %+v", got, want)
 	}
 }

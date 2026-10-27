@@ -14,7 +14,11 @@ import (
 // LeadsBackend is what the leads pages read and write. Every read and write loads the
 // leads settings afresh; when they are missing or broken it returns ErrLeadsNotSetUp.
 type LeadsBackend interface {
-	Leads(ctx context.Context) (LeadsPage, error)
+	Leads(ctx context.Context) (LeadsPage, error) // the Outreach page
+	// LeadList is one page of the Leads list under the query's filter.
+	LeadList(ctx context.Context, q LeadListQuery) (LeadListPage, error)
+	// LeadDetail is everything stored about one lead; ErrNotFound for no such lead.
+	LeadDetail(ctx context.Context, id int64) (LeadDetailPage, error)
 	LeadBatch(ctx context.Context, id int64) (LeadBatch, error) // ErrNotFound for no such batch
 	LeadsNext(ctx context.Context) (LeadsQueue, error)
 	// LeadPriorities is the priority profile as a form with the top of the queue under it:
@@ -229,8 +233,10 @@ type PrioritiesPage struct {
 
 // The leads pages' paths.
 const (
-	leadsPath      = "/leads"
-	leadsNextPath  = "/leads/next"
+	leadsPath      = "/leads"          // the list
+	leadsOutPath   = "/leads/outreach" // sending, batches, replies and suppressions
+	leadsNextPath  = "/leads/next"     // GET goes to the list in the outreach order
+	leadsOrderPath = "/leads?sort=order"
 	leadsPrioPath  = "/leads/priorities"
 	leadBatchPath  = "/leads/batches/"
 	maxLeadsText   = 500 // the longest reason or note a form takes, as the inputs' maxlength
@@ -281,8 +287,8 @@ func (s *server) leadsRead(w http.ResponseWriter, r *http.Request, code int, err
 	return true
 }
 
-// leads is GET /leads.
-func (s *server) leads(w http.ResponseWriter, r *http.Request) {
+// leadsOutreach is GET /leads/outreach: the page that was /leads before the list.
+func (s *server) leadsOutreach(w http.ResponseWriter, r *http.Request) {
 	s.renderLeads(w, r, http.StatusOK, s.takeFlash(w, r), false)
 }
 
@@ -291,7 +297,7 @@ func (s *server) renderLeads(w http.ResponseWriter, r *http.Request, code int, m
 	if s.leadsRead(w, r, code, err) {
 		return
 	}
-	s.render(w, r, code, "leads", page{Title: "Leads", Active: leadsPath, SignedIn: true,
+	s.render(w, r, code, "leads_outreach", page{Title: "Outreach", Active: leadsPath, SignedIn: true,
 		Data: leadsView{Data: p, Message: msg, Error: isErr}})
 }
 
@@ -315,11 +321,13 @@ func (s *server) renderBatch(w http.ResponseWriter, r *http.Request, code int, i
 		Data: leadsView{Data: b, Message: msg, Error: isErr}})
 }
 
-// leadsNext is GET /leads/next.
+// leadsNext is GET /leads/next: the list in the outreach order. The one-time message is
+// left for the list to show.
 func (s *server) leadsNext(w http.ResponseWriter, r *http.Request) {
-	s.renderNext(w, r, http.StatusOK, s.takeFlash(w, r), false)
+	http.Redirect(w, r, leadsOrderPath, http.StatusSeeOther)
 }
 
+// renderNext shows the queue with a refusal from one of its POSTs.
 func (s *server) renderNext(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
 	q, err := s.b.LeadsNext(r.Context())
 	if s.leadsRead(w, r, code, err) {
@@ -389,7 +397,7 @@ func refusalWords(err error) string {
 	return strings.TrimPrefix(strings.TrimPrefix(err.Error(), ErrUserFixable.Error()), ": ")
 }
 
-// backToLeads, backToNext re-render their page with a refusal.
+// backToLeads, backToNext re-render the Outreach page and the queue with a refusal.
 func (s *server) backToLeads(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
 	s.renderLeads(w, r, code, msg, isErr)
 }
@@ -440,7 +448,7 @@ func (s *server) discardBatch(w http.ResponseWriter, r *http.Request) {
 	if !leadsForm(w, r) {
 		return
 	}
-	s.leadsAct(w, r, LeadAction{Do: LeadDiscard, ID: id}, leadsPath, s.backToBatch(id))
+	s.leadsAct(w, r, LeadAction{Do: LeadDiscard, ID: id}, leadsOutPath, s.backToBatch(id))
 }
 
 // newBatch is POST /leads/batches/new: the next batch, sized to the ramp; it goes to the
@@ -449,7 +457,7 @@ func (s *server) newBatch(w http.ResponseWriter, r *http.Request) {
 	if !leadsForm(w, r) {
 		return
 	}
-	s.leadsAct(w, r, LeadAction{Do: LeadNewBatch}, leadsPath, s.backToLeads)
+	s.leadsAct(w, r, LeadAction{Do: LeadNewBatch}, leadsOutPath, s.backToLeads)
 }
 
 // resolveMessage is POST /leads/messages/{id}/resolve with sent=sent|not-sent.
@@ -468,7 +476,7 @@ func (s *server) resolveMessage(w http.ResponseWriter, r *http.Request) {
 		s.renderLeads(w, r, http.StatusUnprocessableEntity, "Say whether the email is in the Sent folder.", true)
 		return
 	}
-	s.leadsAct(w, r, LeadAction{Do: LeadResolve, ID: id, Sent: sent == "sent"}, leadsPath, s.backToLeads)
+	s.leadsAct(w, r, LeadAction{Do: LeadResolve, ID: id, Sent: sent == "sent"}, leadsOutPath, s.backToLeads)
 }
 
 // itemDone is POST /leads/items/{id}/done: a contact form or LinkedIn note was used.
@@ -481,7 +489,7 @@ func (s *server) itemDone(w http.ResponseWriter, r *http.Request) {
 	if !leadsForm(w, r) {
 		return
 	}
-	s.leadsAct(w, r, LeadAction{Do: LeadDone, ID: id}, leadsPath, s.backToLeads)
+	s.leadsAct(w, r, LeadAction{Do: LeadDone, ID: id}, leadsOutPath, s.backToLeads)
 }
 
 // suppress is POST /leads/suppress: kind, value and reason.
@@ -491,7 +499,7 @@ func (s *server) suppress(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.PostForm
 	s.leadsAct(w, r, LeadAction{Do: LeadSuppress, Kind: f.Get("kind"), Value: strings.TrimSpace(f.Get("value")), Reason: f.Get("reason")},
-		leadsPath, s.backToLeads)
+		leadsOutPath, s.backToLeads)
 }
 
 // liftSuppression is POST /leads/suppressions/lift: the suppression's number, its domain
@@ -508,7 +516,7 @@ func (s *server) liftSuppression(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.leadsAct(w, r, LeadAction{Do: LeadLift, ID: id, Value: strings.TrimSpace(f.Get("domain")), Reason: strings.TrimSpace(f.Get("reason"))},
-		leadsPath, s.backToLeads)
+		leadsOutPath, s.backToLeads)
 }
 
 // contacted is POST /leads/contacted: a domain reached by hand, with a note.
@@ -518,7 +526,7 @@ func (s *server) contacted(w http.ResponseWriter, r *http.Request) {
 	}
 	f := r.PostForm
 	s.leadsAct(w, r, LeadAction{Do: LeadContacted, Value: strings.TrimSpace(f.Get("domain")), Note: strings.TrimSpace(f.Get("note"))},
-		leadsPath, s.backToLeads)
+		leadsOutPath, s.backToLeads)
 }
 
 // sending is POST /leads/sending: do=pause (with a reason) or do=resume.
@@ -536,7 +544,7 @@ func (s *server) sending(w http.ResponseWriter, r *http.Request) {
 		s.renderLeads(w, r, http.StatusUnprocessableEntity, "Choose pause or resume.", true)
 		return
 	}
-	s.leadsAct(w, r, a, leadsPath, s.backToLeads)
+	s.leadsAct(w, r, a, leadsOutPath, s.backToLeads)
 }
 
 // steerLead is POST /leads/next/{lead}/{action}: pin, defer (until a date), skip or clear.

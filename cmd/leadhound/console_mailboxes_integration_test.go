@@ -83,7 +83,7 @@ func TestConsoleLeadsSendingFromMailboxes(t *testing.T) {
 		}
 		passed(t, s)
 		h, c := jobsHandler(t, b)
-		r := httptest.NewRequest(http.MethodGet, "/leads", nil)
+		r := httptest.NewRequest(http.MethodGet, "/leads/outreach", nil)
 		r.Header.Set("Cookie", c)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

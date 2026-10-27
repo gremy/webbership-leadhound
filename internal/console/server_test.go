@@ -53,6 +53,9 @@ type fakeBackend struct {
 	leadErr  error // returned by LeadAct
 	leadsErr error // returned by every leads read, after readErr
 	lastLead LeadAction
+	list     LeadListPage
+	listQ    LeadListQuery // the query the last LeadList call asked for
+	detail   LeadDetailPage
 
 	runOut     RunOutcome
 	runErr     error // returned by RunNow
@@ -225,6 +228,8 @@ func richBackend(text string) *fakeBackend {
 		prios: PrioritiesPage{Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Group: "Kind", Label: text, Value: "20"}}, Countries: text},
 			Preview: []QueueLead{{LeadID: 5, Domain: text, Score: 55, Why: []string{text}}}},
 		leadOut: LeadOutcome{Message: text},
+		list:    richLeadList(text),
+		detail:  richLeadDetail(text),
 		runOut:  RunOutcome{Message: text},
 		runCard: richCard(text),
 		results: richResults(text),

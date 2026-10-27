@@ -2,8 +2,9 @@
 {{$v := .Data}}{{$b := $v.Data}}
 <div class="page-head">
   <h1>Batch {{$b.ID}}{{if $b.Shadow}} <span class="tag">shadow</span>{{end}}</h1>
-  <p><a href="/leads">Back to leads</a></p>
+  <p><a href="/leads/outreach">Back to outreach</a></p>
 </div>
+{{template "leads_tabs" (leadsTab "outreach" false)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 <p class="lede">{{plural (len $b.Items) "lead" "leads"}} · made {{when $b.CreatedAt}} ·
   {{if $b.ApprovedAt}}approved {{when $b.ApprovedAt}}{{else if $b.DiscardedAt}}discarded {{when $b.DiscardedAt}}{{else}}waiting for your approval{{end}}</p>

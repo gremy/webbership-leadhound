@@ -250,3 +250,123 @@ type StatusLine struct {
 	Status, Reason, Actor string
 	At                    time.Time
 }
+
+// LeadListQuery is the Leads list's filter as the request gave it: raw values, trimmed and
+// with empty ones dropped. The backend reads them, ignores what it does not know and clamps
+// the numbers; the console never judges them.
+type LeadListQuery struct {
+	Kinds, Countries, Channels []string // kind=, country=, channel= (email | form | phone), each repeatable
+	Starred                    string   // "" any | "yes" | "no"
+	HasPhone                   string   // "" any | "1" only leads with a phone number
+	MinRelevance               string   // a whole number, 0 to 100
+	Status                     string   // "" (open) | open | contacted | all
+	Sort                       string   // "" (relevance) | relevance | newest | order
+	Page                       string   // 1 and up
+}
+
+// LeadListPage is one page of the Leads list. Total is how many leads match the filter,
+// TotalLeads how many there are at all (the two empty states differ). Filter is the query
+// as the backend took it, which the form and the pager echo. Notes are plain lines about
+// the query, such as a value that was ignored.
+type LeadListPage struct {
+	Rows          []LeadListRow
+	Total         int
+	TotalLeads    int
+	Page, PerPage int
+	Filter        LeadListQuery
+	Options       LeadFilterOptions
+	Notes         []string
+}
+
+// LeadFilterOptions are the choices the filter form offers, each a value and its words.
+type LeadFilterOptions struct {
+	Kinds, Countries, Channels []FilterOption
+	Statuses, Sorts            []FilterOption
+}
+
+// FilterOption is one choice of a filter: the value the query carries and its label.
+type FilterOption struct{ Value, Label string }
+
+// LeadListRow is one lead of the list, worded by the backend. Kind is the kind's label,
+// Finding the finding in one line, Relevance the relevance in words ("" when not rated),
+// Position the lead's place in the outreach order ("" when it has none).
+type LeadListRow struct {
+	LeadID, OrgID                int64
+	Name, Domain, Country, Kind  string
+	Finding, Relevance, Position string
+	State                        string
+	HasEmail, HasForm, HasPhone  bool
+	Starred, SmallSite           bool
+}
+
+// LeadDetailPage is everything stored about one lead, in the order the page shows it: the
+// lead and its finding, the finding's signals, the contact routes, the facts found on its
+// pages, the agency page, the site, the lead's history, its outreach order, its messages,
+// its relevance history and why it ranks where it does. ErrNotFound for no such lead.
+type LeadDetailPage struct {
+	LeadListRow
+	Signals          []LeadSignal
+	Routes           []LeadRoute
+	Phones           []LeadFact
+	Descriptions     []LeadFact
+	Social           []LeadFact
+	Agency           *LeadAgency
+	ListRank         string // "" when unknown
+	Origin           string
+	CountryPolicy    string // the country's line, e.g. which channel and language it is written in
+	Events           []LeadEvent
+	Priority         *LeadPriority
+	Messages         []LeadDetailMessage
+	RelevanceHistory []LeadRelevance // the latest few ratings, newest first
+	Why              []string        // why it ranks here, one plain line each
+}
+
+// LeadSignal is one piece of the finding's evidence with the fetch it came from. Status is
+// the fetch's HTTP status in words; FetchedAt is nil when the fetch is unknown.
+type LeadSignal struct {
+	Name, Value, FetchURL, FinalURL, Status string
+	FetchedAt                               *time.Time
+}
+
+// LeadRoute is one way to reach the lead: Kind its label, Note what was checked (the mail
+// server, say), PageURL the page it was found on.
+type LeadRoute struct {
+	Kind, Value, Note, PageURL string
+	FoundAt                    *time.Time
+}
+
+// LeadFact is one fact found on the lead's own pages: a phone number, a description or a
+// social link. Label names it (a social network, say); PageURL is the page it was read on.
+// A social link is shown, never fetched.
+type LeadFact struct {
+	Label, Value, PageURL string
+	FoundAt               *time.Time
+}
+
+// LeadAgency is the agency page an agency lead was found on.
+type LeadAgency struct{ URL, Phrase, FetchURL string }
+
+// LeadEvent is one change of the lead's state.
+type LeadEvent struct {
+	State, Reason, Actor string
+	At                   time.Time
+}
+
+// LeadPriority is the latest steer of the lead's place in the queue, in words.
+type LeadPriority struct {
+	Words, Actor string
+	At           time.Time
+}
+
+// LeadDetailMessage is one message drafted for the lead.
+type LeadDetailMessage struct {
+	BatchID                              int64
+	Label, Channel, State, Subject, Body string
+	Due, Sent                            *time.Time
+}
+
+// LeadRelevance is one relevance rating in words.
+type LeadRelevance struct {
+	Words string
+	At    time.Time
+}

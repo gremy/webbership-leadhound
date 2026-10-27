@@ -536,10 +536,10 @@ func TestLeadsShowsMailboxes(t *testing.T) {
 	b.batch.Items[0].Messages[0].From = MessageFrom{Name: "Northwind Outreach", Address: "outreach@mail.northwind.example"}
 	h := newHarness(t, b, false)
 	c := h.session(t)
-	body := h.do(get("/leads", c)).Body.String()
+	body := h.do(get("/leads/outreach", c)).Body.String()
 	for _, want := range []string{"outreach@mail.northwind.example", "2 of 10", `href="/mailboxes"`, "Ready"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("/leads lacks %q", want)
+			t.Errorf("/leads/outreach lacks %q", want)
 		}
 	}
 	body = h.do(get("/leads/batches/3", c)).Body.String()

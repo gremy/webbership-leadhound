@@ -298,7 +298,7 @@ func TestConsoleMailboxPages(t *testing.T) {
 	}
 
 	// The Leads page shows each mailbox not retired, with its domain and its records.
-	page = c.get("/leads", false).Body.String()
+	page = c.get("/leads/outreach", false).Body.String()
 	if !strings.Contains(page, testUser) || !strings.Contains(page, "Paused: blocklisted") || strings.Contains(page, "desk@other.example") {
 		t.Errorf("leads page mailboxes:\n%s", page)
 	}
@@ -409,7 +409,7 @@ func TestMailboxPasswordNeverLeaks(t *testing.T) {
 		"--selector", "sel1")
 	w.mustRun(t, "leads", "mailboxes", "check", "--requested")
 	w.mustRun(t, "leads", "mailboxes", "list")
-	for _, path := range []string{"/mailboxes", "/mailboxes/2", "/mailboxes/2/edit", "/mailboxes/3", "/leads"} {
+	for _, path := range []string{"/mailboxes", "/mailboxes/2", "/mailboxes/2/edit", "/mailboxes/3", "/leads/outreach", "/leads"} {
 		c.get(path, false)
 	}
 	c.get("/mailboxes/2/check", true)

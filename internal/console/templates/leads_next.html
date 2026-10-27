@@ -2,8 +2,8 @@
 {{$v := .Data}}{{$q := $v.Data}}
 <div class="page-head">
   <h1>Next leads</h1>
-  <p><a href="/leads">Back to leads</a> · <a href="/leads/priorities">Priorities</a></p>
 </div>
+{{template "leads_tabs" (leadsTab "list" false)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 <p class="lede">The order the next batch drafts from: pinned leads first, then the highest score.</p>
 {{if $q.Leads}}

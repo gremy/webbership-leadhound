@@ -682,7 +682,8 @@ select {
   text-decoration: none;
 }
 
-.filters a[aria-current="true"] {
+.filters a[aria-current="true"],
+.filters a[aria-current="page"] {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
@@ -1070,5 +1071,123 @@ details.inline summary {
   .card details summary {
     width: 100%;
     justify-content: center;
+  }
+}
+
+/* Leads: the sub-nav, the list's filter form, its table and cards, the pager, a lead's page. */
+.leads-tabs {
+  margin-top: -0.25rem;
+}
+.lead-filters {
+  display: grid;
+  gap: 0.75rem;
+}
+.lead-filters fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0.4rem 0.75rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.lead-filters legend {
+  padding: 0 0.25rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
+.checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  font-size: 1rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.checks input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.filter-fields {
+  display: grid;
+  gap: 0.5rem 1rem;
+}
+.filter-fields > div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+@media (min-width: 640px) {
+  .filter-fields {
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  }
+}
+.filter-buttons,
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+.pager {
+  justify-content: space-between;
+  margin-top: 0.75rem;
+}
+.pager a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+.pager a:hover {
+  border-color: var(--muted);
+}
+.lead-table .star-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+.lead-table .lead-cell {
+  min-width: 10rem;
+  overflow-wrap: anywhere;
+}
+.lead-table .lead-cell a {
+  font-weight: 600;
+}
+.lead-list .item-head a {
+  font-weight: 600;
+}
+.lead-record h3 {
+  margin-top: 1rem;
+  font-size: 0.95rem;
+}
+.lead-message {
+  margin-top: 0.75rem;
+}
+.lead-message > summary {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.lead-message[open] > summary {
+  margin-bottom: 0.5rem;
+}
+.lead-record .description + .hint {
+  margin: 0.35rem 0 0.75rem;
+}
+@media (max-width: 639px) {
+  .filter-buttons button {
+    width: 100%;
   }
 }

@@ -1141,7 +1141,7 @@ func TestConsoleLeadsPagesRead(t *testing.T) {
 		t.Errorf("default push-back %s", q.DeferUntil)
 	}
 	h, c := jobsHandler(t, b)
-	for _, p := range []string{"/leads", "/leads/next", "/leads/priorities", "/"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/priorities", "/"} {
 		r := httptest.NewRequest(http.MethodGet, p, nil)
 		r.Header.Set("Cookie", c)
 		w := httptest.NewRecorder()
@@ -1149,6 +1149,14 @@ func TestConsoleLeadsPagesRead(t *testing.T) {
 		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "not set up") {
 			t.Errorf("%s: %d %s", p, w.Code, w.Body.String())
 		}
+	}
+	// The old queue page is the list in the outreach order now.
+	r := httptest.NewRequest(http.MethodGet, "/leads/next", nil)
+	r.Header.Set("Cookie", c)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads?sort=order" {
+		t.Errorf("/leads/next: %d to %q", w.Code, w.Header().Get("Location"))
 	}
 	if err := os.Remove(filepath.Join(dir, "leads.yaml")); err != nil {
 		t.Fatal(err)

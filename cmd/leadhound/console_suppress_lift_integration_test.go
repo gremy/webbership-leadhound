@@ -34,7 +34,7 @@ func TestConsoleSuppressLift(t *testing.T) {
 	id := supID(t, leadstore.SuppressAddress, addr)
 	c := newConsoleClient(t, leadsBackend(t), logger)
 
-	page := c.get("/leads", false).Body.String()
+	page := c.get("/leads/outreach", false).Body.String()
 	listed := fmt.Sprintf("#%d address i***@console-lift.example · opt_out · cli · ", id)
 	if !strings.Contains(page, listed) || !strings.Contains(page, `action="/leads/suppressions/lift"`) || strings.Contains(page, "Lifted (") {
 		t.Fatalf("leads page before the lift lacks %q or the form, or shows a Lifted section:\n%s", listed, page)
@@ -61,7 +61,7 @@ func TestConsoleSuppressLift(t *testing.T) {
 	// The lift: one row from the console, the flash on the page it lands on, and the
 	// suppression now under Lifted.
 	w = c.post("/leads/suppressions/lift", url.Values{"id": {fmt.Sprint(id)}, "domain": {" " + dom + " "}, "reason": {" an auto-reply quoted our opt-out line "}})
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads" {
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads/outreach" {
 		t.Fatalf("lift: %d to %q:\n%s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
 	var row string

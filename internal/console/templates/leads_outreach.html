@@ -2,8 +2,8 @@
 {{$v := .Data}}{{$p := $v.Data}}{{$s := $p.Sending}}
 <div class="page-head">
   <h1>Leads</h1>
-  <p><a href="/leads/next">Next leads</a> · <a href="/leads/priorities">Priorities</a></p>
 </div>
+{{template "leads_tabs" (leadsTab "outreach" true)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 <div class="grid two">
