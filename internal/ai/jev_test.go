@@ -179,8 +179,8 @@ func TestJevRequestGoldenOneCall(t *testing.T) {
 		t.Fatalf("request body differs from golden\n got: %s\nwant: %s", got, w)
 	}
 
-	if usage.InputTokens != 321 {
-		t.Fatalf("usage = %+v, want 321 input tokens", usage)
+	if usage.InputTokens != 321 || usage.Model != "jev-1.13.0" {
+		t.Fatalf("usage = %+v, want 321 input tokens from the model the response names", usage)
 	}
 	if len(answers) != 5 {
 		t.Fatalf("answers = %d, want 5", len(answers))

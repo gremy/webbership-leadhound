@@ -170,7 +170,7 @@ func (j *Jev) answers(body []byte, qs []Question) (map[string]Answer, Usage, err
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, Usage{}, fmt.Errorf("jev: decode response: %w: %w", ErrBadAnswer, err)
 	}
-	usage := Usage{InputTokens: r.Usage.InputTokens}
+	usage := Usage{InputTokens: r.Usage.InputTokens, Model: r.Model}
 	out := make(map[string]Answer, len(qs))
 	for _, q := range qs {
 		a, ok := r.Answers[q.Name]

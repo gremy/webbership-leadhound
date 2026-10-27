@@ -15,6 +15,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -32,11 +33,12 @@ import (
 // and the CLI) never merge onto the same version and lose one another.
 const settingsLockKey int64 = 0x4c48_5345_5453 // "LHSETS"
 
-// The relevance trust gate (D9), in the words the Settings page uses.
+// The relevance trust gate (D9), in the words the Settings page uses: leadrate's gate,
+// the one an eval's Trusted applies.
 const (
-	trustMinLeads     = 30
-	trustMinWithinOne = 80 // per cent
-	trustMinSpearman  = 0.5
+	trustMinLeads     = leadrate.TrustMinN
+	trustMinWithinOne = int(leadrate.TrustMinWithinOne * 100) // per cent
+	trustMinSpearman  = leadrate.TrustMinSpearman
 )
 
 // overrideSections are the Settings sections saved in lead_setting, each with the

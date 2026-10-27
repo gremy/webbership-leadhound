@@ -19,6 +19,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadview"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
@@ -30,7 +31,7 @@ import (
 
 // relevanceQuestion is the relevance question whose latest eval decides whether the list
 // sorts by relevance (the trust gate, D9).
-const relevanceQuestion = "relevance@1"
+const relevanceQuestion = leadrate.Question
 
 // noteValueRunes is the most of one ignored value a note repeats.
 const noteValueRunes = 40
@@ -112,7 +113,12 @@ func (b *backend) leadsWeighing(ctx context.Context) (leadsWeighing, error) {
 	if err != nil {
 		return leadsWeighing{}, err
 	}
-	lq := b.lq()
+	return weighLeads(ctx, b.lq(), setup)
+}
+
+// weighLeads is leadsWeighing over lq for the effective config in setup; leads rate orders
+// its queue by it too.
+func weighLeads(ctx context.Context, lq leadstore.Queries, setup leadsSetup) (leadsWeighing, error) {
 	// The fallback the queue reads (CandidateLeads): the file's profile, or kind points
 	// from kinds_priority; a saved profile replaces it.
 	fallback := setup.leads.PriorityProfile()

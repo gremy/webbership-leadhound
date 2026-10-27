@@ -34,8 +34,12 @@ type Answer struct {
 	Probabilities map[string]float64
 }
 
-// Usage is what one call cost. Only input tokens are billed.
-type Usage struct{ InputTokens int }
+// Usage is what one call cost and which model answered it. Only input tokens are billed.
+// Model is the model the provider's response named; "" when it named none (a Fake).
+type Usage struct {
+	InputTokens int
+	Model       string
+}
 
 var (
 	// ErrTooLong means the state and questions are longer than the model's context.
