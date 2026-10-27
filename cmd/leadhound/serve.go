@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
 	"github.com/gremy/webbership-leadhound/internal/candidate"
+	"github.com/gremy/webbership-leadhound/internal/claude"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/eval"
@@ -65,8 +67,10 @@ const maxTrackReason = 500
 // ones finish for up to 10 seconds, closes the store and returns nil. It also refuses to
 // start when LEADHOUND_MAILBOX_KEY_FILE is set (not empty) in its environment: that
 // variable names the private mailbox key for local worker runs, and the console must never
-// hold it. Without a usable LEADHOUND_MAILBOX_PUBLIC_KEY it starts, says so in its log, and
-// refuses only a new mailbox password.
+// hold it. The same holds for the Anthropic key: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or
+// LEADHOUND_ANTHROPIC_KEY_FILE set, or an anthropic-key systemd credential present, and it
+// refuses to start (exit 2). Without a usable LEADHOUND_MAILBOX_PUBLIC_KEY it starts, says so
+// in its log, and refuses only a new mailbox password.
 func runServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	dev := fs.Bool("dev", false, "plain-http cookies for local use; refused unless LEADHOUND_LIVE is off")
@@ -78,6 +82,9 @@ func runServe(ctx context.Context, args []string) error {
 		return usageError("%s", serveUsage)
 	}
 	if err := serveKeyFileRefusal(os.Getenv); err != nil {
+		return err
+	}
+	if err := serveAnthropicKeyRefusal(os.Getenv, fileExists); err != nil {
 		return err
 	}
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL", "LEADHOUND_DATA_DIR", "LEADHOUND_CONSOLE_EMAIL", "LEADHOUND_CONSOLE_PASSWORD_HASH")
@@ -239,6 +246,37 @@ func serveKeyFileRefusal(getenv func(string) string) error {
 	return nil
 }
 
+// anthropicKeyEnv names every variable that can carry the Anthropic key. The key reaches only
+// the units that call Claude, as the systemd credential claude.CredentialName; claude.KeyFileEnv
+// names it for local runs. The two ANTHROPIC_ variables are never read by leadhound, but the
+// SDK reads them when left to its defaults, so a console that has either holds key material
+// all the same.
+var anthropicKeyEnv = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", claude.KeyFileEnv}
+
+// serveAnthropicKeyRefusal refuses (exit 2) a console that can see the Anthropic key: any of
+// anthropicKeyEnv set to anything (empty is not set), or an anthropic-key credential in
+// $CREDENTIALS_DIRECTORY. The console never calls Claude, so it must never hold the key.
+// exists reports whether a path is there; it is never asked to read it.
+func serveAnthropicKeyRefusal(getenv func(string) string, exists func(string) bool) error {
+	for _, name := range anthropicKeyEnv {
+		if getenv(name) != "" {
+			return usageError("%s is set; the console must never hold the Anthropic key: remove it from the console's environment "+
+				"(the key reaches only the units that call Claude, as a systemd credential)", name)
+		}
+	}
+	if dir := getenv("CREDENTIALS_DIRECTORY"); dir != "" && exists(filepath.Join(dir, claude.CredentialName)) {
+		return usageError("$CREDENTIALS_DIRECTORY/%s exists; the console must never hold the Anthropic key: remove "+
+			"LoadCredential=%s from the console's unit (only the units that call Claude get it)", claude.CredentialName, claude.CredentialName)
+	}
+	return nil
+}
+
+// fileExists reports whether path names something, without opening it.
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 // buildSnapshot is buildInput and the funnel for now. The console never rechecks, so the
 // recheck is off unless LEADHOUND_LIVE allows LinkedIn, the same test linkedinClients makes
 // for the brief.
@@ -383,6 +421,10 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		d.LeadsCallCap = setup.jevLeadsDailyCap()
 	}
 	d.AICostUSD = float64(u.InputTokens) * eval.CostPerMillionInput / 1e6
+	d.ClaudeCapMicros = b.cfg.ClaudeDailyCapMicros
+	if d.ClaudeMicros, d.ClaudeByPurpose, err = claudeSpendToday(ctx, q, local); err != nil {
+		return console.Dashboard{}, err
+	}
 	boards, err := q.CountBoards(ctx, store.BoardFilter{})
 	if err != nil {
 		return console.Dashboard{}, err

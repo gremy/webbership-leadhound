@@ -560,6 +560,12 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 	if p.YourCall, err = leadCall(ctx, b.lq(), &p.LeadListRow); err != nil {
 		return console.LeadDetailPage{}, err
 	}
+	// Every purpose together; 0 (no Claude call on this lead yet) shows nothing.
+	if spent, err := b.s.Q().ClaudeSpendForLead(ctx, id, ""); err != nil {
+		return console.LeadDetailPage{}, err
+	} else if spent > 0 {
+		p.ClaudeSpend = console.USD(spent)
+	}
 	if d.ListRank != nil {
 		p.ListRank = strconv.Itoa(*d.ListRank)
 	}

@@ -19,8 +19,9 @@ type CampaignView struct {
 	Countries  []CampaignCountry
 	Steps      []CampaignStep
 	Writer     string // "template" | "claude"
-	// ClaudeSpendToday is today's Claude spend in words ("$0.84 of $5.00"); "" until
-	// Claude writes for this campaign.
+	// ClaudeSpendToday is the account's Claude spend today in words ("$0.84 of $5.00"),
+	// every campaign together: spend is recorded per account and lead, not per campaign.
+	// "" shows "not in use yet".
 	ClaudeSpendToday string
 }
 

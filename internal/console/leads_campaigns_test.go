@@ -49,7 +49,7 @@ func TestCampaignsPage(t *testing.T) {
 		"<dt>Version</dt><dd><code>0123456789ab</code> · Sat 24 Oct 04:50 · from its file</dd>",
 		"<dt>Lead kinds</dt><dd>Drupal 7 or older, Drupal 10</dd>",
 		"<dt>Drafted by</dt><dd>Templates</dd>",
-		"<dt>Claude spend today</dt><dd>not in use yet</dd>",
+		"<dt>Claude spend today (whole account)</dt><dd>not in use yet</dd>",
 		`<span class="item-head">United Kingdom</span> <span class="item-meta">email on · calls on · writes in English</span>`,
 		`<span class="item-head">Germany</span> <span class="item-meta">email off · calls off</span>`,
 		`Step 1: an email</span> <span class="item-meta">first</span>`,
@@ -70,7 +70,7 @@ func TestCampaignsPage(t *testing.T) {
 	// Claude as writer and a spend line, a retired campaign, and no campaigns at all.
 	b.campaigns[0].Writer, b.campaigns[0].ClaudeSpendToday, b.campaigns[0].Retired = "claude", "$0.84 of $5.00", true
 	body = h.do(get("/leads/campaigns", h.session(t))).Body.String()
-	for _, want := range []string{"<dt>Drafted by</dt><dd>Claude</dd>", "<dt>Claude spend today</dt><dd>$0.84 of $5.00</dd>", `<span class="tag">retired</span>`} {
+	for _, want := range []string{"<dt>Drafted by</dt><dd>Claude</dd>", "<dt>Claude spend today (whole account)</dt><dd>$0.84 of $5.00</dd>", `<span class="tag">retired</span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the Campaigns page lacks %q", want)
 		}

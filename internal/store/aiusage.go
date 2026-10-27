@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
+	"github.com/gremy/webbership-leadhound/internal/claude"
 )
 
 // Queries is the usage store ai.Capped counts against, and its cross-process lock.
@@ -75,6 +76,76 @@ func (q Queries) RecordAIUsage(ctx context.Context, r ai.UsageRow) error {
 		r.Provider, r.Model, r.Day.Format(time.DateOnly), r.Calls, r.InputTokens, purpose)
 	if err != nil {
 		return fmt.Errorf("store: record ai usage %s %s %s: %w", r.Provider, r.Model, purpose, err)
+	}
+	return nil
+}
+
+// Queries is the usage store claude.Capped counts dollars against, and its lock.
+var (
+	_ claude.UsageStore  = Queries{}
+	_ claude.UsageLocker = Queries{}
+)
+
+// WithClaudeUsageLock is WithUsageLock for provider anthropic: fn reads, calls and records
+// under the same advisory lock every other Claude caller takes, with a store bound to the
+// lock's transaction.
+func (q Queries) WithClaudeUsageLock(ctx context.Context, fn func(claude.UsageStore) error) error {
+	return q.WithUsageLock(ctx, claude.Provider, func(st ai.UsageStore) error {
+		return fn(st.(Queries))
+	})
+}
+
+// ClaudeSpendOn sums the cost in micro-dollars recorded for Claude (provider anthropic only)
+// by accountID on purpose on day's calendar date, read in day's own location as AICallsOn
+// reads it. An empty purpose sums every purpose. Jev rows never count.
+func (q Queries) ClaudeSpendOn(ctx context.Context, accountID int64, purpose string, day time.Time) (int64, error) {
+	var n int64
+	err := q.db.QueryRow(ctx,
+		`SELECT COALESCE(sum(cost_micros), 0)::bigint FROM ai_usage
+		 WHERE provider = $1 AND account_id = $2 AND day = $3::date AND ($4::text = '' OR purpose = $4::text)`,
+		claude.Provider, accountID, day.Format(time.DateOnly), purpose).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: claude spend account %d %q on %s: %w", accountID, purpose, day.Format(time.DateOnly), err)
+	}
+	return n, nil
+}
+
+// ClaudeSpendForLead sums the cost in micro-dollars Claude has ever cost on leadID for
+// purpose; an empty purpose sums every purpose.
+func (q Queries) ClaudeSpendForLead(ctx context.Context, leadID int64, purpose string) (int64, error) {
+	var n int64
+	err := q.db.QueryRow(ctx,
+		`SELECT COALESCE(sum(cost_micros), 0)::bigint FROM ai_usage
+		 WHERE provider = $1 AND lead_id = $2 AND ($3::text = '' OR purpose = $3::text)`,
+		claude.Provider, leadID, purpose).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: claude spend lead %d %q: %w", leadID, purpose, err)
+	}
+	return n, nil
+}
+
+// RecordClaudeUsage inserts one ai_usage row for one billed Claude call (calls = 1, provider
+// anthropic). A LeadID of 0 stores no lead. An account below 1 or a negative cost is refused
+// before the insert, so a call is never recorded against nobody or for less than nothing.
+func (q Queries) RecordClaudeUsage(ctx context.Context, r claude.UsageRow) error {
+	if r.AccountID < 1 {
+		return fmt.Errorf("store: record claude usage %s %s: account %d", r.Model, r.Purpose, r.AccountID)
+	}
+	if r.CostMicros < 0 {
+		return fmt.Errorf("store: record claude usage %s %s: negative cost %d", r.Model, r.Purpose, r.CostMicros)
+	}
+	var lead *int64
+	if r.LeadID != 0 {
+		lead = &r.LeadID
+	}
+	_, err := q.db.Exec(ctx,
+		`INSERT INTO ai_usage (provider, model, day, calls, purpose, account_id, lead_id, batch,
+		   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, web_searches, cost_micros)
+		 VALUES ($1, $2, $3::date, 1, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		claude.Provider, r.Model, r.Day.Format(time.DateOnly), r.Purpose, r.AccountID, lead, r.Batch,
+		r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheWriteTokens, r.WebSearches, r.CostMicros)
+	if err != nil {
+		return fmt.Errorf("store: record claude usage %s %s lead %d: %w", r.Model, r.Purpose, r.LeadID, err)
 	}
 	return nil
 }

@@ -1320,6 +1320,29 @@ func TestCallsLine(t *testing.T) {
 	}
 }
 
+// TestClaudeLine: the dashboard's Claude line is the account's spend against the daily
+// ceiling, naming only the purposes that spent; a quiet day reads $0.00, and spend under a
+// cent never reads as nothing.
+func TestClaudeLine(t *testing.T) {
+	tests := []struct {
+		d    Dashboard
+		want string
+	}{
+		{Dashboard{ClaudeMicros: 840_000, ClaudeCapMicros: 5_000_000, ClaudeByPurpose: []PurposeSpend{
+			{"drafting", 610_000}, {"research", 230_000}}}, "Claude today: $0.84 of $5.00 (drafting $0.61, research $0.23)"},
+		{Dashboard{ClaudeCapMicros: 5_000_000}, "Claude today: $0.00 of $5.00"},
+		{Dashboard{ClaudeMicros: 2_000, ClaudeCapMicros: 5_000_000, ClaudeByPurpose: []PurposeSpend{{"drafts_eval", 2_000}, {"research", 0}}},
+			"Claude today: under $0.01 of $5.00 (drafts eval under $0.01)"},
+		{Dashboard{ClaudeMicros: 5_000_000, ClaudeCapMicros: 5_000_000, ClaudeByPurpose: []PurposeSpend{{"drafting", 5_000_000}}},
+			"Claude today: $5.00 of $5.00 (drafting $5.00)"},
+	}
+	for _, tt := range tests {
+		if got := claudeLine(tt.d); got != tt.want {
+			t.Errorf("claudeLine = %q, want %q", got, tt.want)
+		}
+	}
+}
+
 func TestTrackedFilters(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
+	"github.com/gremy/webbership-leadhound/internal/claude"
 )
 
 // LockJob takes a row lock on the job for the rest of the transaction (SELECT 1 FROM job
@@ -76,24 +77,51 @@ func (q Queries) RunsSince(ctx context.Context, since time.Time) ([]Run, error) 
 }
 
 // AIUsage is one day's Jev calls per purpose (each has its own daily cap) and the input
-// tokens of both together, over every provider and model.
-type AIUsage struct{ JobsCalls, LeadsCalls, InputTokens int }
+// tokens of both together, over every Jev provider and model, plus what Claude cost that day.
+// Claude rows (provider anthropic) never count in the Jev fields, whose dollars the console
+// still computes from InputTokens; Jev rows never count in ClaudeMicros.
+type AIUsage struct {
+	JobsCalls, LeadsCalls, InputTokens int
+	ClaudeMicros                       int64 // Claude's recorded cost in micro-dollars, every account and purpose
+}
+
+// ClaudeUSD is ClaudeMicros in dollars.
+func (u AIUsage) ClaudeUSD() float64 { return float64(u.ClaudeMicros) / 1e6 }
 
 // AIUsageOn sums the calls per purpose and the input tokens recorded on day's calendar
 // date, read in day's own location as AICallsOn reads it (the caller passes a time in
-// LEADHOUND_TZ).
+// LEADHOUND_TZ), and Claude's cost on that date.
 func (q Queries) AIUsageOn(ctx context.Context, day time.Time) (AIUsage, error) {
 	var u AIUsage
 	err := q.db.QueryRow(ctx,
-		`SELECT COALESCE(sum(calls) FILTER (WHERE purpose = $2), 0)::bigint,
-		        COALESCE(sum(calls) FILTER (WHERE purpose = $3), 0)::bigint,
-		        COALESCE(sum(input_tokens), 0)::bigint
+		`SELECT COALESCE(sum(calls) FILTER (WHERE provider <> $4 AND purpose = $2), 0)::bigint,
+		        COALESCE(sum(calls) FILTER (WHERE provider <> $4 AND purpose = $3), 0)::bigint,
+		        COALESCE(sum(input_tokens) FILTER (WHERE provider <> $4), 0)::bigint,
+		        COALESCE(sum(cost_micros) FILTER (WHERE provider = $4), 0)::bigint
 		 FROM ai_usage WHERE day = $1::date`,
-		day.Format(time.DateOnly), ai.PurposeJobs, ai.PurposeLeads).Scan(&u.JobsCalls, &u.LeadsCalls, &u.InputTokens)
+		day.Format(time.DateOnly), ai.PurposeJobs, ai.PurposeLeads, claude.Provider).
+		Scan(&u.JobsCalls, &u.LeadsCalls, &u.InputTokens, &u.ClaudeMicros)
 	if err != nil {
 		return AIUsage{}, fmt.Errorf("store: ai usage on %s: %w", day.Format(time.DateOnly), err)
 	}
 	return u, nil
+}
+
+// ClaudeSpendByPurpose returns accountID's Claude cost in micro-dollars per purpose on day's
+// calendar date (read as AICallsOn reads it), for "Claude today: $0.84 of $5.00 (drafting
+// $0.61, research $0.23)". A purpose with nothing recorded is absent; a quiet day is an empty
+// (non-nil) map.
+func (q Queries) ClaudeSpendByPurpose(ctx context.Context, accountID int64, day time.Time) (map[string]int64, error) {
+	out := map[string]int64{}
+	err := q.db.QueryRow(ctx,
+		`SELECT coalesce(jsonb_object_agg(purpose, micros), '{}') FROM
+		   (SELECT purpose, sum(cost_micros)::bigint AS micros FROM ai_usage
+		    WHERE provider = $1 AND account_id = $2 AND day = $3::date GROUP BY purpose) s`,
+		claude.Provider, accountID, day.Format(time.DateOnly)).Scan(&out)
+	if err != nil {
+		return nil, fmt.Errorf("store: claude spend by purpose account %d on %s: %w", accountID, day.Format(time.DateOnly), err)
+	}
+	return out, nil
 }
 
 // Funnel is what happened to jobs on one local day.

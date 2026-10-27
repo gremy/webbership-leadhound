@@ -24,6 +24,7 @@
     <div><dt>Reach by</dt><dd>{{template "lead_channels" $d}}</dd></div>
     <div><dt>Outreach order</dt><dd>{{with $d.Position}}number {{.}}{{else}}not in the order{{end}}</dd></div>
     <div><dt>Starred</dt><dd>{{if $d.Starred}}yes{{else}}no{{end}}</dd></div>
+    {{with $d.ClaudeSpend}}<div><dt>Claude spend</dt><dd>{{.}} in all</dd></div>{{end}}
     {{if $d.SmallSite}}<div><dt>Size</dt><dd><span class="tag">small site</span></dd></div>{{end}}
   </dl>
 

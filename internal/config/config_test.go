@@ -46,6 +46,7 @@ func TestLoadDefaults(t *testing.T) {
 		ConsoleURL:           "",
 		DBMaxBytes:           8 << 30,
 		DiskMinFreePct:       15,
+		ClaudeDailyCapMicros: 5_000_000,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("Load(empty) = %#v\nwant %#v", cfg, want)

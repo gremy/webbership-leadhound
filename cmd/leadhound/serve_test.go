@@ -50,6 +50,10 @@ func serveEnv(t *testing.T) {
 	t.Setenv("LEADHOUND_CONSOLE_EMAIL", "operator@mail.example")
 	t.Setenv("LEADHOUND_CONSOLE_PASSWORD_HASH", testHash(t))
 	t.Setenv(secretbox.KeyFileEnv, "")
+	for _, name := range anthropicKeyEnv {
+		t.Setenv(name, "")
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
 }
 
 // TestServeRefusals: serve exits 2, naming the problem, without the operator's email or

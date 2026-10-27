@@ -124,13 +124,24 @@ type Dashboard struct {
 	// JobsCalls and LeadsCalls are today's Jev calls for scoring jobs and rating leads, each
 	// against its own daily cap (JobsCallCap, LeadsCallCap; 0 when unknown).
 	JobsCalls, JobsCallCap, LeadsCalls, LeadsCallCap int
-	AIInputTokens                                    int           // both purposes together
-	AICostUSD                                        float64       // both purposes together
-	Boards                                           []BoardCount  // ats, state, n
-	LastRuns                                         []RunRow      // the latest 8
-	LastBrief                                        *BriefStamp   // day, sent at, listed count; nil when none sent
-	Leads                                            *LeadsSummary // nil when leads are not set up on this server
-	RunNow                                           RunNowCard    // read live, outside the snapshot
+	AIInputTokens                                    int     // both purposes together
+	AICostUSD                                        float64 // both purposes together
+	// ClaudeMicros is the account's Claude spend today in micro-dollars, ClaudeCapMicros the
+	// LEADHOUND_CLAUDE_DAILY_USD_CAP ceiling, ClaudeByPurpose the spend per purpose (only
+	// purposes that spent, drafting, research and drafts_eval first).
+	ClaudeMicros, ClaudeCapMicros int64
+	ClaudeByPurpose               []PurposeSpend
+	Boards                        []BoardCount  // ats, state, n
+	LastRuns                      []RunRow      // the latest 8
+	LastBrief                     *BriefStamp   // day, sent at, listed count; nil when none sent
+	Leads                         *LeadsSummary // nil when leads are not set up on this server
+	RunNow                        RunNowCard    // read live, outside the snapshot
+}
+
+// PurposeSpend is one Claude purpose's spend in micro-dollars.
+type PurposeSpend struct {
+	Purpose string
+	Micros  int64
 }
 
 // Funnel counts the day's jobs at each step, as store.Funnel does.
@@ -332,6 +343,7 @@ type LeadDetailPage struct {
 	RelevanceHistory []LeadRelevance // the latest few ratings, newest first
 	Why              []string        // why it ranks here, one plain line each
 	YourCall         LeadCall        // the operator's own call: the "Your call" block
+	ClaudeSpend      string          // what Claude has cost on this lead in words; "" when nothing
 }
 
 // LeadCall is the operator's own call on a lead, as its page shows it: the band he chose

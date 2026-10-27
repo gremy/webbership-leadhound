@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -1622,35 +1623,57 @@ func TestInstallArmsEveryPath(t *testing.T) {
 // handed the mailboxes' private key, as a systemd credential.
 var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-sync", "leadhound-mailbox-check"}
 
+// claudeWorkers are the only services that call Claude, so the only ones handed the Anthropic
+// key, as a systemd credential. The research and drafts units join them when they are added.
+var claudeWorkers = []string{"leadhound-leads-batch"}
+
 const (
-	mailboxCredential = "mailbox-key:/etc/leadhound/mailbox.key" //nolint:gosec // G101: a systemd credential name and path, not a credential
-	noCredentials     = "-/run/credentials"                      //nolint:gosec // G101: a path the units hide, not a credential
+	mailboxCredential   = "mailbox-key:/etc/leadhound/mailbox.key"     //nolint:gosec // G101: a systemd credential name and path, not a credential
+	anthropicCredential = "anthropic-key:/etc/leadhound/anthropic.key" //nolint:gosec // G101: a systemd credential name and path, not a credential
+	noCredentials       = "-/run/credentials"                          //nolint:gosec // G101: a path the units hide, not a credential
 )
 
-// TestMailboxKeyOnlyForWorkers: the send, the sync and the mailbox check have the key's
-// LoadCredential= line and nothing else does; every other service, the console first, has
-// InaccessiblePaths=-/run/credentials, so a compromised console or job can store a new sealed
-// password but never read one back (MB-R4).
+// wantCredentials is the exact LoadCredential= list the service name gets, in file order.
+func wantCredentials(name string) []string {
+	var want []string
+	if slices.Contains(mailboxWorkers, name) {
+		want = append(want, mailboxCredential)
+	}
+	if slices.Contains(claudeWorkers, name) {
+		want = append(want, anthropicCredential)
+	}
+	return want
+}
+
+// TestMailboxKeyOnlyForWorkers: the send, the sync and the mailbox check have the mailbox
+// key's LoadCredential= line, the units that call Claude have the Anthropic key's, and nothing
+// else has either or any other credential; every service with no credential, the console
+// first, has InaccessiblePaths=-/run/credentials, so a compromised console or job can store a
+// new sealed password but never read one back (MB-R4), and never holds the Anthropic key.
 func TestMailboxKeyOnlyForWorkers(t *testing.T) {
 	credKey := regexp.MustCompile(`^(Load|Set|Import)Credential`)
 	all := units(t, "*.service")
 	for _, pattern := range []string{"*.timer", "*.path"} {
 		maps.Copy(all, units(t, pattern))
 	}
-	seen := 0
+	seen := map[string]bool{}
 	for path, u := range all {
 		name := base(path)
-		worker := filepath.Ext(path) == ".service" && slices.Contains(mailboxWorkers, name)
-		if worker {
-			seen++
+		var want []string
+		if filepath.Ext(path) == ".service" {
+			want = wantCredentials(name)
+			if len(want) > 0 {
+				seen[name] = true
+			}
 		}
 		for section, keys := range u {
 			for key, vals := range keys {
 				if !credKey.MatchString(key) {
 					continue
 				}
-				if !worker || section != "Service" || key != "LoadCredential" || !slices.Equal(vals, []string{mailboxCredential}) {
-					t.Errorf("%s: [%s] %s = %q; only %q get a credential, exactly LoadCredential=%s", path, section, key, vals, mailboxWorkers, mailboxCredential)
+				if len(want) == 0 || section != "Service" || key != "LoadCredential" || !slices.Equal(vals, want) {
+					t.Errorf("%s: [%s] %s = %q; want exactly LoadCredential=%q (mailbox key only for %q, Anthropic key only for %q)",
+						path, section, key, vals, want, mailboxWorkers, claudeWorkers)
 				}
 			}
 		}
@@ -1659,16 +1682,57 @@ func TestMailboxKeyOnlyForWorkers(t *testing.T) {
 		}
 		inaccessible := strings.Fields(strings.Join(u["Service"]["InaccessiblePaths"], " "))
 		switch {
-		case worker && len(u["Service"]["LoadCredential"]) == 0:
-			t.Errorf("%s: no LoadCredential=%s; it opens the sealed passwords", path, mailboxCredential)
-		case worker && slices.ContainsFunc(inaccessible, func(p string) bool { return strings.Contains(p, "/run/credentials") }):
+		case len(want) > 0 && !slices.Equal(u["Service"]["LoadCredential"], want):
+			t.Errorf("%s: LoadCredential = %q, want %q", path, u["Service"]["LoadCredential"], want)
+		case len(want) > 0 && slices.ContainsFunc(inaccessible, func(p string) bool { return strings.Contains(p, "/run/credentials") }):
 			t.Errorf("%s: InaccessiblePaths = %q hides its own credential", path, inaccessible)
-		case !worker && !slices.Contains(inaccessible, noCredentials):
+		case len(want) == 0 && !slices.Contains(inaccessible, noCredentials):
 			t.Errorf("%s: InaccessiblePaths = %q, want it to include %s", path, inaccessible, noCredentials)
 		}
 	}
-	if seen != len(mailboxWorkers) {
-		t.Errorf("%d of the %d mailbox workers have a .service file", seen, len(mailboxWorkers))
+	for _, name := range slices.Concat(mailboxWorkers, claudeWorkers) {
+		if !seen[name] {
+			t.Errorf("%s has no .service file", name)
+		}
+	}
+}
+
+// TestAnthropicKeyNeverOnConsole: the console unit gets no credential at all, hides
+// /run/credentials, and nothing in it names the Anthropic key; no unit sets ANTHROPIC_ in its
+// environment, and env.example sets no ANTHROPIC_ line (the env file reaches every unit, the
+// console included).
+func TestAnthropicKeyNeverOnConsole(t *testing.T) {
+	const path = "leadhound-console.service"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := readUnit(t, path)
+	if got := u["Service"]["LoadCredential"]; len(got) != 0 {
+		t.Errorf("%s: LoadCredential = %q, want none", path, got)
+	}
+	if strings.Contains(string(b), "anthropic") {
+		t.Errorf("%s names the Anthropic key", path)
+	}
+	if inaccessible := strings.Fields(strings.Join(u["Service"]["InaccessiblePaths"], " ")); !slices.Contains(inaccessible, noCredentials) {
+		t.Errorf("%s: InaccessiblePaths = %q, want it to include %s", path, inaccessible, noCredentials)
+	}
+	for p, u := range units(t, "*.service") {
+		for _, e := range u["Service"]["Environment"] {
+			if strings.Contains(e, "ANTHROPIC_") {
+				t.Errorf("%s: Environment = %q; the Anthropic key is a credential, never an environment line", p, e)
+			}
+		}
+	}
+	env, err := os.ReadFile("env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(env)) {
+		l := strings.TrimSpace(line)
+		if !strings.HasPrefix(l, "#") && (strings.HasPrefix(l, "ANTHROPIC_") || strings.HasPrefix(l, "LEADHOUND_ANTHROPIC_KEY_FILE")) {
+			t.Errorf("env.example sets %q; the env file reaches the console, which refuses to start with it", l)
+		}
 	}
 }
 
@@ -1866,6 +1930,96 @@ esac
 			}
 			if leftovers, _ := filepath.Glob(env + ".*"); len(leftovers) > 0 {
 				t.Errorf("temporary files left: %q", leftovers)
+			}
+		})
+	}
+}
+
+// TestInstallAnthropicKey: install.sh runs anthropic_key before the units are installed; the
+// function never creates, reads or prints the key, makes an existing one root:root 0600 again,
+// and on a missing one says the Claude units cannot start without failing the deploy.
+func TestInstallAnthropicKey(t *testing.T) {
+	steps := installSteps(t)
+	call := firstLine(steps, "anthropic_key /etc/leadhound/anthropic.key")
+	unitsAt := firstLine(steps, "/etc/systemd/system/")
+	switch {
+	case call < 0:
+		t.Fatal("install.sh does not run anthropic_key /etc/leadhound/anthropic.key")
+	case call > unitsAt:
+		t.Errorf("install.sh runs anthropic_key (line %d) after installing the units (line %d)", call, unitsAt)
+	}
+	fn := installFunc(t, "anthropic_key")
+	for _, never := range []string{"cat ", "<", ">", "leadhound ", "head", "tail", "sed", "grep", "read ", "touch", "install ", "cp ", "mv "} {
+		if strings.Contains(fn, never) {
+			t.Errorf("anthropic_key uses %q; it must never create, read or move the key:\n%s", never, fn)
+		}
+	}
+
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("set -eu\n"+fn+"anthropic_key \"$1\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "chown"), []byte("#!/bin/sh\necho \"chown $*\" >>\"$LEADHOUND_LOG\"\n"), 0o700); err != nil { // #nosec G306 -- an executable stub in a test temp dir
+		t.Fatal(err)
+	}
+	const secret = "sk-ant-sentinel-value\n" //nolint:gosec // G101: a sentinel the test looks for, not a credential
+	for _, tc := range []struct {
+		name    string
+		mode    os.FileMode // 0: no key file
+		wantOut string
+	}{
+		{"missing", 0, "cannot start until you place it"},
+		{"kept 0600", 0o600, "is root:root 0600"},
+		{"restored 0644", 0o644, "is root:root 0600"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			key, log := filepath.Join(tmp, "anthropic.key"), filepath.Join(tmp, "calls.log")
+			if tc.mode != 0 {
+				if err := os.WriteFile(key, []byte(secret), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(key, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command(sh, script, key) // #nosec G204 -- the test's own script
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "LEADHOUND_LOG="+log)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("anthropic_key: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), tc.wantOut) || strings.Contains(string(out), "sentinel") {
+				t.Errorf("output %q, want %q and no key material", out, tc.wantOut)
+			}
+			calls, _ := os.ReadFile(log) // #nosec G304 -- the test's own temp file
+			if tc.mode == 0 {
+				if _, err := os.Lstat(key); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("a missing key was created (%v)", err)
+				}
+				if len(calls) != 0 {
+					t.Errorf("chown ran on a missing key: %s", calls)
+				}
+				return
+			}
+			got, err := os.ReadFile(key) // #nosec G304 -- the test's own temp file
+			if err != nil || string(got) != secret {
+				t.Errorf("the key changed: %v", err)
+			}
+			if fi, err := os.Stat(key); err != nil || fi.Mode().Perm() != 0o600 {
+				t.Errorf("key file mode %v (%v), want 0600", fi.Mode().Perm(), err)
+			}
+			if !strings.Contains(string(calls), "chown root:root "+key) {
+				t.Errorf("the key was not made root:root; calls:\n%s", calls)
 			}
 		})
 	}

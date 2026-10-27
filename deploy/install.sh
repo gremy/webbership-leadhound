@@ -2,7 +2,7 @@
 # install.sh STAGE: installs a release that `make deploy` copied into the directory STAGE.
 # Run on the server as root (make deploy runs it with sudo). Order: the env files' owner and
 # mode, the Postgres limits on the leadhound roles, the new binary beside the old one, migrate
-# with the new binary as the owner role, then the swap, the mailbox key, the backup script, the units,
+# with the new binary as the owner role, then the swap, the mailbox key, the Anthropic key's mode, the backup script, the units,
 # the timers, the leads timers as /etc/leadhound/env switches them, and the console. A failed migrate leaves the old
 # binary and the old units in place. STAGE is removed once the units are in.
 set -eu
@@ -86,6 +86,20 @@ mailbox_key() {
 	echo "install: wrote the mailbox public key to $2"
 }
 
+# anthropic_key KEY: the Anthropic key (deploy/README.md, The Anthropic key). The operator
+# places KEY by hand; install never creates, reads or prints it. When it is there it is made
+# root:root 0600 again on every deploy (a copy put back by hand may not be); when it is not,
+# the units that call Claude cannot start, and install says so without failing the deploy.
+anthropic_key() {
+	if [ ! -e "$1" ]; then
+		echo "install: no Anthropic key at $1: the units that call Claude (leadhound-leads-batch) cannot start until you place it (deploy/README.md, The Anthropic key)"
+		return
+	fi
+	chown root:root "$1"
+	chmod 0600 "$1"
+	echo "install: the Anthropic key at $1 is root:root 0600"
+}
+
 # The one-time bootstrap (deploy/README.md) comes first.
 id leadhound >/dev/null 2>&1 || fail "no leadhound user: run the bootstrap in deploy/README.md first"
 id postgres >/dev/null 2>&1 || fail "no postgres user: install Postgres first (deploy/README.md)"
@@ -121,6 +135,8 @@ fi
 mv -f "$bin/.leadhound.new" "$bin/leadhound"
 # The mailbox key, before the units that read it are installed (mailbox_key above).
 mailbox_key /etc/leadhound/mailbox.key /etc/leadhound/env
+# The Anthropic key's owner and mode, before the units that read it are installed.
+anthropic_key /etc/leadhound/anthropic.key
 install -o root -g root -m 0755 "$stage/leadhound-backup.sh" "$bin/leadhound-backup"
 for f in "$stage"/leadhound-*.service "$stage"/leadhound-*.timer "$stage"/leadhound-*.path; do
 	install -o root -g root -m 0644 "$f" /etc/systemd/system/

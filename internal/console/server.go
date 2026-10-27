@@ -314,6 +314,7 @@ func (s *server) funcs() template.FuncMap {
 		"sources":      sources,
 		"costLine":     costLine,
 		"callsLine":    callsLine,
+		"claudeLine":   claudeLine,
 		"row":          func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
 		"ruleFields":   func() []string { return ruleFields },
 		"cssVersion":   func() string { return cssVersion },
@@ -935,6 +936,35 @@ func callsLine(d Dashboard) string {
 // "$0.12 · 2.7M input tokens".
 func costLine(d Dashboard) string {
 	return fmt.Sprintf("$%.2f · %s input tokens", d.AICostUSD, compact(d.AIInputTokens))
+}
+
+// USD words micro-dollars as dollars and cents, "$0.84"; a spend above zero but under a cent
+// is "under $0.01", never "$0.00".
+func USD(micros int64) string {
+	if micros > 0 && micros < 10_000 {
+		return "under $0.01"
+	}
+	return fmt.Sprintf("$%.2f", float64(micros)/1e6)
+}
+
+// SpendOf words spent against a cap, "$0.84 of $5.00".
+func SpendOf(spent, capMicros int64) string { return USD(spent) + " of " + USD(capMicros) }
+
+// claudeLine is the dashboard's Claude spend today against the daily ceiling, with the
+// purposes that spent, e.g. "Claude today: $0.84 of $5.00 (drafting $0.61, research $0.23)";
+// "Claude today: $0.00 of $5.00" when nothing was spent.
+func claudeLine(d Dashboard) string {
+	line := "Claude today: " + SpendOf(d.ClaudeMicros, d.ClaudeCapMicros)
+	var parts []string
+	for _, p := range d.ClaudeByPurpose {
+		if p.Micros > 0 {
+			parts = append(parts, strings.ReplaceAll(p.Purpose, "_", " ")+" "+USD(p.Micros))
+		}
+	}
+	if len(parts) > 0 {
+		line += " (" + strings.Join(parts, ", ") + ")"
+	}
+	return line
 }
 
 // took is how long a run took, or "running" when it has not finished.

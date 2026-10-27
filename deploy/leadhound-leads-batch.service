@@ -18,6 +18,11 @@ User=leadhound
 Group=leadhound
 # root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
 EnvironmentFile=/etc/leadhound/env
+# The Anthropic key (root:root 0600, placed by the operator by hand), handed to this job as a
+# systemd credential, because drafting with Claude runs at batch time: it reads
+# $CREDENTIALS_DIRECTORY/anthropic-key. Only the units that call Claude get it, never the
+# console (deploy/README.md, The Anthropic key). A missing file fails the unit at start.
+LoadCredential=anthropic-key:/etc/leadhound/anthropic.key
 # timeout ends a step that hangs.
 ExecStart=-/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build
 ExecStart=/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads batch new
@@ -45,9 +50,8 @@ AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-# Only the jobs that send, sync and check a mailbox get its private key, as a systemd
-# credential; this unit sees none, so it can never read a mailbox password back.
-InaccessiblePaths=-/run/credentials
+# No InaccessiblePaths=-/run/credentials here: it would hide the unit's own Anthropic key.
+# The mailbox key is never given to this unit, so it still cannot read a mailbox password.
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

@@ -14,7 +14,7 @@
     <div><dt>Version</dt><dd>{{with .SpecSHA}}<code>{{shortSHA .}}</code>{{else}}none registered{{end}}{{if not .SpecAt.IsZero}} · {{when .SpecAt}}{{end}}{{if eq .SpecSource "console"}} · changed in the console{{else if eq .SpecSource "file"}} · from its file{{end}}</dd></div>
     <div><dt>Lead kinds</dt><dd>{{if .Kinds}}{{join .Kinds ", "}}{{else}}none{{end}}</dd></div>
     <div><dt>Drafted by</dt><dd>{{writerWords .Writer}}</dd></div>
-    <div><dt>Claude spend today</dt><dd>{{or .ClaudeSpendToday "not in use yet"}}</dd></div>
+    <div><dt>Claude spend today (whole account)</dt><dd>{{or .ClaudeSpendToday "not in use yet"}}</dd></div>
   </dl>
 
   <h3>Countries</h3>

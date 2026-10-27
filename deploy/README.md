@@ -361,7 +361,8 @@ Someone with a shell as the service user is outside what the key protects agains
   That deploy prints `install: new mailbox key at /etc/leadhound/mailbox.key, fingerprint …`; later deploys print no fingerprint, because they never make a new key.
 - An existing key is never overwritten.
   Every deploy reads the public key from the key file again and rewrites the env line if it differs, so the two always match; leave the line empty in your copy of `deploy/env.example`.
-- The key reaches only the send, sync and mailbox check units, as a systemd credential (`LoadCredential=`), and every other unit, the console's included, has `/run/credentials` walled off.
+- The key reaches only the send, sync and mailbox check units, as a systemd credential (`LoadCredential=`).
+  Every other unit, the console's included, has `/run/credentials` walled off, except the units that hold the [Anthropic key](#the-anthropic-key), which never get the mailbox key either.
   `make remote` hands it on the same way, and only to `leads selftest`, `leads send`, `leads sync`, `leads mailboxes check` and `leads suppress review`.
 - `LEADHOUND_MAILBOX_KEY_FILE` is for local runs only; never set it on the server.
   The console refuses to start when it is set to anything (the empty line in `deploy/env.example` is fine).
@@ -560,6 +561,43 @@ It lists first each one that now reads as a reply, with the exact lift line to r
 It prints no lift line for a suppression that another opt-out still leans on ("also covers event …: do not lift"), since lifting it would free an address that really asked to hear no more.
 
 `leads transfer` carries only active suppressions: a lifted one is left behind, and a suppression the target had lifted is recorded there again.
+
+## The Anthropic key
+
+LeadHound drafts with Claude, so the jobs that draft need an Anthropic API key.
+The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600`), holding the key alone on one line.
+
+- **Place it by hand.**
+  Make the key in the Claude Console, in a workspace of its own.
+  Then ssh to the server, open the file in your own editor as root (for example `sudo -e /etc/leadhound/anthropic.key`), paste the key, save, and run `sudo chmod 0600 /etc/leadhound/anthropic.key`.
+  Never type the key into a command line, where it lands in your shell history, and never paste it into a chat.
+- **Who reads it.**
+  Only the units that call Claude get it, as a systemd credential (`LoadCredential=anthropic-key:/etc/leadhound/anthropic.key`): today `leadhound-leads-batch.service`, because drafting runs at batch time.
+  The research and drafts units get the same line when they arrive; no other unit, and never the console.
+  This is why it is not a line in `/etc/leadhound/env`: the env file reaches every unit, the console included, and a credential reaches only the units that need it.
+- **No `ANTHROPIC_API_KEY` line is read anywhere.**
+  LeadHound reads the key only from `$CREDENTIALS_DIRECTORY/anthropic-key` on the server or from the file `LEADHOUND_ANTHROPIC_KEY_FILE` names locally, and never from the environment.
+- **The console refuses to start** when it can see the key: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `LEADHOUND_ANTHROPIC_KEY_FILE` set to anything, or an `anthropic-key` credential handed to it.
+  It exits 2, naming what it found, and systemd does not restart it.
+- **Every deploy** makes the file `root:root 0600` again if it is there, and never creates, reads or prints it.
+  Until you place it, the deploy says `install: no Anthropic key at /etc/leadhound/anthropic.key`, and `leadhound-leads-batch.service` cannot start, because systemd fails a unit whose credential file is missing.
+- **Locally**, put the key in a file outside the repository, made `0600` (`chmod 0600`), and set `LEADHOUND_ANTHROPIC_KEY_FILE=/path/outside/the/repo/anthropic.key` in your local `.env`.
+  A file any other user can read is refused.
+  Never set it on the server.
+- **To rotate**, make a new key in the Claude Console, replace the file's contents in your editor as above, and start the next run; a running job keeps the key it started with.
+  Then delete the old key in the Claude Console.
+  No deploy is needed.
+- **A second ceiling.**
+  Set a monthly spend limit on the key's workspace in the Claude Console, so a bug past LeadHound's own caps still stops at a sum you chose.
+
+### Claude spend caps
+
+Every Claude call is priced before it is made, at its worst case, and refused when that would pass a cap; after the call its real cost is recorded.
+
+- `LEADHOUND_CLAUDE_DAILY_USD_CAP` in `/etc/leadhound/env` (default `5.00`, in US dollars) is the ceiling for one day across every purpose.
+- Each purpose has its own daily cap in the campaign settings, never above that ceiling: drafting `3.00`, research `1.50`, and the drafts eval `2.00` (only when the eval's decider is Claude).
+- Each lead has a cap per purpose, checked against what that lead has already cost: drafting `0.08`, about two attempts' worst case so the one retry always fits, and research `0.10`, set in the campaign spec's `caps`.
+- A refused call costs nothing and is logged; the console shows today's spend against the ceiling.
 
 ## Console
 

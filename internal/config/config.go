@@ -160,6 +160,7 @@ type Config struct {
 	ConsoleURL           string        // LEADHOUND_CONSOLE_URL: the console's public https URL, for the brief's footer
 	DBMaxBytes           int64         // LEADHOUND_DB_MAX_BYTES: the database size at which collectors stop storing
 	DiskMinFreePct       int           // LEADHOUND_DISK_MIN_FREE_PCT: the free-disk floor, in percent, under which they stop
+	ClaudeDailyCapMicros int64         // LEADHOUND_CLAUDE_DAILY_USD_CAP in micro-dollars: the ceiling across every Claude purpose per day
 }
 
 // Defaults for the variables that have one.
@@ -176,6 +177,8 @@ const (
 	DefaultConsoleAddr          = "127.0.0.1:8090"
 	DefaultDBMaxBytes           = 8 << 30
 	DefaultDiskMinFreePct       = 15
+	// DefaultClaudeDailyCapMicros is LEADHOUND_CLAUDE_DAILY_USD_CAP's default, $5.00.
+	DefaultClaudeDailyCapMicros = 5_000_000
 	// MinATSInterval is the shortest pause LEADHOUND_ATS_INTERVAL may set: below it, one
 	// ATS's API would see a burst from a large board list.
 	MinATSInterval = 200 * time.Millisecond
@@ -215,6 +218,8 @@ func Load(getenv func(string) string) (Config, []string) {
 	c.ATSDetailBudget = count(getenv, "LEADHOUND_ATS_DETAIL_BUDGET", DefaultATSDetailBudget, report)
 	c.DBMaxBytes = between(getenv, "LEADHOUND_DB_MAX_BYTES", DefaultDBMaxBytes, 1, math.MaxInt64, report)
 	c.DiskMinFreePct = int(between(getenv, "LEADHOUND_DISK_MIN_FREE_PCT", DefaultDiskMinFreePct, 1, 99, report))
+
+	c.ClaudeDailyCapMicros = usdMicros(getenv, "LEADHOUND_CLAUDE_DAILY_USD_CAP", DefaultClaudeDailyCapMicros, report)
 
 	c.LinkedInInterval = duration(getenv, "LEADHOUND_LINKEDIN_INTERVAL", DefaultLinkedInInterval, "4s", report)
 	c.ATSInterval = duration(getenv, "LEADHOUND_ATS_INTERVAL", DefaultATSInterval, "1s", report)
@@ -311,6 +316,60 @@ func between(getenv func(string) string, name string, def, lo, hi int64, report 
 		return def
 	}
 	return n
+}
+
+// maxUSDCapMicros is the largest dollar cap a variable may set, $100,000: far above any
+// sensible cap, and far below where micro-dollar sums could overflow.
+const maxUSDCapMicros = 100_000 * 1_000_000
+
+// usdMicros reads a dollar amount such as 5.00 (at most six decimals, 0 or more, at most
+// $100,000) as micro-dollars, keeping def when it is unset or unusable. It never goes through
+// a float, so 0.07 is exactly 70000.
+func usdMicros(getenv func(string) string, name string, def int64, report func(string)) int64 {
+	v := getenv(name)
+	if v == "" {
+		return def
+	}
+	n, ok := ParseUSDMicros(v)
+	if !ok {
+		report(fmt.Sprintf("%s must be a dollar amount such as 5.00 (0 or more, at most 6 decimals, at most 100000), not %q", name, v))
+		return def
+	}
+	return n
+}
+
+// ParseUSDMicros reads a plain dollar amount ("5", "5.00", "0.075") as micro-dollars. A sign,
+// a currency symbol, an exponent, more than six decimals or more than $100,000 is refused.
+func ParseUSDMicros(v string) (int64, bool) {
+	whole, frac, hasDot := strings.Cut(v, ".")
+	if whole == "" || len(whole) > 6 || (hasDot && (frac == "" || len(frac) > 6)) || !digits(whole) || !digits(frac) {
+		return 0, false
+	}
+	w, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	f := int64(0)
+	if frac != "" {
+		frac += strings.Repeat("0", 6-len(frac))
+		if f, err = strconv.ParseInt(frac, 10, 64); err != nil {
+			return 0, false
+		}
+	}
+	n := w*1_000_000 + f
+	if n > maxUSDCapMicros {
+		return 0, false
+	}
+	return n, true
+}
+
+func digits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Require returns one problem for each named variable that is not set in cfg, in the order
