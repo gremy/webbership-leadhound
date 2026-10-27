@@ -46,8 +46,9 @@ type fakeBackend struct {
 	lastRule RuleRequest
 	leads    LeadsPage
 	batch    LeadBatch
-	prios    PrioritiesPage
-	lastEdit *PriorityForm
+	settings LeadSettingsPage
+	saveErr  error // returned by SaveLeadSettings
+	saves    []settingsSave
 	leadOut  LeadOutcome
 	leadErr  error // returned by LeadAct
 	leadsErr error // returned by every leads read, after readErr
@@ -219,18 +220,17 @@ func richBackend(text string) *fakeBackend {
 			Job:  BriefJob{N: 1, JobID: 42, Title: "Go Engineer", Company: "Acme", Status: "applied", URL: "https://jobs.example/42"},
 			From: "shortlisted", To: "applied", Message: "shortlisted → applied",
 		},
-		job:     richJob(text),
-		ruleMsg: "rule 8 added",
-		leads:   richLeads(text),
-		batch:   richBatch(text),
-		prios: PrioritiesPage{Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Group: "Kind", Label: text, Value: "20"}}, Countries: text},
-			Preview: []QueueLead{{LeadID: 5, Domain: text, Score: 55, Why: []string{text}}}},
-		leadOut: LeadOutcome{Message: text},
-		list:    richLeadList(text),
-		detail:  richLeadDetail(text),
-		runOut:  RunOutcome{Message: text},
-		runCard: richCard(text),
-		results: richResults(text),
+		job:      richJob(text),
+		ruleMsg:  "rule 8 added",
+		leads:    richLeads(text),
+		batch:    richBatch(text),
+		settings: richSettings(text),
+		leadOut:  LeadOutcome{Message: text},
+		list:     richLeadList(text),
+		detail:   richLeadDetail(text),
+		runOut:   RunOutcome{Message: text},
+		runCard:  richCard(text),
+		results:  richResults(text),
 
 		mailboxes: richMailboxes(text),
 		mailbox:   richMailbox(text),

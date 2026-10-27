@@ -1266,3 +1266,142 @@ details.inline summary {
 .signal-fetch .item-list {
   margin-bottom: 0;
 }
+/* Leads: the Settings page. One card per section; each value says where it comes from. */
+.settings-toc ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+.settings-toc a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+.settings-section {
+  scroll-margin-top: 1rem;
+}
+.settings-form {
+  display: grid;
+  gap: 0.75rem;
+}
+.settings-form fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0.4rem 0.75rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.settings-form legend {
+  padding: 0 0.25rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.settings-form .points {
+  margin-bottom: 0;
+}
+.settings-field {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 32rem;
+}
+.settings-dates {
+  display: grid;
+  gap: 0.75rem 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+}
+.checks.stacked {
+  flex-direction: column;
+}
+.setting-source {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.settings-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+.kind-order {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: kind;
+}
+.kind-order li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+  padding: 0.25rem 0;
+  border-top: 1px solid var(--border);
+  counter-increment: kind;
+}
+.kind-order li:first-child {
+  border-top: 0;
+}
+.kind-on {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  font-size: 1rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.kind-on::before {
+  content: counter(kind) ".";
+  min-width: 1.25rem;
+  color: var(--muted);
+}
+.kind-on input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.kind-moves {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(5rem, auto));
+  gap: 0.35rem;
+  margin-left: auto;
+}
+.kind-moves .move-up {
+  grid-column: 1;
+}
+.kind-moves .move-down {
+  grid-column: 2;
+}
+.kind-moves button {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  font-size: 0.9rem;
+}
+.settings-section h3 {
+  margin-top: 1rem;
+  font-size: 0.95rem;
+}
+.settings-section .fields dt {
+  overflow-wrap: anywhere;
+}
+.settings-section .fields > div {
+  grid-template-columns: minmax(7rem, 22rem) minmax(0, 1fr);
+}
+.settings-readonly {
+  margin-bottom: 0.25rem;
+}
+@media (max-width: 639px) {
+  .settings-section .fields > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-buttons button {
+    width: 100%;
+  }
+}

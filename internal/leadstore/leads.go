@@ -292,9 +292,6 @@ type Candidate struct {
 	// The priority: the score the profile gives and Score's reasons for it.
 	Score int      `db:"score"`
 	Why   []string `db:"-"`
-	// Pinned is whether the lead's latest lead_priority row is a legacy pin. Pins no longer
-	// order the queue (D5 retired them for stars); the flag stays for its last reader.
-	Pinned bool `db:"pinned"`
 	// The operator's order (D5): whether the lead is starred and its position (nil when not).
 	Starred  bool   `db:"starred"`
 	Position *int64 `db:"position"`
@@ -385,7 +382,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     coalesce(p.major, 0) AS major, coalesce(p.exact_version, '') AS exact_version,
 		     coalesce(p.site_name, '') AS site_name,
 		     coalesce(af.phrase, '') AS phrase, coalesce(af.url, '') AS finding_url,
-		     sc.score, coalesce(pr.action = 'pin', false) AS pinned,
+		     sc.score,
 		     coalesce(st.action <> 'unstar', false) AS starred,
 		     CASE WHEN st.action <> 'unstar' THEN st.position END AS position,
 		     rv.score AS relevance,
@@ -454,7 +451,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		 )
 		 SELECT lead_id, org_id, domain, org_name, country, kind, channel, route_id, route_kind, route,
 		   probe_id, agency_finding_id, list_rank, major, exact_version, site_name, phrase, finding_url,
-		   score, pinned, starred, position, relevance
+		   score, starred, position, relevance
 		 FROM c
 		 WHERE lead_id NOT IN (SELECT lead_id FROM blocked)
 		 ORDER BY starred DESC, position, CASE WHEN starred THEN lead_id END,

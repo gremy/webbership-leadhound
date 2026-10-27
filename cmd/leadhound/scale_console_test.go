@@ -22,9 +22,9 @@ import (
 // whole through the handler as the operator's browser reads it, on the jobs and leads scale
 // seeds as the app role, within a second each; the Leads list and the page of the lead with
 // the most messages, end to end, within half a second each (D15: read live); the dashboard,
-// which reads the leads card live, within its half second with leads set up. The priorities
-// page is timed and logged: its cost is NextUp's, which the leads scale test budgets; the
-// old queue page answers with the list in the outreach order. Nothing is written.
+// which reads the leads card live, within its half second with leads set up; the Settings
+// page, which reads leads.yaml whole and the profile in force, within half a second. The old
+// queue page answers with the list in the outreach order. Nothing is written.
 func TestScaleConsolePages(t *testing.T) {
 	info := leadstoretest.ScaleSeeded(t)
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestScaleConsolePages(t *testing.T) {
 	}
 	for _, p := range []struct {
 		path, want string
-		budget     time.Duration // 0: timed and logged only
+		budget     time.Duration
 	}{
 		{"/leads/outreach", "Batches waiting for approval", time.Second},
 		{fmt.Sprintf("/leads/batches/%d", batchID), fmt.Sprintf("Batch %d", batchID), time.Second},
@@ -81,7 +81,7 @@ func TestScaleConsolePages(t *testing.T) {
 		{"/leads", `<tr id="lead-w-`, 500 * time.Millisecond},
 		{"/leads?status=all&sort=relevance&page=100", "Previous page", 500 * time.Millisecond},
 		{fmt.Sprintf("/leads/%d", leadID), "Why it ranks here", 500 * time.Millisecond},
-		{"/leads/priorities", "The top 20", 0},
+		{"/leads/settings", "Fallback order", 500 * time.Millisecond},
 	} {
 		r := httptest.NewRequest(http.MethodGet, p.path, nil)
 		r.Header.Set("Cookie", "lh_session="+token)
@@ -90,11 +90,7 @@ func TestScaleConsolePages(t *testing.T) {
 			h.ServeHTTP(w, r)
 			return nil
 		})
-		if p.budget == 0 {
-			t.Logf("%s: %v, peak heap %.1f MB (NextUp's cost; not budgeted here)", p.path, took.Round(time.Millisecond), float64(peak)/(1<<20))
-		} else {
-			budgets(t, p.path, peak, took, p.budget)
-		}
+		budgets(t, p.path, peak, took, p.budget)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), p.want) {
 			t.Errorf("%s: %d, %d bytes, lacks %q", p.path, w.Code, w.Body.Len(), p.want)
 		}

@@ -20,10 +20,15 @@ type LeadsBackend interface {
 	// LeadDetail is everything stored about one lead; ErrNotFound for no such lead.
 	LeadDetail(ctx context.Context, id int64) (LeadDetailPage, error)
 	LeadBatch(ctx context.Context, id int64) (LeadBatch, error) // ErrNotFound for no such batch
-	// LeadPriorities is the priority profile as a form with the top of the queue under it:
-	// the profile in use when edit is nil, else edit (nothing is saved). An edit with
-	// problems comes back with them and no preview.
-	LeadPriorities(ctx context.Context, edit *PriorityForm) (PrioritiesPage, error)
+	// LeadSettings is the Settings page: the settings in force, where each comes from, and
+	// what is shown read-only. It never writes.
+	LeadSettings(ctx context.Context) (LeadSettingsPage, error)
+	// SaveLeadSettings saves one section of the Settings page (a Settings* name) from v,
+	// reading only that section's fields, as a new version over leads.yaml; with reset it
+	// puts that section back to the file instead and ignores v (SettingsAll: every section).
+	// A change leads.yaml's checks refuse is a *SettingsRefused (or wraps ErrUserFixable)
+	// and saves nothing.
+	SaveLeadSettings(ctx context.Context, section string, v LeadSettingsValues, reset bool) error
 	// LeadAct runs one write. A refusal the operator can fix wraps ErrUserFixable with
 	// the words to show.
 	LeadAct(ctx context.Context, a LeadAction) (LeadOutcome, error)
@@ -38,26 +43,24 @@ const leadsNotSetUp = "Leads are not set up on this server yet."
 
 // The writes LeadAction.Do names.
 const (
-	LeadApprove      = "approve"          // ID batch, Hash, Skip
-	LeadDiscard      = "discard"          // ID batch
-	LeadNewBatch     = "new-batch"        //
-	LeadResolve      = "resolve"          // ID message, Sent
-	LeadDone         = "done"             // ID message
-	LeadSuppress     = "suppress"         // Kind, Value, Reason
-	LeadLift         = "lift"             // ID, Value (the domain typed to confirm), Reason
-	LeadContacted    = "contacted"        // Value (a domain), Note
-	LeadPause        = "pause"            // Reason
-	LeadResume       = "resume"           //
-	LeadStar         = "star"             // ID lead: to the bottom of the outreach order
-	LeadUnstar       = "unstar"           // ID lead: out of the outreach order
-	LeadUp           = "up"               // ID lead: one place up the order
-	LeadDown         = "down"             // ID lead: one place down the order
-	LeadTop          = "top"              // ID lead: pinned to the top of the order
-	LeadDefer        = "defer"            // ID lead, Until ("" is the default push-back)
-	LeadSkip         = "skip"             // ID lead
-	LeadClear        = "clear"            // ID lead
-	LeadSavePriority = "save-priorities"  // Form
-	LeadResetPrio    = "reset-priorities" //
+	LeadApprove   = "approve"   // ID batch, Hash, Skip
+	LeadDiscard   = "discard"   // ID batch
+	LeadNewBatch  = "new-batch" //
+	LeadResolve   = "resolve"   // ID message, Sent
+	LeadDone      = "done"      // ID message
+	LeadSuppress  = "suppress"  // Kind, Value, Reason
+	LeadLift      = "lift"      // ID, Value (the domain typed to confirm), Reason
+	LeadContacted = "contacted" // Value (a domain), Note
+	LeadPause     = "pause"     // Reason
+	LeadResume    = "resume"    //
+	LeadStar      = "star"      // ID lead: to the bottom of the outreach order
+	LeadUnstar    = "unstar"    // ID lead: out of the outreach order
+	LeadUp        = "up"        // ID lead: one place up the order
+	LeadDown      = "down"      // ID lead: one place down the order
+	LeadTop       = "top"       // ID lead: pinned to the top of the order
+	LeadDefer     = "defer"     // ID lead, Until ("" is the default push-back)
+	LeadSkip      = "skip"      // ID lead
+	LeadClear     = "clear"     // ID lead
 )
 
 // LeadAction is one write from a leads page.
@@ -68,7 +71,6 @@ type LeadAction struct {
 	Skip                             []int
 	Kind, Value, Reason, Note, Until string
 	Sent                             bool
-	Form                             PriorityForm
 }
 
 // LeadOutcome is what a write did: the line to show, and the batch a new batch made.
@@ -199,24 +201,7 @@ type LeadMessage struct {
 	State, CancelReason               string      // State "" while a draft
 }
 
-// LeadsQueue is the next leads, in the order batches draw them. No console page reads it
-// any more (the list sorted by order replaced the queue page); it stays only until
-// cmd/leadhound drops its LeadsNext method (CP5, Task 5.3).
-type LeadsQueue struct {
-	DeferUntil string // the default push-back date, YYYY-MM-DD
-	Leads      []QueueLead
-}
-
-// QueueLead is one lead of the queue with its score and the reasons for it.
-type QueueLead struct {
-	LeadID                                  int64
-	Domain, Kind, Version, Country, Channel string
-	Score                                   int
-	Why                                     []string
-	Pinned                                  bool
-}
-
-// PriorityForm is the priority profile as the form holds it. Points are keyed
+// PriorityForm is the priority profile as a form holds it (Settings' fallback order). Points are keyed
 // "kind.<kind>", "major.<n>" and "channel.<channel>"; a blank value is no rule.
 // Countries and RankBands are "GB 20, DE 10" and "10000 15, 100000 8"; Exclude is "FR, IT".
 type PriorityForm struct {
@@ -227,21 +212,12 @@ type PriorityForm struct {
 // PointField is one points input.
 type PointField struct{ Key, Group, Label, Value string }
 
-// PrioritiesPage is the priorities form and the queue's top under it.
-type PrioritiesPage struct {
-	FromDB   bool // the profile in use is the operator's saved one, not the file's defaults
-	Edited   bool // the form shows an edit, not the profile in use
-	Form     PriorityForm
-	Problems []string
-	Preview  []QueueLead
-}
-
 // The leads pages' paths.
 const (
 	leadsPath      = "/leads"          // the list
 	leadsOutPath   = "/leads/outreach" // sending, batches, replies and suppressions
 	leadsOrderPath = "/leads?sort=order"
-	leadsPrioPath  = "/leads/priorities"
+	leadsSetPath   = "/leads/settings"
 	leadBatchPath  = "/leads/batches/"
 	maxLeadsText   = 500 // the longest reason or note a form takes, as the inputs' maxlength
 	approveLiveFmt = "Approve: these emails send in each recipient's business hours over the next days, within the warm-up ramp, a few minutes apart, and their follow-ups send automatically unless a reply stops them."
@@ -329,20 +305,6 @@ func (s *server) renderBatch(w http.ResponseWriter, r *http.Request, code int, i
 // left for the list to show.
 func (s *server) leadsNext(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, leadsOrderPath, http.StatusSeeOther)
-}
-
-// leadPriorities is GET /leads/priorities.
-func (s *server) leadPriorities(w http.ResponseWriter, r *http.Request) {
-	s.renderPriorities(w, r, http.StatusOK, nil, s.takeFlash(w, r), false)
-}
-
-func (s *server) renderPriorities(w http.ResponseWriter, r *http.Request, code int, edit *PriorityForm, msg string, isErr bool) {
-	p, err := s.b.LeadPriorities(r.Context(), edit)
-	if s.leadsRead(w, r, code, err) {
-		return
-	}
-	s.render(w, r, code, "leads_priorities", page{Title: "Lead priorities", Active: leadsPath, SignedIn: true,
-		Data: leadsView{Data: p, Message: msg, Error: isErr}})
 }
 
 // leadsForm reads a leads POST form; a body over the cap or an unreadable form has been
@@ -537,36 +499,8 @@ func (s *server) sending(w http.ResponseWriter, r *http.Request) {
 	s.leadsAct(w, r, a, leadsOutPath, s.backToLeads)
 }
 
-// savePriorities is POST /leads/priorities: do=preview shows the queue under the edited
-// profile and saves nothing; do=save saves it as a new version; do=reset goes back to the
-// file's defaults.
-func (s *server) savePriorities(w http.ResponseWriter, r *http.Request) {
-	if !leadsForm(w, r) {
-		return
-	}
-	form := priorityForm(r.PostForm)
-	switch r.PostForm.Get("do") {
-	case "preview":
-		s.leadsLog("preview-priorities", "ok")
-		s.renderPriorities(w, r, http.StatusOK, &form, "", false)
-	case "save":
-		s.leadsAct(w, r, LeadAction{Do: LeadSavePriority, Form: form}, leadsPrioPath,
-			func(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
-				s.renderPriorities(w, r, code, &form, msg, isErr)
-			})
-	case "reset":
-		s.leadsAct(w, r, LeadAction{Do: LeadResetPrio}, leadsPrioPath,
-			func(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
-				s.renderPriorities(w, r, code, nil, msg, isErr)
-			})
-	default:
-		s.leadsLog("priorities", "refused")
-		s.renderPriorities(w, r, http.StatusUnprocessableEntity, &form, "Choose preview, save or reset.", true)
-	}
-}
-
-// priorityForm reads the priorities form: every points input by its key, and the text
-// fields.
+// priorityForm reads the fallback order's form: every points input by its key, and the
+// text fields. Exclude stays empty: never-contact countries are Who to contact's.
 func priorityForm(f url.Values) PriorityForm {
 	var out PriorityForm
 	keys := make([]string, 0, len(f))
@@ -582,7 +516,6 @@ func priorityForm(f url.Values) PriorityForm {
 	out.ExactVersion = strings.TrimSpace(f.Get("exact_version"))
 	out.Countries = strings.TrimSpace(f.Get("countries"))
 	out.RankBands = strings.TrimSpace(f.Get("rank_bands"))
-	out.Exclude = strings.TrimSpace(f.Get("exclude_countries"))
 	return out
 }
 

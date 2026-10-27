@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
 func init() { commands["leads"] = runLeads }
@@ -65,14 +67,105 @@ const (
 
 // leadsSetup is what every leads subcommand reads before it starts.
 type leadsSetup struct {
-	dataDir string            // LEADHOUND_DATA_DIR
-	leads   leadconfig.Config // leads.yaml, checked as the leadsLoad asked
-	env     leadconfig.Env    // the outreach and probe variables
+	dataDir string // LEADHOUND_DATA_DIR
+	// leads is leads.yaml, checked as the leadsLoad asked; through leadsOpen and
+	// backend.leadsSetup it is the effective config, the console's saved settings applied.
+	leads leadconfig.Config
+	// file is leads.yaml alone, as leadsEnv loaded it, before the saved settings: what a
+	// Settings save merges onto and checks against. Set by applyLeadSettings.
+	file leadconfig.Config
+	env  leadconfig.Env // the outreach and probe variables
+	// jevLeadsEnvCap is LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the server's ceiling on lead
+	// relevance calls a day; jevLeadsDailyCap gives the cap in force.
+	jevLeadsEnvCap int
+	settings       leadSettingsRead // which saved settings leads carries
 }
+
+// leadSettingsRead says which saved leads settings (lead_setting) an effective config
+// carries.
+type leadSettingsRead struct {
+	ID      int64     // the latest lead_setting row; 0 when none was ever saved
+	At      time.Time // when that row was saved; zero with none
+	Applied bool      // the row's settings are in leads; false with no row, after a reset or when ignored
+	// Overrides are the row's settings when Applied: which knobs the console changed.
+	Overrides leadconfig.Overrides
+	// Ignored is why a saved row was left out, in plain words: it no longer passes the
+	// checks leads.yaml passes. The file's values apply instead.
+	Ignored []leadconfig.Problem
+}
+
+// applyLeadSettings returns setup with the latest saved leads settings applied over
+// leads.yaml (D10): LatestSettings, a strict decode into leadconfig.Overrides, Apply and the
+// checks Load runs. No row, or a reset (NULL) row, leaves the file's values. A saved
+// document the file no longer accepts is ignored with a note that names no value, and the
+// file's values are used; it never stops the command. Never-contact countries and the
+// fallback order are not here: they live in priority_profile. Only a failed read of the
+// store is an error.
+func applyLeadSettings(ctx context.Context, lq leadstore.Queries, setup leadsSetup) (leadsSetup, error) {
+	raw, id, at, fromDB, err := lq.LatestSettings(ctx)
+	if err != nil {
+		return leadsSetup{}, err
+	}
+	setup.file = setup.leads
+	setup.settings = leadSettingsRead{ID: id, At: at}
+	if !fromDB {
+		return setup, nil
+	}
+	eff, problems := effectiveLeads(raw, setup.leads)
+	if len(problems) > 0 {
+		setup.settings.Ignored = problems
+		slog.Default().Warn("leads settings ignored: the saved settings no longer pass the checks leads.yaml passes, so the file's values apply",
+			"setting", id, "problems", len(problems))
+		return setup, nil
+	}
+	o, err := leadconfig.DecodeOverrides(raw) // effectiveLeads decoded it already, so it reads
+	if err != nil {
+		return leadsSetup{}, err
+	}
+	setup.leads, setup.settings.Applied, setup.settings.Overrides = eff, true, o
+	return setup, nil
+}
+
+// effectiveLeads is file with the saved settings document raw applied, or the problems that
+// make raw stale. A probe load checks only part of leads.yaml, so the rest of the file may
+// already fail on its own; only the problems the settings bring count against them.
+func effectiveLeads(raw []byte, file leadconfig.Config) (leadconfig.Config, []leadconfig.Problem) {
+	o, err := leadconfig.DecodeOverrides(raw)
+	if err != nil {
+		msg := err.Error()
+		if _, words, ok := strings.Cut(msg, leadconfig.ErrInvalid.Error()+": "); ok {
+			msg = words
+		}
+		return leadconfig.Config{}, []leadconfig.Problem{{Message: msg}}
+	}
+	eff, problems := o.Effective(file)
+	if len(problems) == 0 {
+		return eff, nil
+	}
+	own := leadconfig.Overrides{}.Validate(file)
+	var added []leadconfig.Problem
+	for _, p := range problems {
+		if !slices.Contains(own, p) {
+			added = append(added, p)
+		}
+	}
+	if len(added) > 0 {
+		return leadconfig.Config{}, added
+	}
+	return o.Apply(file), nil
+}
+
+// jevLeadsDailyCap is the most lead relevance calls a day in force: relevance.leads_daily_calls
+// of the effective config when above 0, never above LEADHOUND_JEV_LEADS_DAILY_CALL_CAP (D9: a
+// setting may lower the server's cap, never raise it). Whether rating runs at all is
+// leads.Relevance.RatingOn.
+func (s leadsSetup) jevLeadsDailyCap() int { return s.leads.Relevance.DailyCalls(s.jevLeadsEnvCap) }
 
 // leadsEnv loads leads.yaml from LEADHOUND_DATA_DIR, checked as load says, and the outreach
 // variables. A missing data directory, a broken file or an unusable variable is a usage
-// error listing every problem at once.
+// error listing every problem at once. It reads the file alone: a command that reads a knob
+// Settings may change goes through leadsOpen or backend.leadsSetup instead, which apply the
+// saved settings (TestSettingsReachEveryDoor names the readers allowed here).
 func leadsEnv(cfg config.Config, load leadsLoad) (leadsSetup, error) {
 	if cfg.DataDir == "" {
 		return leadsSetup{}, usageError("LEADHOUND_DATA_DIR is not set; the leads commands read leads.yaml from it")
@@ -89,7 +182,7 @@ func leadsEnv(cfg config.Config, load leadsLoad) (leadsSetup, error) {
 	if len(problems) > 0 {
 		return leadsSetup{}, usageError("%s", strings.Join(problems, "; "))
 	}
-	return leadsSetup{dataDir: cfg.DataDir, leads: lc, env: env}, nil
+	return leadsSetup{dataDir: cfg.DataDir, leads: lc, env: env, jevLeadsEnvCap: cfg.JevLeadsDailyCallCap}, nil
 }
 
 // Site client settings: each organisation's site gets its own client, so these are per site.

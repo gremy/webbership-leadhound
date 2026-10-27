@@ -62,18 +62,6 @@ func (f *fakeBackend) LeadBatch(_ context.Context, id int64) (LeadBatch, error) 
 	return f.batch, nil
 }
 
-func (f *fakeBackend) LeadPriorities(_ context.Context, edit *PriorityForm) (PrioritiesPage, error) {
-	f.count("LeadPriorities")
-	f.mu.Lock()
-	f.lastEdit = edit
-	f.mu.Unlock()
-	p := f.prios
-	if edit != nil {
-		p.Edited, p.Form = true, *edit
-	}
-	return p, f.leadsRead()
-}
-
 func (f *fakeBackend) LeadAct(_ context.Context, a LeadAction) (LeadOutcome, error) {
 	f.count("LeadAct")
 	f.mu.Lock()
@@ -159,16 +147,12 @@ func leadsPosts() []leadsRoute {
 		{"/leads/5/defer", url.Values{"until": {" 2026-11-07 "}}, "/leads", LeadAction{Do: LeadDefer, ID: 5, Until: "2026-11-07"}},
 		{"/leads/5/skip", url.Values{"back": {"//evil.example"}}, "/leads", LeadAction{Do: LeadSkip, ID: 5}},
 		{"/leads/5/clear", url.Values{"until": {"2026-11-07"}}, "/leads", LeadAction{Do: LeadClear, ID: 5}},
-		{"/leads/priorities", url.Values{"do": {"save"}, "kind.unsupported": {"25"}, "countries": {"GB 20"}}, "/leads/priorities",
-			LeadAction{Do: LeadSavePriority, Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Value: "25"}}, Countries: "GB 20"}}},
-		{"/leads/priorities", url.Values{"do": {"reset"}}, "/leads/priorities", LeadAction{Do: LeadResetPrio}},
 	}
 }
 
 func sameAction(a, b LeadAction) bool {
 	return a.Do == b.Do && a.ID == b.ID && a.Hash == b.Hash && slices.Equal(a.Skip, b.Skip) && a.Kind == b.Kind &&
-		a.Value == b.Value && a.Reason == b.Reason && a.Note == b.Note && a.Until == b.Until && a.Sent == b.Sent &&
-		fmt.Sprint(a.Form) == fmt.Sprint(b.Form)
+		a.Value == b.Value && a.Reason == b.Reason && a.Note == b.Note && a.Until == b.Until && a.Sent == b.Sent
 }
 
 // TestLeadsWrites: each leads POST asks the backend for its write and, done, goes on with
@@ -237,7 +221,6 @@ func TestLeadsFormsRefusedBeforeTheBackend(t *testing.T) {
 		{"/leads/x/star", url.Values{}, http.StatusNotFound},
 		{"/leads/next/5/pin", url.Values{}, http.StatusNotFound},
 		{"/leads/batches/x/approve", url.Values{}, http.StatusNotFound},
-		{"/leads/priorities", url.Values{"do": {"drop"}}, http.StatusUnprocessableEntity},
 		{"/leads/suppressions/lift", url.Values{"domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
 		{"/leads/suppressions/lift", url.Values{"id": {"0"}, "domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
 		{"/leads/suppressions/lift", url.Values{"id": {"-2"}, "domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
@@ -257,26 +240,6 @@ func TestLeadsFormsRefusedBeforeTheBackend(t *testing.T) {
 	}
 }
 
-func TestPrioritiesPreviewWritesNothing(t *testing.T) {
-	b := richBackend("x")
-	h := newHarness(t, b, false)
-	form := url.Values{"do": {"preview"}, "major.7": {"40"}, "kind.d10": {""}, "rank_bands": {"10000 15"}, "exclude_countries": {"FR"}}
-	w := h.do(post("/leads/priorities", form, h.session(t)))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d", w.Code)
-	}
-	if b.n("LeadAct") != 0 {
-		t.Error("a preview wrote")
-	}
-	want := PriorityForm{Points: []PointField{{Key: "kind.d10"}, {Key: "major.7", Value: "40"}}, RankBands: "10000 15", Exclude: "FR"}
-	if b.lastEdit == nil || fmt.Sprint(*b.lastEdit) != fmt.Sprint(want) {
-		t.Errorf("edit %+v, want %+v", b.lastEdit, want)
-	}
-	if body := w.Body.String(); !strings.Contains(body, "Your edit, not saved yet.") || !strings.Contains(body, "under this edit") {
-		t.Errorf("preview page: %s", body)
-	}
-}
-
 // TestLeadsNotSetUp: every leads page says leads are not set up, and the jobs pages keep
 // working.
 func TestLeadsNotSetUp(t *testing.T) {
@@ -285,7 +248,7 @@ func TestLeadsNotSetUp(t *testing.T) {
 	b.dash.Leads = nil
 	h := newHarness(t, b, false)
 	c := h.session(t)
-	for _, p := range []string{"/leads", "/leads/outreach", "/leads/priorities", "/leads/batches/3", "/leads/5"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/settings", "/leads/batches/3", "/leads/5"} {
 		w := h.do(get(p, c))
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), leadsNotSetUp) {
 			t.Errorf("%s: %d %s", p, w.Code, w.Body.String())
@@ -361,7 +324,8 @@ func TestLeadsNeverLogSubmittedValues(t *testing.T) {
 	const secret = "zq7secretvalue"
 	const secretID = "987654321"
 	form := url.Values{}
-	for _, k := range []string{"hash", "kind", "value", "reason", "domain", "note", "until", "back", "countries", "rank_bands", "exclude_countries", "exact_version", "kind.unsupported"} {
+	for _, k := range []string{"hash", "kind", "value", "reason", "domain", "note", "until", "back", "countries", "rank_bands", "exclude_countries", "exact_version", "kind.unsupported",
+		"country", "wanted", "never_contact", "on", "skip_rank_over", "batches_from", "d6_eol", "d10_eol", "rating", "leads_cap"} {
 		form.Set(k, secret)
 	}
 	form.Set("skip", secretID)
@@ -375,11 +339,11 @@ func TestLeadsNeverLogSubmittedValues(t *testing.T) {
 			continue
 		}
 		routesSeen++
-		target := strings.NewReplacer("{id}", secretID, "{lead}", secretID, "{action}", "defer").Replace(path)
-		for _, do := range []string{"pause", "save", "preview"} {
+		target := strings.NewReplacer("{id}", secretID, "{lead}", secretID, "{action}", "defer", "{section}", "who").Replace(path)
+		for _, do := range []string{"pause", "save", "preview", "reset", "up:" + secret} {
 			for _, e := range errs {
 				b := richBackend("x")
-				b.leadErr = e
+				b.leadErr, b.saveErr = e, e
 				if e != nil && !errors.Is(e, ErrUserFixable) {
 					b.leadsErr = e
 				}
@@ -416,12 +380,12 @@ func TestNoLeadsWriteOnGet(t *testing.T) {
 		}
 		h.do(get(rt.sample+"?do=save&hash=0123456789ab&action=applied", c))
 	}
-	for _, name := range []string{"LeadAct", "AddRule", "DisableRule", "Track"} {
+	for _, name := range []string{"LeadAct", "AddRule", "DisableRule", "Track", "SaveLeadSettings"} {
 		if n := h.b.n(name); n != 0 {
 			t.Errorf("a GET called %s %d times", name, n)
 		}
 	}
-	for _, name := range []string{"LeadList", "LeadDetail", "Leads"} {
+	for _, name := range []string{"LeadList", "LeadDetail", "Leads", "LeadSettings"} {
 		if h.b.n(name) == 0 {
 			t.Errorf("the sweep never reached %s", name)
 		}
@@ -533,8 +497,8 @@ func TestLeadsPages(t *testing.T) {
 		"/leads/outreach": {"Sending is on.", "2 of 4", "DMARC <span class=\"bad\">missing</span>", `href="/leads/batches/3"`,
 			`action="/leads/batches/new"`, "Make the next batch now", `action="/leads/messages/11/resolve"`, `action="/leads/items/9/done"`,
 			`name="value" value="northwind.example"`, "Pause sending", `action="/leads/contacted"`, "j***@northwind.example"},
-		"/leads/priorities": {`name="kind.unsupported" value="20"`, "The defaults from the leads settings file.", "The top 20 now"},
-		"/leads/batches/3":  {"1. northwind.example", "To: northwind.example", "Subject: northwind.example", "Finding: northwind.example"},
+		"/leads/settings":  {`name="kind.unsupported" value="20"`, "Source: file", `action="/leads/settings/order"`},
+		"/leads/batches/3": {"1. northwind.example", "To: northwind.example", "Subject: northwind.example", "Finding: northwind.example"},
 	}
 	for p, wants := range pages {
 		body := h.do(get(p, c)).Body.String()
@@ -581,7 +545,7 @@ func TestLeadsEscaping(t *testing.T) {
 	b.detail.Signals[0].FetchURL = jsLink
 	h := newHarness(t, b, false)
 	c := h.session(t)
-	for _, p := range []string{"/leads", "/leads/outreach", "/leads/5", "/leads/priorities", "/leads/batches/3", "/jobs/42"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/5", "/leads/settings", "/leads/batches/3", "/jobs/42"} {
 		body := h.do(get(p, c)).Body.String()
 		if strings.Contains(body, "<script>alert") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 			t.Errorf("%s does not escape backend text", p)
@@ -757,7 +721,7 @@ func TestLeadListPage(t *testing.T) {
 	body := h.do(get("/leads", h.session(t))).Body.String()
 	for _, want := range []string{
 		`<a href="/leads" aria-current="page">Leads</a>`,
-		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`, `<a href="/leads/priorities">Settings</a>`,
+		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`, `<a href="/leads/settings">Settings</a>`,
 		`<form method="get" action="/leads" class="lead-filters">`,
 		`<ul class="item-list narrow-only">`, `<div class="table-wrap wide-only">`,
 		`<li id="lead-n-5">`, `<tr id="lead-w-5">`, `<a href="/leads/5">Northwind Trading</a>`,
@@ -978,7 +942,7 @@ func TestOldLeadsLinksPointToOutreach(t *testing.T) {
 		"mailboxes":  h.do(get("/mailboxes", c)).Body.String(),
 		"not set up": oh.do(get("/leads/outreach", oh.session(t))).Body.String(),
 		"outreach":   h.do(get("/leads/outreach", c)).Body.String(),
-		"priorities": h.do(get("/leads/priorities", c)).Body.String(),
+		"settings":   h.do(get("/leads/settings", c)).Body.String(),
 	} {
 		if !strings.Contains(body, `href="/leads/outreach"`) {
 			t.Errorf("%s has no link to /leads/outreach", name)
@@ -1017,12 +981,13 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 	}{
 		{"/leads", "LeadList", http.StatusOK},
 		{"/leads/outreach", "Leads", http.StatusOK},
-		{"/leads/priorities", "LeadPriorities", http.StatusOK},
+		{"/leads/settings", "LeadSettings", http.StatusOK},
+		{"/leads/priorities", "", http.StatusSeeOther},
 		{"/leads/batches/3", "LeadBatch", http.StatusOK},
 		{"/leads/5", "LeadDetail", http.StatusOK},
 		{"/leads/next", "", http.StatusSeeOther},
 		{"/leads/batches", "", http.StatusNotFound},
-		{"/leads/settings", "", http.StatusNotFound},
+		{"/leads/settings/who", "", http.StatusMethodNotAllowed},
 		{"/leads/5/star", "", http.StatusMethodNotAllowed},
 	}
 	for _, c := range cases {

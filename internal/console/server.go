@@ -88,7 +88,8 @@ var routes = []route{
 	{"GET /leads", "/leads", false, (*server).leadList},
 	{"GET /leads/outreach", "/leads/outreach", false, (*server).leadsOutreach},
 	{"GET /leads/next", "/leads/next", false, (*server).leadsNext},
-	{"GET /leads/priorities", "/leads/priorities", false, (*server).leadPriorities},
+	{"GET /leads/priorities", "/leads/priorities", false, (*server).leadPrioritiesMoved},
+	{"GET /leads/settings", "/leads/settings", false, (*server).leadSettings},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
 	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
 	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
@@ -101,9 +102,9 @@ var routes = []route{
 	{"POST /leads/suppressions/lift", "/leads/suppressions/lift", false, (*server).liftSuppression},
 	{"POST /leads/contacted", "/leads/contacted", false, (*server).contacted},
 	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
+	{"POST /leads/settings/{section}", "/leads/settings/who", false, (*server).saveLeadSettings},
 	// Every literal /leads/... POST above is more specific than this pattern, so it wins.
 	{"POST /leads/{id}/{action}", "/leads/5/star", false, (*server).leadAct},
-	{"POST /leads/priorities", "/leads/priorities", false, (*server).savePriorities},
 	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
 	{"GET /mailboxes/new", "/mailboxes/new", false, (*server).newMailbox},
 	{"POST /mailboxes", "/mailboxes", false, (*server).addMailbox},
@@ -266,7 +267,7 @@ func (s *server) parseTemplates() map[string]*template.Template {
 		"templates/leads_tabs.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
-		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_priorities", "results",
+		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "results",
 		"mailboxes", "mailbox", "mailbox_form"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
@@ -331,6 +332,7 @@ func (s *server) funcs() template.FuncMap {
 		"maxMailbox":   func() int { return maxMailbox },
 		"leadsTab":     func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
 		"webURL":       webURL,
+		"source":       func(src SettingSource) string { return sourceWords(src, s.opt.Location) },
 		"leadAct": func(id int64, do, label, back, sr string) leadActView {
 			return leadActView{ID: id, Do: do, Label: label, Back: back, SR: sr}
 		},

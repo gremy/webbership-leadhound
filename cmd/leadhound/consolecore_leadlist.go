@@ -108,7 +108,7 @@ type leadsWeighing struct {
 }
 
 func (b *backend) leadsWeighing(ctx context.Context) (leadsWeighing, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
 	if err != nil {
 		return leadsWeighing{}, err
 	}

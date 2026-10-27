@@ -35,9 +35,7 @@ import (
 const (
 	consoleListCap    = 200 // most manual items or emails to check the leads page lists
 	consoleHistoryCap = 50  // most status changes the job page lists
-	consoleQueue      = leadstore.NextUpPage
-	consolePreview    = 20 // leads the priorities page previews
-	consoleDeferDays  = 14 // the default push-back
+	consoleDeferDays  = 14  // the default push-back
 	consoleMaxText    = 500
 	consoleEvidence   = 3 // most evidence lines per criterion on the job page
 	// consoleMailboxText is the longest address, login, server, selector, From name or
@@ -179,14 +177,16 @@ func (b *backend) DisableRule(ctx context.Context, id int64, reason string) (str
 	return fmt.Sprintf("rule %d disabled", id), nil
 }
 
-// leadsSetup reads leads.yaml and the outreach settings for one request. Any problem is
-// ErrLeadsNotSetUp: the problems stay out of the page and the log (check-config names them).
-func (b *backend) leadsSetup(load leadsLoad) (leadsSetup, error) {
+// leadsSetup reads leads.yaml and the outreach settings for one request, with the
+// console's saved settings applied (applyLeadSettings). Any problem with the file or the
+// variables is ErrLeadsNotSetUp: the problems stay out of the page and the log (check-config
+// names them). Saved settings the file no longer accepts are ignored, never an error.
+func (b *backend) leadsSetup(ctx context.Context, load leadsLoad) (leadsSetup, error) {
 	setup, err := leadsEnv(b.cfg, load)
 	if err != nil {
 		return leadsSetup{}, console.ErrLeadsNotSetUp
 	}
-	return setup, nil
+	return applyLeadSettings(ctx, b.lq(), setup)
 }
 
 // lq is the leads queries over the pool.
@@ -195,7 +195,7 @@ func (b *backend) lq() leadstore.Queries { return leadstore.NewQueries(b.s.Pool(
 // leadsSummary is the dashboard's leads card, nil when leads are not set up here or their
 // tables cannot be read; the jobs dashboard never fails for it.
 func (b *backend) leadsSummary(ctx context.Context, now time.Time) *console.LeadsSummary {
-	if _, err := b.leadsSetup(leadsForProbe); err != nil {
+	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
 		return nil
 	}
 	sec, err := leadbrief.Load(ctx, b.s.Pool(), now, b.loc)
@@ -215,7 +215,7 @@ func (b *backend) leadsSummary(ctx context.Context, now time.Time) *console.Lead
 // waiting for approval, the manual items and the emails to check by hand, and the
 // suppression list with addresses masked as `leads suppress list` masks them.
 func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
 	if err != nil {
 		return console.LeadsPage{}, err
 	}
@@ -497,7 +497,7 @@ func checkItems(ctx context.Context, db store.DBTX) ([]console.CheckItem, error)
 // LeadBatch is batch id in full through batchView, with the hash an approval names only
 // when the batch can be approved as recomputed for this read.
 func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, error) {
-	if _, err := b.leadsSetup(leadsForProbe); err != nil {
+	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
 		return console.LeadBatch{}, err
 	}
 	v, err := batchView(ctx, b.lq(), id)
@@ -563,87 +563,8 @@ func consoleMessageLabel(m leadstore.Message, n int) string {
 	return fmt.Sprintf("Message %d", m.ID)
 }
 
-// candidateOptions is what the queue is read with: the order a live batch drafts in.
-func (b *backend) candidateOptions(cfg leadconfig.Config, now time.Time) leadstore.CandidateOptions {
-	return leadstore.CandidateOptions{KindsPriority: cfg.KindsPriority, Profile: cfg.PriorityProfile(), Today: now.In(b.loc),
-		IncludeReserved: leadsMail.allowReserved}
-}
-
-// LeadsNext is the next consoleQueue leads, in the order the next live batch drafts them.
-func (b *backend) LeadsNext(ctx context.Context) (console.LeadsQueue, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
-	if err != nil {
-		return console.LeadsQueue{}, err
-	}
-	now := b.now()
-	cands, err := b.lq().NextUp(ctx, b.candidateOptions(setup.leads, now), consoleQueue)
-	if err != nil {
-		return console.LeadsQueue{}, err
-	}
-	until := startOfDay(now, b.loc).AddDate(0, 0, consoleDeferDays)
-	return console.LeadsQueue{DeferUntil: until.Format(time.DateOnly), Leads: queueLeads(cands)}, nil
-}
-
-func queueLeads(cands []leadstore.Candidate) []console.QueueLead {
-	out := make([]console.QueueLead, 0, len(cands))
-	for _, c := range cands {
-		v := "agency page"
-		if c.ProbeID != nil {
-			v = "Drupal " + strconv.Itoa(c.Major)
-			if c.ExactVersion != "" {
-				v += " (" + c.ExactVersion + ")"
-			}
-		}
-		out = append(out, console.QueueLead{LeadID: c.LeadID, Domain: c.Domain, Kind: c.Kind, Version: v, Country: c.Country,
-			Channel: c.Channel, Score: c.Score, Why: c.Why, Pinned: c.Pinned})
-	}
-	return out
-}
-
-// LeadPriorities is the profile in use as a form, or edit, with the top consolePreview
-// leads under it. An edit is previewed by saving it inside a transaction that is rolled
-// back, so the queue is read by the same code a batch drafts with and nothing stays.
-func (b *backend) LeadPriorities(ctx context.Context, edit *console.PriorityForm) (console.PrioritiesPage, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
-	if err != nil {
-		return console.PrioritiesPage{}, err
-	}
-	now := b.now()
-	opts := b.candidateOptions(setup.leads, now)
-	if edit == nil {
-		p, fromDB, err := b.lq().EffectiveProfile(ctx, setup.leads.PriorityProfile())
-		if err != nil {
-			return console.PrioritiesPage{}, err
-		}
-		cands, err := b.lq().NextUp(ctx, opts, consolePreview)
-		if err != nil {
-			return console.PrioritiesPage{}, err
-		}
-		return console.PrioritiesPage{FromDB: fromDB, Form: profileForm(p), Preview: queueLeads(cands)}, nil
-	}
-	p, problems := parseProfileForm(*edit)
-	page := console.PrioritiesPage{Edited: true, Form: normalForm(*edit), Problems: problems}
-	if len(problems) > 0 {
-		return page, nil
-	}
-	tx, err := b.s.Pool().Begin(ctx)
-	if err != nil {
-		return console.PrioritiesPage{}, fmt.Errorf("console: preview: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() // the edit never stays
-	tq := leadstore.NewQueries(tx)
-	if _, err := tq.SaveProfile(ctx, p); err != nil {
-		return console.PrioritiesPage{}, err
-	}
-	cands, err := tq.NextUp(ctx, opts, consolePreview)
-	if err != nil {
-		return console.PrioritiesPage{}, err
-	}
-	page.Preview = queueLeads(cands)
-	return page, nil
-}
-
-// The form's point groups, in the order the page shows them.
+// The fallback order form's point groups (Settings' Order section), in the order the page
+// shows them.
 func pointFields() []console.PointField {
 	var out []console.PointField
 	for _, k := range leadconfig.Kinds {
@@ -804,7 +725,7 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 	if a.Do == console.LeadNewBatch {
 		load = leadsForOutreach
 	}
-	setup, err := b.leadsSetup(load)
+	setup, err := b.leadsSetup(ctx, load)
 	if err != nil {
 		return console.LeadOutcome{}, err
 	}
@@ -836,21 +757,6 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 		return b.star(ctx, a)
 	case console.LeadDefer, console.LeadSkip, console.LeadClear:
 		return b.steer(ctx, a)
-	case console.LeadSavePriority:
-		p, problems := parseProfileForm(a.Form)
-		if len(problems) > 0 {
-			return console.LeadOutcome{}, refused("Nothing was saved: %s.", strings.Join(problems, "; "))
-		}
-		id, err := b.lq().SaveProfile(ctx, p)
-		if err != nil {
-			return console.LeadOutcome{}, err
-		}
-		return console.LeadOutcome{Message: fmt.Sprintf("Priorities saved (version %d); the next batch drafts in this order.", id)}, nil
-	case console.LeadResetPrio:
-		if _, err := b.lq().ResetProfile(ctx); err != nil {
-			return console.LeadOutcome{}, err
-		}
-		return console.LeadOutcome{Message: "Priorities reset to the leads settings file's defaults."}, nil
 	}
 	return console.LeadOutcome{}, refused("That is not something the leads pages do.")
 }
@@ -1233,7 +1139,7 @@ func mailboxCheckView(m leadstore.MailboxStatus) console.MailboxCheckView {
 // mailboxStatus is mailbox id as of the operator's today, console.ErrNotFound when there is
 // none, with the leads settings.
 func (b *backend) mailboxStatus(ctx context.Context, id int64) (leadstore.MailboxStatus, leadsSetup, time.Time, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
 	if err != nil {
 		return leadstore.MailboxStatus{}, leadsSetup{}, time.Time{}, err
 	}
@@ -1256,7 +1162,7 @@ func (b *backend) mailboxStatus(ctx context.Context, id int64) (leadstore.Mailbo
 // of its active mailboxes, and whether the domain is paused as a whole: none of its
 // mailboxes active and one paused with the domain. It reads stored rows only.
 func (b *backend) Mailboxes(ctx context.Context) (console.MailboxesPage, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
 	if err != nil {
 		return console.MailboxesPage{}, err
 	}
@@ -1343,7 +1249,7 @@ func (b *backend) MailboxCheckCard(ctx context.Context, id int64) (console.Mailb
 // refusal is the core's, wrapping console.ErrUserFixable. A write that was saved but whose
 // check could not be started (the request file) says so and is logged, never a failure.
 func (b *backend) MailboxAct(ctx context.Context, a console.MailboxAction) (console.MailboxOutcome, error) {
-	setup, err := b.leadsSetup(leadsForProbe)
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
 	if err != nil {
 		return console.MailboxOutcome{}, err
 	}

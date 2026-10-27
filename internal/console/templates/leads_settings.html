@@ -1,0 +1,219 @@
+{{define "content"}}
+{{$v := .Data}}{{$p := $v.P}}{{$x := $p.Values}}{{$s := $p.Sources}}
+<div class="page-head">
+  <h1>Lead settings</h1>
+</div>
+{{template "leads_tabs" (leadsTab "settings" true)}}
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+{{if $v.Problems}}<p class="notice notice-error" role="alert">Nothing was saved. <a href="#{{$v.Section}}">{{$v.SectionTitle}}</a> needs {{if eq (len $v.Problems) 1}}a fix{{else}}fixes{{end}} first.</p>{{end}}
+{{range $p.Notes}}<p class="notice">{{.}}</p>{{end}}
+<p class="lede">These settings sit on top of the leads settings file. Each value says where it comes from; a section's reset puts it back to the file.</p>
+<nav class="settings-toc" aria-label="Settings sections">
+  <ul>
+    {{range $v.Sections}}<li><a href="#{{.Name}}">{{.Title}}</a></li>{{end}}
+    <li><a href="#file">In the file and on the server</a></li>
+  </ul>
+</nav>
+
+<section class="card settings-section" id="who" aria-labelledby="who-title">
+  <h2 id="who-title">Who to contact</h2>
+  {{if eq $v.Section "who"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/who" class="settings-form">
+    {{with $x.Countries}}
+    <fieldset>
+      <legend>Countries to contact</legend>
+      <div class="checks">{{range .}}<input type="hidden" name="country" value="{{.Code}}"><label><input type="checkbox" name="wanted" value="{{.Code}}"{{if .Wanted}} checked{{end}}> {{or .Label .Code}}</label>{{end}}</div>
+    </fieldset>
+    {{end}}
+    <div class="settings-field">
+      <label for="never-contact">Never contact these other countries</label>
+      <input id="never-contact" name="never_contact" value="{{$x.NeverContact}}" maxlength="{{maxText}}" aria-describedby="never-contact-hint">
+      <p id="never-contact-hint" class="hint">Country codes, for example FR, IT. A country left unticked above is never contacted either.</p>
+    </div>
+    <p class="setting-source">Source: {{source $s.Who}}</p>
+    <p class="hint">A change applies to new leads at the next build.</p>
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="kinds" aria-labelledby="kinds-title">
+  <h2 id="kinds-title">Lead kinds</h2>
+  {{if eq $v.Section "kinds"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/kinds" class="settings-form">
+    {{if $x.Kinds}}
+    <p class="hint">Batches draw the kinds in this order, first first. A kind turned off leaves the queue and new batches.</p>
+    <ol class="kind-order">
+      {{$last := len $x.Kinds}}
+      {{range $i, $k := $x.Kinds}}
+      {{$name := or $k.Label $k.Name}}
+      <li>
+        <input type="hidden" name="kind" value="{{$k.Name}}">
+        <label class="kind-on"><input type="checkbox" name="on" value="{{$k.Name}}"{{if $k.On}} checked{{end}}> {{$name}}</label>
+        <span class="kind-moves">
+          {{if gt $i 0}}<button type="submit" name="do" value="up:{{$k.Name}}" class="move-up">Up<span class="visually-hidden"> {{$name}}</span></button>{{end}}
+          {{if lt (add $i 1) $last}}<button type="submit" name="do" value="down:{{$k.Name}}" class="move-down">Down<span class="visually-hidden"> {{$name}}</span></button>{{end}}
+        </span>
+      </li>
+      {{end}}
+    </ol>
+    {{else}}<p class="empty">No lead kinds are known.</p>{{end}}
+    <p class="setting-source">On or off · Source: {{source $s.KindsOn}}</p>
+    <p class="setting-source">Order · Source: {{source $s.KindsOrder}}</p>
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="small-sites" aria-labelledby="small-sites-title">
+  <h2 id="small-sites-title">Small sites</h2>
+  {{if eq $v.Section "small-sites"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/small-sites" class="settings-form">
+    <div class="settings-field">
+      <label for="skip-rank-over">Skip sites ranked below</label>
+      <input id="skip-rank-over" name="skip_rank_over" value="{{$x.SkipRankOver}}" type="number" min="0" step="1" inputmode="numeric" aria-describedby="skip-rank-hint">
+      <p id="skip-rank-hint" class="hint">A list rank, for example 100000. A site lead ranked lower, or not ranked, leaves the queue and stays in the list marked "small site". 0 is off.</p>
+    </div>
+    <p class="setting-source">Source: {{source $s.SkipRankOver}}</p>
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="batches" aria-labelledby="batches-title">
+  <h2 id="batches-title">Batches draw from</h2>
+  {{if eq $v.Section "batches"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/batches" class="settings-form">
+    <fieldset>
+      <legend>A new batch drafts</legend>
+      <div class="checks stacked">{{range $v.BatchSources}}<label><input type="radio" name="batches_from" value="{{.Value}}"{{if eq .Value $x.BatchesFrom}} checked{{end}}> {{.Label}}</label>{{end}}</div>
+    </fieldset>
+    <p class="setting-source">Source: {{source $s.BatchesFrom}}</p>
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="dates" aria-labelledby="dates-title">
+  <h2 id="dates-title">Dates</h2>
+  {{if eq $v.Section "dates"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/dates" class="settings-form">
+    <p class="hint">The end-of-life date of each Drupal version, as the emails state it.</p>
+    <div class="settings-dates">
+      {{range $x.Dates}}
+      <div class="settings-field">
+        <label for="date-{{.Name}}">{{or .Label .Name}}</label>
+        <input id="date-{{.Name}}" name="{{.Name}}" value="{{.Value}}" type="date">
+        <p class="setting-source">Source: {{source .Source}}</p>
+      </div>
+      {{end}}
+    </div>
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="relevance" aria-labelledby="relevance-title">
+  <h2 id="relevance-title">Jev relevance</h2>
+  {{if eq $v.Section "relevance"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/relevance" class="settings-form">
+    <div class="checks">
+      <label><input type="checkbox" name="rating" value="on"{{if $x.Rating}} checked{{end}}> Rate new leads for relevance</label>
+    </div>
+    <p class="setting-source">Source: {{source $s.Rating}}</p>
+    <div class="settings-field">
+      <label for="leads-cap">Most ratings a day</label>
+      <input id="leads-cap" name="leads_cap" value="{{$x.LeadsCap}}" type="number" min="0"{{if gt $p.ServerCap 0}} max="{{$p.ServerCap}}"{{end}} step="1" inputmode="numeric" aria-describedby="leads-cap-hint">
+      <p id="leads-cap-hint" class="hint">0 uses the server's cap{{if gt $p.ServerCap 0}} of {{thousands $p.ServerCap}} a day{{end}}. A setting may lower the server's cap, never raise it.</p>
+    </div>
+    <p class="setting-source">Source: {{source $s.LeadsCap}}</p>
+    {{with $p.TrustGate}}
+    <h3>Sorting by relevance</h3>
+    {{range .}}<p>{{.}}</p>{{end}}
+    {{end}}
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="order" aria-labelledby="order-title">
+  <h2 id="order-title">Fallback order</h2>
+  {{if eq $v.Section "order"}}{{template "settings_problems" $v}}{{end}}
+  <form method="post" action="/leads/settings/order" class="settings-form">
+    <p class="hint">Leads not starred, and not sorted by relevance yet, follow these points: a lead scores their sum. Points run from -100 to 100, and a blank box is no rule.</p>
+    {{with $x.Order.Points}}
+    <div class="points">
+    {{range .}}
+      <div>
+        <label for="pt-{{.Key}}">{{.Group}} {{.Label}}</label>
+        <input id="pt-{{.Key}}" name="{{.Key}}" value="{{.Value}}" inputmode="numeric" maxlength="4">
+      </div>
+    {{end}}
+    </div>
+    {{end}}
+    <div class="settings-field">
+      <label for="exact-version">Exact version known</label>
+      <input id="exact-version" name="exact_version" value="{{$x.Order.ExactVersion}}" inputmode="numeric" maxlength="4">
+    </div>
+    <div class="settings-field">
+      <label for="rank-bands">Bigger sites first: rank bands (rank under, points)</label>
+      <input id="rank-bands" name="rank_bands" value="{{$x.Order.RankBands}}" maxlength="{{maxText}}" aria-describedby="rank-hint">
+      <p id="rank-hint" class="hint">For example 10000 15, 100000 8. A site earns the first band its rank is under.</p>
+    </div>
+    <div class="settings-field">
+      <label for="order-countries">Country order (code, points)</label>
+      <input id="order-countries" name="countries" value="{{$x.Order.Countries}}" maxlength="{{maxText}}" aria-describedby="order-countries-hint">
+      <p id="order-countries-hint" class="hint">For example GB 20, DE 10. A country not listed scores 0.</p>
+    </div>
+    <p class="setting-source">Source: {{source $s.Order}}</p>
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
+<section class="card settings-section" id="file" aria-labelledby="file-title">
+  <h2 id="file-title">In the file and on the server</h2>
+  <p class="hint">Sending reads these directly, so the console shows them and never changes them.</p>
+  {{$ro := $p.ReadOnly}}
+  <h3>Country channels and languages</h3>
+  {{if $ro.Countries}}
+  <ul class="item-list settings-readonly">
+    {{range $ro.Countries}}<li><span class="item-head">{{or .Label .Code}}</span> <span class="item-meta">{{.Channel}}{{with .Language}} · {{.}}{{end}}{{with .Timezone}} · {{.}}{{end}}{{with .Footer}} · footer {{.}}{{end}}</span></li>{{end}}
+  </ul>
+  {{else}}<p class="empty">No countries.</p>{{end}}
+  <p class="setting-source">Edit in leads.yaml.</p>
+  <h3>Sending pace and ramp</h3>
+  {{if $ro.Pace}}<ul class="plain">{{range $ro.Pace}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="empty">Not set.</p>{{end}}
+  <p class="setting-source">Edit in leads.yaml.</p>
+  <h3>Sender</h3>
+  <dl class="fields">
+    <div><dt>Name</dt><dd>{{or $ro.SenderName "not set"}}</dd></div>
+    <div><dt>Identity line</dt><dd>{{or $ro.IdentityLine "not set"}}</dd></div>
+    <div><dt>Site URL</dt><dd>{{or $ro.SiteURL "not set"}}</dd></div>
+    <div><dt>Opt-out lines</dt><dd>{{if $ro.OptOutLanguages}}one for each of {{join $ro.OptOutLanguages ", "}}{{else}}none{{end}}</dd></div>
+  </dl>
+  <p class="setting-source">Edit in leads.yaml.</p>
+  <h3>Templates</h3>
+  {{if $ro.Templates}}<ul class="plain">{{range $ro.Templates}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="empty">None in use.</p>{{end}}
+  <p class="setting-source">Edit in leads.yaml.</p>
+  <h3>Environment</h3>
+  {{if $ro.Env}}
+  <dl class="fields">
+    {{range $ro.Env}}<div><dt><code>{{.Name}}</code></dt><dd>{{or .Value "not set: the default"}}</dd></div>{{end}}
+  </dl>
+  {{else}}<p class="empty">None shown.</p>{{end}}
+  <p class="setting-source">Set in .env on the server.</p>
+</section>
+
+<section class="card settings-section" id="reset-all" aria-labelledby="reset-all-title">
+  <h2 id="reset-all-title">Start again from the file</h2>
+  {{if eq $v.Section "all"}}{{template "settings_problems" $v}}{{end}}
+  <details>
+    <summary>Reset everything to the file</summary>
+    <form method="post" action="/leads/settings/all" class="confirm-form">
+      <p>Every section above goes back to the leads settings file. A change applies to new leads at the next build.</p>
+      <button type="submit" name="do" value="reset" class="primary">Reset everything to the file</button>
+    </form>
+  </details>
+</section>
+{{end}}
+
+{{define "settings_problems"}}<div class="notice notice-error"><p>Fix {{if eq (len .Problems) 1}}this{{else}}these{{end}} before saving:</p><ul>{{range .Problems}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+
+{{define "settings_buttons"}}<div class="settings-buttons">
+      <button type="submit" name="do" value="save" class="primary">Save</button>
+      <button type="submit" name="do" value="reset" class="quiet">Reset this section</button>
+    </div>{{end}}

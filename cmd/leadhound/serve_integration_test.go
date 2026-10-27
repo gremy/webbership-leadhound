@@ -25,6 +25,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
@@ -1114,34 +1115,40 @@ func TestConsoleBatchPage(t *testing.T) {
 	}
 }
 
-// TestConsoleLeadsPagesRead: the leads pages render from the real backend, the queue in the
-// order a batch drafts, and the not-set-up line without a leads file.
+// consoleQueueOf is the queue the console's batches draw from, through the console's
+// settings door: every lead a batch could draft, starred or not, in the order it drafts them.
+func consoleQueueOf(t *testing.T, b *backend) []leadstore.Candidate {
+	t.Helper()
+	ctx := context.Background()
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := batchCandidateOptions(ctx, b.lq(), newBatchSetup(setup, b.loc), b.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.StarredOnly = false
+	cands, err := b.lq().NextUp(ctx, opts, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cands
+}
+
+// TestConsoleLeadsPagesRead: the leads pages render from the real backend, the retired
+// priorities page sends to the Settings page's fallback order, and the not-set-up line
+// shows without a leads file.
 func TestConsoleLeadsPagesRead(t *testing.T) {
 	ctx := context.Background()
 	dir := leadsScene(t)
 	goLive(t)
 	b := leadsBackend(t)
-	q, err := b.LeadsNext(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cands, err := leadstoretest.Q(t).NextUp(ctx, b.candidateOptions(mustLeads(t), leadsNow()), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(q.Leads) == 0 || len(q.Leads) != len(cands) {
-		t.Fatalf("queue %d leads, NextUp %d", len(q.Leads), len(cands))
-	}
-	for i, c := range cands {
-		if q.Leads[i].LeadID != c.LeadID || q.Leads[i].Score != c.Score {
-			t.Errorf("queue %d is lead %d score %d, want %d score %d", i, q.Leads[i].LeadID, q.Leads[i].Score, c.LeadID, c.Score)
-		}
-	}
-	if q.DeferUntil != "2026-11-10" {
-		t.Errorf("default push-back %s", q.DeferUntil)
+	if q := consoleQueueOf(t, b); len(q) == 0 {
+		t.Fatal("the scene has no leads in the queue")
 	}
 	h, c := jobsHandler(t, b)
-	for _, p := range []string{"/leads", "/leads/outreach", "/leads/priorities", "/"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/settings", "/"} {
 		r := httptest.NewRequest(http.MethodGet, p, nil)
 		r.Header.Set("Cookie", c)
 		w := httptest.NewRecorder()
@@ -1150,13 +1157,16 @@ func TestConsoleLeadsPagesRead(t *testing.T) {
 			t.Errorf("%s: %d %s", p, w.Code, w.Body.String())
 		}
 	}
-	// The old queue page is the list in the outreach order now.
-	r := httptest.NewRequest(http.MethodGet, "/leads/next", nil)
-	r.Header.Set("Cookie", c)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads?sort=order" {
-		t.Errorf("/leads/next: %d to %q", w.Code, w.Header().Get("Location"))
+	// The old queue page is the list in the outreach order now, and the old priorities
+	// page the Settings page's fallback order.
+	for p, want := range map[string]string{"/leads/next": "/leads?sort=order", "/leads/priorities": "/leads/settings#order"} {
+		r := httptest.NewRequest(http.MethodGet, p, nil)
+		r.Header.Set("Cookie", c)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+			t.Errorf("%s: %d to %q, want %q", p, w.Code, w.Header().Get("Location"), want)
+		}
 	}
 	if err := os.Remove(filepath.Join(dir, "leads.yaml")); err != nil {
 		t.Fatal(err)
@@ -1181,16 +1191,16 @@ func mustLeads(t *testing.T) leadconfig.Config {
 
 // TestConsoleQueueSteering: star, unstar, up, down and pin to top write the operator's
 // order the queue reads (starred first); a move of an unstarred lead is refused; push back
-// (the default 14 days when no day is given), clear and skip write the priority rows; a
-// preview of an edited profile writes nothing; save and reset add versions.
+// (the default 14 days when no day is given), clear and skip write the priority rows; the
+// Settings page's fallback order refuses a bad edit, and a save and a reset add versions.
 func TestConsoleQueueSteering(t *testing.T) {
 	ctx := context.Background()
 	leadsScene(t)
 	goLive(t)
 	b := leadsBackend(t)
-	q, err := b.LeadsNext(ctx)
-	if err != nil || len(q.Leads) < 3 {
-		t.Fatalf("queue %v %v", q.Leads, err)
+	q := consoleQueueOf(t, b)
+	if len(q) < 3 {
+		t.Fatalf("queue %v", q)
 	}
 	act := func(do string, id int64) (console.LeadOutcome, error) {
 		t.Helper()
@@ -1198,17 +1208,17 @@ func TestConsoleQueueSteering(t *testing.T) {
 	}
 	head := func(n int) []int64 {
 		t.Helper()
-		q, err := b.LeadsNext(ctx)
-		if err != nil || len(q.Leads) < n {
-			t.Fatalf("queue %v %v", q.Leads, err)
+		q := consoleQueueOf(t, b)
+		if len(q) < n {
+			t.Fatalf("queue %v", q)
 		}
 		ids := make([]int64, n)
 		for i := range ids {
-			ids[i] = q.Leads[i].LeadID
+			ids[i] = q[i].LeadID
 		}
 		return ids
 	}
-	last, second := q.Leads[len(q.Leads)-1].LeadID, q.Leads[len(q.Leads)-2].LeadID
+	last, second := q[len(q)-1].LeadID, q[len(q)-2].LeadID
 	for _, do := range []string{console.LeadUp, console.LeadDown, console.LeadTop} {
 		if _, err := act(do, last); !errors.Is(err, console.ErrUserFixable) || !strings.Contains(err.Error(), "Star it first.") {
 			t.Errorf("%s of an unstarred lead: %v", do, err)
@@ -1272,8 +1282,8 @@ func TestConsoleQueueSteering(t *testing.T) {
 		`SELECT until::text FROM lead_priority WHERE lead_id = $1 ORDER BY id DESC LIMIT 1`, last).Scan(&until); err != nil || until != "2026-11-10" {
 		t.Errorf("default push back until %q (%v), want 2026-11-10", until, err)
 	}
-	q, _ = b.LeadsNext(ctx)
-	for _, l := range q.Leads {
+	q = consoleQueueOf(t, b)
+	for _, l := range q {
 		if l.LeadID == last {
 			t.Error("a pushed-back lead is still in the queue")
 		}
@@ -1281,7 +1291,7 @@ func TestConsoleQueueSteering(t *testing.T) {
 	if _, err := act(console.LeadClear, last); err != nil {
 		t.Fatal(err)
 	}
-	first := q.Leads[0].LeadID
+	first := q[0].LeadID
 	if _, err := act(console.LeadSkip, first); err != nil {
 		t.Fatal(err)
 	}
@@ -1299,38 +1309,33 @@ func TestConsoleQueueSteering(t *testing.T) {
 	}
 
 	versions := func() int { return batchCount(t, `SELECT count(*)::int FROM priority_profile`) }
-	page, err := b.LeadPriorities(ctx, nil)
-	if err != nil || page.FromDB || len(page.Preview) == 0 {
-		t.Fatalf("priorities %+v %v", page, err)
+	page, err := b.LeadSettings(ctx)
+	if err != nil || page.Sources.Order.Console {
+		t.Fatalf("settings %+v %v", page.Sources, err)
 	}
-	edit := page.Form
-	edit.Countries = "gb 90"
-	prev, err := b.LeadPriorities(ctx, &edit)
-	if err != nil || len(prev.Problems) != 0 || !prev.Edited {
-		t.Fatalf("preview %+v %v", prev, err)
-	}
-	if versions() != 0 {
-		t.Error("a preview saved a version")
-	}
-	bad := page.Form
-	bad.RankBands = "ten 5"
-	if prev, _ := b.LeadPriorities(ctx, &bad); len(prev.Problems) == 0 || prev.Preview != nil {
-		t.Errorf("a bad edit previewed: %+v", prev)
-	}
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSavePriority, Form: bad}); !errors.Is(err, console.ErrUserFixable) {
+	edit := page.Values
+	edit.Order.Countries = "gb 90"
+	bad := page.Values
+	bad.Order.RankBands = "ten 5"
+	var refusal *console.SettingsRefused
+	if err := b.SaveLeadSettings(ctx, console.SettingsOrder, bad, false); !errors.As(err, &refusal) || len(refusal.Problems) == 0 ||
+		!errors.Is(err, console.ErrUserFixable) {
 		t.Errorf("a bad save: %v", err)
 	}
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSavePriority, Form: edit}); err != nil {
+	if versions() != 0 {
+		t.Error("a refused save wrote a version")
+	}
+	if err := b.SaveLeadSettings(ctx, console.SettingsOrder, edit, false); err != nil {
 		t.Fatal(err)
 	}
-	if page, _ = b.LeadPriorities(ctx, nil); !page.FromDB || page.Form.Countries != "GB 90" {
-		t.Errorf("after save %+v", page.Form)
+	if page, _ = b.LeadSettings(ctx); !page.Sources.Order.Console || page.Values.Order.Countries != "GB 90" {
+		t.Errorf("after save %+v, %q", page.Sources.Order, page.Values.Order.Countries)
 	}
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadResetPrio}); err != nil {
+	if err := b.SaveLeadSettings(ctx, console.SettingsOrder, console.LeadSettingsValues{}, true); err != nil {
 		t.Fatal(err)
 	}
-	if page, _ = b.LeadPriorities(ctx, nil); page.FromDB || versions() != 2 {
-		t.Errorf("after reset FromDB %v, %d versions", page.FromDB, versions())
+	if page, _ = b.LeadSettings(ctx); page.Sources.Order.Console || versions() != 2 {
+		t.Errorf("after reset %+v, %d versions", page.Sources.Order, versions())
 	}
 }
 

@@ -326,8 +326,10 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 	if got := leadIDs(cs); !reflect.DeepEqual(got, []int64{a, b, c}) {
 		t.Errorf("pinned b then c = %v, want a, b, c (a pin no longer orders)", got)
 	}
-	if cs[0].Pinned || !cs[1].Pinned || !cs[2].Pinned || slices.Contains(cs[2].Why, "pinned") {
-		t.Errorf("pinned flags: %v %v %v, why %q", cs[0].Pinned, cs[1].Pinned, cs[2].Pinned, cs[2].Why)
+	for _, c := range cs {
+		if slices.ContainsFunc(c.Why, func(w string) bool { return strings.Contains(w, "pin") }) {
+			t.Errorf("lead %d: a pin still gives a reason: %q", c.LeadID, c.Why)
+		}
 	}
 	if err := f.q.ClearLeadPriority(ctx, c); err != nil {
 		t.Fatal(err)
@@ -620,9 +622,18 @@ func TestCandidateLeadsSetBasedOracle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[leadstore.Candidate])
+			// The oracle still reads the legacy pin flag, which Candidate no longer carries.
+			type oracleRow struct {
+				leadstore.Candidate
+				Pinned bool `db:"pinned"`
+			}
+			orows, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[oracleRow])
 			if err != nil {
 				t.Fatal(err)
+			}
+			want := make([]leadstore.Candidate, len(orows))
+			for i, r := range orows {
+				want[i] = r.Candidate
 			}
 			slices.SortStableFunc(want, func(a, b leadstore.Candidate) int {
 				switch {

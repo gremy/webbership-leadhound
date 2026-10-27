@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -370,3 +371,144 @@ type LeadRelevance struct {
 	Words string
 	At    time.Time
 }
+
+// The sections of the Leads Settings page. Each editable one posts to
+// /leads/settings/{section} and is the anchor of its part of the page; SettingsAll takes only
+// a reset, of every section at once.
+const (
+	SettingsWho        = "who"         // who to contact: countries wanted, never-contact countries
+	SettingsKinds      = "kinds"       // lead kinds on or off, and their order
+	SettingsSmallSites = "small-sites" // skip very small sites
+	SettingsBatches    = "batches"     // where a new batch draws its leads from
+	SettingsDates      = "dates"       // the Drupal end-of-life dates
+	SettingsRelevance  = "relevance"   // Jev relevance: rating on or off, the leads daily cap
+	SettingsOrder      = "order"       // the fallback order: the priority profile's points
+	SettingsAll        = "all"         // reset only: every section back to the file
+)
+
+// The values LeadSettingsValues.BatchesFrom takes, as leads.yaml's batches_from does.
+const (
+	BatchesStarred         = "starred"           // starred leads only
+	BatchesStarredThenRest = "starred_then_rest" // starred leads first, then the rest of the queue
+)
+
+// LeadSettingsValues are the settings the console may change (plan D11), as the Settings
+// page's forms hold them: text stays text, so the backend checks it with the same rules
+// leads.yaml passes and words every problem. A save hands the backend the values of one
+// section; the backend reads only that section's fields.
+type LeadSettingsValues struct {
+	// Who to contact. Countries are the countries leads.yaml names, in the page's order;
+	// Wanted false puts one on the never-contact list. NeverContact is the rest of that list,
+	// codes leads.yaml does not name, as typed ("FR, IT"). Both go to the priority profile's
+	// exclude_countries.
+	Countries    []CountryToggle
+	NeverContact string
+	// Lead kinds, in the order batches draw them, first first (kinds_priority); On false
+	// turns a kind off (kinds_off).
+	Kinds []KindToggle
+	// SkipRankOver is skip_rank_over as typed: a whole number, "0" off.
+	SkipRankOver string
+	// BatchesFrom is batches_from: BatchesStarred or BatchesStarredThenRest.
+	BatchesFrom string
+	// Dates are the end-of-life dates, facts.d6_eol to facts.d10_eol, YYYY-MM-DD as typed.
+	Dates []DateSetting
+	// Rating is relevance.rating; LeadsCap relevance.leads_daily_calls as typed ("0" is the
+	// server's cap, LEADHOUND_JEV_LEADS_DAILY_CALL_CAP).
+	Rating   bool
+	LeadsCap string
+	// Order is the fallback order: the priority profile's points, exact version, countries
+	// and rank bands. Its Exclude is never read or written here: never-contact countries are
+	// Who's.
+	Order PriorityForm
+}
+
+// CountryToggle is one country of Who to contact: its ISO code, its words, and whether it
+// is contacted.
+type CountryToggle struct {
+	Code, Label string
+	Wanted      bool
+}
+
+// KindToggle is one lead kind: its name (lead_kind.name), its words, and whether it is on.
+type KindToggle struct {
+	Name, Label string
+	On          bool
+}
+
+// DateSetting is one end-of-life date. Name is the form field and the setting both
+// (d6_eol … d10_eol); Label names the Drupal version; Source is where the date comes from.
+type DateSetting struct {
+	Name, Label, Value string
+	Source             SettingSource
+}
+
+// SettingSource is where a value comes from: the file (leads.yaml), or the console, saved At.
+type SettingSource struct {
+	Console bool
+	At      time.Time // when it was changed in the console; zero for the file
+}
+
+// SettingsSources say where each setting of the page comes from. A date carries its own.
+type SettingsSources struct {
+	Who, KindsOn, KindsOrder, SkipRankOver, BatchesFrom, Rating, LeadsCap, Order SettingSource
+}
+
+// LeadSettingsPage is the Settings page: the values in force and where each comes from,
+// the words of the relevance trust gate, and what the console shows but never changes.
+// Notes are plain lines about the settings as a whole, such as a saved change leads.yaml no
+// longer accepts, which is ignored.
+type LeadSettingsPage struct {
+	Values    LeadSettingsValues
+	Sources   SettingsSources
+	ServerCap int      // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the most a setting may allow a day
+	TrustGate []string // whether the list and the queue sort by relevance yet, and why, one line each
+	Notes     []string
+	ReadOnly  ReadOnlySettings
+}
+
+// ReadOnlySettings are the settings the Settings page shows and never changes: they are
+// read outside the settings door (plan D11), so they are edited in leads.yaml or set in
+// .env on the server. Never put a secret here (operator addresses, a DSN, the password hash,
+// a key or a mailbox password); the page also shows an env name only when it is on
+// EnvAllowlist.
+type ReadOnlySettings struct {
+	Countries       []CountryPolicy // each country's channel, language, time zone and footer
+	Pace            []string        // sending pace and the warm-up ramp, one plain line each
+	SenderName      string
+	IdentityLine    string
+	SiteURL         string
+	OptOutLanguages []string     // the languages that have an opt-out line; the lines are not shown
+	Templates       []string     // the message templates in use, by name only (kind, language, step); never a body
+	Env             []EnvSetting // the allowlisted environment values in force
+}
+
+// CountryPolicy is one country's policy from leads.yaml, in words.
+type CountryPolicy struct {
+	Code, Label, Channel, Language, Timezone, Footer string
+}
+
+// EnvSetting is one environment value the page shows: its name and its value ("" for
+// unset, the default in force).
+type EnvSetting struct{ Name, Value string }
+
+// EnvAllowlist are the only environment names the Settings page shows (plan D11); the page
+// drops any other the backend hands it.
+var EnvAllowlist = []string{
+	"LEADHOUND_OUTREACH", "LEADHOUND_LEADS_TIMERS", "LEADHOUND_LEADS_SEND", "LEADHOUND_PROBE_RATE",
+	"LEADHOUND_PROBE_CONCURRENCY", "LEADHOUND_TZ", "LEADHOUND_JEV_MODEL", "LEADHOUND_JEV_DAILY_CALL_CAP",
+	"LEADHOUND_JEV_LEADS_DAILY_CALL_CAP",
+}
+
+// SettingsRefused is a settings save the backend refused, with every problem in plain words
+// (the same words leads.yaml's checks use). errors.Is(err, ErrUserFixable) holds for it; a
+// plain ErrUserFixable refusal works too, shown as one problem.
+type SettingsRefused struct {
+	Problems []string
+}
+
+func (e *SettingsRefused) Error() string {
+	return ErrUserFixable.Error() + ": " + strings.Join(e.Problems, " ")
+}
+
+// Unwrap makes a SettingsRefused an ErrUserFixable.
+func (e *SettingsRefused) Unwrap() error { return ErrUserFixable }

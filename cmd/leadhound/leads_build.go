@@ -41,7 +41,8 @@ func leadsInTx(ctx context.Context, pool *pgxpool.Pool, fn func(leadstore.Querie
 	return nil
 }
 
-// leadsOpen loads the config the leads commands need and opens the store.
+// leadsOpen loads the config the leads commands need, opens the store and applies the
+// console's saved settings (applyLeadSettings), so the command reads the effective config.
 func leadsOpen(ctx context.Context, load leadsLoad) (*store.Store, leadsSetup, error) {
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
 	if err != nil {
@@ -53,6 +54,10 @@ func leadsOpen(ctx context.Context, load leadsLoad) (*store.Store, leadsSetup, e
 	}
 	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
+		return nil, leadsSetup{}, err
+	}
+	if setup, err = applyLeadSettings(ctx, leadstore.NewQueries(s.Pool()), setup); err != nil {
+		s.Close()
 		return nil, leadsSetup{}, err
 	}
 	return s, setup, nil
