@@ -1,15 +1,18 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
-The Leads console (2026-10-27, on local main, not yet pushed or deployed; plan `leadhound-leads-console`):
+The Leads console (2026-10-27, pushed and deployed to production; plan `leadhound-leads-console`, archived):
 - Committed: CP1 the data model (`ed6e42e`: findings, kinds and channels as rows, Jev usage counted per purpose), CP2 the list and the lead page with Outreach moved (`fc24933`), CP4 enrichment (`55afa3e`: phones, descriptions and social links from the org's own pages), CP3 stars and the outreach order (`2f48058`), CP5 Settings in the console with the priorities page retired (`cafca15`), CP6 Jev relevance with a golden set and an eval (`8efa0f7`).
-- Built, not yet committed: your calls in the database (leads migration 00015 `lead_label`, "Your call" on the lead page, the To label filter, the eval reading the calls from the database by default) and the Settings help text, with a polish pass on the console in progress.
+- Then `5ae1a3f`: your calls in the database (leads migration 00015 `lead_label`, "Your call" on the lead page, the To label filter, the eval reading the calls from the database by default), the Settings help text, the console polish, and the final review's fixes (the probe waits for the fetch lock, `batch new` refuses while saved settings are ignored, Jev calls per purpose on the dashboard, a huge `?page=` shows the last page).
+- Then `114f782`: `make gate` runs the whole gate once and stamps the commit; `make deploy` skips the gate on a stamped clean HEAD; the scale seed analyses each step and reseeds on an emptied database.
+- Deployed 27 Oct from `5ae1a3f`: the console answers, the finding timers (probe, contacts) are on, sending timers stay off.
 - New commands: `leads enrich`, `leads rate`, `leads relevance golden-draft|eval`, `leads settings show|reset`.
 - The contacts unit now runs contacts, enrich, rate and build, with `TimeoutStartSec=7h`; rating needs `LEADHOUND_LIVE=1` and the Jev key on the server.
 - Leads have their own Jev cap, `LEADHOUND_JEV_LEADS_DAILY_CALL_CAP` (10,000 by default), apart from the jobs cap.
 - Migrations: core up to 00008, leads up to 00015; dev is migrated to both.
 - Dev: 1,185 leads built, enriched (phones on 666 orgs, descriptions on 823, social links on 988), and screenshots of every Leads page at 1280 and 390 px in light and dark, outside the repo.
-- Next: the final review and `make prepush`, then push and deploy on the operator's yes, then label 30 leads under To label and run the eval.
+- Not checked from here (the server could not be read): the leads migration level in production and whether the server env has `LEADHOUND_LIVE=1` and the Jev key; the dashboard's "for leads" Jev line after the next contacts run shows it.
+- Next: give your call on 30 leads under Leads → To label in production, then run `leads relevance eval --decider jev` with `LEADHOUND_LIVE=1` (about 90 calls) and record the numbers under "Eval baseline".
 
 No false opt-outs (2026-10-26, on local main, not yet pushed or deployed; plan `leadhound-false-opt-outs`):
 - CP1 (detection, `b47f703`) and CP2 (lift, `4bb4a5d`) are committed: an opt-out is read from the subject and the sender's own words only, our own lines and quoted text are taken out, a multipart reply's first text part is decoded, and a draft with an opt-out word outside the opt-out line is refused.
