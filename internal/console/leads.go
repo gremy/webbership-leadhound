@@ -20,7 +20,6 @@ type LeadsBackend interface {
 	// LeadDetail is everything stored about one lead; ErrNotFound for no such lead.
 	LeadDetail(ctx context.Context, id int64) (LeadDetailPage, error)
 	LeadBatch(ctx context.Context, id int64) (LeadBatch, error) // ErrNotFound for no such batch
-	LeadsNext(ctx context.Context) (LeadsQueue, error)
 	// LeadPriorities is the priority profile as a form with the top of the queue under it:
 	// the profile in use when edit is nil, else edit (nothing is saved). An edit with
 	// problems comes back with them and no preview.
@@ -49,8 +48,12 @@ const (
 	LeadContacted    = "contacted"        // Value (a domain), Note
 	LeadPause        = "pause"            // Reason
 	LeadResume       = "resume"           //
-	LeadPin          = "pin"              // ID lead
-	LeadDefer        = "defer"            // ID lead, Until
+	LeadStar         = "star"             // ID lead: to the bottom of the outreach order
+	LeadUnstar       = "unstar"           // ID lead: out of the outreach order
+	LeadUp           = "up"               // ID lead: one place up the order
+	LeadDown         = "down"             // ID lead: one place down the order
+	LeadTop          = "top"              // ID lead: pinned to the top of the order
+	LeadDefer        = "defer"            // ID lead, Until ("" is the default push-back)
 	LeadSkip         = "skip"             // ID lead
 	LeadClear        = "clear"            // ID lead
 	LeadSavePriority = "save-priorities"  // Form
@@ -196,7 +199,9 @@ type LeadMessage struct {
 	State, CancelReason               string      // State "" while a draft
 }
 
-// LeadsQueue is the next leads, in the order batches draw them.
+// LeadsQueue is the next leads, in the order batches draw them. No console page reads it
+// any more (the list sorted by order replaced the queue page); it stays only until
+// cmd/leadhound drops its LeadsNext method (CP5, Task 5.3).
 type LeadsQueue struct {
 	DeferUntil string // the default push-back date, YYYY-MM-DD
 	Leads      []QueueLead
@@ -235,7 +240,6 @@ type PrioritiesPage struct {
 const (
 	leadsPath      = "/leads"          // the list
 	leadsOutPath   = "/leads/outreach" // sending, batches, replies and suppressions
-	leadsNextPath  = "/leads/next"     // GET goes to the list in the outreach order
 	leadsOrderPath = "/leads?sort=order"
 	leadsPrioPath  = "/leads/priorities"
 	leadBatchPath  = "/leads/batches/"
@@ -251,9 +255,9 @@ type leadsView struct {
 	Error   bool
 }
 
-// pathID reads the {name} path segment as a positive id, or reports false.
-func pathID(r *http.Request, name string) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
+// pathID reads the {id} path segment as a positive id, or reports false.
+func pathID(r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	return id, err == nil && id > 0
 }
 
@@ -304,7 +308,7 @@ func (s *server) renderLeads(w http.ResponseWriter, r *http.Request, code int, m
 // leadBatch is GET /leads/batches/{id}: the whole batch, and the approve form when it can
 // be approved.
 func (s *server) leadBatch(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -325,16 +329,6 @@ func (s *server) renderBatch(w http.ResponseWriter, r *http.Request, code int, i
 // left for the list to show.
 func (s *server) leadsNext(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, leadsOrderPath, http.StatusSeeOther)
-}
-
-// renderNext shows the queue with a refusal from one of its POSTs.
-func (s *server) renderNext(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
-	q, err := s.b.LeadsNext(r.Context())
-	if s.leadsRead(w, r, code, err) {
-		return
-	}
-	s.render(w, r, code, "leads_next", page{Title: "Next leads", Active: leadsPath, SignedIn: true,
-		Data: leadsView{Data: q, Message: msg, Error: isErr}})
 }
 
 // leadPriorities is GET /leads/priorities.
@@ -397,13 +391,9 @@ func refusalWords(err error) string {
 	return strings.TrimPrefix(strings.TrimPrefix(err.Error(), ErrUserFixable.Error()), ": ")
 }
 
-// backToLeads, backToNext re-render the Outreach page and the queue with a refusal.
+// backToLeads re-renders the Outreach page with a refusal.
 func (s *server) backToLeads(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
 	s.renderLeads(w, r, code, msg, isErr)
-}
-
-func (s *server) backToNext(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
-	s.renderNext(w, r, code, msg, isErr)
 }
 
 // backToBatch re-renders batch id with a refusal.
@@ -416,7 +406,7 @@ func (s *server) backToBatch(id int64) func(http.ResponseWriter, *http.Request, 
 // approveBatch is POST /leads/batches/{id}/approve: the hash the page showed and the items
 // left out.
 func (s *server) approveBatch(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -440,7 +430,7 @@ func (s *server) approveBatch(w http.ResponseWriter, r *http.Request) {
 
 // discardBatch is POST /leads/batches/{id}/discard.
 func (s *server) discardBatch(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -462,7 +452,7 @@ func (s *server) newBatch(w http.ResponseWriter, r *http.Request) {
 
 // resolveMessage is POST /leads/messages/{id}/resolve with sent=sent|not-sent.
 func (s *server) resolveMessage(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -481,7 +471,7 @@ func (s *server) resolveMessage(w http.ResponseWriter, r *http.Request) {
 
 // itemDone is POST /leads/items/{id}/done: a contact form or LinkedIn note was used.
 func (s *server) itemDone(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -545,20 +535,6 @@ func (s *server) sending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.leadsAct(w, r, a, leadsOutPath, s.backToLeads)
-}
-
-// steerLead is POST /leads/next/{lead}/{action}: pin, defer (until a date), skip or clear.
-func (s *server) steerLead(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "lead")
-	do := r.PathValue("action")
-	if !ok || !slices.Contains([]string{LeadPin, LeadDefer, LeadSkip, LeadClear}, do) {
-		http.NotFound(w, r)
-		return
-	}
-	if !leadsForm(w, r) {
-		return
-	}
-	s.leadsAct(w, r, LeadAction{Do: do, ID: id, Until: strings.TrimSpace(r.PostForm.Get("until"))}, leadsNextPath, s.backToNext)
 }
 
 // savePriorities is POST /leads/priorities: do=preview shows the queue under the edited

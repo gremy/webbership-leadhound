@@ -1179,30 +1179,98 @@ func mustLeads(t *testing.T) leadconfig.Config {
 	return setup.leads
 }
 
-// TestConsoleQueueSteering: pin, push back, clear and skip from the queue write the priority
-// rows the queue reads; a preview of an edited profile writes nothing; save and reset add
-// versions.
+// TestConsoleQueueSteering: star, unstar, up, down and pin to top write the operator's
+// order the queue reads (starred first); a move of an unstarred lead is refused; push back
+// (the default 14 days when no day is given), clear and skip write the priority rows; a
+// preview of an edited profile writes nothing; save and reset add versions.
 func TestConsoleQueueSteering(t *testing.T) {
 	ctx := context.Background()
 	leadsScene(t)
 	goLive(t)
 	b := leadsBackend(t)
 	q, err := b.LeadsNext(ctx)
-	if err != nil || len(q.Leads) < 2 {
+	if err != nil || len(q.Leads) < 3 {
 		t.Fatalf("queue %v %v", q.Leads, err)
 	}
-	last := q.Leads[len(q.Leads)-1].LeadID
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadPin, ID: last}); err != nil {
+	act := func(do string, id int64) (console.LeadOutcome, error) {
+		t.Helper()
+		return b.LeadAct(ctx, console.LeadAction{Do: do, ID: id})
+	}
+	head := func(n int) []int64 {
+		t.Helper()
+		q, err := b.LeadsNext(ctx)
+		if err != nil || len(q.Leads) < n {
+			t.Fatalf("queue %v %v", q.Leads, err)
+		}
+		ids := make([]int64, n)
+		for i := range ids {
+			ids[i] = q.Leads[i].LeadID
+		}
+		return ids
+	}
+	last, second := q.Leads[len(q.Leads)-1].LeadID, q.Leads[len(q.Leads)-2].LeadID
+	for _, do := range []string{console.LeadUp, console.LeadDown, console.LeadTop} {
+		if _, err := act(do, last); !errors.Is(err, console.ErrUserFixable) || !strings.Contains(err.Error(), "Star it first.") {
+			t.Errorf("%s of an unstarred lead: %v", do, err)
+		}
+	}
+	for _, id := range []int64{second, last} {
+		if out, err := act(console.LeadStar, id); err != nil || !strings.Contains(out.Message, "starred") {
+			t.Fatalf("star %d: %+v %v", id, out, err)
+		}
+	}
+	if got := head(2); !slices.Equal(got, []int64{second, last}) {
+		t.Errorf("starred order %v, want %v", got, []int64{second, last})
+	}
+	if out, err := act(console.LeadStar, last); err != nil || !strings.Contains(out.Message, "already starred") {
+		t.Errorf("star again: %+v %v", out, err)
+	}
+	steps := []struct {
+		do   string
+		want []int64
+	}{
+		{console.LeadTop, []int64{last, second}},
+		{console.LeadUp, []int64{last, second}}, // already first: nothing moves
+		{console.LeadDown, []int64{second, last}},
+		{console.LeadUp, []int64{last, second}},
+	}
+	for _, st := range steps {
+		if _, err := act(st.do, last); err != nil {
+			t.Fatalf("%s: %v", st.do, err)
+		}
+		if got := head(2); !slices.Equal(got, st.want) {
+			t.Errorf("after %s: %v, want %v", st.do, got, st.want)
+		}
+	}
+	if _, err := act(console.LeadUnstar, second); err != nil {
 		t.Fatal(err)
 	}
-	if q, _ = b.LeadsNext(ctx); q.Leads[0].LeadID != last || !q.Leads[0].Pinned {
-		t.Errorf("pinned lead %d is not first: %+v", last, q.Leads[0])
+	if got := head(2); got[0] != last || got[1] == second {
+		t.Errorf("after unstar: %v", got)
 	}
+	var operatorRows, otherRows int
+	if err := storetest.OwnerConn(t).QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE actor = 'operator')::int, count(*) FILTER (WHERE actor <> 'operator')::int FROM lead_star`).Scan(&operatorRows, &otherRows); err != nil {
+		t.Fatal(err)
+	}
+	if operatorRows == 0 || otherRows != 0 {
+		t.Errorf("lead_star rows: %d by the operator, %d by others", operatorRows, otherRows)
+	}
+
 	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadDefer, ID: last, Until: "2026-10-20"}); !errors.Is(err, console.ErrUserFixable) {
 		t.Errorf("a past day: %v", err)
 	}
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadDefer, ID: last, Until: "2026-11-10"}); err != nil {
-		t.Fatal(err)
+	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadDefer, ID: last, Until: "nope"}); !errors.Is(err, console.ErrUserFixable) {
+		t.Errorf("not a day: %v", err)
+	}
+	out, err := act(console.LeadDefer, last) // no day: the default push-back
+	if err != nil || !strings.Contains(out.Message, "pushed back") {
+		t.Fatalf("default push back: %+v %v", out, err)
+	}
+	var until string
+	if err := storetest.OwnerConn(t).QueryRow(ctx,
+		`SELECT until::text FROM lead_priority WHERE lead_id = $1 ORDER BY id DESC LIMIT 1`, last).Scan(&until); err != nil || until != "2026-11-10" {
+		t.Errorf("default push back until %q (%v), want 2026-11-10", until, err)
 	}
 	q, _ = b.LeadsNext(ctx)
 	for _, l := range q.Leads {
@@ -1210,19 +1278,24 @@ func TestConsoleQueueSteering(t *testing.T) {
 			t.Error("a pushed-back lead is still in the queue")
 		}
 	}
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadClear, ID: last}); err != nil {
+	if _, err := act(console.LeadClear, last); err != nil {
 		t.Fatal(err)
 	}
 	first := q.Leads[0].LeadID
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSkip, ID: first}); err != nil {
+	if _, err := act(console.LeadSkip, first); err != nil {
 		t.Fatal(err)
 	}
 	var state string
 	if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT state FROM lead WHERE id = $1`, first).Scan(&state); err != nil || state != "skipped" {
 		t.Errorf("skipped lead is %q (%v)", state, err)
 	}
-	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadPin, ID: 999}); !errors.Is(err, console.ErrUserFixable) {
-		t.Errorf("no such lead: %v", err)
+	for _, do := range []string{console.LeadStar, console.LeadUnstar, console.LeadUp, console.LeadDown, console.LeadTop, console.LeadSkip} {
+		if _, err := act(do, 999); !errors.Is(err, console.ErrUserFixable) || !strings.Contains(err.Error(), "There is no lead 999.") {
+			t.Errorf("%s of no such lead: %v", do, err)
+		}
+	}
+	if _, err := act("pin", last); !errors.Is(err, console.ErrUserFixable) {
+		t.Errorf("the retired pin: %v", err)
 	}
 
 	versions := func() int { return batchCount(t, `SELECT count(*)::int FROM priority_profile`) }

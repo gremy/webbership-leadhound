@@ -832,7 +832,9 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 		return b.contacted(ctx, a)
 	case console.LeadPause, console.LeadResume:
 		return b.setSending(ctx, a.Do == console.LeadPause, a.Reason)
-	case console.LeadPin, console.LeadDefer, console.LeadSkip, console.LeadClear:
+	case console.LeadStar, console.LeadUnstar, console.LeadUp, console.LeadDown, console.LeadTop:
+		return b.star(ctx, a)
+	case console.LeadDefer, console.LeadSkip, console.LeadClear:
 		return b.steer(ctx, a)
 	case console.LeadSavePriority:
 		p, problems := parseProfileForm(a.Form)
@@ -918,6 +920,8 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 			return console.LeadOutcome{}, refused("Sending isn't set up on this server yet.")
 		case RefuseBatchWaiting:
 			return console.LeadOutcome{}, refused("Batch %d still waits for approval; no new batch.", r.BatchID)
+		case RefuseNoStarred:
+			return console.LeadOutcome{}, refused("%s", noStarredWords)
 		case RefuseNoRoom:
 			if r.Sizing.Waiting == 0 {
 				return console.LeadOutcome{}, refused("The warm-up ramp sends nothing over the next %d days; no new batch.", r.Sizing.Days)
@@ -1094,22 +1098,77 @@ func (b *backend) setSending(ctx context.Context, pause bool, reason string) (co
 	return console.LeadOutcome{Message: "Sending is resumed: the next send run sends what is due."}, nil
 }
 
-// steer pins, pushes back, skips or clears one lead of the queue.
+// star stars, unstars or moves one lead in the operator's outreach order (D5). Only a
+// starred lead has a place to move.
+func (b *backend) star(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
+	lq := b.lq()
+	var (
+		done bool
+		err  error
+		msg  string
+	)
+	switch a.Do {
+	case console.LeadStar:
+		done, err = lq.Star(ctx, a.ID, leadstore.ActorOperator)
+		msg = fmt.Sprintf("Lead %d starred: it is last in your order.", a.ID)
+		if !done {
+			msg = fmt.Sprintf("Lead %d is already starred; it keeps its place.", a.ID)
+		}
+	case console.LeadUnstar:
+		done, err = lq.Unstar(ctx, a.ID, leadstore.ActorOperator)
+		msg = fmt.Sprintf("Lead %d unstarred: it left your order.", a.ID)
+		if !done {
+			msg = fmt.Sprintf("Lead %d was not starred; nothing changed.", a.ID)
+		}
+	case console.LeadUp:
+		done, err = lq.MoveUp(ctx, a.ID, leadstore.ActorOperator)
+		msg = fmt.Sprintf("Lead %d moved up one place.", a.ID)
+		if !done {
+			msg = fmt.Sprintf("Lead %d is already first in your order.", a.ID)
+		}
+	case console.LeadDown:
+		done, err = lq.MoveDown(ctx, a.ID, leadstore.ActorOperator)
+		msg = fmt.Sprintf("Lead %d moved down one place.", a.ID)
+		if !done {
+			msg = fmt.Sprintf("Lead %d is already last in your order.", a.ID)
+		}
+	case console.LeadTop:
+		done, err = lq.MoveTop(ctx, a.ID, leadstore.ActorOperator)
+		msg = fmt.Sprintf("Lead %d pinned to the top of your order.", a.ID)
+		if !done {
+			msg = fmt.Sprintf("Lead %d is already first in your order.", a.ID)
+		}
+	}
+	switch {
+	case errors.Is(err, leadstore.ErrLeadNotFound):
+		return console.LeadOutcome{}, refused("There is no lead %d.", a.ID)
+	case errors.Is(err, leadstore.ErrNotStarred):
+		return console.LeadOutcome{}, refused("Lead %d is not starred, so it has no place to move. Star it first.", a.ID)
+	case err != nil:
+		return console.LeadOutcome{}, err
+	}
+	return console.LeadOutcome{Message: msg}, nil
+}
+
+// steer pushes back, skips or clears one lead of the queue. A push back with no day given
+// is the default consoleDeferDays from today.
 func (b *backend) steer(ctx context.Context, a console.LeadAction) (console.LeadOutcome, error) {
 	lq := b.lq()
 	var err error
 	msg := ""
 	switch a.Do {
-	case console.LeadPin:
-		err, msg = lq.PinLead(ctx, a.ID), fmt.Sprintf("Lead %d pinned: it comes first.", a.ID)
 	case console.LeadClear:
 		err, msg = lq.ClearLeadPriority(ctx, a.ID), fmt.Sprintf("Lead %d is back in its place by score.", a.ID)
 	case console.LeadDefer:
-		until, perr := time.ParseInLocation(time.DateOnly, a.Until, b.loc)
-		if perr != nil {
-			return console.LeadOutcome{}, refused("Pick the day to push the lead back to.")
+		today := startOfDay(b.now(), b.loc)
+		until := today.AddDate(0, 0, consoleDeferDays)
+		if strings.TrimSpace(a.Until) != "" {
+			var perr error
+			if until, perr = time.ParseInLocation(time.DateOnly, a.Until, b.loc); perr != nil {
+				return console.LeadOutcome{}, refused("Pick the day to push the lead back to.")
+			}
 		}
-		if until.Before(startOfDay(b.now(), b.loc)) {
+		if until.Before(today) {
 			return console.LeadOutcome{}, refused("Pick a day from today on.")
 		}
 		err, msg = lq.DeferLead(ctx, a.ID, until), fmt.Sprintf("Lead %d pushed back: it comes back after %s.", a.ID, until.Format("Mon 2 Jan"))

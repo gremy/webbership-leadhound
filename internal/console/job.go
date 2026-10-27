@@ -16,7 +16,7 @@ type jobView struct {
 
 // job is GET /jobs/{id}: one job's whole record and its mark form.
 func (s *server) job(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -41,7 +41,7 @@ func (s *server) renderJob(w http.ResponseWriter, r *http.Request, code int, id 
 // trackJob is POST /jobs/{id}/track: the same mark as the Jobs page makes, answered with
 // the job page showing what it did next to the form.
 func (s *server) trackJob(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -90,7 +90,7 @@ func (s *server) addRule(w http.ResponseWriter, r *http.Request) {
 
 // disableRule is POST /rules/{id}/disable with a reason.
 func (s *server) disableRule(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return

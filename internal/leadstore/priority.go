@@ -221,8 +221,10 @@ func (q Queries) EffectiveProfile(ctx context.Context, fallback leadconfig.Profi
 	return p, true, nil
 }
 
-// PinLead puts lead leadID at the head of the queue (the newest pin first) until it is
-// cleared or deferred.
+// PinLead appends a legacy lead_priority pin row for lead leadID. Pins no longer order the
+// queue (D5 retired them for stars, and migration 00011 turned the old ones into stars);
+// no command or console page writes one any more. It stays so tests can write the row a
+// pre-star database holds and prove the queue ignores it.
 func (q Queries) PinLead(ctx context.Context, leadID int64) error {
 	return q.steer(ctx, leadID, PriorityPin, nil)
 }

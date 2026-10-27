@@ -62,11 +62,6 @@ func (f *fakeBackend) LeadBatch(_ context.Context, id int64) (LeadBatch, error) 
 	return f.batch, nil
 }
 
-func (f *fakeBackend) LeadsNext(context.Context) (LeadsQueue, error) {
-	f.count("LeadsNext")
-	return f.queue, f.leadsRead()
-}
-
 func (f *fakeBackend) LeadPriorities(_ context.Context, edit *PriorityForm) (PrioritiesPage, error) {
 	f.count("LeadPriorities")
 	f.mu.Lock()
@@ -155,10 +150,15 @@ func leadsPosts() []leadsRoute {
 			LeadAction{Do: LeadContacted, Value: "northwind.example", Note: "called"}},
 		{"/leads/sending", url.Values{"do": {"pause"}, "reason": {"holiday"}}, "/leads/outreach", LeadAction{Do: LeadPause, Reason: "holiday"}},
 		{"/leads/sending", url.Values{"do": {"resume"}}, "/leads/outreach", LeadAction{Do: LeadResume}},
-		{"/leads/next/5/pin", url.Values{}, "/leads/next", LeadAction{Do: LeadPin, ID: 5}},
-		{"/leads/next/5/defer", url.Values{"until": {"2026-11-07"}}, "/leads/next", LeadAction{Do: LeadDefer, ID: 5, Until: "2026-11-07"}},
-		{"/leads/next/5/skip", url.Values{}, "/leads/next", LeadAction{Do: LeadSkip, ID: 5}},
-		{"/leads/next/5/clear", url.Values{}, "/leads/next", LeadAction{Do: LeadClear, ID: 5}},
+		{"/leads/5/star", url.Values{"back": {"/leads?sort=order#lead-w-5"}}, "/leads?sort=order#lead-w-5", LeadAction{Do: LeadStar, ID: 5}},
+		{"/leads/5/unstar", url.Values{"back": {"/leads/5"}}, "/leads/5", LeadAction{Do: LeadUnstar, ID: 5}},
+		{"/leads/5/up", url.Values{"back": {"/leads?sort=order"}}, "/leads?sort=order", LeadAction{Do: LeadUp, ID: 5}},
+		{"/leads/5/down", url.Values{"back": {"/leads?sort=order&page=2"}}, "/leads?sort=order&page=2", LeadAction{Do: LeadDown, ID: 5}},
+		{"/leads/5/top", url.Values{}, "/leads", LeadAction{Do: LeadTop, ID: 5}},
+		{"/leads/5/defer", url.Values{"back": {"/leads/5"}}, "/leads/5", LeadAction{Do: LeadDefer, ID: 5}},
+		{"/leads/5/defer", url.Values{"until": {" 2026-11-07 "}}, "/leads", LeadAction{Do: LeadDefer, ID: 5, Until: "2026-11-07"}},
+		{"/leads/5/skip", url.Values{"back": {"//evil.example"}}, "/leads", LeadAction{Do: LeadSkip, ID: 5}},
+		{"/leads/5/clear", url.Values{"until": {"2026-11-07"}}, "/leads", LeadAction{Do: LeadClear, ID: 5}},
 		{"/leads/priorities", url.Values{"do": {"save"}, "kind.unsupported": {"25"}, "countries": {"GB 20"}}, "/leads/priorities",
 			LeadAction{Do: LeadSavePriority, Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Value: "25"}}, Countries: "GB 20"}}},
 		{"/leads/priorities", url.Values{"do": {"reset"}}, "/leads/priorities", LeadAction{Do: LeadResetPrio}},
@@ -231,8 +231,11 @@ func TestLeadsFormsRefusedBeforeTheBackend(t *testing.T) {
 		{"/leads/batches/3/approve", url.Values{"hash": {"0123456789ab"}, "skip": {"one"}}, http.StatusUnprocessableEntity},
 		{"/leads/messages/9/resolve", url.Values{"sent": {"maybe"}}, http.StatusUnprocessableEntity},
 		{"/leads/sending", url.Values{"do": {"stop"}}, http.StatusUnprocessableEntity},
-		{"/leads/next/5/promote", url.Values{}, http.StatusNotFound},
-		{"/leads/next/0/pin", url.Values{}, http.StatusNotFound},
+		{"/leads/5/promote", url.Values{}, http.StatusNotFound},
+		{"/leads/5/pin", url.Values{}, http.StatusNotFound},
+		{"/leads/0/star", url.Values{}, http.StatusNotFound},
+		{"/leads/x/star", url.Values{}, http.StatusNotFound},
+		{"/leads/next/5/pin", url.Values{}, http.StatusNotFound},
 		{"/leads/batches/x/approve", url.Values{}, http.StatusNotFound},
 		{"/leads/priorities", url.Values{"do": {"drop"}}, http.StatusUnprocessableEntity},
 		{"/leads/suppressions/lift", url.Values{"domain": {"domain.example"}, "reason": {"wrong"}}, http.StatusUnprocessableEntity},
@@ -358,7 +361,7 @@ func TestLeadsNeverLogSubmittedValues(t *testing.T) {
 	const secret = "zq7secretvalue"
 	const secretID = "987654321"
 	form := url.Values{}
-	for _, k := range []string{"hash", "kind", "value", "reason", "domain", "note", "until", "countries", "rank_bands", "exclude_countries", "exact_version", "kind.unsupported"} {
+	for _, k := range []string{"hash", "kind", "value", "reason", "domain", "note", "until", "back", "countries", "rank_bands", "exclude_countries", "exact_version", "kind.unsupported"} {
 		form.Set(k, secret)
 	}
 	form.Set("skip", secretID)
@@ -566,17 +569,6 @@ func TestLeadsPages(t *testing.T) {
 			t.Errorf("empty /leads/outreach lacks %q", want)
 		}
 	}
-
-	// The queue's page is shown now only with a refusal from one of its POSTs.
-	b = richBackend("northwind.example")
-	b.leadErr = fmt.Errorf("%w: no", ErrUserFixable)
-	qh := newHarness(t, b, false)
-	body = qh.do(post("/leads/next/5/pin", url.Values{}, qh.session(t))).Body.String()
-	for _, want := range []string{"Score 55: northwind.example · GB &#43;20", `action="/leads/next/5/pin"`, `value="2026-11-07"`, `action="/leads/next/5/skip"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the queue lacks %q", want)
-		}
-	}
 }
 
 // TestLeadsEscaping: every leads page escapes what the backend gives it, a hostile site
@@ -599,9 +591,15 @@ func TestLeadsEscaping(t *testing.T) {
 	if strings.Contains(body, `href="javascript`) || strings.Contains(body, "ZgotmplZ") || !strings.Contains(body, jsLink) {
 		t.Errorf("a javascript: URL is a link, or is not shown: %s", body)
 	}
-	b.leadErr = fmt.Errorf("%w: no", ErrUserFixable)
-	if body := h.do(post("/leads/next/5/pin", url.Values{}, c)).Body.String(); strings.Contains(body, "<script>alert") {
-		t.Error("the queue does not escape backend text")
+	// A refusal shows the page back with its words, escaped, the list and the lead page alike;
+	// and a hostile back value never reaches a page.
+	b.leadErr = fmt.Errorf("%w: %s", ErrUserFixable, evil)
+	for _, back := range []string{"/leads?sort=order", "/leads/5", `/leads?sort="><script>alert(1)</script>`} {
+		w := h.do(post("/leads/5/star", url.Values{"back": {back}}, c))
+		if body := w.Body.String(); w.Code != http.StatusUnprocessableEntity || strings.Contains(body, "<script>alert") ||
+			!strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+			t.Errorf("refusal back to %q: %d, unescaped or missing", back, w.Code)
+		}
 	}
 }
 
@@ -764,7 +762,9 @@ func TestLeadListPage(t *testing.T) {
 		`<ul class="item-list narrow-only">`, `<div class="table-wrap wide-only">`,
 		`<li id="lead-n-5">`, `<tr id="lead-w-5">`, `<a href="/leads/5">Northwind Trading</a>`,
 		"email · phone", "number 3 in the outreach order", `<td class="num">3</td>`,
-		`<span class="tag">starred</span>`, `<span class="tag">small site</span>`,
+		`<form method="post" action="/leads/5/unstar" class="star-form"><input type="hidden" name="back" value="/leads?page=2#lead-w-5">`,
+		`<input type="hidden" name="back" value="/leads?page=2#lead-n-5">`,
+		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="tag">small site</span>`,
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
 		`<p class="hint">Northwind Trading</p>`,
 	} {
@@ -772,8 +772,11 @@ func TestLeadListPage(t *testing.T) {
 			t.Errorf("/leads lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "No leads") || strings.Contains(body, `method="post"`) && strings.Contains(body, "/star") {
-		t.Error("a list with leads shows an empty state, or a star button before CP3")
+	if strings.Contains(body, "No leads") {
+		t.Error("a list with leads shows an empty state")
+	}
+	if strings.Contains(body, `action="/leads/5/up"`) {
+		t.Error("a list not in the outreach order offers to move a lead")
 	}
 
 	b := richBackend("x")
@@ -873,7 +876,7 @@ func TestLeadDetailPage(t *testing.T) {
 		"<dt>Relevance</dt><dd>Northwind Trading</dd>", "<dt>Reach by</dt><dd>email · form</dd>", "<dt>Outreach order</dt><dd>number 3</dd>",
 		"generator: Northwind Trading",
 		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow">https://northwind.example/</a>`,
-		`Ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
+		`ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
 		"email: info@northwind.example", "mail server found",
 		"&#43;44 20 7946 0000", `<div class="description">Northwind Trading</div>`,
 		`LinkedIn: <a href="https://social.example/northwind" rel="noopener noreferrer nofollow">https://social.example/northwind</a>`,
@@ -1020,7 +1023,7 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		{"/leads/next", "", http.StatusSeeOther},
 		{"/leads/batches", "", http.StatusNotFound},
 		{"/leads/settings", "", http.StatusNotFound},
-		{"/leads/5/star", "", http.StatusNotFound},
+		{"/leads/5/star", "", http.StatusMethodNotAllowed},
 	}
 	for _, c := range cases {
 		b := richBackend("x")
@@ -1035,5 +1038,266 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		case c.read != "" && (b.n(c.read) != 1 || b.total() != 1):
 			t.Errorf("%s: %s called %d times, %d reads in all", c.path, c.read, b.n(c.read), b.total())
 		}
+	}
+}
+
+// TestStarActions: every row of the list and the lead's own page carry a star toggle that
+// names the lead's next state; each move posts its action for that lead and comes back to
+// the page it was sent from with the outcome; nothing else is sent to the backend.
+func TestStarActions(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	b.list.Rows = append(b.list.Rows, LeadListRow{LeadID: 6, Name: "Contoso", Domain: "contoso.example"})
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	list := h.do(get("/leads", c)).Body.String()
+	for _, want := range []string{
+		`action="/leads/5/unstar" class="star-form"`, `action="/leads/6/star" class="star-form"`,
+		`<span class="visually-hidden">Star Contoso</span>`, `title="Star"`, `title="Unstar"`,
+	} {
+		if !strings.Contains(list, want) {
+			t.Errorf("/leads lacks %q", want)
+		}
+	}
+	if n := strings.Count(list, `class="star-form"`); n != 4 {
+		t.Errorf("%d star toggles on the list, want one per row in each layout (4)", n)
+	}
+	detail := h.do(get("/leads/5", c)).Body.String()
+	if !strings.Contains(detail, `<form method="post" action="/leads/5/star" class="star-form"><input type="hidden" name="back" value="/leads/5">`) ||
+		!strings.Contains(detail, "☆</span> Star</button>") {
+		t.Errorf("the lead page lacks its star toggle: %s", detail)
+	}
+	b.detail.Starred = true
+	if detail := h.do(get("/leads/5", c)).Body.String(); !strings.Contains(detail, `action="/leads/5/unstar"`) ||
+		!strings.Contains(detail, "★</span> Unstar</button>") {
+		t.Error("a starred lead's page does not offer to unstar it")
+	}
+
+	for _, do := range []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear} {
+		b.leadOut = LeadOutcome{Message: "Lead 5: " + do + " done."}
+		w := h.do(post("/leads/5/"+do, url.Values{"back": {"/leads?sort=order#lead-w-5"}}, c))
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads?sort=order#lead-w-5" {
+			t.Errorf("%s: %d to %q", do, w.Code, w.Header().Get("Location"))
+			continue
+		}
+		if !sameAction(b.lastLead, LeadAction{Do: do, ID: 5}) {
+			t.Errorf("%s asked %+v", do, b.lastLead)
+		}
+		page := h.do(get("/leads?sort=order", c, cookieNamed(w, "__Host-lh_flash"))).Body.String()
+		if !strings.Contains(page, "Lead 5: "+do+" done.") {
+			t.Errorf("%s: the list does not show the outcome", do)
+		}
+	}
+}
+
+// TestOrderRowsOfferMoves: sorted by the outreach order, each starred row shows its place
+// and Up, Down, Pin to top, Push back and Skip, coming back to the same row; its star
+// toggle is its Unstar.
+func TestOrderRowsOfferMoves(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads?sort=order", h.session(t))).Body.String()
+	for _, do := range []string{"up", "down", "top", "defer", "skip"} {
+		if n := strings.Count(body, `action="/leads/5/`+do+`"`); n != 2 {
+			t.Errorf("%s offered %d times, want once in each layout", do, n)
+		}
+	}
+	for _, want := range []string{">Up<span", ">Down<span", ">Pin to top<span", ">Push back<span", ">Skip<span",
+		`<span class="visually-hidden"> Northwind Trading</span>`, `<th scope="col">Move</th>`, `<td class="num">3</td>`,
+		"number 3 in the outreach order", `name="back" value="/leads?page=2&amp;sort=order#lead-w-5"`,
+		`name="back" value="/leads?page=2&amp;sort=order#lead-n-5"`, `action="/leads/5/unstar"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the order lacks %q", want)
+		}
+	}
+	b.list.Rows[0].Starred = false
+	if body := h.do(get("/leads?sort=order", h.session(t))).Body.String(); strings.Contains(body, `action="/leads/5/up"`) {
+		t.Error("a lead not starred is offered moves in the order")
+	}
+}
+
+// TestBackIsRelative: a lead action goes back only to a Leads page on this site; any other
+// back value goes to the list.
+func TestBackIsRelative(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                                      "/leads",
+		"/leads":                                "/leads",
+		"/leads?sort=order":                     "/leads?sort=order",
+		"/leads#lead-w-5":                       "/leads#lead-w-5",
+		"/leads/5":                              "/leads/5",
+		"/leads/outreach":                       "/leads/outreach",
+		"/leads?kind=d10&page=2#x":              "/leads?kind=d10&page=2#x",
+		"/leads?sort=order&kind=a&kind=b":       "/leads?sort=order&kind=a&kind=b",
+		"/leads?q=a%20b&x=%2F%2Fevil":           "/leads?q=a+b&x=%2F%2Fevil",
+		"/leads?q=%zz":                          "/leads",
+		"/leads/5#a%2Fb":                        "/leads/5#a%2Fb",
+		"//evil.example":                        "/leads",
+		"//evil.example/leads":                  "/leads",
+		"https://evil.example/leads":            "/leads",
+		"http:/leads":                           "/leads",
+		"javascript:alert(1)":                   "/leads",
+		"/leadsx":                               "/leads",
+		"/leads.evil.example":                   "/leads",
+		"/leads@evil.example":                   "/leads",
+		"/leads/":                               "/leads",
+		"/leads/../evil":                        "/leads",
+		"/leads/5/../../x":                      "/leads",
+		"/leads//evil.example":                  "/leads",
+		`/leads\evil.example`:                   "/leads",
+		`/leads/\evil.example`:                  "/leads",
+		"/leads\r\nSet-Cookie: x=1":             "/leads",
+		"/leads?x=\x00":                         "/leads",
+		"leads":                                 "/leads",
+		" /leads":                               "/leads",
+		"/jobs":                                 "/leads",
+		"/leads" + strings.Repeat("?", maxBack): "/leads",
+	} {
+		if got := leadsBack(in); got != want {
+			t.Errorf("leadsBack(%q) = %q, want %q", in, got, want)
+		}
+	}
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	for _, back := range []string{"//evil.example", "https://evil.example/", "/leadsx"} {
+		w := h.do(post("/leads/5/star", url.Values{"back": {back}}, c))
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads" {
+			t.Errorf("back %q: %d to %q, want 303 to /leads", back, w.Code, w.Header().Get("Location"))
+		}
+	}
+}
+
+// TestLeadActCrossOrigin: a lead action from another site is refused before the backend,
+// signed in or not, and one without a session never writes.
+func TestLeadActCrossOrigin(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	for _, do := range leadActions {
+		r := post("/leads/5/"+do, url.Values{"back": {"/leads"}}, c)
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		if w := h.do(r); w.Code != http.StatusForbidden {
+			t.Errorf("cross-site %s: %d, want 403", do, w.Code)
+		}
+		r = post("/leads/5/"+do, url.Values{"back": {"/leads"}}, c)
+		r.Header.Set("Origin", "https://evil.example")
+		if w := h.do(r); w.Code != http.StatusForbidden {
+			t.Errorf("cross-origin %s: %d, want 403", do, w.Code)
+		}
+		if w := h.do(post("/leads/5/"+do, url.Values{})); w.Code == http.StatusSeeOther && strings.HasPrefix(w.Header().Get("Location"), "/leads") {
+			t.Errorf("%s without a session went through", do)
+		}
+	}
+	if n := b.n("LeadAct"); n != 0 {
+		t.Errorf("LeadAct called %d times", n)
+	}
+}
+
+// TestLeadActRefusalShowsThePage: a refused action shows the page it came from again, with
+// the refusal: the list under the same filter, or the lead's own page.
+func TestLeadActRefusalShowsThePage(t *testing.T) {
+	b := richBackend("x")
+	b.leadErr = fmt.Errorf("%w: Lead 5 is already at the top.", ErrUserFixable)
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(post("/leads/5/up", url.Values{"back": {"/leads?sort=order&kind=d10#lead-w-5"}}, c))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "Lead 5 is already at the top.") ||
+		!strings.Contains(w.Body.String(), `class="lead-filters"`) {
+		t.Errorf("list refusal: %d %s", w.Code, w.Body.String())
+	}
+	if want := (LeadListQuery{Kinds: []string{"d10"}, Sort: "order"}); fmt.Sprint(b.listQ) != fmt.Sprint(want) {
+		t.Errorf("the list came back under %+v, want %+v", b.listQ, want)
+	}
+	w = h.do(post("/leads/5/star", url.Values{"back": {"/leads/5"}}, c))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "Lead 5 is already at the top.") ||
+		!strings.Contains(w.Body.String(), `id="lead-5"`) {
+		t.Errorf("lead page refusal: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestLeadListColumns: the table leaves out State under the default filter (open leads), and
+// Relevance and Order when no row has one.
+func TestLeadListColumns(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	head := func(target string) string {
+		body := h.do(get(target, c)).Body.String()
+		i, j := strings.Index(body, "<thead>"), strings.Index(body, "</thead>")
+		if i < 0 || j < i {
+			t.Fatalf("%s has no table head", target)
+		}
+		return body[i:j]
+	}
+	for target, want := range map[string]map[string]bool{
+		"/leads":             {"State": false, "Relevance": true, "Order": true},
+		"/leads?status=open": {"State": false, "Relevance": true, "Order": true},
+		"/leads?status=all":  {"State": true, "Relevance": true, "Order": true},
+	} {
+		h := head(target)
+		for col, on := range want {
+			if strings.Contains(h, ">"+col+"</th>") != on {
+				t.Errorf("%s: column %s shown %v, want %v", target, col, !on, on)
+			}
+		}
+	}
+	b.list.Rows[0].Relevance, b.list.Rows[0].Position = "", ""
+	h2 := head("/leads?status=contacted")
+	if strings.Contains(h2, ">Relevance</th>") || strings.Contains(h2, ">Order</th>") || !strings.Contains(h2, ">State</th>") {
+		t.Errorf("empty columns shown, or State hidden off the default filter: %s", h2)
+	}
+}
+
+// TestLeadListFilterForm: a phone number is asked for once ("Has a phone number", has_phone),
+// unless the query itself asked for the phone channel; the form folds behind "Filters",
+// which counts the filters on; and Sort by has its own wider field.
+func TestLeadListFilterForm(t *testing.T) {
+	b := richBackend("x")
+	b.list.Options.Channels = append(b.list.Options.Channels, FilterOption{"phone", "Phone number"})
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	body := h.do(get("/leads", c)).Body.String()
+	if strings.Contains(body, "Phone number</label>") || !strings.Contains(body, `name="has_phone" value="1"> Has a phone number`) {
+		t.Error("the phone filter is offered twice, or not at all")
+	}
+	for _, want := range []string{`<details class="filter-fold">`, "<summary>Filters</summary>", `<div class="filter-sort">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/leads lacks %q", want)
+		}
+	}
+	body = h.do(get("/leads?channel=phone&has_phone=1&kind=d10&status=all", c)).Body.String()
+	if !strings.Contains(body, `name="channel" value="phone" checked> Phone number`) {
+		t.Error("a phone channel the query asked for is dropped from the form")
+	}
+	if !strings.Contains(body, "<summary>Filters · 4 on</summary>") {
+		t.Error("the folded form does not count the filters on")
+	}
+	if b.listQ.HasPhone != "1" {
+		t.Errorf("has_phone reached the backend as %q", b.listQ.HasPhone)
+	}
+}
+
+// TestLeadDetailSignalsByFetch: the finding's signals are listed under the fetch they came
+// from, each fetch once.
+func TestLeadDetailSignalsByFetch(t *testing.T) {
+	b := richBackend("x")
+	at := testSent
+	sig := b.detail.Signals[0]
+	b.detail.Signals = []LeadSignal{sig, {Name: "version", Value: "10.2", FetchURL: sig.FetchURL, FinalURL: sig.FinalURL, Status: sig.Status, FetchedAt: &at},
+		{Name: "changelog", Value: "10.2.1", FetchURL: "https://northwind.example/CHANGELOG.txt", Status: "200 OK", FetchedAt: &at},
+		{Name: "header", Value: "Drupal 10"}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/5", h.session(t))).Body.String()
+	if n := strings.Count(body, `Fetched <a href="https://northwind.example/"`); n != 1 {
+		t.Errorf("the shared fetch is shown %d times, want once", n)
+	}
+	if n := strings.Count(body, `<div class="signal-fetch">`); n != 3 {
+		t.Errorf("%d fetch groups, want 3", n)
+	}
+	i, j, k := strings.Index(body, "generator: x"), strings.Index(body, "version: 10.2"), strings.Index(body, "CHANGELOG.txt")
+	if i < 0 || j < i || k < j || !strings.Contains(body, "header: Drupal 10") {
+		t.Error("the signals are not under their fetches in order")
+	}
+	if got := signalFetches(nil); got != nil {
+		t.Errorf("no signals made %v", got)
 	}
 }

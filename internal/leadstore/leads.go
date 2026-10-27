@@ -289,11 +289,17 @@ type Candidate struct {
 	SiteName     string `db:"site_name"`
 	Phrase       string `db:"phrase"`
 	FindingURL   string `db:"finding_url"`
-	// The priority: the score the profile gives, whether the operator pinned the lead, and
-	// the reasons ("pinned" first, then Score's).
-	Score  int      `db:"score"`
-	Pinned bool     `db:"pinned"`
-	Why    []string `db:"-"`
+	// The priority: the score the profile gives and Score's reasons for it.
+	Score int      `db:"score"`
+	Why   []string `db:"-"`
+	// Pinned is whether the lead's latest lead_priority row is a legacy pin. Pins no longer
+	// order the queue (D5 retired them for stars); the flag stays for its last reader.
+	Pinned bool `db:"pinned"`
+	// The operator's order (D5): whether the lead is starred and its position (nil when not).
+	Starred  bool   `db:"starred"`
+	Position *int64 `db:"position"`
+	// Relevance is the lead's latest Jev rating (0..100), nil when never rated.
+	Relevance *int `db:"relevance"`
 }
 
 // CandidateOptions shapes CandidateLeads.
@@ -310,6 +316,16 @@ type CandidateOptions struct {
 	// IncludeReserved lets leads on ReservedTLDs through. Only shadow and dry-run callers
 	// (and tests) set it; a live batch never does (RA25).
 	IncludeReserved bool
+	// StarredOnly offers the starred leads only (batches draw from "starred", D6).
+	StarredOnly bool
+	// KindsOff are lead kinds the operator turned off: never offered.
+	KindsOff []string
+	// SkipRankOver leaves out site leads (a lead with a probe) whose site's list rank is
+	// unknown or larger than it; 0 is off. An agency lead has no rank and is never left out.
+	SkipRankOver int
+	// SortByRelevance orders the unstarred leads by their latest relevance (unrated last)
+	// before their score: set only when the trust gate passed (D9).
+	SortByRelevance bool
 }
 
 // CandidateLeads returns the leads a new batch may draft: state new, a channel other than
@@ -317,10 +333,13 @@ type CandidateOptions struct {
 // no other lead on one of those domains already reached (batched, contacted, replied,
 // bounced or opted out), of a kind batches draft (lead_kind.outreach), a site lead's probe still its site's
 // latest (else it waits for RefreshLead), not deferred through o.Today, not in a country
-// the profile excludes, and, unless o.IncludeReserved, not on a reserved TLD (ReservedTLDs;
-// RA25). They come pinned first (the newest pin first), then by their score under the
-// profile (EffectiveProfile over o.Profile, computed in SQL so the limit stays in the
-// database), then by their site's list rank (unranked last), then by id.
+// the profile excludes, not on a reserved TLD unless o.IncludeReserved (ReservedTLDs;
+// RA25), not of a kind in o.KindsOff, not a site lead left out by o.SkipRankOver, and, with
+// o.StarredOnly, starred. They come starred first, by the operator's position (then id),
+// then the unstarred: by relevance (unrated last) when o.SortByRelevance, then by their
+// score under the profile (EffectiveProfile over o.Profile, computed in SQL so the limit
+// stays in the database), then by their site's list rank (unranked last), then by id. A
+// legacy lead_priority pin no longer orders anything (D5); its defer still hides a lead.
 func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Candidate, error) {
 	var lim *int
 	if o.Limit > 0 {
@@ -343,6 +362,10 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		d := o.Today.Format(time.DateOnly)
 		today = &d
 	}
+	kindsOff := o.KindsOff
+	if kindsOff == nil {
+		kindsOff = []string{} // NULL would make "NOT kind = ANY(...)" NULL and offer nothing
+	}
 	// The query is set-based: the candidates are read once (c) with their domains as plain
 	// columns, every lead blocked by a suppression or a reached domain is found by equality
 	// joins (blocked), and the candidates not blocked are ordered and limited. A correlated
@@ -363,7 +386,9 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     coalesce(p.site_name, '') AS site_name,
 		     coalesce(af.phrase, '') AS phrase, coalesce(af.url, '') AS finding_url,
 		     sc.score, coalesce(pr.action = 'pin', false) AS pinned,
-		     CASE WHEN pr.action = 'pin' THEN pr.id END AS pin_id,
+		     coalesce(st.action <> 'unstar', false) AS starred,
+		     CASE WHEN st.action <> 'unstar' THEN st.position END AS position,
+		     rv.score AS relevance,
 		     lower(a.addr) AS laddr, lower(o.domain) AS ldom, lower(split_part(a.addr, '@', 2)) AS sdom, ad.adom
 		   FROM lead l
 		   CROSS JOIN (SELECT $2::jsonb AS pf) pf
@@ -377,6 +402,14 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     SELECT lp.id, lp.action, lp.until FROM lead_priority lp
 		     WHERE lp.lead_id = l.id ORDER BY lp.id DESC LIMIT 1
 		   ) pr ON true
+		   LEFT JOIN LATERAL (
+		     SELECT x.action, x.position FROM lead_star x
+		     WHERE x.lead_id = l.id ORDER BY x.id DESC LIMIT 1
+		   ) st ON true
+		   LEFT JOIN LATERAL (
+		     SELECT x.score FROM lead_relevance x
+		     WHERE x.lead_id = l.id ORDER BY x.id DESC LIMIT 1
+		   ) rv ON true
 		   CROSS JOIN LATERAL (
 		     SELECT CASE WHEN r.kind = 'email' THEN r.value ELSE '' END AS addr
 		   ) a
@@ -390,6 +423,9 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     AND ($4 OR (o.domain !~ $3 AND coalesce(ad.adom, '') !~ $3))
 		     AND NOT coalesce(pr.action = 'defer' AND pr.until >= coalesce($5::date, current_date), false)
 		     AND NOT pf.pf->'exclude_countries' @> to_jsonb(o.country)
+		     AND NOT l.kind = ANY($6::text[])
+		     AND NOT (l.probe_id IS NOT NULL AND $7::int > 0 AND (s.list_rank IS NULL OR s.list_rank > $7::int))
+		     AND (NOT $8::bool OR coalesce(st.action <> 'unstar', false))
 		 ), reached AS MATERIALIZED (
 		   SELECT l2.id AS lead_id, o2.domain AS d FROM lead l2 JOIN org o2 ON o2.id = l2.org_id
 		   WHERE l2.state IN ('batched', 'contacted', 'replied', 'bounced', 'opted_out')
@@ -418,20 +454,19 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		 )
 		 SELECT lead_id, org_id, domain, org_name, country, kind, channel, route_id, route_kind, route,
 		   probe_id, agency_finding_id, list_rank, major, exact_version, site_name, phrase, finding_url,
-		   score, pinned
+		   score, pinned, starred, position, relevance
 		 FROM c
 		 WHERE lead_id NOT IN (SELECT lead_id FROM blocked)
-		 ORDER BY pinned DESC, pin_id DESC NULLS LAST, score DESC, list_rank NULLS LAST, lead_id
-		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today)
+		 ORDER BY starred DESC, position, CASE WHEN starred THEN lead_id END,
+		   CASE WHEN $9::bool THEN relevance END DESC NULLS LAST,
+		   score DESC, list_rank NULLS LAST, lead_id
+		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today,
+		kindsOff, o.SkipRankOver, o.StarredOnly, o.SortByRelevance)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
 	}
 	for i := range rows {
-		_, why := Score(profile, rows[i])
-		if rows[i].Pinned {
-			why = append([]string{"pinned"}, why...)
-		}
-		rows[i].Why = why
+		_, rows[i].Why = Score(profile, rows[i])
 	}
 	return rows, nil
 }

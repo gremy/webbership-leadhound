@@ -34,6 +34,7 @@ const (
 	RefuseBatchWaiting    RefusalKind = iota + 1 // newBatch: BatchID, of the same kind, still waits for approval
 	RefuseNoRoom                                 // newBatch: the ramp has no room for one lead (Sizing)
 	RefuseNotLive                                // newBatch: sending is not set up, so the batch would be shadow
+	RefuseNoStarred                              // newBatch: batches draw from starred leads and none is ready (D6)
 	RefuseBatchNotFound                          // BatchID does not exist
 	RefuseHashMismatch                           // approveBatch: the hash is not the batch's, or too short
 	RefuseBatchChanged                           // approveBatch: the rows no longer hash to what was drafted
@@ -350,11 +351,19 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 		return out, refused("Add a mailbox first: Mailboxes in the console, or leads mailboxes add.")
 	}
 	steps := 1 + len(bs.leads.Schedule.FollowupBusinessDays)
-	cands, err := lq.CandidateLeads(ctx, leadstore.CandidateOptions{
-		KindsPriority: bs.leads.KindsPriority, Profile: bs.leads.PriorityProfile(), Today: now.In(bs.loc), IncludeReserved: bs.shadow || leadsMail.allowReserved,
-	})
-	if err != nil || len(cands) == 0 {
+	opts, err := batchCandidateOptions(ctx, lq, bs, now)
+	if err != nil {
 		return out, err
+	}
+	cands, err := lq.CandidateLeads(ctx, opts)
+	if err != nil {
+		return out, err
+	}
+	if len(cands) == 0 {
+		if opts.StarredOnly {
+			return out, &LeadRefusal{Kind: RefuseNoStarred}
+		}
+		return out, nil
 	}
 	room := map[int64]int{}
 	if bs.shadow {
@@ -419,6 +428,27 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	out.Counts = countDrafts(drafts)
 	return out, nil
 }
+
+// batchCandidateOptions is the queue a batch drafts from (D6, D11): starred leads only
+// unless batches_from is starred_then_rest, without the kinds turned off or the site leads
+// skip_rank_over leaves out, and the unstarred by relevance only once relevance passed its
+// trust gate (D9), as the Leads list sorts them.
+func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time) (leadstore.CandidateOptions, error) {
+	e, ok, err := lq.LatestRelevanceEval(ctx, relevanceQuestion)
+	if err != nil {
+		return leadstore.CandidateOptions{}, err
+	}
+	return leadstore.CandidateOptions{
+		KindsPriority: bs.leads.KindsPriority, Profile: bs.leads.PriorityProfile(), Today: now.In(bs.loc),
+		IncludeReserved: bs.shadow || leadsMail.allowReserved,
+		StarredOnly:     bs.leads.BatchesFrom() == leadconfig.BatchesStarred,
+		KindsOff:        bs.leads.KindsOff, SkipRankOver: bs.leads.SkipRankOver,
+		SortByRelevance: ok && e.Trusted,
+	}, nil
+}
+
+// noStarredWords is RefuseNoStarred in plain words, for the CLI and the console alike.
+const noStarredWords = "No starred leads are ready: star some on Leads."
 
 // readyForLeads is decision 5's readiness to be given new leads: active, its latest check
 // passed, and a DNS pass today for its domain and selector (mbs was read from the start of
@@ -525,6 +555,8 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 		note = fmt.Sprintf("batch %d still waits for approval", r.BatchID)
 	case r != nil && r.Kind == RefuseNoRoom:
 		note = "no room in the ramp"
+	case r != nil && r.Kind == RefuseNoStarred:
+		note = "no starred leads ready"
 	case runErr != nil:
 		note = runErr.Error()
 	}

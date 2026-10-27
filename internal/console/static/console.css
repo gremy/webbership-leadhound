@@ -1191,3 +1191,78 @@ details.inline summary {
     width: 100%;
   }
 }
+/* Leads: the filter form folds behind "Filters" under 640 px and is always open above it. */
+.filter-fold[open] > summary {
+  margin-bottom: 0.75rem;
+}
+@media (min-width: 640px) {
+  .filter-fold > summary {
+    display: none;
+  }
+  .filter-fold::details-content {
+    content-visibility: visible;
+  }
+  .filter-fields > .filter-sort {
+    grid-column: span 2;
+  }
+}
+/* Leads: the star toggle, and a starred lead's moves in the outreach order. */
+.star-form {
+  margin: 0;
+}
+.star-toggle {
+  min-width: 44px;
+  padding: 0 0.6rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.star-toggle > span[aria-hidden] {
+  font-size: 1.2rem;
+  line-height: 1;
+}
+.star-toggle.is-starred > span[aria-hidden] {
+  color: var(--warn);
+}
+.lead-star .star-toggle {
+  color: var(--text);
+}
+.lead-star {
+  margin-bottom: 0.75rem;
+}
+.lead-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.lead-card-head .item-head {
+  min-width: 0;
+}
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.row-actions form {
+  margin: 0;
+}
+.lead-list li .row-actions {
+  margin-top: 0.5rem;
+}
+.lead-table .row-actions {
+  min-width: 13rem;
+}
+.lead-table .row-actions button {
+  min-height: 36px;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.signal-fetch + .signal-fetch {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.signal-fetch .item-list {
+  margin-bottom: 0;
+}

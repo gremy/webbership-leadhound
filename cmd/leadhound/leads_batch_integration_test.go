@@ -125,6 +125,7 @@ func mustRun(t *testing.T, args ...string) string {
 
 func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	dir := leadsDB(t)
+	drawFromAll(t, dir)
 	t.Setenv("LEADHOUND_OUTREACH", "")
 	saved := leadsNow
 	leadsNow = func() time.Time { return time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC) } // a Tuesday
@@ -186,11 +187,11 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 		"1. northwind.example · unsupported · email\n",
 		"To: info@northwind.example",
 		"Evidence: Drupal.settings · https://northwind.example/ · fetched",
-		"2. contoso.example · d10 · form\n",
+		"2. tailspin.example · unsupported · email\n",
+		"Drupal 9 stopped getting security updates on 1 November 2023",
+		"3. contoso.example · d10 · form\n",
 		"Form page (the lead's current route): https://contoso.example/contact",
 		"Evidence: x-generator = 10 · https://contoso.example/ · fetched",
-		"3. tailspin.example · unsupported · email\n",
-		"Drupal 9 stopped getting security updates on 1 November 2023",
 		"4. wingtip.example · agency_partner · email\n", "To: hello@wingtip.example",
 		`Finding: agency page https://www.wingtip.example/services/drupal-upgrades says "upgrades from Drupal 7 to Drupal 10"`,
 		"email 3 of 3", "LinkedIn note · message",
@@ -198,7 +199,8 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	if !strings.HasSuffix(out, "Approve: leadhound leads batch approve 1 --hash "+hash+"\n") {
 		t.Errorf("show does not end with the approve line")
 	}
-	if one := mustRun(t, "leads", "batch", "show", "1", "--item", "2"); strings.Contains(one, "northwind") || !strings.Contains(one, "2. contoso.example") ||
+	// Items are numbered in draft order (D6): by points here, as nothing is starred.
+	if one := mustRun(t, "leads", "batch", "show", "1", "--item", "2"); strings.Contains(one, "northwind") || !strings.Contains(one, "2. tailspin.example") ||
 		strings.Contains(one, "--hash") || !strings.Contains(one, "To approve, read the whole batch: leadhound leads batch show 1") {
 		t.Errorf("--item 2:\n%s", one)
 	}
@@ -338,7 +340,7 @@ func mustConfig(t *testing.T) config.Config {
 
 // A row edited after batch new: show prints no approve line and approve refuses it.
 func TestLeadsBatchTampered(t *testing.T) {
-	leadsDB(t)
+	drawFromAll(t, leadsDB(t))
 	t.Setenv("LEADHOUND_OUTREACH", "")
 	batchFixture(t)
 	mustRun(t, "leads", "build")

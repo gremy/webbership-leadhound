@@ -188,7 +188,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 func leadFilterOptions(kinds []leadKind, cfg leadconfig.Config, trusted bool) console.LeadFilterOptions {
 	o := console.LeadFilterOptions{Channels: leadChannelOptions, Statuses: leadStatusOptions, Sorts: slices.Clone(leadSortOptions)}
 	if !trusted {
-		o.Sorts[0].Label = "Relevance (by score while relevance is an early number)"
+		o.Sorts[0].Label = "Relevance (by score for now)"
 	}
 	for _, k := range kinds {
 		if k.Outreach {

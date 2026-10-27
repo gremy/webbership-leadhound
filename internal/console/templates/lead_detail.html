@@ -8,7 +8,7 @@
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 <article class="record lead-record" id="lead-{{$d.LeadID}}">
-  {{/* CP3: the star button goes here, next to the lead's facts. */}}
+  <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
   <dl class="fields">
     <div><dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd></div>
     <div><dt>Domain</dt><dd>{{$d.Domain}}</dd></div>
@@ -25,17 +25,13 @@
   <section>
     <h2>Finding</h2>
     {{with $d.Finding}}<p>{{.}}</p>{{else}}<p class="muted">No finding on file.</p>{{end}}
-    {{if $d.Signals}}
-    <ul class="item-list">
-      {{range $d.Signals}}
-      <li>
-        <span class="item-head">{{.Name}}{{with .Value}}: {{.}}{{end}}</span>
-        {{with .FetchURL}}<span class="item-meta">Fetched {{template "lead_link" .}}</span>{{end}}
-        {{if and .FinalURL (ne .FinalURL .FetchURL)}}<span class="item-meta">Ended at {{template "lead_link" .FinalURL}}</span>{{end}}
-        {{if or .Status .FetchedAt}}<span class="item-meta">{{.Status}}{{if and .Status .FetchedAt}} · {{end}}{{with .FetchedAt}}{{when .}}{{end}}</span>{{end}}
-      </li>
+    {{range $v.Fetches}}
+    <div class="signal-fetch">
+      {{if or .FetchURL .Status .FetchedAt}}
+      <p class="item-meta">{{with .FetchURL}}Fetched {{template "lead_link" .}}{{end}}{{if and .FinalURL (ne .FinalURL .FetchURL)}} · ended at {{template "lead_link" .FinalURL}}{{end}}{{if and .FetchURL (or .Status .FetchedAt)}} · {{end}}{{.Status}}{{if and .Status .FetchedAt}} · {{end}}{{with .FetchedAt}}{{when .}}{{end}}</p>
       {{end}}
-    </ul>
+      <ul class="item-list">{{range .Signals}}<li><span class="item-head">{{.Name}}{{with .Value}}: {{.}}{{end}}</span></li>{{end}}</ul>
+    </div>
     {{end}}
   </section>
 

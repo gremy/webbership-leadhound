@@ -46,7 +46,6 @@ type fakeBackend struct {
 	lastRule RuleRequest
 	leads    LeadsPage
 	batch    LeadBatch
-	queue    LeadsQueue
 	prios    PrioritiesPage
 	lastEdit *PriorityForm
 	leadOut  LeadOutcome
@@ -224,7 +223,6 @@ func richBackend(text string) *fakeBackend {
 		ruleMsg: "rule 8 added",
 		leads:   richLeads(text),
 		batch:   richBatch(text),
-		queue:   LeadsQueue{DeferUntil: "2026-11-07", Leads: []QueueLead{{LeadID: 5, Domain: text, Kind: text, Version: text, Country: "GB", Channel: "email", Score: 55, Why: []string{text, "GB +20"}}}},
 		prios: PrioritiesPage{Form: PriorityForm{Points: []PointField{{Key: "kind.unsupported", Group: "Kind", Label: text, Value: "20"}}, Countries: text},
 			Preview: []QueueLead{{LeadID: 5, Domain: text, Score: 55, Why: []string{text}}}},
 		leadOut: LeadOutcome{Message: text},

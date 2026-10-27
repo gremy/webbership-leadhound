@@ -333,6 +333,9 @@ func TestScaleLeadsBuildAndBatch(t *testing.T) {
 	saved := leadsMail
 	t.Cleanup(func() { leadsMail = saved })
 	leadsMail.allowReserved = true
+	// Batches drawn from every lead (the whole queue, starred first): the most a batch new
+	// reads, so the budget holds for either batches_from.
+	cfg.BatchSource = leadconfig.BatchesStarredThenRest
 	bs := batchSetup{leads: cfg, loc: info.Loc} // the v3 scale seed holds ready mailboxes
 	var out NewBatchOutcome
 	peak, took = measure(t, func() error {

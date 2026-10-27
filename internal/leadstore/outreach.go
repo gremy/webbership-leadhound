@@ -155,7 +155,10 @@ func MessageSHA256(to, subject, body, inReplyTo string) []byte {
 // latest probe, else nothing is written and
 // ErrNotDraftable names it. A live batch moves its leads to batched; a shadow batch never
 // touches lead.state (RA1), so its leads come up again for the first live batch. Messages
-// start as drafts. templatesSHA is provenance only. Run it in a transaction.
+// start as drafts, written in draft order (each lead where it first appears in drafts, its
+// steps in order), so BatchMessages reads the batch in the order it was drafted; the content
+// hash does not depend on that order. templatesSHA is provenance only. Run it in a
+// transaction.
 func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow, templatesSHA []byte) (batchID int64, contentSHA []byte, err error) {
 	if len(drafts) == 0 {
 		return 0, nil, ErrEmptyBatch
@@ -208,7 +211,7 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 		shadow, contentSHA, templatesSHA).Scan(&batchID); err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
 	}
-	for _, d := range c {
+	for _, d := range draftOrder(drafts, c) {
 		if _, err := q.db.Exec(ctx,
 			`INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, subject, body_text,
 			   message_id, in_reply_to, slots, mailbox_id, from_name)
@@ -227,6 +230,20 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 		}
 	}
 	return batchID, contentSHA, nil
+}
+
+// draftOrder returns c (canonical: by lead, then step) with its leads in the order they
+// first appear in drafts; each lead's steps stay in step order.
+func draftOrder(drafts, c []DraftRow) []DraftRow {
+	first := map[int64]int{}
+	for i, d := range drafts {
+		if _, ok := first[d.LeadID]; !ok {
+			first[d.LeadID] = i
+		}
+	}
+	out := slices.Clone(c)
+	slices.SortStableFunc(out, func(a, b DraftRow) int { return cmp.Compare(first[a.LeadID], first[b.LeadID]) })
+	return out
 }
 
 // inheritMailbox gives each later step of a lead (c sorted by lead then step) its step 0's
@@ -341,11 +358,13 @@ func (q Queries) BatchByID(ctx context.Context, id int64) (Batch, error) {
 	return b[0], nil
 }
 
-// BatchMessages returns batch id's messages by lead, then step. A batch's items, the
-// numbers ApproveBatch's skip list names, are its leads in this order, from 1.
+// BatchMessages returns batch id's messages in draft order: by lead, the lead whose first
+// message was written first coming first (min(m.id) per lead, D6), then by step. A batch's
+// items, the numbers ApproveBatch's skip list names, are its leads in this order, from 1.
 func (q Queries) BatchMessages(ctx context.Context, batchID int64) ([]Message, error) {
 	ms, err := collect(ctx, q.db, pgx.RowToStructByName[Message],
-		`SELECT `+messageCols+` FROM outreach_message m WHERE m.batch_id = $1 ORDER BY m.lead_id, m.step`, batchID)
+		`SELECT `+messageCols+` FROM outreach_message m WHERE m.batch_id = $1
+		 ORDER BY min(m.id) OVER (PARTITION BY m.lead_id), m.lead_id, m.step`, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: batch messages: %w", err)
 	}

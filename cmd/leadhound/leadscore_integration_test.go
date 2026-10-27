@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
@@ -28,11 +29,13 @@ import (
 // Bucharest alike.
 var leadsTuesday = time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC)
 
-// leadsScene is a fresh leads database with the batch fixture built into leads, shadow mode
-// and the clock at leadsTuesday. It returns the data directory.
+// leadsScene is a fresh leads database with the batch fixture built into leads, shadow mode,
+// batches drawn from every lead (drawFromAll: its tests are about drafting, not about the
+// operator's order) and the clock at leadsTuesday. It returns the data directory.
 func leadsScene(t *testing.T) string {
 	t.Helper()
 	dir := leadsDB(t)
+	drawFromAll(t, dir)
 	t.Setenv("LEADHOUND_OUTREACH", "")
 	t.Setenv("LEADHOUND_TZ", "Europe/Bucharest")
 	saved := leadsNow
@@ -66,6 +69,24 @@ func setCaps(t *testing.T, dir, startDate, ramp string) {
 	out = regexp.MustCompile(`(?m)^  ramp: .*$`).ReplaceAll(out, []byte("  ramp: "+ramp))
 	if string(out) == string(raw) {
 		t.Fatal("leads.yaml caps not rewritten")
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+}
+
+// drawFromAll sets leads.yaml's batches_from to starred_then_rest, so batch new drafts
+// leads nobody starred: for tests about drafting, not about the operator's order (D6).
+func drawFromAll(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, "leads.yaml")
+	raw, err := os.ReadFile(path) // #nosec G304 -- the test's own temp copy
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := regexp.MustCompile(`(?m)^batches_from: \S+`).ReplaceAll(raw, []byte("batches_from: "+leadconfig.BatchesStarredThenRest))
+	if string(out) == string(raw) {
+		t.Fatal("leads.yaml batches_from not rewritten")
 	}
 	if err := os.WriteFile(path, out, 0o600); err != nil { // #nosec G703 -- a test temp dir
 		t.Fatal(err)

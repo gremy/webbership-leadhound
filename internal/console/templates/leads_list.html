@@ -8,6 +8,8 @@
 
 <section class="card">
   <h2 class="visually-hidden">Filter</h2>
+  <details class="filter-fold">
+  <summary>Filters{{with $v.Filters}} · {{.}} on{{end}}</summary>
   <form method="get" action="/leads" class="lead-filters">
     {{with $o.Kinds}}
     <fieldset>
@@ -24,7 +26,7 @@
     <fieldset>
       <legend>Can be reached by</legend>
       <div class="checks">
-        {{range $o.Channels}}<label><input type="checkbox" name="channel" value="{{.Value}}"{{if in .Value $f.Channels}} checked{{end}}> {{.Label}}</label>{{end}}
+        {{range $o.Channels}}{{if or (ne .Value "phone") (in .Value $f.Channels)}}<label><input type="checkbox" name="channel" value="{{.Value}}"{{if in .Value $f.Channels}} checked{{end}}> {{.Label}}</label>{{end}}{{end}}
         <label><input type="checkbox" name="has_phone" value="1"{{if eq $f.HasPhone "1"}} checked{{end}}> Has a phone number</label>
       </div>
     </fieldset>
@@ -48,7 +50,7 @@
       </div>
       {{end}}
       {{with $o.Sorts}}
-      <div>
+      <div class="filter-sort">
         <label for="filter-sort">Sort by</label>
         <select id="filter-sort" name="sort">{{range .}}<option value="{{.Value}}"{{if eq .Value $f.Sort}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       </div>
@@ -59,6 +61,7 @@
       <a href="/leads">Clear the filter</a>
     </div>
   </form>
+  </details>
   {{range $p.Notes}}<p class="hint">{{.}}</p>{{end}}
 </section>
 
@@ -72,12 +75,16 @@
   <p class="muted">{{plural $p.Total "lead" "leads"}}{{if gt $v.Pages 1}} · page {{$p.Page}} of {{$v.Pages}}{{end}}</p>
   <ul class="item-list narrow-only">
     {{range $p.Rows}}
+    {{$back := printf "%s#lead-n-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
     <li id="lead-n-{{.LeadID}}">
-      {{/* CP3: the star button goes at the start of this line. */}}
-      <span class="item-head"><a href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .Starred}} <span class="tag">starred</span>{{end}}{{if .SmallSite}} <span class="tag">small site</span>{{end}}</span>
+      <div class="lead-card-head">
+        {{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}
+        <span class="item-head"><a href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</span>
+      </div>
       <span class="item-meta">{{.Domain}}{{with .Country}} · {{.}}{{end}} · {{.Kind}}{{with .State}} · {{.}}{{end}}</span>
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
       <span class="item-meta">{{template "lead_channels" .}}{{with .Relevance}} · {{.}}{{end}}{{with .Position}} · number {{.}} in the outreach order{{end}}</span>
+      {{if and $v.Order .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}
     </li>
     {{end}}
   </ul>
@@ -86,21 +93,26 @@
     <thead><tr>
       <th scope="col"><span class="visually-hidden">Starred</span></th>
       <th scope="col">Lead</th><th scope="col">Country</th><th scope="col">Kind</th><th scope="col">Finding</th>
-      <th scope="col">Reach by</th><th scope="col">Relevance</th><th scope="col" class="num">Order</th><th scope="col">State</th>
+      <th scope="col">Reach by</th>
+      {{- if $v.ShowRelevance}}<th scope="col">Relevance</th>{{end}}
+      {{- if $v.ShowOrder}}<th scope="col" class="num">Order</th>{{end}}
+      {{- if $v.ShowState}}<th scope="col">State</th>{{end}}
+      {{- if $v.Order}}<th scope="col">Move</th>{{end}}
     </tr></thead>
     <tbody>
     {{range $p.Rows}}
+    {{$back := printf "%s#lead-w-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
     <tr id="lead-w-{{.LeadID}}">
-      {{/* CP3: the star button goes in this cell. */}}
-      <td class="star-cell">{{if .Starred}}<span class="tag">starred</span>{{end}}</td>
+      <td class="star-cell">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
       <td class="lead-cell"><a href="/leads/{{.LeadID}}">{{.Name}}</a><span class="item-meta">{{.Domain}}</span>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</td>
       <td>{{.Country}}</td>
       <td>{{.Kind}}</td>
       <td>{{.Finding}}</td>
       <td>{{template "lead_channels" .}}</td>
-      <td>{{.Relevance}}</td>
-      <td class="num">{{.Position}}</td>
-      <td>{{.State}}</td>
+      {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}
+      {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}
+      {{- if $v.ShowState}}<td>{{.State}}</td>{{end}}
+      {{- if $v.Order}}<td>{{if .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}</td>{{end}}
     </tr>
     {{end}}
     </tbody>
@@ -116,3 +128,12 @@
 {{end}}
 {{end}}
 
+
+{{/* lead_order is a starred lead's moves in the outreach order: the lead's ID, Back and its name in SR. Its Unstar is the row's star toggle. */}}
+{{define "lead_order"}}
+{{template "lead_act" (leadAct .ID "up" "Up" .Back .SR)}}
+{{template "lead_act" (leadAct .ID "down" "Down" .Back .SR)}}
+{{template "lead_act" (leadAct .ID "top" "Pin to top" .Back .SR)}}
+{{template "lead_act" (leadAct .ID "defer" "Push back" .Back .SR)}}
+{{template "lead_act" (leadAct .ID "skip" "Skip" .Back .SR)}}
+{{end}}

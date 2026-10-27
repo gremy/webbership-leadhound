@@ -361,7 +361,7 @@ func (s *server) addMailbox(w http.ResponseWriter, r *http.Request) {
 
 // mailbox is GET /mailboxes/{id}.
 func (s *server) mailbox(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -387,7 +387,7 @@ func (s *server) backToMailbox(id int64) func(http.ResponseWriter, *http.Request
 
 // editMailboxForm is GET /mailboxes/{id}/edit: the form holding the mailbox's settings.
 func (s *server) editMailboxForm(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -412,7 +412,7 @@ func (s *server) renderEditForm(w http.ResponseWriter, r *http.Request, code int
 
 // editMailbox is POST /mailboxes/{id}: a blank password keeps the saved one.
 func (s *server) editMailbox(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -431,7 +431,7 @@ func (s *server) editMailbox(w http.ResponseWriter, r *http.Request) {
 // back in place, with the outcome or the refusal on it; a plain form goes back to the
 // mailbox.
 func (s *server) checkMailbox(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -466,7 +466,7 @@ func (s *server) checkMailbox(w http.ResponseWriter, r *http.Request) {
 // mailboxCheck is GET /mailboxes/{id}/check: the check card alone, which the card polls
 // while the check waits or runs. A plain visit goes to the mailbox.
 func (s *server) mailboxCheck(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -513,7 +513,7 @@ func (s *server) retireMailbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) mailboxSwitch(w http.ResponseWriter, r *http.Request, do string) {
-	id, ok := pathID(r, "id")
+	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
 		return

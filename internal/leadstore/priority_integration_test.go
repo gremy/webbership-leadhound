@@ -109,11 +109,44 @@ func leadIDs(cs []leadstore.Candidate) []int64 {
 }
 
 // TestPriorityDrift: the score SQL computes from the profile's jsonb equals the Go oracle
-// on every candidate of a varied fixture, for several profiles, and the order is score
-// descending, then list rank, then id.
+// on every candidate of a varied fixture with stars and relevance ratings, for several
+// profiles, sorted by points and by relevance; the star and relevance columns are the
+// latest rows; and the order is starred by position, then (by relevance) relevance, then
+// score descending, then list rank, then id.
 func TestPriorityDrift(t *testing.T) {
 	f := newOutreachFixture(t)
+	ctx := context.Background()
 	ids := variedLeads(t, f)
+	// Stars: four leads, one moved to the top, one starred and unstarred again.
+	for _, i := range []int{5, 17, 2, 22, 9} {
+		f.star(t, ids[i])
+	}
+	if moved, err := f.q.MoveTop(ctx, ids[2], leadstore.ActorOperator); err != nil || !moved {
+		t.Fatalf("move top: %v %v", moved, err)
+	}
+	if _, err := f.q.Unstar(ctx, ids[9], leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	// Relevance: some leads rated (one twice, the latest wins, two tied), the rest never.
+	for i, score := range map[int]int{0: 40, 3: 90, 7: 40, 11: 10, 17: 99, 20: 65, 23: 75} {
+		f.rate(t, ids[i], score, leadstore.BandMaybe)
+	}
+	f.rate(t, ids[3], 55, leadstore.BandMaybe)
+	stars, err := f.q.StarOrder(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position := map[int64]int64{}
+	for _, s := range stars {
+		position[s.LeadID] = s.Position
+	}
+	if len(position) != 4 {
+		t.Fatalf("starred = %v, want 4", stars)
+	}
+	latest, err := f.q.LatestRelevance(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
 	negative := testProfile.Clone()
 	negative.Kinds[leadstore.LeadD10] = -100
 	negative.Majors[11] = 100
@@ -125,29 +158,63 @@ func TestPriorityDrift(t *testing.T) {
 		"kinds only": {Kinds: leadconfig.KindPoints([]string{leadstore.LeadD10})},
 	}
 	for name, p := range profiles {
-		t.Run(name, func(t *testing.T) {
-			cs := candidates(t, f.q, leadstore.CandidateOptions{Profile: p})
-			if len(cs) != len(ids) {
-				t.Errorf("%d candidates, want %d", len(cs), len(ids))
-			}
-			for i, c := range cs {
-				score, why := leadstore.Score(p, c)
-				if c.Score != score {
-					t.Errorf("lead %d (%s %s major %d %q rank %s %s): SQL score %d, Go %d",
-						c.LeadID, c.Kind, c.Country, c.Major, c.ExactVersion, rankOf(c.ListRank), c.Channel, c.Score, score)
+		for _, byRelevance := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/by relevance %v", name, byRelevance), func(t *testing.T) {
+				cs := candidates(t, f.q, leadstore.CandidateOptions{Profile: p, SortByRelevance: byRelevance})
+				if len(cs) != len(ids) {
+					t.Errorf("%d candidates, want %d", len(cs), len(ids))
 				}
-				if !slices.Equal(c.Why, why) {
-					t.Errorf("lead %d: why %q, want %q", c.LeadID, c.Why, why)
+				for i, c := range cs {
+					pos, starred := position[c.LeadID]
+					if c.Starred != starred || (c.Position == nil) == starred || (starred && *c.Position != pos) {
+						t.Errorf("lead %d: starred %v position %v, want %v %d", c.LeadID, c.Starred, c.Position, starred, pos)
+					}
+					r, rated := latest[c.LeadID]
+					if (c.Relevance == nil) == rated || (rated && *c.Relevance != r.Score) {
+						t.Errorf("lead %d: relevance %v, want %v (rated %v)", c.LeadID, c.Relevance, r.Score, rated)
+					}
+					score, why := leadstore.Score(p, c)
+					if c.Score != score {
+						t.Errorf("lead %d (%s %s major %d %q rank %s %s): SQL score %d, Go %d",
+							c.LeadID, c.Kind, c.Country, c.Major, c.ExactVersion, rankOf(c.ListRank), c.Channel, c.Score, score)
+					}
+					if !slices.Equal(c.Why, why) {
+						t.Errorf("lead %d: why %q, want %q", c.LeadID, c.Why, why)
+					}
+					if !leadstore.Offered(p, c) {
+						t.Errorf("lead %d in %s offered though excluded", c.LeadID, c.Country)
+					}
+					if i > 0 && !queueBefore(cs[i-1], c, byRelevance) {
+						t.Errorf("order: lead %d (%d) before lead %d (%d)", cs[i-1].LeadID, cs[i-1].Score, c.LeadID, c.Score)
+					}
 				}
-				if !leadstore.Offered(p, c) {
-					t.Errorf("lead %d in %s offered though excluded", c.LeadID, c.Country)
-				}
-				if i > 0 && !before(cs[i-1], c) {
-					t.Errorf("order: lead %d (%d) before lead %d (%d)", cs[i-1].LeadID, cs[i-1].Score, c.LeadID, c.Score)
-				}
-			}
-		})
+			})
+		}
 	}
+}
+
+// queueBefore reports whether a may come before b in CandidateLeads' order (D6): starred
+// first by position, then id; then, by relevance, the rated by relevance descending; then
+// before.
+func queueBefore(a, b leadstore.Candidate, byRelevance bool) bool {
+	if a.Starred != b.Starred {
+		return a.Starred
+	}
+	if a.Starred {
+		if *a.Position != *b.Position {
+			return *a.Position < *b.Position
+		}
+		return a.LeadID < b.LeadID
+	}
+	if byRelevance {
+		if (a.Relevance == nil) != (b.Relevance == nil) {
+			return b.Relevance == nil
+		}
+		if a.Relevance != nil && *a.Relevance != *b.Relevance {
+			return *a.Relevance > *b.Relevance
+		}
+	}
+	return before(a, b)
 }
 
 func rankOf(r *int) string {
@@ -234,9 +301,9 @@ func TestPriorityOrderFollowsProfile(t *testing.T) {
 	}
 }
 
-// TestPriorityPinDeferSkip: a pin puts a lead first (newest pin first), clear undoes it, a
-// defer hides the lead through its date and brings it back the day after, and a skip moves
-// only a new lead to skipped, for good.
+// TestPriorityPinDeferSkip: a legacy pin no longer orders the queue (D5: stars replaced
+// it), a defer hides the lead through its date and brings it back the day after, a later
+// row ends a defer, and a skip moves only a new lead to skipped, for good.
 func TestPriorityPinDeferSkip(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
@@ -256,17 +323,17 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 		}
 	}
 	cs := candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile})
-	if got := leadIDs(cs); !reflect.DeepEqual(got, []int64{c, b, a}) {
-		t.Errorf("pinned b then c = %v, want c, b, a", got)
+	if got := leadIDs(cs); !reflect.DeepEqual(got, []int64{a, b, c}) {
+		t.Errorf("pinned b then c = %v, want a, b, c (a pin no longer orders)", got)
 	}
-	if !cs[0].Pinned || cs[0].Why[0] != "pinned" || cs[2].Pinned {
-		t.Errorf("pinned flags: %+v %q / %+v", cs[0].Pinned, cs[0].Why, cs[2].Pinned)
+	if cs[0].Pinned || !cs[1].Pinned || !cs[2].Pinned || slices.Contains(cs[2].Why, "pinned") {
+		t.Errorf("pinned flags: %v %v %v, why %q", cs[0].Pinned, cs[1].Pinned, cs[2].Pinned, cs[2].Why)
 	}
 	if err := f.q.ClearLeadPriority(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	if got := order(priorityDay); !reflect.DeepEqual(got, []int64{b, a, c}) {
-		t.Errorf("c cleared = %v, want b, a, c", got)
+	if got := order(priorityDay); !reflect.DeepEqual(got, []int64{a, b, c}) {
+		t.Errorf("c cleared = %v, want a, b, c", got)
 	}
 	// Defer a until two days on: hidden through that day, back the day after.
 	until := priorityDay.AddDate(0, 0, 2)
@@ -278,15 +345,18 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 			t.Errorf("on %s a deferred until %s is offered: %v", day.Format(time.DateOnly), until.Format(time.DateOnly), got)
 		}
 	}
-	if got := order(until.AddDate(0, 0, 1)); !reflect.DeepEqual(got, []int64{b, a, c}) {
-		t.Errorf("the day after = %v, want b, a, c", got)
+	if got := order(until.AddDate(0, 0, 1)); !reflect.DeepEqual(got, []int64{a, b, c}) {
+		t.Errorf("the day after = %v, want a, b, c", got)
 	}
-	// A pin after a defer wins: the latest row per lead decides.
-	if err := f.q.PinLead(ctx, a); err != nil {
+	// A row after a defer ends it: the latest row per lead decides.
+	if err := f.q.DeferLead(ctx, a, until); err != nil {
 		t.Fatal(err)
 	}
-	if got := order(priorityDay); got[0] != a {
-		t.Errorf("pin after defer = %v, want a first", got)
+	if err := f.q.ClearLeadPriority(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(priorityDay); !reflect.DeepEqual(got, []int64{a, b, c}) {
+		t.Errorf("clear after defer = %v, want a, b, c", got)
 	}
 
 	// Skip: new → skipped, never offered again; a batched lead does not move.
@@ -323,17 +393,14 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 	}
 }
 
-// TestPriorityExcludeCountries: an excluded country is never offered, pinned or not.
+// TestPriorityExcludeCountries: an excluded country is never offered, starred or not.
 func TestPriorityExcludeCountries(t *testing.T) {
 	f := newOutreachFixture(t)
-	ctx := context.Background()
 	de := f.siteLead(t, "de.localhost", intp(1), 7, "info@de.localhost")
 	gb := f.siteLead(t, "gb.localhost", intp(2), 7, "info@gb.localhost")
 	f.setOrgCountry(t, de, "DE")
 	f.setOrgCountry(t, gb, "GB")
-	if err := f.q.PinLead(ctx, de); err != nil {
-		t.Fatal(err)
-	}
+	f.star(t, de)
 	if got := leadIDs(candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile})); !reflect.DeepEqual(got, []int64{gb}) {
 		t.Errorf("candidates = %v, want only %d", got, gb)
 	}
@@ -467,7 +534,9 @@ const oracleCandidatesSQL = `SELECT l.id AS lead_id, l.org_id, o.domain, o.name 
 // the old correlated query blocked, and returns the same rows in the same order: suffix
 // suppression on the org's domain and on the address's domain (a parent at a label
 // boundary only), address suppression in any case, a domain or an address domain another
-// lead already reached, reserved names, pins and defers.
+// lead already reached, reserved names, pins and defers. The oracle predates stars (D5) and
+// still orders pins first, so its rows are put in today's order (no lead here is starred
+// or rated: score, list rank, id) and limited in Go; its SQL stays frozen.
 func TestCandidateLeadsSetBasedOracle(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
@@ -547,13 +616,25 @@ func TestCandidateLeadsSetBasedOracle(t *testing.T) {
 			if tc.o.Limit > 0 {
 				lim = &tc.o.Limit
 			}
-			rows, err := app.Query(ctx, oracleCandidatesSQL, lim, string(pf), reserved, tc.o.IncludeReserved, tc.o.Today.Format(time.DateOnly))
+			rows, err := app.Query(ctx, oracleCandidatesSQL, nil, string(pf), reserved, tc.o.IncludeReserved, tc.o.Today.Format(time.DateOnly))
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, err := pgx.CollectRows(rows, pgx.RowToStructByName[leadstore.Candidate])
+			want, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[leadstore.Candidate])
 			if err != nil {
 				t.Fatal(err)
+			}
+			slices.SortStableFunc(want, func(a, b leadstore.Candidate) int {
+				switch {
+				case before(a, b):
+					return -1
+				case before(b, a):
+					return 1
+				}
+				return 0
+			})
+			if lim != nil && len(want) > *lim {
+				want = want[:*lim]
 			}
 			for i := range got {
 				got[i].Why = nil
