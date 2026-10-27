@@ -1,5 +1,9 @@
 # webbership-leadhound
 
+> **Built for one person first.** LeadHound is public so others can read it, learn from it and run it, but it is built around its author's own job hunt and outreach (Drupal and Go work, Romania, the UK and the EU), and his immediate needs come first.
+> Your own profile, templates and settings live in an untracked `data/` folder, starting from `examples/`.
+> Expect to adapt it, and expect changes without notice.
+
 - **What**: a single Go binary, `leadhound`, that collects job postings from public sources, filters and scores them, and sends one daily brief by email.
   It runs as one-shot subcommands under systemd timers, with Postgres as its store; the application's database role cannot delete or drop.
 - **How to run**: copy `.env.example` to `.env` and fill it in, then use the make targets.
