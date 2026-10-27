@@ -400,7 +400,8 @@ func seed(ctx context.Context, conn *pgx.Conn, info ScaleInfo) error {
 	return nil
 }
 
-// clearAndTruncate drops the marker, then empties every table but goose's, as ResetDB does.
+// clearAndTruncate drops the marker, then empties every table but goose's and KeptTables, as
+// ResetDB does.
 func clearAndTruncate(ctx context.Context, conn *pgx.Conn) error {
 	var db string
 	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&db); err != nil {
@@ -409,9 +410,7 @@ func clearAndTruncate(ctx context.Context, conn *pgx.Conn) error {
 	if _, err := conn.Exec(ctx, "COMMENT ON DATABASE "+pgx.Identifier{db}.Sanitize()+" IS NULL"); err != nil {
 		return fmt.Errorf("seed: clear marker: %w", err)
 	}
-	rows, err := conn.Query(ctx,
-		`SELECT quote_ident(tablename) FROM pg_tables
-		 WHERE schemaname = 'public' AND tablename NOT LIKE 'goose\_db\_version%' ORDER BY tablename`)
+	rows, err := conn.Query(ctx, resetTablesSQL, KeptTables)
 	if err != nil {
 		return fmt.Errorf("seed: list tables: %w", err)
 	}

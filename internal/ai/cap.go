@@ -8,17 +8,25 @@ import (
 	"time"
 )
 
+// The purposes an ai_usage row counts against; each has its own daily cap.
+const (
+	PurposeJobs  = "jobs"
+	PurposeLeads = "leads"
+)
+
 // UsageRow is one ai_usage row: what one billed call cost, on a day in the cap's zone.
 type UsageRow struct {
 	Provider, Model    string
+	Purpose            string    // PurposeJobs or PurposeLeads; the store records "" as jobs
 	Day                time.Time // midnight of the local day, in Capped.Loc
 	Calls, InputTokens int
 }
 
 // UsageStore is what Capped needs from the database (store.Queries implements it).
 type UsageStore interface {
-	// AICallsOn sums the calls recorded for provider on day's calendar date.
-	AICallsOn(ctx context.Context, provider string, day time.Time) (int, error)
+	// AICallsOn sums the calls recorded for provider and purpose on day's calendar date; an
+	// empty purpose sums every purpose.
+	AICallsOn(ctx context.Context, provider, purpose string, day time.Time) (int, error)
 	RecordAIUsage(ctx context.Context, r UsageRow) error
 }
 
@@ -35,12 +43,16 @@ type UsageLocker interface {
 // row. Calls through one Capped run one at a time; when Store is a UsageLocker, the read,
 // the call and the record also run under its lock, so processes sharing the database cannot
 // overshoot the cap together either.
+//
+// Purpose, when set, makes the cap count and record that purpose only. When empty, the cap
+// counts every purpose and records jobs.
 type Capped struct {
 	Decider    Decider
 	Store      UsageStore
 	DailyCalls int
 	Loc        *time.Location
 	Now        func() time.Time // time.Now when nil
+	Purpose    string           // PurposeJobs, PurposeLeads or ""
 
 	mu sync.Mutex
 }
@@ -64,6 +76,12 @@ func (c *Capped) Decide(ctx context.Context, state string, qs []Question) (map[s
 	local := now().In(c.Loc)
 	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, c.Loc)
 	provider := providerOf(c.Decider)
+	recordAs, label := c.Purpose, provider
+	if recordAs == "" {
+		recordAs = PurposeJobs
+	} else {
+		label += " " + c.Purpose
+	}
 
 	var (
 		answers map[string]Answer
@@ -73,20 +91,20 @@ func (c *Capped) Decide(ctx context.Context, state string, qs []Question) (map[s
 	// body returns only usage-store failures, so a locker keeps the recorded row whatever
 	// the Decider said.
 	body := func(st UsageStore) error {
-		used, err := st.AICallsOn(ctx, provider, day)
+		used, err := st.AICallsOn(ctx, provider, c.Purpose, day)
 		if err != nil {
 			return fmt.Errorf("ai: capped: read usage: %w: %w", ErrUsageStore, err)
 		}
 		if used >= c.DailyCalls {
 			callErr = fmt.Errorf("ai: %s: %d of %d calls used on %s: %w",
-				provider, used, c.DailyCalls, day.Format(time.DateOnly), ErrSpendCap)
+				label, used, c.DailyCalls, day.Format(time.DateOnly), ErrSpendCap)
 			return nil
 		}
 		answers, usage, callErr = c.Decider.Decide(ctx, state, qs)
 		if callErr != nil && !errors.Is(callErr, ErrBadAnswer) {
 			return nil // never billed: nothing to record
 		}
-		row := UsageRow{Provider: provider, Model: c.Decider.Name(), Day: day, Calls: 1, InputTokens: usage.InputTokens}
+		row := UsageRow{Provider: provider, Model: c.Decider.Name(), Purpose: recordAs, Day: day, Calls: 1, InputTokens: usage.InputTokens}
 		if err := st.RecordAIUsage(ctx, row); err != nil {
 			// The call was billed but not counted; stopping keeps the cap from under-counting.
 			return fmt.Errorf("ai: capped: record usage: %w: %w", ErrUsageStore, err)

@@ -67,6 +67,12 @@ BEGIN
   IF to_regclass('public.lead') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead FROM leadhound_app;
     GRANT UPDATE (state, state_at, kind, probe_id, agency_finding_id, channel, route_id) ON public.lead TO leadhound_app;
+    -- finding_id comes with leads 00010; a database not yet migrated that far skips it, and
+    -- the next run after its migrate grants it.
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'lead' AND column_name = 'finding_id') THEN
+      GRANT UPDATE (finding_id) ON public.lead TO leadhound_app;
+    END IF;
   END IF;
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
@@ -128,6 +134,37 @@ BEGIN
   IF to_regclass('public.mailbox_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.mailbox_check FROM leadhound_app;
     GRANT UPDATE (checked_at, smtp_ok, imap_ok, folders_ok, spf, dkim, dmarc, fix, outcome) ON public.mailbox_check TO leadhound_app;
+  END IF;
+  -- The lead kinds and channels (leads 00010) are reference rows that change only by
+  -- migration: the app reads them only.
+  IF to_regclass('public.lead_kind') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.lead_kind FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_channel') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.lead_channel FROM leadhound_app;
+  END IF;
+  -- Findings (00010), stars (00011), org facts and enrich attempts (00012), relevance and its
+  -- evals (00013) and the leads settings (00014) are append-only.
+  IF to_regclass('public.finding') IS NOT NULL THEN
+    REVOKE UPDATE ON public.finding FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_star') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_star FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.org_fact') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org_fact FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.enrich_attempt') IS NOT NULL THEN
+    REVOKE UPDATE ON public.enrich_attempt FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_relevance') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_relevance FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_relevance_eval') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_relevance_eval FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_setting') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_setting FROM leadhound_app;
   END IF;
 END
 $$;

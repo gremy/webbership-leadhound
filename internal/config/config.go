@@ -143,6 +143,7 @@ type Config struct {
 	TypesafeAPIKey       Secret        // TYPESAFE_API_KEY
 	JevModel             string        // LEADHOUND_JEV_MODEL
 	JevDailyCallCap      int           // LEADHOUND_JEV_DAILY_CALL_CAP
+	JevLeadsDailyCallCap int           // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the runaway guard for lead relevance rating
 	ResendAPIKey         Secret        // RESEND_API_KEY
 	MailFrom             Secret        // LEADHOUND_MAIL_FROM: an address on a private sending domain
 	MailTo               Secret        // LEADHOUND_MAIL_TO: a personal address
@@ -165,6 +166,7 @@ type Config struct {
 const (
 	DefaultJevModel             = "jev-1.13.0"
 	DefaultJevDailyCallCap      = 300
+	DefaultJevLeadsDailyCallCap = 10000
 	DefaultTZ                   = "Europe/Bucharest"
 	DefaultLinkedInInterval     = 4 * time.Second
 	DefaultLinkedInSearchBudget = 60
@@ -207,6 +209,7 @@ func Load(getenv func(string) string) (Config, []string) {
 	report := func(p string) { problems = append(problems, p) }
 
 	c.JevDailyCallCap = count(getenv, "LEADHOUND_JEV_DAILY_CALL_CAP", DefaultJevDailyCallCap, report)
+	c.JevLeadsDailyCallCap = count(getenv, "LEADHOUND_JEV_LEADS_DAILY_CALL_CAP", DefaultJevLeadsDailyCallCap, report)
 	c.LinkedInSearchBudget = count(getenv, "LEADHOUND_LINKEDIN_SEARCH_BUDGET", DefaultLinkedInSearchBudget, report)
 	c.LinkedInDetailBudget = count(getenv, "LEADHOUND_LINKEDIN_DETAIL_BUDGET", DefaultLinkedInDetailBudget, report)
 	c.ATSDetailBudget = count(getenv, "LEADHOUND_ATS_DETAIL_BUDGET", DefaultATSDetailBudget, report)

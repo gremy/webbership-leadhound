@@ -258,7 +258,7 @@ func scoreRunLocked(ctx context.Context, s *store.Store, cfg config.Config, prof
 	qc := &queueCounter{StoreAdapter: scoring.StoreAdapter{S: s}}
 	sc := &scoring.Scorer{
 		Store:            qc,
-		Decider:          &ai.Capped{Decider: decider, Store: q, DailyCalls: cfg.JevDailyCallCap, Loc: loc},
+		Decider:          &ai.Capped{Decider: decider, Store: q, DailyCalls: cfg.JevDailyCallCap, Loc: loc, Purpose: ai.PurposeJobs},
 		Criteria:         prof.Candidate.Criteria.List(),
 		EvidenceKeywords: prof.Candidate.EvidenceKeywords,
 		Threshold:        prof.ConfidenceThreshold,
@@ -281,7 +281,7 @@ func scoreRunLocked(ctx context.Context, s *store.Store, cfg config.Config, prof
 }
 
 // remainingCalls is how many calls the daily cap still allows today, counted as ai.Capped
-// counts them: per provider, on the calendar day in loc. It only sizes the batches; the
+// counts them: per provider, jobs calls only, on the calendar day in loc. It only sizes the batches; the
 // cap itself still refuses every call past it.
 func remainingCalls(ctx context.Context, q store.Queries, d ai.Decider, daily int, loc *time.Location) (int, error) {
 	provider := d.Name()
@@ -289,7 +289,7 @@ func remainingCalls(ctx context.Context, q store.Queries, d ai.Decider, daily in
 		provider = p.Provider()
 	}
 	now := time.Now().In(loc)
-	used, err := q.AICallsOn(ctx, provider, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc))
+	used, err := q.AICallsOn(ctx, provider, ai.PurposeJobs, time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc))
 	if err != nil {
 		return 0, err
 	}

@@ -108,8 +108,17 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 	return ok
 }
 
+// appendOnlyLeadTables are the append-only lead tables from 00010 on: INSERT and SELECT, no
+// UPDATE, no DELETE.
+var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
+	"lead_relevance_eval", "lead_setting"}
+
+// referenceLeadTables are read-only to the app role (00010): they change only by migration.
+var referenceLeadTables = []string{"lead_kind", "lead_channel"}
+
 // assertLeadPrivileges fails the test when the app role may write the leads version table,
-// UPDATE an append-only lead table, or UPDATE an org column other than site_id.
+// UPDATE an append-only lead table, write a reference table, or UPDATE an org column other
+// than site_id.
 func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 	t.Helper()
 	for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
@@ -117,8 +126,8 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 			t.Errorf("%s: leadhound_app has %s on goose_db_version_leads, want none", when, priv)
 		}
 	}
-	for _, table := range []string{"site_probe", "fetch_header", "contact_route", "agency_finding", "contact_attempt",
-		"lead_event", "suppression", "mailbox_event", "sender_check"} {
+	for _, table := range append([]string{"site_probe", "fetch_header", "contact_route", "agency_finding", "contact_attempt",
+		"lead_event", "suppression", "mailbox_event", "sender_check"}, appendOnlyLeadTables...) {
 		if appHas(t, owner, table, "UPDATE") {
 			t.Errorf("%s: leadhound_app has UPDATE on %s, want none", when, table)
 		}
@@ -157,8 +166,18 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 		appHas(t, owner, "suppression_active", "UPDATE") {
 		t.Errorf("%s: leadhound_app on suppression_active: want SELECT only", when)
 	}
-	for _, table := range []string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
-		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check"} {
+	for _, table := range referenceLeadTables {
+		if !appHas(t, owner, table, "SELECT") {
+			t.Errorf("%s: leadhound_app lacks SELECT on %s", when, table)
+		}
+		for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
+			if appHas(t, owner, table, priv) {
+				t.Errorf("%s: leadhound_app has %s on %s, want SELECT only", when, priv, table)
+			}
+		}
+	}
+	for _, table := range append([]string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
+		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check"}, appendOnlyLeadTables...) {
 		if appHas(t, owner, table, "DELETE") || appHas(t, owner, table, "TRUNCATE") {
 			t.Errorf("%s: leadhound_app may DELETE or TRUNCATE %s", when, table)
 		}
@@ -168,7 +187,7 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 // pointerColumns are the outreach tables whose app UPDATE is cut to their state pointers
 // (00003's header): table → pointer columns, then the columns that must stay fixed.
 var pointerColumns = map[string][2][]string{
-	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "channel", "route_id"},
+	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "finding_id", "channel", "route_id"},
 		{"org_id", "created_at"}},
 	"outreach_batch": {{"approved_at", "approved_hash"},
 		{"shadow", "created_at", "content_sha256", "templates_sha256"}},
@@ -329,6 +348,16 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM mailbox_event",
 		"DELETE FROM mailbox_cursor",
 		"DELETE FROM sender_check",
+		"DELETE FROM finding",
+		"DELETE FROM lead_star",
+		"DELETE FROM org_fact",
+		"DELETE FROM enrich_attempt",
+		"DELETE FROM lead_relevance",
+		"DELETE FROM lead_relevance_eval",
+		"DELETE FROM lead_setting",
+		"DELETE FROM lead_kind",
+		"DELETE FROM lead_channel",
+		"TRUNCATE lead_kind",
 		"TRUNCATE suppression",
 		"TRUNCATE site",
 		"DROP TABLE site",
@@ -364,6 +393,18 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE outreach_batch SET content_sha256 = ''",
 		"UPDATE lead SET org_id = 1",
 		"UPDATE lead SET created_at = now()",
+		"UPDATE finding SET subject = '{}'",
+		"UPDATE lead_star SET position = 1",
+		"UPDATE org_fact SET value = 'x'",
+		"UPDATE enrich_attempt SET facts_found = 0",
+		"UPDATE lead_relevance SET score = 0",
+		"UPDATE lead_relevance_eval SET trusted = true",
+		"UPDATE lead_setting SET settings = NULL",
+		// The reference rows change only by migration.
+		"UPDATE lead_kind SET outreach = true",
+		"UPDATE lead_channel SET label = ''",
+		"INSERT INTO lead_kind (name, label, outreach) VALUES ('forged', 'Forged', true)",
+		"INSERT INTO lead_channel (name, label) VALUES ('pigeon', 'Pigeon')",
 	} {
 		t.Run(q, func(t *testing.T) {
 			_, err := app.Exec(context.Background(), q)

@@ -21,6 +21,12 @@ sender:
 facts: {d6_eol: 2016-02-24, d7_eol: 2025-01-05, d8_eol: 2021-11-17, d9_eol: 2023-11-01, d10_eol: 2026-12-09} # dates the templates may state
 templates_dir: leads-templates # relative to the data dir
 kinds_priority: [agency_partner, unsupported, d10]
+kinds_off: [] # kinds left out of the queue and of new batches: any of unsupported, d10, agency_partner
+skip_rank_over: 0 # skip very small sites: 0 is off; else a site lead ranked above this, or unranked, leaves the queue (it stays in the list)
+batches_from: starred # starred (the default when left out): batch new drafts starred leads only; starred_then_rest: then the rest of the queue
+relevance:
+  rating: true # Jev rates each lead's relevance; on when left out
+  leads_daily_calls: 0 # the most rating calls a day; 0 uses LEADHOUND_JEV_LEADS_DAILY_CALL_CAP, and a value can lower that cap, never raise it
 priority: # the order batches draw leads in: highest score first; points are -100 to 100
   kinds: {unsupported: 20, d10: 10, agency_partner: 15} # replaces kinds_priority's order when present
   majors: {6: 5, 7: 30, 8: 20, 9: 15, 10: 10} # Drupal major -> points

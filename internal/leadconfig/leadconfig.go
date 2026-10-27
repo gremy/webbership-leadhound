@@ -12,9 +12,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -85,6 +87,15 @@ const (
 // Kinds are the lead kinds that have templates.
 var Kinds = []string{KindAgencyPartner, KindUnsupported, KindD10}
 
+// Where batch new draws its leads from (batches_from).
+const (
+	BatchesStarred         = "starred"           // starred leads only; the default
+	BatchesStarredThenRest = "starred_then_rest" // starred leads first, then the rest of the queue
+)
+
+// BatchSources are the values batches_from accepts; empty means BatchesStarred.
+var BatchSources = []string{BatchesStarred, BatchesStarredThenRest}
+
 // SlotNames are the values a template may use, as {{.Name}}. Footer holds the rendered
 // footer, so a footer itself may use every slot but Footer.
 var SlotNames = []string{
@@ -107,6 +118,10 @@ type Config struct {
 	Facts                Facts              `yaml:"facts"`
 	TemplatesDir         string             `yaml:"templates_dir"` // relative to the data dir
 	KindsPriority        []string           `yaml:"kinds_priority"`
+	KindsOff             []string           `yaml:"kinds_off"`      // kinds left out of the queue and of new batches
+	SkipRankOver         int                `yaml:"skip_rank_over"` // 0 is off; else a site lead ranked above it, or unranked, leaves the queue
+	BatchSource          string             `yaml:"batches_from"`   // BatchesFrom gives the value in force
+	Relevance            Relevance          `yaml:"relevance"`
 	Priority             *Profile           `yaml:"priority"` // nil: kinds_priority alone orders the leads
 	Copy                 Copy               `yaml:"copy"`
 	Schedule             Schedule           `yaml:"schedule"`
@@ -117,6 +132,75 @@ type Config struct {
 	Templates Templates `yaml:"-"`
 
 	agencyFinding *regexp.Regexp
+	dataDir       string // set by Load, so a check of an override reads the templates again
+}
+
+// Relevance holds the Jev relevance rating of leads.
+type Relevance struct {
+	Rating          *bool `yaml:"rating"`            // nil (left out) is on; RatingOn gives the value in force
+	LeadsDailyCalls int   `yaml:"leads_daily_calls"` // 0 uses the server's cap; DailyCalls gives the value in force
+}
+
+// RatingOn reports whether leads are rated for relevance; it is on unless the file says false.
+func (r Relevance) RatingOn() bool { return r.Rating == nil || *r.Rating }
+
+// DailyCalls returns the most relevance calls a day: leads_daily_calls, or envCap
+// (LEADHOUND_JEV_LEADS_DAILY_CALL_CAP) when it is 0 or above envCap. A setting may lower the
+// server's cap, never raise it.
+func (r Relevance) DailyCalls(envCap int) int {
+	if r.LeadsDailyCalls == 0 || r.LeadsDailyCalls > envCap {
+		return envCap
+	}
+	return r.LeadsDailyCalls
+}
+
+// BatchesFrom returns batches_from in force: BatchesStarred when the file leaves it out.
+func (cfg Config) BatchesFrom() string {
+	if cfg.BatchSource == "" {
+		return BatchesStarred
+	}
+	return cfg.BatchSource
+}
+
+// KindOff reports whether kinds_off turns a lead kind off.
+func (cfg Config) KindOff(kind string) bool { return slices.Contains(cfg.KindsOff, kind) }
+
+// Clone returns a deep copy of cfg: no slice or map of the copy is shared with cfg. Parsed
+// templates and compiled patterns are shared, since nothing changes them after a load.
+func (cfg Config) Clone() Config {
+	c := cfg
+	c.SiteLists.TLDs = slices.Clone(cfg.SiteLists.TLDs)
+	c.PublicBodySuffixes = slices.Clone(cfg.PublicBodySuffixes)
+	c.RoleLocalParts = slices.Clone(cfg.RoleLocalParts)
+	c.Countries = maps.Clone(cfg.Countries)
+	c.Sender.OperatorAddresses = slices.Clone(cfg.Sender.OperatorAddresses)
+	c.Sender.OptOutLines = maps.Clone(cfg.Sender.OptOutLines)
+	c.KindsPriority = slices.Clone(cfg.KindsPriority)
+	c.KindsOff = slices.Clone(cfg.KindsOff)
+	if cfg.Relevance.Rating != nil {
+		on := *cfg.Relevance.Rating
+		c.Relevance.Rating = &on
+	}
+	if cfg.Priority != nil {
+		p := cfg.Priority.Clone()
+		c.Priority = &p
+	}
+	c.Copy.FirstWords = slices.Clone(cfg.Copy.FirstWords)
+	c.Copy.FollowupWords = slices.Clone(cfg.Copy.FollowupWords)
+	c.Copy.BannedWords = slices.Clone(cfg.Copy.BannedWords)
+	c.Schedule.BusinessHours.Days = slices.Clone(cfg.Schedule.BusinessHours.Days)
+	c.Schedule.FollowupBusinessDays = slices.Clone(cfg.Schedule.FollowupBusinessDays)
+	c.Schedule.SpacingMinutes = slices.Clone(cfg.Schedule.SpacingMinutes)
+	c.Caps.Ramp = slices.Clone(cfg.Caps.Ramp)
+	if cfg.Templates.Sets != nil {
+		c.Templates.Sets = make(map[SetKey]Set, len(cfg.Templates.Sets))
+		for k, set := range cfg.Templates.Sets {
+			set.Steps = slices.Clone(set.Steps)
+			c.Templates.Sets[k] = set
+		}
+	}
+	c.Templates.Footers = maps.Clone(cfg.Templates.Footers)
+	return c
 }
 
 // SiteLists filters imported site lists.
@@ -254,12 +338,40 @@ type Date struct {
 	raw string
 }
 
-// UnmarshalYAML keeps the raw text and parses it; it never fails the decode.
-func (d *Date) UnmarshalYAML(n *yaml.Node) error {
-	d.raw = n.Value
-	if t, err := time.Parse(time.DateOnly, n.Value); err == nil {
+// ParseDate reads a date as the file does: it keeps the text, and a value that does not
+// parse stays zero for the check to report.
+func ParseDate(s string) Date {
+	d := Date{raw: s}
+	if t, err := time.Parse(time.DateOnly, s); err == nil {
 		d.Time = t
 	}
+	return d
+}
+
+// UnmarshalYAML keeps the raw text and parses it; it never fails the decode.
+func (d *Date) UnmarshalYAML(n *yaml.Node) error {
+	*d = ParseDate(n.Value)
+	return nil
+}
+
+// MarshalJSON writes the date as the file writes it (2006-01-02), so a saved override reads
+// back the same.
+func (d Date) MarshalJSON() ([]byte, error) {
+	raw := d.raw
+	if raw == "" && !d.IsZero() {
+		raw = d.Format(time.DateOnly)
+	}
+	return json.Marshal(raw)
+}
+
+// UnmarshalJSON reads a JSON string as ParseDate does; only a value that is not a string
+// fails the decode.
+func (d *Date) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	*d = ParseDate(s)
 	return nil
 }
 
@@ -273,19 +385,27 @@ func Load(dataDir string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	problems := cfg.checkProbe()
-	problems = append(problems, cfg.checkRest()...)
-	if cfg.TemplatesDir != "" && filepath.IsLocal(cfg.TemplatesDir) {
-		// Which files are needed follows from the policy; entries already reported above
-		// (an unknown kind, a bad language or footer name) are left out of that set.
-		var tp []string
-		cfg.Templates, tp = loadTemplates(filepath.Join(dataDir, cfg.TemplatesDir), cfg.requiredTemplates())
-		problems = append(problems, tp...)
-	}
-	if len(problems) > 0 {
+	cfg.dataDir = dataDir
+	if problems := cfg.check(); len(problems) > 0 {
 		return Config{}, invalid(problems)
 	}
 	return cfg, nil
+}
+
+// check runs every check Load runs, compiling and filling cfg in place: the content, then,
+// for a config Load read, the templates the policy needs. Overrides.Validate runs it too, so
+// the file and an override pass the same rules.
+func (cfg *Config) check() []string {
+	problems := cfg.checkProbe()
+	problems = append(problems, cfg.checkRest()...)
+	if cfg.dataDir != "" && cfg.TemplatesDir != "" && filepath.IsLocal(cfg.TemplatesDir) {
+		// Which files are needed follows from the policy; entries already reported above
+		// (an unknown kind, a bad language or footer name) are left out of that set.
+		var tp []string
+		cfg.Templates, tp = loadTemplates(filepath.Join(cfg.dataDir, cfg.TemplatesDir), cfg.requiredTemplates())
+		problems = append(problems, tp...)
+	}
+	return problems
 }
 
 // LoadForProbe reads FileName from dataDir and checks only site_lists, probe,
@@ -465,12 +585,16 @@ func (cfg *Config) checkRest() []string {
 	if len(cfg.KindsPriority) == 0 {
 		p = append(p, "kinds_priority is empty")
 	}
-	for i, k := range cfg.KindsPriority {
-		if !slices.Contains(Kinds, k) {
-			p = append(p, fmt.Sprintf("kinds_priority: %q is not one of %s", k, strings.Join(Kinds, ", ")))
-		} else if slices.Index(cfg.KindsPriority, k) != i {
-			p = append(p, fmt.Sprintf("kinds_priority: %q appears twice", k))
-		}
+	p = append(p, kindList("kinds_priority", cfg.KindsPriority)...)
+	p = append(p, kindList("kinds_off", cfg.KindsOff)...)
+	if cfg.SkipRankOver < 0 {
+		p = append(p, fmt.Sprintf("skip_rank_over must be 0 (off) or more, not %d", cfg.SkipRankOver))
+	}
+	if cfg.BatchSource != "" && !slices.Contains(BatchSources, cfg.BatchSource) {
+		p = append(p, fmt.Sprintf("batches_from: %q is not one of %s", cfg.BatchSource, strings.Join(BatchSources, ", ")))
+	}
+	if cfg.Relevance.LeadsDailyCalls < 0 {
+		p = append(p, fmt.Sprintf("relevance.leads_daily_calls must be 0 (the server's cap) or more, not %d", cfg.Relevance.LeadsDailyCalls))
 	}
 	if cfg.Priority != nil {
 		p = append(p, cfg.Priority.Problems()...)
@@ -558,6 +682,20 @@ func (d Date) check(field string, or ...string) []string {
 		return []string{fmt.Sprintf("%s: %q is not a date like 2026-01-31%s", field, d.raw, strings.Join(or, ""))}
 	}
 	return nil
+}
+
+// kindList reports entries of a list of lead kinds that are not one of Kinds, or that appear
+// twice.
+func kindList(field string, list []string) []string {
+	var p []string
+	for i, k := range list {
+		if !slices.Contains(Kinds, k) {
+			p = append(p, fmt.Sprintf("%s: %q is not one of %s", field, k, strings.Join(Kinds, ", ")))
+		} else if slices.Index(list, k) != i {
+			p = append(p, fmt.Sprintf("%s: %q appears twice", field, k))
+		}
+	}
+	return p
 }
 
 // bounded reports v outside lo..hi; note says what hi is, when it is a ceiling.

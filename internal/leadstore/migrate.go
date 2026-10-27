@@ -85,9 +85,13 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // same, outreach_message gains hard_bounce, and mailbox_state is append-only (00007);
 // mailbox_cursor keeps its table-wide UPDATE, every column of it being a pointer.
 // suppression_lift is append-only and the suppression_active view takes no INSERT or UPDATE
-// (00009: an auto-updatable view would let the app UPDATE suppression through it). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the
-// same, so either may run last. Each statement is skipped when the app role or its table
-// does not exist.
+// (00009: an auto-updatable view would let the app UPDATE suppression through it). lead's
+// pointers gain finding_id, finding is append-only, and the reference rows lead_kind and
+// lead_channel are read-only to the app (00010); lead_star (00011), org_fact and
+// enrich_attempt (00012), lead_relevance and lead_relevance_eval (00013) and lead_setting
+// (00014) are append-only. It runs after every migrate, a no-op one too; deploy/sql/grants.sql
+// does the same, so either may run last. Each statement is skipped when the app role, its
+// table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'leadhound_app') THEN
@@ -118,6 +122,10 @@ BEGIN
   IF to_regclass('public.lead') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead FROM leadhound_app;
     GRANT UPDATE (state, state_at, kind, probe_id, agency_finding_id, channel, route_id) ON public.lead TO leadhound_app;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'lead' AND column_name = 'finding_id') THEN
+      GRANT UPDATE (finding_id) ON public.lead TO leadhound_app;
+    END IF;
   END IF;
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
@@ -164,6 +172,33 @@ BEGIN
   IF to_regclass('public.mailbox_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.mailbox_check FROM leadhound_app;
     GRANT UPDATE (checked_at, smtp_ok, imap_ok, folders_ok, spf, dkim, dmarc, fix, outcome) ON public.mailbox_check TO leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_kind') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.lead_kind FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_channel') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.lead_channel FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.finding') IS NOT NULL THEN
+    REVOKE UPDATE ON public.finding FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_star') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_star FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.org_fact') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org_fact FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.enrich_attempt') IS NOT NULL THEN
+    REVOKE UPDATE ON public.enrich_attempt FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_relevance') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_relevance FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_relevance_eval') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_relevance_eval FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_setting') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_setting FROM leadhound_app;
   END IF;
 END
 $$`

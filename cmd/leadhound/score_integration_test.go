@@ -86,6 +86,25 @@ func TestScoreSpendCapExitsZero(t *testing.T) {
 	}
 }
 
+// TestScoreJobsCapIgnoresLeadsCalls: lead-rating calls on the same provider never use the
+// jobs cap, so a day of rating leaves the scorer its whole cap.
+func TestScoreJobsCapIgnoresLeadsCalls(t *testing.T) {
+	collectFixtures(t)
+	t.Setenv("LEADHOUND_JEV_DAILY_CALL_CAP", "1")
+	// Yesterday, today and tomorrow, so the test does not depend on LEADHOUND_TZ's date.
+	if _, err := storetest.AppConn(t).Exec(context.Background(), `INSERT INTO ai_usage (provider, model, day, calls, input_tokens, purpose)
+		SELECT 'fake', 'fake', current_date + d, 5, 0, 'leads' FROM generate_series(-1, 1) AS d`); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runCmd(t, "score", "--decider", "fake")
+	if code != 0 || strings.Contains(out, "calls 0") {
+		t.Fatalf("exit %d, stdout %q: the leads rows used the jobs cap", code, out)
+	}
+	if got := dbCount(t, `SELECT count(*) FROM ai_usage WHERE provider = 'fake' AND purpose = 'jobs'`); got != 1 {
+		t.Errorf("jobs usage rows = %d, want 1 (the cap of 1)", got)
+	}
+}
+
 // TestScoreTitleCheck: with the demo profile's title screen, a title the screen is unsure
 // of gets one title-only call (the fake fails it) and no full scoring, a stored title the
 // screen drops fails without a call, both rank as a failed criterion, and a second run

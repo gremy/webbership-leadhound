@@ -50,8 +50,10 @@ const (
 
 var transferFiles = []string{tfSites, tfFetches, tfProbes, tfOrgs, tfRoutes, tfFindings, tfAttempts, tfLeads, tfEvents, tfSuppressions}
 
-// transferFormat is the manifest's format number; an import refuses any other.
-const transferFormat = 1
+// transferFormat is the manifest's format number; an import refuses any other. Format 2 is
+// the first written against leads migration 00010: its rows are format 1's, and the import
+// builds each lead's finding from the probe or agency finding it carries.
+const transferFormat = 2
 
 const (
 	// transferBatchRows is how many rows one import transaction writes.
@@ -853,8 +855,11 @@ func readManifest(dir string) (transferManifest, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return m, usageError("the transfer manifest does not parse: %v", err)
 	}
-	if m.Format != transferFormat {
-		return m, usageError("the transfer manifest is format %d; this leadhound reads format %d", m.Format, transferFormat)
+	switch {
+	case m.Format < transferFormat:
+		return m, usageError("this transfer was exported by an older leadhound (format %d); this one reads format %d only: update leadhound on the machine that exported it, then export again", m.Format, transferFormat)
+	case m.Format > transferFormat:
+		return m, usageError("this transfer was exported by a newer leadhound (format %d); this one reads format %d only: update this leadhound first", m.Format, transferFormat)
 	}
 	byName := map[string]manifestFile{}
 	for _, f := range m.Files {
@@ -1790,8 +1795,9 @@ func (im *importer) importLeads(ctx context.Context) error {
 					}
 				}
 			}
+			lq := leadstore.NewQueries(tx)
 			var org []int64
-			var probe, finding, route []*int64
+			var probe, finding, route, findingRow []*int64
 			var kind, channel, state []string
 			var stateAt, created []time.Time
 			for i, l := range batch {
@@ -1825,14 +1831,21 @@ func (im *importer) importLeads(ctx context.Context) error {
 					}
 					r = &id
 				}
+				// The lead's finding, looked up by its probe or agency finding or made from it;
+				// none for a hand lead.
+				fr, err := lq.EnsureFinding(ctx, leadstore.LeadRow{OrgID: o, Kind: l.Kind, ProbeID: p, AgencyFindingID: f})
+				if err != nil {
+					return fmt.Errorf("leads transfer: %w", err)
+				}
 				org, probe, finding, route = append(org, o), append(probe, p), append(finding, f), append(route, r)
+				findingRow = append(findingRow, fr)
 				kind, channel, state = append(kind, l.Kind), append(channel, l.Channel), append(state, l.State)
 				stateAt, created = append(stateAt, l.StateAt), append(created, l.CreatedAt)
 			}
 			if len(org) > 0 {
-				tag, err := tx.Exec(ctx, `INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, channel, route_id, state, state_at, created_at)
-					SELECT * FROM unnest($1::bigint[], $2::text[], $3::bigint[], $4::bigint[], $5::text[], $6::bigint[], $7::text[], $8::timestamptz[], $9::timestamptz[])
-					ON CONFLICT (org_id) DO NOTHING`, org, kind, probe, finding, channel, route, state, stateAt, created)
+				tag, err := tx.Exec(ctx, `INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, channel, route_id, state, state_at, created_at, finding_id)
+					SELECT * FROM unnest($1::bigint[], $2::text[], $3::bigint[], $4::bigint[], $5::text[], $6::bigint[], $7::text[], $8::timestamptz[], $9::timestamptz[], $10::bigint[])
+					ON CONFLICT (org_id) DO NOTHING`, org, kind, probe, finding, channel, route, state, stateAt, created, findingRow)
 				if err != nil {
 					return fmt.Errorf("leads transfer: insert leads: %w", err)
 				}

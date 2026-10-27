@@ -21,7 +21,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v4"
+	scaleLeadsVersion = "v5"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -47,7 +47,10 @@ const (
 )
 
 // leadsTables are the tables of the leads migration set, emptied before a reseed.
+// The reference tables lead_kind and lead_channel are never in it: their rows come with the
+// migration (storetest.KeptTables).
 var leadsTables = []string{
+	"lead_setting", "lead_relevance_eval", "lead_relevance", "enrich_attempt", "org_fact", "lead_star", "finding",
 	"mailbox_check", "mailbox_state", "sender_mailbox",
 	"lead_priority", "priority_profile", "send_pause", "sender_check", "mailbox_cursor",
 	"mailbox_event", "suppression_lift", "suppression", "outreach_message", "outreach_batch", "lead_event", "lead",
@@ -135,6 +138,20 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 		  THEN $1::timestamptz - (60 + ` + rnd("k", 21, 305) + `) * interval '1 day' + ` + rnd("k", 22, 86400) + ` * interval '1 second'
 		  ELSE $1::timestamptz - ` + rnd("k", 21, 60) + ` * interval '1 day' + ` + rnd("k", 22, 86400) + ` * interval '1 second' END`
 	senderSHA := sha256.Sum256([]byte("sender.example"))
+	// leadPick is the CTE c of the orgs that become leads: their kind, probe, agency finding
+	// and best email and form routes.
+	leadPick := `c AS (
+		  SELECT o.id AS org_id, o.country, o.created_at,
+		         CASE WHEN o.kind = 'agency' THEN 'agency_partner' WHEN p.major = 10 THEN 'd10' ELSE 'unsupported' END AS kind,
+		         CASE WHEN o.kind = 'site_owner' THEN p.id END AS probe_id,
+		         (SELECT min(f.id) FROM agency_finding f WHERE f.org_id = o.id) AS finding_id,
+		         (SELECT r.id FROM contact_route r WHERE r.org_id = o.id AND r.kind = 'email' AND r.mx_ok ORDER BY r.id LIMIT 1) AS email_id,
+		         (SELECT r.id FROM contact_route r WHERE r.org_id = o.id AND r.kind = 'form' ORDER BY r.id LIMIT 1) AS form_id
+		  FROM org o LEFT JOIN site s ON s.id = o.site_id LEFT JOIN site_probe p ON p.id = s.last_probe_id
+		  WHERE o.kind = 'agency' OR (p.major BETWEEN 6 AND 10 AND p.ambiguous = '')
+		  ORDER BY o.kind = 'agency' DESC, o.id
+		  LIMIT ` + fmt.Sprint(scaleLeads) + `
+		)`
 	steps := []struct {
 		name string
 		sql  string
@@ -220,29 +237,35 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			WHERE o.id % 4 <> 0 AND (n = 0 OR o.id % 7 = 0)
 			ORDER BY o.id, n`, []any{day, runBase}},
 		// The first 5,000 orgs that classify into a lead (Drupal 6-10 with a known major,
-		// or an agency with a finding), the channel and route as Classify picks them.
-		{"lead", `WITH c AS (
-			  SELECT o.id AS org_id, o.country, o.created_at,
-			         CASE WHEN o.kind = 'agency' THEN 'agency_partner' WHEN p.major = 10 THEN 'd10' ELSE 'unsupported' END AS kind,
-			         CASE WHEN o.kind = 'site_owner' THEN p.id END AS probe_id,
-			         (SELECT min(f.id) FROM agency_finding f WHERE f.org_id = o.id) AS finding_id,
-			         (SELECT r.id FROM contact_route r WHERE r.org_id = o.id AND r.kind = 'email' AND r.mx_ok ORDER BY r.id LIMIT 1) AS email_id,
-			         (SELECT r.id FROM contact_route r WHERE r.org_id = o.id AND r.kind = 'form' ORDER BY r.id LIMIT 1) AS form_id
-			  FROM org o LEFT JOIN site s ON s.id = o.site_id LEFT JOIN site_probe p ON p.id = s.last_probe_id
-			  WHERE o.kind = 'agency' OR (p.major BETWEEN 6 AND 10 AND p.ambiguous = '')
-			  ORDER BY o.kind = 'agency' DESC, o.id
-			  LIMIT ` + fmt.Sprint(scaleLeads) + `
-			), ch AS (
+		// or an agency with a finding), each one finding from its probe or agency finding as
+		// 00010's backfill shapes it.
+		{"finding", `WITH ` + leadPick + `
+			INSERT INTO finding (org_id, kind, detector, subject, evidence, source_table, source_id, observed_at, created_at)
+			SELECT c.org_id, c.kind, coalesce(p.derived_by, af.derived_by),
+			       CASE WHEN p.id IS NOT NULL THEN jsonb_build_object('major', p.major, 'exact_version', p.exact_version, 'ambiguous', p.ambiguous)
+			            ELSE jsonb_build_object('url', af.url, 'phrase', af.phrase) END,
+			       CASE WHEN p.id IS NOT NULL THEN coalesce((SELECT jsonb_agg(jsonb_build_object('name', e.v->>'signal', 'value', e.v->'value', 'fetch_id', e.v->'fetch_id') ORDER BY e.i)
+			                                                 FROM jsonb_array_elements(p.signals) WITH ORDINALITY AS e(v, i)), '[]'::jsonb)
+			            ELSE jsonb_build_array(jsonb_build_object('name', 'phrase', 'value', af.phrase, 'fetch_id', af.fetch_id)) END,
+			       CASE WHEN p.id IS NOT NULL THEN 'site_probe' ELSE 'agency_finding' END, coalesce(p.id, af.id),
+			       coalesce(p.created_at, af.created_at), c.created_at + interval '1 day'
+			FROM c LEFT JOIN site_probe p ON p.id = c.probe_id
+			LEFT JOIN agency_finding af ON af.id = c.finding_id AND c.probe_id IS NULL
+			ORDER BY c.org_id`, nil},
+		// Their leads, the channel and route as Classify picks them.
+		{"lead", `WITH ` + leadPick + `, ch AS (
 			  SELECT c.*, CASE WHEN c.country = 'GB' AND email_id IS NOT NULL THEN 'email'
 			                   WHEN c.country IN ('GB', 'DE') AND form_id IS NOT NULL THEN 'form' ELSE 'none' END AS channel
 			  FROM c
 			)
-			INSERT INTO lead (id, org_id, kind, probe_id, agency_finding_id, channel, route_id, state, state_at, created_at)
-			SELECT row_number() OVER (ORDER BY org_id), org_id, kind, probe_id,
-			       CASE WHEN kind = 'agency_partner' THEN finding_id END, channel,
-			       CASE channel WHEN 'email' THEN email_id WHEN 'form' THEN form_id END,
-			       'new', created_at + interval '1 day', created_at + interval '1 day'
-			FROM ch ORDER BY org_id`, nil},
+			INSERT INTO lead (id, org_id, kind, probe_id, agency_finding_id, finding_id, channel, route_id, state, state_at, created_at)
+			SELECT row_number() OVER (ORDER BY ch.org_id), ch.org_id, ch.kind, ch.probe_id,
+			       CASE WHEN ch.kind = 'agency_partner' THEN ch.finding_id END, fi.id, ch.channel,
+			       CASE ch.channel WHEN 'email' THEN ch.email_id WHEN 'form' THEN ch.form_id END,
+			       'new', ch.created_at + interval '1 day', ch.created_at + interval '1 day'
+			FROM ch JOIN finding fi ON fi.source_table = CASE WHEN ch.probe_id IS NOT NULL THEN 'site_probe' ELSE 'agency_finding' END
+			  AND fi.source_id = coalesce(ch.probe_id, ch.finding_id)
+			ORDER BY ch.org_id`, nil},
 		// Half the leads still new; the rest moved on, as a year of outreach leaves them.
 		{"lead state", `UPDATE lead SET
 			  state = (ARRAY['contacted', 'contacted', 'contacted', 'contacted', 'contacted', 'contacted', 'replied', 'bounced',
@@ -373,6 +396,59 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM lead WHERE state = 'new') l
 			WHERE l.n <= 200
 			ORDER BY l.n`, []any{day}},
+		// Enrichment of half the orgs: one to three phones (fictional numbers in the drama
+		// range), a description and up to four social profiles, each read from a seeded page,
+		// with the attempt that found them; the other half not enriched yet.
+		{"org_fact", `INSERT INTO org_fact (org_id, kind, value, normalized, fetch_id, derived_by, found_at)
+			SELECT o.id, f.kind, f.value, f.norm, $2::bigint + 1 + o.id % 400000, 'enrich@1', $1::timestamptz - (o.id % 200) * interval '1 day'
+			FROM org o
+			CROSS JOIN LATERAL (
+			  SELECT 'phone' AS kind, '+44 20 7946 ' || lpad(((o.id + n) % 1000)::text, 4, '0') AS value,
+			         '+44207946' || lpad(((o.id + n) % 1000)::text, 4, '0') AS norm, n AS ord
+			  FROM generate_series(1, 1 + o.id % 3) n
+			  UNION ALL
+			  SELECT 'description', 'Seeded description of organisation ' || o.id || ', a business that runs its own website.',
+			         'Seeded description of organisation ' || o.id || ', a business that runs its own website.', 10
+			  UNION ALL
+			  SELECT 'social', 'https://social' || n || '.example/org' || o.id, 'https://social' || n || '.example/org' || o.id, 20 + n
+			  FROM generate_series(1, o.id % 5) n
+			) f
+			WHERE o.id % 2 = 0
+			ORDER BY o.id, f.ord`, []any{day, fetchBase}},
+		{"enrich_attempt", `INSERT INTO enrich_attempt (org_id, run_id, facts_found, attempted_at)
+			SELECT o.id, $2::bigint + 13 + o.id % 12, (SELECT count(*) FROM org_fact x WHERE x.org_id = o.id),
+			       $1::timestamptz - (o.id % 200) * interval '1 day'
+			FROM org o WHERE o.id % 2 = 0 ORDER BY o.id`, []any{day, runBase}},
+		// 250 new leads starred in order, 50 of them unstarred since and 40 moved: 200 stars.
+		{"lead_star", `WITH l AS (
+			  SELECT id, row_number() OVER (ORDER BY id DESC) AS n FROM lead WHERE state = 'new'
+			)
+			INSERT INTO lead_star (lead_id, action, position, actor, at)
+			SELECT id, 'star', n, 'operator', $1::timestamptz - (300 - n) * interval '1 hour' FROM l WHERE n <= 250
+			UNION ALL
+			SELECT id, 'unstar', NULL, 'operator', $1::timestamptz - (40 - n % 40) * interval '1 minute' FROM l WHERE n > 200 AND n <= 250
+			UNION ALL
+			SELECT id, 'place', CASE WHEN n % 2 = 1 THEN n + 1 ELSE n - 1 END, 'operator', $1::timestamptz - interval '10 minutes' FROM l WHERE n <= 40
+			ORDER BY 5, 1`, []any{day}},
+		// Relevance for 4,000 leads, 1,500 of them rated twice (the earlier row superseded).
+		{"lead_relevance", `WITH r AS (
+			  SELECT l.id, g.k FROM lead l CROSS JOIN generate_series(0, 1) g(k)
+			  WHERE l.id <= 4000 AND (g.k = 1 OR l.id <= 1500)
+			), s AS (
+			  SELECT r.*, ` + rnd("r.id * 2 + r.k", 30, 101) + ` AS score FROM r
+			)
+			INSERT INTO lead_relevance (lead_id, question, decider, model, input_sha256, band, score, probabilities, input_tokens, run_id, created_at)
+			SELECT s.id, 'relevance@1', 'jev', 'seed-model', sha256(convert_to(s.id || ':' || s.k, 'UTF8')),
+			       CASE WHEN s.score >= 88 THEN 'strong' WHEN s.score >= 63 THEN 'likely' WHEN s.score >= 38 THEN 'maybe'
+			            WHEN s.score >= 13 THEN 'unlikely' ELSE 'no' END,
+			       s.score, jsonb_build_object('strong', s.score / 100.0, 'no', 1 - s.score / 100.0), 1900, $2::bigint + 1,
+			       $1::timestamptz - (2 - s.k) * interval '10 days'
+			FROM s ORDER BY s.k, s.id`, []any{day, runBase}},
+		// Three settings saves: a change, a reset, then the current settings.
+		{"lead_setting", `INSERT INTO lead_setting (settings, actor, at)
+			VALUES ('{"batches_from": "starred_then_rest"}'::jsonb, 'operator', $1::timestamptz - interval '20 days'),
+			       (NULL, 'operator', $1::timestamptz - interval '10 days'),
+			       ('{"skip_rank_over": 0, "kinds_off": []}'::jsonb, 'operator', $1::timestamptz - interval '1 day')`, []any{day}},
 	}
 	for _, s := range steps {
 		if reuse && (s.name == "run" || s.name == "http_fetch") {

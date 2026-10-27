@@ -234,8 +234,10 @@ func TestUnchangedNotSentAgain(t *testing.T) {
 // capStore counts like ai_usage, for ai.Capped.
 type capStore struct{ calls int }
 
-func (c *capStore) AICallsOn(context.Context, string, time.Time) (int, error) { return c.calls, nil }
-func (c *capStore) RecordAIUsage(context.Context, ai.UsageRow) error          { c.calls++; return nil }
+func (c *capStore) AICallsOn(context.Context, string, string, time.Time) (int, error) {
+	return c.calls, nil
+}
+func (c *capStore) RecordAIUsage(context.Context, ai.UsageRow) error { c.calls++; return nil }
 
 // TestSpendCapStopsCleanly: at the cap the run stops with spend_cap and no error, keeping
 // what it already wrote.

@@ -19,7 +19,7 @@ func TestAIUsageCounts(t *testing.T) {
 	loc := bucharest(t)
 	day := time.Date(2026, 10, 23, 0, 0, 0, 0, loc)
 
-	if n, err := q.AICallsOn(ctx, "typesafe", day); err != nil || n != 0 {
+	if n, err := q.AICallsOn(ctx, "typesafe", "", day); err != nil || n != 0 {
 		t.Fatalf("empty AICallsOn = %d, %v; want 0, nil", n, err)
 	}
 	rows := []ai.UsageRow{
@@ -33,10 +33,10 @@ func TestAIUsageCounts(t *testing.T) {
 			t.Fatalf("RecordAIUsage %+v: %v", r, err)
 		}
 	}
-	if n, err := q.AICallsOn(ctx, "typesafe", day); err != nil || n != 2 {
+	if n, err := q.AICallsOn(ctx, "typesafe", "", day); err != nil || n != 2 {
 		t.Fatalf("AICallsOn typesafe = %d, %v; want 2, nil", n, err)
 	}
-	if n, err := q.AICallsOn(ctx, "fake", day); err != nil || n != 1 {
+	if n, err := q.AICallsOn(ctx, "fake", "", day); err != nil || n != 1 {
 		t.Fatalf("AICallsOn fake = %d, %v; want 1, nil", n, err)
 	}
 
@@ -47,6 +47,49 @@ func TestAIUsageCounts(t *testing.T) {
 		`SELECT day::text, input_tokens FROM ai_usage WHERE id = 1`).Scan(&stored, &tokens)
 	if err != nil || stored != "2026-10-23" || tokens != 300 {
 		t.Fatalf("row 1 = %s, %d, %v; want 2026-10-23, 300", stored, tokens, err)
+	}
+}
+
+// TestAIUsagePurposeDefault proves 00008: a row written without a purpose is a jobs row, the
+// count reads one purpose or (with "") every purpose, and a purpose outside the two is refused.
+func TestAIUsagePurposeDefault(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	day := time.Date(2026, 10, 23, 0, 0, 0, 0, bucharest(t))
+	app := storetest.AppConn(t)
+
+	// A writer that predates the column names no purpose.
+	if _, err := app.Exec(ctx,
+		`INSERT INTO ai_usage (provider, model, day, calls, input_tokens) VALUES ('typesafe', 'm', '2026-10-23', 1, 5)`); err != nil {
+		t.Fatalf("insert without purpose: %v", err)
+	}
+	for _, r := range []ai.UsageRow{
+		{Provider: "typesafe", Model: "m", Day: day, Calls: 1},                           // "" is jobs
+		{Provider: "typesafe", Model: "m", Purpose: ai.PurposeLeads, Day: day, Calls: 1}, // leads
+		{Provider: "typesafe", Model: "m", Purpose: ai.PurposeLeads, Day: day, Calls: 1}, // leads
+		{Provider: "fake", Model: "fake", Purpose: ai.PurposeLeads, Day: day, Calls: 1},  // another provider
+	} {
+		if err := q.RecordAIUsage(ctx, r); err != nil {
+			t.Fatalf("RecordAIUsage %+v: %v", r, err)
+		}
+	}
+	var jobsRows int
+	if err := app.QueryRow(ctx,
+		`SELECT count(*) FROM ai_usage WHERE provider = 'typesafe' AND purpose = 'jobs'`).Scan(&jobsRows); err != nil || jobsRows != 2 {
+		t.Fatalf("typesafe jobs rows = %d, %v; want 2 (the default and the empty purpose)", jobsRows, err)
+	}
+	for _, c := range []struct {
+		purpose string
+		want    int
+	}{{"", 4}, {ai.PurposeJobs, 2}, {ai.PurposeLeads, 2}} {
+		if n, err := q.AICallsOn(ctx, "typesafe", c.purpose, day); err != nil || n != c.want {
+			t.Fatalf("AICallsOn typesafe %q = %d, %v; want %d", c.purpose, n, err, c.want)
+		}
+	}
+
+	err := q.RecordAIUsage(ctx, ai.UsageRow{Provider: "typesafe", Model: "m", Purpose: "other", Day: day, Calls: 1})
+	if sqlState(err) != "23514" {
+		t.Fatalf("purpose other: err = %v, want 23514 check_violation", err)
 	}
 }
 
@@ -117,7 +160,7 @@ func TestCappedLockAcrossCappers(t *testing.T) {
 	if d.calls != 1 || capped != 1 {
 		t.Fatalf("decider calls = %d, capped = %d; want 1 and 1", d.calls, capped)
 	}
-	if n, err := s.Q().AICallsOn(ctx, "slow", time.Now().UTC()); err != nil || n != 1 {
+	if n, err := s.Q().AICallsOn(ctx, "slow", "", time.Now().UTC()); err != nil || n != 1 {
 		t.Fatalf("recorded calls = %d, %v; want 1", n, err)
 	}
 }
@@ -136,7 +179,7 @@ func TestUsageLockRollsBackOnError(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
 	}
-	if n, err := q.AICallsOn(ctx, "typesafe", time.Now()); err != nil || n != 0 {
+	if n, err := q.AICallsOn(ctx, "typesafe", "", time.Now()); err != nil || n != 0 {
 		t.Fatalf("calls after rollback = %d, %v; want 0", n, err)
 	}
 }

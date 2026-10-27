@@ -49,26 +49,32 @@ func (q Queries) WithUsageLock(ctx context.Context, provider string, fn func(ai.
 	return nil
 }
 
-// AICallsOn sums the calls recorded for provider on day's calendar date, read in day's own
-// location (the caller passes local midnight in LEADHOUND_TZ).
-func (q Queries) AICallsOn(ctx context.Context, provider string, day time.Time) (int, error) {
+// AICallsOn sums the calls recorded for provider and purpose on day's calendar date, read in
+// day's own location (the caller passes local midnight in LEADHOUND_TZ). An empty purpose
+// sums every purpose.
+func (q Queries) AICallsOn(ctx context.Context, provider, purpose string, day time.Time) (int, error) {
 	var n int
 	err := q.db.QueryRow(ctx,
-		`SELECT COALESCE(sum(calls), 0)::int FROM ai_usage WHERE provider = $1 AND day = $2::date`,
-		provider, day.Format(time.DateOnly)).Scan(&n)
+		`SELECT COALESCE(sum(calls), 0)::int FROM ai_usage
+		 WHERE provider = $1 AND day = $2::date AND ($3::text = '' OR purpose = $3::text)`,
+		provider, day.Format(time.DateOnly), purpose).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("store: ai calls %s on %s: %w", provider, day.Format(time.DateOnly), err)
+		return 0, fmt.Errorf("store: ai calls %s %q on %s: %w", provider, purpose, day.Format(time.DateOnly), err)
 	}
 	return n, nil
 }
 
-// RecordAIUsage inserts one ai_usage row.
+// RecordAIUsage inserts one ai_usage row; an empty purpose is recorded as jobs.
 func (q Queries) RecordAIUsage(ctx context.Context, r ai.UsageRow) error {
+	purpose := r.Purpose
+	if purpose == "" {
+		purpose = ai.PurposeJobs
+	}
 	_, err := q.db.Exec(ctx,
-		`INSERT INTO ai_usage (provider, model, day, calls, input_tokens) VALUES ($1, $2, $3::date, $4, $5)`,
-		r.Provider, r.Model, r.Day.Format(time.DateOnly), r.Calls, r.InputTokens)
+		`INSERT INTO ai_usage (provider, model, day, calls, input_tokens, purpose) VALUES ($1, $2, $3::date, $4, $5, $6)`,
+		r.Provider, r.Model, r.Day.Format(time.DateOnly), r.Calls, r.InputTokens, purpose)
 	if err != nil {
-		return fmt.Errorf("store: record ai usage %s %s: %w", r.Provider, r.Model, err)
+		return fmt.Errorf("store: record ai usage %s %s %s: %w", r.Provider, r.Model, purpose, err)
 	}
 	return nil
 }

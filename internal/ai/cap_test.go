@@ -21,7 +21,7 @@ type memUsage struct {
 	readErr error // returned by AICallsOn when set
 }
 
-func (m *memUsage) AICallsOn(_ context.Context, provider string, day time.Time) (int, error) {
+func (m *memUsage) AICallsOn(_ context.Context, provider, purpose string, day time.Time) (int, error) {
 	if m.readErr != nil {
 		return 0, m.readErr
 	}
@@ -29,7 +29,8 @@ func (m *memUsage) AICallsOn(_ context.Context, provider string, day time.Time) 
 	defer m.mu.Unlock()
 	n := 0
 	for _, r := range m.rows {
-		if r.Provider == provider && r.Day.Format(time.DateOnly) == day.Format(time.DateOnly) {
+		if r.Provider == provider && (purpose == "" || r.Purpose == purpose) &&
+			r.Day.Format(time.DateOnly) == day.Format(time.DateOnly) {
 			n += r.Calls
 		}
 	}
@@ -115,6 +116,54 @@ func TestCappedCountsPerProvider(t *testing.T) {
 	}
 	if st.rows[1].Provider != "fake" || st.rows[1].Model != "fake" {
 		t.Fatalf("fake usage row = %+v", st.rows[1])
+	}
+}
+
+// TestCappedCountsOwnPurpose: a Capped with a purpose counts and records that purpose only,
+// so one purpose at its cap leaves the other free; a Capped without one counts every
+// purpose and records jobs, as before purposes existed.
+func TestCappedCountsOwnPurpose(t *testing.T) {
+	loc := loadBucharest(t)
+	now := time.Date(2026, 10, 23, 8, 0, 0, 0, time.UTC)
+	day := now.In(loc)
+	qs := []Question{{Name: "q", Options: []Option{{Name: "a"}}}}
+	st := &memUsage{rows: []UsageRow{
+		{Provider: "fake", Model: "fake", Purpose: PurposeJobs, Day: day, Calls: 2},
+		{Provider: "fake", Model: "fake", Purpose: PurposeLeads, Day: day, Calls: 1},
+	}}
+	f := &Fake{Answers: map[string]Answer{"q": {Choice: "a"}}}
+	capped := func(purpose string, daily int) *Capped {
+		return &Capped{Decider: f, Store: st, DailyCalls: daily, Loc: loc, Now: func() time.Time { return now }, Purpose: purpose}
+	}
+
+	// Jobs is at its cap of 2; leads has used 1 of 2, so one leads call still goes through.
+	if _, _, err := capped(PurposeJobs, 2).Decide(context.Background(), "s", qs); !errors.Is(err, ErrSpendCap) {
+		t.Fatalf("jobs at its cap: err = %v, want ErrSpendCap", err)
+	}
+	leads := capped(PurposeLeads, 2)
+	if _, _, err := leads.Decide(context.Background(), "s", qs); err != nil {
+		t.Fatalf("leads under its cap: %v", err)
+	}
+	if r := st.rows[len(st.rows)-1]; r.Purpose != PurposeLeads || r.Calls != 1 {
+		t.Fatalf("leads usage row = %+v, want purpose leads", r)
+	}
+	if _, _, err := leads.Decide(context.Background(), "s", qs); !errors.Is(err, ErrSpendCap) ||
+		!strings.Contains(err.Error(), "fake leads: 2 of 2") {
+		t.Fatalf("leads at its cap: err = %v, want ErrSpendCap naming leads", err)
+	}
+
+	// No purpose: all 4 calls count, and a call under the cap is recorded as jobs.
+	if _, _, err := capped("", 4).Decide(context.Background(), "s", qs); !errors.Is(err, ErrSpendCap) {
+		t.Fatalf("no purpose, every purpose counted: err = %v, want ErrSpendCap", err)
+	}
+	if _, _, err := capped("", 5).Decide(context.Background(), "s", qs); err != nil {
+		t.Fatalf("no purpose under the cap: %v", err)
+	}
+	if r := st.rows[len(st.rows)-1]; r.Purpose != PurposeJobs {
+		t.Fatalf("no-purpose usage row = %+v, want purpose jobs", r)
+	}
+	if f.Calls() != 2 || len(st.rows) != 4 {
+		t.Fatalf("decider calls %d, rows %d; want 2 and 4", f.Calls(), len(st.rows))
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
 )
 
-// The kinds a lead can be (lead_kind_check).
+// The kinds a lead can be today (lead_kind rows, migration 00010).
 const (
 	LeadUnsupported   = "unsupported"
 	LeadD10           = "d10"
@@ -23,7 +23,7 @@ const (
 	LeadHand          = "hand"
 )
 
-// The channels a lead can be reached on (lead_channel_check).
+// The channels a lead can be reached on (lead_channel rows, migration 00010).
 const (
 	ChannelEmail = "email"
 	ChannelForm  = "form"
@@ -91,40 +91,78 @@ type LeadRow struct {
 
 // UpsertLead creates the lead for l.OrgID unless the org already has one: a lead is
 // created once (ON CONFLICT (org_id) DO NOTHING) and an existing lead is left as it is.
-// A new lead starts in state new with its first lead_event. It returns the lead's id and
+// A new lead starts in state new with its first lead_event, pointing at the finding its
+// probe or agency finding gives (looked up, or inserted once). It returns the lead's id and
 // whether this call created it.
 func (q Queries) UpsertLead(ctx context.Context, l LeadRow) (leadID int64, created bool, err error) {
+	existing := func() (int64, error) {
+		var id int64
+		return id, q.db.QueryRow(ctx, `SELECT id FROM lead WHERE org_id = $1`, l.OrgID).Scan(&id)
+	}
+	// An org that has its lead already gets no finding written for it here.
+	if id, err := existing(); err == nil {
+		return id, false, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, fmt.Errorf("leadstore: upsert lead: %w", err)
+	}
+	findingID, err := findingFor(ctx, q.db, l)
+	if err != nil {
+		return 0, false, fmt.Errorf("leadstore: upsert lead: finding: %w", err)
+	}
 	err = q.db.QueryRow(ctx,
 		`WITH ins AS (
-		   INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, channel, route_id)
-		   VALUES ($1, $2, $3, $4, $5, $6)
+		   INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, finding_id, channel, route_id)
+		   VALUES ($1, $2, $3, $4, $7, $5, $6)
 		   ON CONFLICT (org_id) DO NOTHING RETURNING id
 		 ), ev AS (
 		   INSERT INTO lead_event (lead_id, state, reason, actor)
 		   SELECT id, 'new', 'created', 'system' FROM ins
 		 )
 		 SELECT id FROM ins`,
-		l.OrgID, l.Kind, l.ProbeID, l.AgencyFindingID, l.Channel, l.RouteID).Scan(&leadID)
+		l.OrgID, l.Kind, l.ProbeID, l.AgencyFindingID, l.Channel, l.RouteID, findingID).Scan(&leadID)
 	if err == nil {
 		return leadID, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, fmt.Errorf("leadstore: upsert lead: %w", err)
 	}
-	if err := q.db.QueryRow(ctx, `SELECT id FROM lead WHERE org_id = $1`, l.OrgID).Scan(&leadID); err != nil {
+	if leadID, err = existing(); err != nil {
 		return 0, false, fmt.Errorf("leadstore: upsert lead: %w", err)
 	}
 	return leadID, false, nil
 }
 
 // RefreshLead brings the lead of l.OrgID up to the latest facts while it is still new: its
-// kind, finding, channel and route become l's (lead_finding_check still holds). A lead past
-// new never changes. changed reports whether a row was rewritten (false: not new, no lead,
-// or nothing differed). A caller whose classification now gives no lead moves it to
-// skipped with SetLeadState.
+// kind, finding, channel and route become l's (lead_finding_check still holds). finding_id
+// moves only when the probe or agency pointer does, to the finding of l's new source row
+// (looked up, or inserted once); the earlier finding stays as history. A lead past new
+// never changes. changed reports whether a row was rewritten (false: not new, no lead, or
+// nothing differed). A caller whose classification now gives no lead moves it to skipped
+// with SetLeadState.
 func (q Queries) RefreshLead(ctx context.Context, l LeadRow) (changed bool, err error) {
+	var probeID, agencyID *int64
+	err = q.db.QueryRow(ctx, `SELECT probe_id, agency_finding_id FROM lead WHERE org_id = $1 AND state = 'new'`,
+		l.OrgID).Scan(&probeID, &agencyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("leadstore: refresh lead: %w", err)
+	}
+	if !sameID(probeID, l.ProbeID) || !sameID(agencyID, l.AgencyFindingID) {
+		if _, err := findingFor(ctx, q.db, l); err != nil {
+			return false, fmt.Errorf("leadstore: refresh lead: finding: %w", err)
+		}
+	}
+	// The finding is read by its source row inside the guard, so a pointer that moved since
+	// the read above still gets its own finding (or none, and lead_finding_check refuses).
 	tag, err := q.db.Exec(ctx,
-		`UPDATE lead SET kind = $2, probe_id = $3, agency_finding_id = $4, channel = $5, route_id = $6
+		`UPDATE lead SET kind = $2, probe_id = $3, agency_finding_id = $4, channel = $5, route_id = $6,
+		   finding_id = CASE WHEN (probe_id, agency_finding_id) IS DISTINCT FROM ($3::bigint, $4::bigint)
+		     THEN (SELECT f.id FROM finding f
+		           WHERE f.source_table = CASE WHEN $3::bigint IS NOT NULL THEN 'site_probe' ELSE 'agency_finding' END
+		             AND f.source_id = coalesce($3::bigint, $4::bigint))
+		     ELSE finding_id END
 		 WHERE org_id = $1 AND state = 'new'
 		   AND (kind, probe_id, agency_finding_id, channel, route_id)
 		     IS DISTINCT FROM ($2::text, $3::bigint, $4::bigint, $5::text, $6::bigint)`,
@@ -133,6 +171,14 @@ func (q Queries) RefreshLead(ctx context.Context, l LeadRow) (changed bool, err 
 		return false, fmt.Errorf("leadstore: refresh lead: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// sameID reports whether two nullable ids are equal (both nil, or both the same id).
+func sameID(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 var leadStates = []string{LeadNew, LeadBatched, LeadContacted, LeadReplied, LeadBounced, LeadOptedOut, LeadSuppressed, LeadSkipped, LeadClosed}
@@ -269,7 +315,7 @@ type CandidateOptions struct {
 // CandidateLeads returns the leads a new batch may draft: state new, a channel other than
 // none, no suppression on the route's address, the org's domain or the address's domain,
 // no other lead on one of those domains already reached (batched, contacted, replied,
-// bounced or opted out), not a selftest or hand lead, a site lead's probe still its site's
+// bounced or opted out), of a kind batches draft (lead_kind.outreach), a site lead's probe still its site's
 // latest (else it waits for RefreshLead), not deferred through o.Today, not in a country
 // the profile excludes, and, unless o.IncludeReserved, not on a reserved TLD (ReservedTLDs;
 // RA25). They come pinned first (the newest pin first), then by their score under the
@@ -322,6 +368,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   FROM lead l
 		   CROSS JOIN (SELECT $2::jsonb AS pf) pf
 		   JOIN org o ON o.id = l.org_id
+		   JOIN lead_kind lk ON lk.name = l.kind AND lk.outreach
 		   LEFT JOIN contact_route r ON r.id = l.route_id
 		   LEFT JOIN site_probe p ON p.id = l.probe_id
 		   LEFT JOIN site s ON s.id = coalesce(p.site_id, o.site_id)
@@ -339,7 +386,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   CROSS JOIN LATERAL (SELECT `+scoreSQL+` AS score) sc
 		   WHERE l.state = 'new' AND l.channel <> 'none'
 		     AND (l.probe_id IS NULL OR p.id = s.last_probe_id)
-		     AND l.kind NOT IN ('selftest', 'hand') AND o.kind <> 'selftest'
+		     AND o.kind <> 'selftest'
 		     AND ($4 OR (o.domain !~ $3 AND coalesce(ad.adom, '') !~ $3))
 		     AND NOT coalesce(pr.action = 'defer' AND pr.until >= coalesce($5::date, current_date), false)
 		     AND NOT pf.pf->'exclude_countries' @> to_jsonb(o.country)

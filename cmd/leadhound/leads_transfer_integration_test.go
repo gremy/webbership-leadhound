@@ -295,7 +295,7 @@ func withoutReserved(lines []string) []string {
 }
 
 var transferTables = []string{"run", "http_fetch", "fetch_header", "site", "site_probe", "org", "contact_route",
-	"agency_finding", "contact_attempt", "lead", "lead_event", "suppression", "outreach_batch", "outreach_message"}
+	"agency_finding", "contact_attempt", "lead", "finding", "lead_event", "suppression", "outreach_batch", "outreach_message"}
 
 func tableCounts(t *testing.T) map[string]int {
 	t.Helper()
@@ -473,6 +473,19 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 			+ (SELECT count(*) FROM contact_attempt WHERE run_id <> 1002)
 			+ (SELECT count(*) FROM http_fetch f JOIN run r ON r.id = f.run_id WHERE r.command = 'transfer' AND r.id <> 1002)`, 0},
 		{"the transfer run finished", `SELECT count(*) FROM run WHERE command = 'transfer' AND finished_at IS NOT NULL`, 1},
+		// Findings are not carried: each imported lead but the hand one gets its own, made from
+		// the probe or agency finding it arrived with, on its own org.
+		{"every real lead has the finding of its own source", `SELECT count(*) FROM lead l LEFT JOIN finding f ON f.id = l.finding_id
+			WHERE l.kind NOT IN ('hand', 'selftest') AND (f.id IS NULL OR f.org_id <> l.org_id OR f.kind <> l.kind OR NOT (
+			  (l.probe_id IS NOT NULL AND f.source_table = 'site_probe' AND f.source_id = l.probe_id)
+			  OR (l.agency_finding_id IS NOT NULL AND f.source_table = 'agency_finding' AND f.source_id = l.agency_finding_id)))`, 0},
+		{"a finding per real lead", `SELECT count(*) FROM finding`, 2},
+		{"the site lead's finding is its probe's", `SELECT count(*) FROM lead l JOIN finding f ON f.id = l.finding_id
+			JOIN org o ON o.id = l.org_id WHERE o.domain = 'alpha.example' AND f.source_table = 'site_probe'
+			AND f.detector = 'drupal@1' AND f.subject->>'exact_version' = '7.98' AND jsonb_array_length(f.evidence) = 2`, 1},
+		{"the agency lead's finding is its agency finding's", `SELECT count(*) FROM lead l JOIN finding f ON f.id = l.finding_id
+			JOIN org o ON o.id = l.org_id WHERE o.domain = '` + batchedOrg + `' AND f.source_table = 'agency_finding' AND f.detector = 'agencies@1'`, 1},
+		{"the hand lead has none", `SELECT count(*) FROM lead WHERE kind = 'hand' AND finding_id IS NOT NULL`, 0},
 	}
 	for _, c := range checks {
 		var args []any
@@ -519,6 +532,29 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 	for tbl, n := range tableCounts(t) {
 		if n != 0 {
 			t.Errorf("tampered import wrote %d rows to %s", n, tbl)
+		}
+	}
+
+	// An export from before findings (format 1) is refused in plain words naming both
+	// versions, before anything is written.
+	older := filepath.Join(t.TempDir(), "older")
+	if err := os.CopyFS(older, os.DirFS(dir)); err != nil {
+		t.Fatal(err)
+	}
+	m.Files[0].Rows--
+	m.Format = transferFormat - 1
+	b, _ = json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(older, transferManifestName), b, 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+	code, out, errOut = leadsRun(t, "leads", "transfer", "import", older)
+	if want := fmt.Sprintf("exported by an older leadhound (format %d); this one reads format %d only", transferFormat-1, transferFormat); code != 2 || !strings.Contains(errOut, want) {
+		t.Errorf("older-format import: exit %d, stderr %q, want %q", code, errOut, want)
+	}
+	noValues(t, "older-format import", out+errOut)
+	for tbl, n := range tableCounts(t) {
+		if n != 0 {
+			t.Errorf("older-format import wrote %d rows to %s", n, tbl)
 		}
 	}
 }

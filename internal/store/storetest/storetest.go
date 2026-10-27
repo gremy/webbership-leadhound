@@ -65,18 +65,28 @@ func Migrated(t testing.TB) {
 	}
 }
 
+// KeptTables are the reference tables a reset never empties: their rows are seeded by a
+// migration and change only by migration (leads 00010), and nothing references a test's
+// rows from them. Every goose version table is kept too.
+var KeptTables = []string{"lead_kind", "lead_channel"}
+
+// resetTablesSQL lists the tables a reset empties: every table but the goose version tables
+// and KeptTables ($1), each through quote_ident.
+const resetTablesSQL = `SELECT quote_ident(tablename) FROM pg_tables
+	 WHERE schemaname = 'public' AND tablename NOT LIKE 'goose\_db\_version%' AND tablename <> ALL($1::text[])
+	 ORDER BY tablename`
+
 // ResetDB migrates the test database if this process has not yet, then empties every table
 // (TRUNCATE … RESTART IDENTITY CASCADE as the owner), so a test starts from an empty database
-// with ids from 1. Every goose version table (goose_db_version, goose_db_version_leads) is
-// left alone.
+// with ids from 1. Every goose version table (goose_db_version, goose_db_version_leads) and
+// every KeptTables reference table is left alone; CASCADE never reaches them, as they
+// reference no emptied table.
 func ResetDB(t testing.TB) {
 	t.Helper()
 	Migrated(t)
 	ctx := context.Background()
 	conn := OwnerConn(t)
-	rows, err := conn.Query(ctx,
-		`SELECT quote_ident(tablename) FROM pg_tables
-		 WHERE schemaname = 'public' AND tablename NOT LIKE 'goose\_db\_version%' ORDER BY tablename`)
+	rows, err := conn.Query(ctx, resetTablesSQL, KeptTables)
 	if err != nil {
 		t.Fatalf("storetest: list tables: %v", err)
 	}
