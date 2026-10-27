@@ -42,8 +42,9 @@ type BuildOrg struct {
 
 // OrgsForBuild returns every org but selftest ones, by id, each with its site's last probe
 // (site.last_probe_id; nil when the org has no site or the site no probe), its first
-// agency finding (the lowest id; nil when it has none) and its lead, when it has one.
-func (q Queries) OrgsForBuild(ctx context.Context) ([]BuildOrg, error) {
+// agency finding (the lowest id; nil when it has none) and its lead in campaign campaignID
+// (0: DefaultCampaignID), when it has one.
+func (q Queries) OrgsForBuild(ctx context.Context, campaignID int64) ([]BuildOrg, error) {
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[BuildOrg],
 		`SELECT o.id, o.kind, o.domain, o.name, o.country,
 		   p.id AS probe_id, coalesce(p.is_drupal, false) AS is_drupal, coalesce(p.major, 0) AS major,
@@ -52,11 +53,11 @@ func (q Queries) OrgsForBuild(ctx context.Context) ([]BuildOrg, error) {
 		   l.id AS lead_id, coalesce(l.state, '') AS lead_state, coalesce(l.kind, '') AS lead_kind,
 		   coalesce(l.channel, '') AS lead_channel
 		 FROM org o
-		 LEFT JOIN lead l ON l.org_id = o.id
+		 LEFT JOIN lead l ON l.org_id = o.id AND l.campaign_id = $1
 		 LEFT JOIN site s ON s.id = o.site_id
 		 LEFT JOIN site_probe p ON p.id = s.last_probe_id
 		 WHERE o.kind <> 'selftest'
-		 ORDER BY o.id`)
+		 ORDER BY o.id`, orCampaign(campaignID))
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: orgs for build: %w", err)
 	}
@@ -232,10 +233,12 @@ type SuppressionCount struct {
 	N      int    `db:"n"`
 }
 
-// SuppressionCounts counts the active suppression rows (none lifted, FO6) by kind, then reason.
-func (q Queries) SuppressionCounts(ctx context.Context) ([]SuppressionCount, error) {
+// SuppressionCounts counts the active suppression rows (none lifted, FO6) of account
+// accountID (0: DefaultAccountID) by kind, then reason.
+func (q Queries) SuppressionCounts(ctx context.Context, accountID int64) ([]SuppressionCount, error) {
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[SuppressionCount],
-		`SELECT kind, reason, count(*)::int AS n FROM suppression_active GROUP BY kind, reason ORDER BY kind, reason`)
+		`SELECT kind, reason, count(*)::int AS n FROM suppression_active WHERE account_id = $1
+		 GROUP BY kind, reason ORDER BY kind, reason`, orAccount(accountID))
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: suppression counts: %w", err)
 	}
@@ -265,11 +268,13 @@ func (q Queries) LockBatchNew(ctx context.Context) error {
 }
 
 // UnapprovedBatch returns the oldest batch of the given kind (shadow or live) that is
-// neither approved nor discarded: the one a new batch waits for. ok is false when none waits.
-func (q Queries) UnapprovedBatch(ctx context.Context, shadow bool) (id int64, ok bool, err error) {
+// neither approved nor discarded, of account accountID (0: DefaultAccountID): the one a new
+// batch waits for. ok is false when none waits.
+func (q Queries) UnapprovedBatch(ctx context.Context, accountID int64, shadow bool) (id int64, ok bool, err error) {
 	err = q.db.QueryRow(ctx,
 		`SELECT id FROM outreach_batch WHERE shadow = $1 AND approved_at IS NULL AND discarded_at IS NULL
-		 ORDER BY id LIMIT 1`, shadow).Scan(&id)
+		   AND account_id = $2
+		 ORDER BY id LIMIT 1`, shadow, orAccount(accountID)).Scan(&id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return 0, false, nil

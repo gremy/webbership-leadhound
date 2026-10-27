@@ -69,7 +69,7 @@ func (w *coreWorld) add(t *testing.T, in MailboxInput) int64 {
 
 func (w *coreWorld) status(t *testing.T, id int64) leadstore.MailboxStatus {
 	t.Helper()
-	ms, err := w.lq.Mailboxes(context.Background(), w.now.Add(-time.Hour))
+	ms, err := w.lq.Mailboxes(context.Background(), leadstore.DefaultAccountID, w.now.Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

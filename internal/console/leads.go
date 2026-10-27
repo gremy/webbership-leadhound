@@ -32,6 +32,9 @@ type LeadsBackend interface {
 	// LeadAct runs one write. A refusal the operator can fix wraps ErrUserFixable with
 	// the words to show.
 	LeadAct(ctx context.Context, a LeadAction) (LeadOutcome, error)
+	// Campaigns is every campaign of the operator's account, each at its latest spec
+	// version, for the Campaigns tab. It never writes.
+	Campaigns(ctx context.Context) ([]CampaignView, error)
 }
 
 // ErrLeadsNotSetUp is what the leads backend returns when this server has no usable

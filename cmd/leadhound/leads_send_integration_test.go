@@ -812,7 +812,7 @@ func TestSendRefusals(t *testing.T) {
 	// The first send suppresses late.example's domain: its message must not go.
 	w.smtp.onSend = func(n int, to string) {
 		if n == 0 {
-			if _, err := leadstoretest.Q(t).Suppress(ctx, leadstore.SuppressDomain, "late.example", leadstore.ReasonManual, "test"); err != nil {
+			if _, err := leadstoretest.Q(t).Suppress(ctx, 0, leadstore.SuppressDomain, "late.example", leadstore.ReasonManual, "test"); err != nil {
 				t.Error(err)
 			}
 		}

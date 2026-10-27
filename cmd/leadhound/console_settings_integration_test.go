@@ -15,6 +15,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -403,7 +404,7 @@ func TestSettingsStaleOverrideNote(t *testing.T) {
 	if err := b.SaveLeadSettings(ctx, console.SettingsBatches, v, false); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, _, _, err := leadstoretest.Q(t).LatestSettings(ctx)
+	raw, _, _, _, err := leadstoretest.Q(t).LatestSettings(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		t.Fatal(err)
 	}

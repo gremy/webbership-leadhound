@@ -152,7 +152,7 @@ func TestScaleLeadsSend(t *testing.T) {
 		return err
 	})
 	within(t, "SuppressionSet", time.Second, func() error {
-		set, err := q.SuppressionSet(ctx)
+		set, err := q.SuppressionSet(ctx, 0)
 		// 2,000 seeded, 50 of them lifted (FO6): the view leaves those out.
 		if err == nil && len(set.Addresses)+len(set.Domains) != 1950 {
 			t.Errorf("active suppressions = %d, want 1950", len(set.Addresses)+len(set.Domains))
@@ -175,7 +175,7 @@ func TestScaleLeadsSend(t *testing.T) {
 		return err
 	})
 	within(t, "UnapprovedBatch", time.Second, func() error {
-		_, _, err := q.UnapprovedBatch(ctx, false)
+		_, _, err := q.UnapprovedBatch(ctx, leadstore.DefaultAccountID, false)
 		return err
 	})
 	var last int64

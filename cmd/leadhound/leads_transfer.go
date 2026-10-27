@@ -50,10 +50,19 @@ const (
 
 var transferFiles = []string{tfSites, tfFetches, tfProbes, tfOrgs, tfRoutes, tfFindings, tfAttempts, tfLeads, tfEvents, tfSuppressions}
 
-// transferFormat is the manifest's format number; an import refuses any other. Format 2 is
-// the first written against leads migration 00010: its rows are format 1's, and the import
-// builds each lead's finding from the probe or agency finding it carries.
-const transferFormat = 2
+// transferFormat is the manifest's format number the export writes; an import reads
+// transferFormatOldest through transferFormat and refuses any other. Format 2 is the first
+// written against leads migration 00010: its rows are format 1's, and the import builds each
+// lead's finding from the probe or agency finding it carries. Format 3 (leads migration
+// 00016) names each lead's and each event's campaign by slug; a format 2 file has none, and
+// its leads import into campaign 1 (leadstore.DefaultCampaignSlug).
+const (
+	transferFormat       = 3
+	transferFormatOldest = 2
+)
+
+// The transfer carries the default account's data only: its campaigns' leads and events and
+// its suppressions, and an import writes them into the default account.
 
 const (
 	// transferBatchRows is how many rows one import transaction writes.
@@ -239,6 +248,7 @@ type tAttempt struct {
 }
 
 type tLead struct {
+	Campaign  string       `json:"campaign,omitempty"` // the campaign's slug; "" (format 2) is campaign 1's
 	Org       string       `json:"org"`
 	Kind      string       `json:"kind"`
 	Probe     *tProbeKey   `json:"probe"`
@@ -251,12 +261,25 @@ type tLead struct {
 }
 
 type tEvent struct {
-	Lead   string    `json:"lead"` // the lead's org domain
-	State  string    `json:"state"`
-	Reason string    `json:"reason"`
-	Actor  string    `json:"actor"`
-	At     time.Time `json:"at"`
+	Campaign string    `json:"campaign,omitempty"` // the lead's campaign slug; "" (format 2) is campaign 1's
+	Lead     string    `json:"lead"`               // the lead's org domain
+	State    string    `json:"state"`
+	Reason   string    `json:"reason"`
+	Actor    string    `json:"actor"`
+	At       time.Time `json:"at"`
 }
+
+// campaignSlug is slug, or campaign 1's for a format 2 row that names none.
+func campaignSlug(slug string) string {
+	if slug == "" {
+		return leadstore.DefaultCampaignSlug
+	}
+	return slug
+}
+
+// leadKey is a lead's natural key within the default account: its campaign's slug and its
+// org's domain (neither holds a space).
+func leadKey(campaign, org string) string { return campaignSlug(campaign) + " " + org }
 
 type tSuppression struct {
 	Kind      string    `json:"kind"`
@@ -438,7 +461,7 @@ func (ex *exporter) run(ctx context.Context) ([]manifestFile, exportCounts, erro
 	}
 	// Leads before events: the events follow the leads that crossed.
 	var leadIDs []int64
-	var batched []string
+	var batched []tEvent
 	mf, err := ex.write(ctx, tfLeads, func(w *jsonlWriter) error {
 		var err error
 		leadIDs, batched, err = ex.leads(ctx, w)
@@ -720,11 +743,13 @@ func (ex *exporter) attempts(ctx context.Context, w *jsonlWriter, _ *exportCount
 
 // leads writes every lead that crosses: not a selftest, its org, finding and route all
 // crossing. A lead batched on the source arrives new (its batch stays behind) at the
-// export's moment. It returns the ids written and the org domains of the batched ones.
-func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, batched []string, err error) {
-	err = each(ctx, ex.tx, "leads", `SELECT l.id, o.domain, l.kind, ps.domain, p.created_at, fo.domain, f.url, f.created_at,
+// export's moment. Only the default account's campaigns cross. It returns the ids written
+// and the campaign and org domain of the batched ones.
+func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, batched []tEvent, err error) {
+	err = each(ctx, ex.tx, "leads", `SELECT l.id, cg.slug, o.domain, l.kind, ps.domain, p.created_at, fo.domain, f.url, f.created_at,
 		  l.channel, ro.domain, r.kind, r.value, l.state, l.state_at, l.created_at
 		FROM lead l JOIN org o ON o.id = l.org_id
+		JOIN campaign cg ON cg.id = l.campaign_id AND cg.account_id = $2
 		LEFT JOIN site_probe p ON p.id = l.probe_id LEFT JOIN site ps ON ps.id = p.site_id
 		LEFT JOIN agency_finding f ON f.id = l.agency_finding_id LEFT JOIN org fo ON fo.id = f.org_id
 		LEFT JOIN contact_route r ON r.id = l.route_id LEFT JOIN org ro ON ro.id = r.org_id
@@ -732,7 +757,7 @@ func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, bat
 		  AND (p.id IS NULL OR ps.domain !~ $1)
 		  AND (f.id IS NULL OR (fo.kind <> 'selftest' AND fo.domain !~ $1))
 		  AND (r.id IS NULL OR (ro.kind <> 'selftest' AND ro.domain !~ $1))
-		ORDER BY l.id`, []any{ex.re}, func(r pgx.Rows) error {
+		ORDER BY l.id`, []any{ex.re, leadstore.DefaultAccountID}, func(r pgx.Rows) error {
 		var (
 			id                          int64
 			l                           tLead
@@ -740,7 +765,7 @@ func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, bat
 			routeOrg, routeKind, value  *string
 			probeAt, findAt             *time.Time
 		)
-		if err := r.Scan(&id, &l.Org, &l.Kind, &probeSite, &probeAt, &findOrg, &findURL, &findAt,
+		if err := r.Scan(&id, &l.Campaign, &l.Org, &l.Kind, &probeSite, &probeAt, &findOrg, &findURL, &findAt,
 			&l.Channel, &routeOrg, &routeKind, &value, &l.State, &l.StateAt, &l.CreatedAt); err != nil {
 			return fmt.Errorf("leads transfer: leads: %w", err)
 		}
@@ -755,7 +780,7 @@ func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, bat
 		}
 		if l.State == leadstore.LeadBatched {
 			l.State, l.StateAt = leadstore.LeadNew, ex.at
-			batched = append(batched, l.Org)
+			batched = append(batched, tEvent{Campaign: l.Campaign, Lead: l.Org})
 		}
 		ids = append(ids, id)
 		return w.put(l)
@@ -765,15 +790,16 @@ func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, bat
 
 // events writes the history of every lead that crossed, then, for each lead that was
 // batched, the event that moved it back to new.
-func (ex *exporter) events(ctx context.Context, w *jsonlWriter, leadIDs []int64, batched []string) error {
+func (ex *exporter) events(ctx context.Context, w *jsonlWriter, leadIDs []int64, batched []tEvent) error {
 	if leadIDs == nil {
 		leadIDs = []int64{}
 	}
-	err := each(ctx, ex.tx, "events", `SELECT o.domain, e.state, e.reason, e.actor, e.at
+	err := each(ctx, ex.tx, "events", `SELECT cg.slug, o.domain, e.state, e.reason, e.actor, e.at
 		FROM lead_event e JOIN lead l ON l.id = e.lead_id JOIN org o ON o.id = l.org_id
+		JOIN campaign cg ON cg.id = l.campaign_id
 		WHERE e.lead_id = ANY($1) ORDER BY e.id`, []any{leadIDs}, func(r pgx.Rows) error {
 		var e tEvent
-		if err := r.Scan(&e.Lead, &e.State, &e.Reason, &e.Actor, &e.At); err != nil {
+		if err := r.Scan(&e.Campaign, &e.Lead, &e.State, &e.Reason, &e.Actor, &e.At); err != nil {
 			return fmt.Errorf("leads transfer: events: %w", err)
 		}
 		return w.put(e)
@@ -781,8 +807,8 @@ func (ex *exporter) events(ctx context.Context, w *jsonlWriter, leadIDs []int64,
 	if err != nil {
 		return err
 	}
-	for _, org := range batched {
-		if err := w.put(tEvent{Lead: org, State: leadstore.LeadNew, Reason: transferBatchedReason,
+	for _, b := range batched {
+		if err := w.put(tEvent{Campaign: b.Campaign, Lead: b.Lead, State: leadstore.LeadNew, Reason: transferBatchedReason,
 			Actor: leadstore.ActorSystem, At: ex.at}); err != nil {
 			return err
 		}
@@ -790,17 +816,18 @@ func (ex *exporter) events(ctx context.Context, w *jsonlWriter, leadIDs []int64,
 	return nil
 }
 
-// suppressions writes every active suppression but those on a reserved TLD and a selftest's
-// own address. Lifts are not transferred (FO6): a lifted suppression is left behind, so it can
+// suppressions writes every active suppression of the default account but those on a
+// reserved TLD and a selftest's own address. Lifts are not transferred (FO6): a lifted suppression is left behind, so it can
 // never come back blocking on the target, and the target's own lifts stay its own.
 func (ex *exporter) suppressions(ctx context.Context, w *jsonlWriter) error {
 	return each(ctx, ex.tx, "suppressions", `SELECT x.kind, x.value, x.reason, x.source, x.created_at
 		FROM suppression_active x
-		WHERE CASE WHEN x.kind = 'domain' THEN x.value ELSE split_part(x.value, '@', 2) END !~ $1
+		WHERE x.account_id = $2
+		  AND CASE WHEN x.kind = 'domain' THEN x.value ELSE split_part(x.value, '@', 2) END !~ $1
 		  AND NOT (x.kind = 'address' AND EXISTS (
 		    SELECT 1 FROM outreach_message m JOIN lead l ON l.id = m.lead_id
 		    WHERE l.kind = 'selftest' AND lower(m.to_address) = x.value))
-		ORDER BY x.id`, []any{ex.re}, func(r pgx.Rows) error {
+		ORDER BY x.id`, []any{ex.re, leadstore.DefaultAccountID}, func(r pgx.Rows) error {
 		var s tSuppression
 		if err := r.Scan(&s.Kind, &s.Value, &s.Reason, &s.Source, &s.CreatedAt); err != nil {
 			return fmt.Errorf("leads transfer: suppressions: %w", err)
@@ -856,10 +883,10 @@ func readManifest(dir string) (transferManifest, error) {
 		return m, usageError("the transfer manifest does not parse: %v", err)
 	}
 	switch {
-	case m.Format < transferFormat:
-		return m, usageError("this transfer was exported by an older leadhound (format %d); this one reads format %d only: update leadhound on the machine that exported it, then export again", m.Format, transferFormat)
+	case m.Format < transferFormatOldest:
+		return m, usageError("this transfer was exported by an older leadhound (format %d); this one reads formats %d to %d only: update leadhound on the machine that exported it, then export again", m.Format, transferFormatOldest, transferFormat)
 	case m.Format > transferFormat:
-		return m, usageError("this transfer was exported by a newer leadhound (format %d); this one reads format %d only: update this leadhound first", m.Format, transferFormat)
+		return m, usageError("this transfer was exported by a newer leadhound (format %d); this one reads formats %d to %d only: update this leadhound first", m.Format, transferFormatOldest, transferFormat)
 	}
 	byName := map[string]manifestFile{}
 	for _, f := range m.Files {
@@ -968,7 +995,9 @@ type importer struct {
 	orgs     map[string]int64  // domain → id
 	routes   map[string]int64  // route key → id
 	findings map[string]int64  // finding key → id
-	leads    map[string]int64  // org domain → id
+	leads    map[string]int64  // leadKey (campaign slug, org domain) → id
+	// campaigns is the default account's campaigns met so far, slug → id.
+	campaigns map[string]int64
 
 	tallies  map[string]*tally
 	pointers int // sites whose last probe and state were set from the transfer
@@ -985,13 +1014,13 @@ func transferImport(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 		pool: pool, dir: dir,
 		fetches: map[hkey]int64{}, needed: map[hkey]struct{}{},
 		orgs: map[string]int64{}, routes: map[string]int64{}, findings: map[string]int64{},
-		leads: map[string]int64{}, tallies: map[string]*tally{},
+		leads: map[string]int64{}, campaigns: map[string]int64{}, tallies: map[string]*tally{},
 	}
 	for _, name := range transferFiles {
 		im.tallies[name] = &tally{}
 	}
 	steps := []func(context.Context) error{
-		im.importSites, im.findNeeded, im.importFetches, im.importProbes, im.setPointers,
+		im.checkCampaigns, im.importSites, im.findNeeded, im.importFetches, im.importProbes, im.setPointers,
 		im.importOrgs, im.importRoutes, im.importFindings, im.dropFetches, im.importAttempts, im.importLeads,
 		im.importEvents, im.importSuppressions,
 	}
@@ -1086,12 +1115,12 @@ const (
 		JOIN org o ON o.domain = t.d JOIN agency_finding f ON f.org_id = o.id AND f.url = t.u AND f.created_at = t.at`
 	matchAttemptsSQL = `SELECT t.i, a.id FROM unnest($1::text[], $2::timestamptz[]) WITH ORDINALITY AS t(d, at, i)
 		JOIN org o ON o.domain = t.d JOIN contact_attempt a ON a.org_id = o.id AND a.attempted_at = t.at`
-	matchLeadsSQL = `SELECT t.i, l.id FROM unnest($1::text[]) WITH ORDINALITY AS t(d, i)
-		JOIN org o ON o.domain = t.d JOIN lead l ON l.org_id = o.id`
+	matchLeadsSQL = `SELECT t.i, l.id FROM unnest($1::text[], $2::bigint[]) WITH ORDINALITY AS t(d, c, i)
+		JOIN org o ON o.domain = t.d JOIN lead l ON l.org_id = o.id AND l.campaign_id = t.c`
 	matchEventsSQL = `SELECT t.i, e.id FROM unnest($1::bigint[], $2::timestamptz[], $3::text[]) WITH ORDINALITY AS t(l, at, st, i)
 		JOIN lead_event e ON e.lead_id = t.l AND e.at = t.at AND e.state = t.st`
 	matchSuppressionsSQL = `SELECT t.i, x.id FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS t(k, v, r, i)
-		JOIN suppression_active x ON x.kind = t.k AND x.value = t.v AND x.reason = t.r`
+		JOIN suppression_active x ON x.account_id = $4 AND x.kind = t.k AND x.value = t.v AND x.reason = t.r`
 )
 
 func probeArgs(batch []tProbe) []any {
@@ -1769,10 +1798,16 @@ func (im *importer) importLeads(ctx context.Context) error {
 	return eachBatch(im.dir, tfLeads, nil, 0, func(batch []tLead) error {
 		return im.tx(ctx, func(tx pgx.Tx) error {
 			all := make([]string, len(batch))
+			camp := make([]int64, len(batch))
 			for i, l := range batch {
 				all[i] = l.Org
+				id, err := im.campaignID(ctx, tx, l.Campaign)
+				if err != nil {
+					return err
+				}
+				camp[i] = id
 			}
-			have, err := matchIDs(ctx, tx, "leads", matchLeadsSQL, all)
+			have, err := matchIDs(ctx, tx, "leads", matchLeadsSQL, all, camp)
 			if err != nil {
 				return err
 			}
@@ -1796,7 +1831,7 @@ func (im *importer) importLeads(ctx context.Context) error {
 				}
 			}
 			lq := leadstore.NewQueries(tx)
-			var org []int64
+			var org, campaign []int64
 			var probe, finding, route, findingRow []*int64
 			var kind, channel, state []string
 			var stateAt, created []time.Time
@@ -1838,14 +1873,15 @@ func (im *importer) importLeads(ctx context.Context) error {
 					return fmt.Errorf("leads transfer: %w", err)
 				}
 				org, probe, finding, route = append(org, o), append(probe, p), append(finding, f), append(route, r)
+				campaign = append(campaign, camp[i])
 				findingRow = append(findingRow, fr)
 				kind, channel, state = append(kind, l.Kind), append(channel, l.Channel), append(state, l.State)
 				stateAt, created = append(stateAt, l.StateAt), append(created, l.CreatedAt)
 			}
 			if len(org) > 0 {
-				tag, err := tx.Exec(ctx, `INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, channel, route_id, state, state_at, created_at, finding_id)
-					SELECT * FROM unnest($1::bigint[], $2::text[], $3::bigint[], $4::bigint[], $5::text[], $6::bigint[], $7::text[], $8::timestamptz[], $9::timestamptz[], $10::bigint[])
-					ON CONFLICT (org_id) DO NOTHING`, org, kind, probe, finding, channel, route, state, stateAt, created, findingRow)
+				tag, err := tx.Exec(ctx, `INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, channel, route_id, state, state_at, created_at, finding_id, campaign_id)
+					SELECT * FROM unnest($1::bigint[], $2::text[], $3::bigint[], $4::bigint[], $5::text[], $6::bigint[], $7::text[], $8::timestamptz[], $9::timestamptz[], $10::bigint[], $11::bigint[])
+					ON CONFLICT (campaign_id, org_id) DO NOTHING`, org, kind, probe, finding, channel, route, state, stateAt, created, findingRow, campaign)
 				if err != nil {
 					return fmt.Errorf("leads transfer: insert leads: %w", err)
 				}
@@ -1853,8 +1889,41 @@ func (im *importer) importLeads(ctx context.Context) error {
 				t.known += len(org) - int(tag.RowsAffected())
 			}
 			return scanInto(ctx, tx, "leads", im.leads,
-				`SELECT o.domain, l.id FROM lead l JOIN org o ON o.id = l.org_id WHERE o.domain = ANY($1)`, all)
+				`SELECT cg.slug || ' ' || o.domain, l.id FROM lead l JOIN org o ON o.id = l.org_id
+				 JOIN campaign cg ON cg.id = l.campaign_id
+				 WHERE o.domain = ANY($1) AND cg.account_id = $2`, all, leadstore.DefaultAccountID)
 		})
+	})
+}
+
+// campaignID returns the id of the default account's campaign slug ("" is campaign 1's). A
+// campaign the target does not hold refuses the import: register it there first.
+func (im *importer) campaignID(ctx context.Context, db store.DBTX, slug string) (int64, error) {
+	slug = campaignSlug(slug)
+	if id, ok := im.campaigns[slug]; ok {
+		return id, nil
+	}
+	c, err := leadstore.NewQueries(db).CampaignBySlug(ctx, leadstore.DefaultAccountID, slug)
+	if errors.Is(err, leadstore.ErrCampaignNotFound) {
+		return 0, usageError("campaign %q is not on this machine: register it here first (leads campaigns register), then import again", slug)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("leads transfer: %w", err)
+	}
+	im.campaigns[slug] = c.ID
+	return c.ID, nil
+}
+
+// checkCampaigns resolves every campaign the transfer's leads name before anything is
+// written, so a campaign missing here refuses the import with nothing changed.
+func (im *importer) checkCampaigns(ctx context.Context) error {
+	return eachBatch(im.dir, tfLeads, nil, 0, func(batch []tLead) error {
+		for _, l := range batch {
+			if _, err := im.campaignID(ctx, im.pool, l.Campaign); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -1868,7 +1937,7 @@ func (im *importer) importEvents(ctx context.Context) error {
 			n := len(batch)
 			lid, at, st := make([]int64, n), make([]time.Time, n), make([]string, n)
 			for i, e := range batch {
-				id, ok := im.leads[e.Lead]
+				id, ok := im.leads[leadKey(e.Campaign, e.Lead)]
 				if !ok {
 					return errors.New("leads transfer: an event's lead is not in the transfer")
 				}
@@ -1882,7 +1951,7 @@ func (im *importer) importEvents(ctx context.Context) error {
 			var state, reason, actor []string
 			var when []time.Time
 			for i, e := range batch {
-				k := e.Lead + "\x00" + microKey(e.At) + "\x00" + e.State
+				k := leadKey(e.Campaign, e.Lead) + "\x00" + microKey(e.At) + "\x00" + e.State
 				if _, ok := have[int64(i+1)]; ok || seen[k] {
 					t.known++
 					continue
@@ -1915,7 +1984,7 @@ func (im *importer) importSuppressions(ctx context.Context) error {
 			for i, s := range batch {
 				k[i], v[i], r[i] = s.Kind, s.Value, s.Reason
 			}
-			have, err := matchIDs(ctx, tx, "suppressions", matchSuppressionsSQL, k, v, r)
+			have, err := matchIDs(ctx, tx, "suppressions", matchSuppressionsSQL, k, v, r, leadstore.DefaultAccountID)
 			if err != nil {
 				return err
 			}
@@ -1935,9 +2004,9 @@ func (im *importer) importSuppressions(ctx context.Context) error {
 			if len(kind) == 0 {
 				return nil
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO suppression (kind, value, reason, source, created_at)
-				SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])`,
-				kind, value, reason, source, at); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO suppression (kind, value, reason, source, created_at, account_id)
+				SELECT u.*, $6::bigint FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[]) u`,
+				kind, value, reason, source, at, leadstore.DefaultAccountID); err != nil {
 				return fmt.Errorf("leads transfer: insert suppressions: %w", err)
 			}
 			t.added += len(kind)

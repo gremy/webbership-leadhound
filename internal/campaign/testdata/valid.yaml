@@ -1,0 +1,17 @@
+slug: drupal-eol
+name: Drupal end-of-life
+product: {name: Drupal upgrades, site_url: https://webbership.example}
+source: {kind: site_list}
+detectors: [drupal@1, agency@1]
+kinds: [unsupported, d10, agency_partner]
+countries: {GB: {email: on, call: on, lang: en}, DE: {email: off, call: off}}
+writer: template
+offer: {proof_line: "Two Drupal 7 migrations shipped.", magnet: upgrade_risk_report}
+copy: {banned_words: [synergy], forbid_by_kind: {d10: ["(?i)migrat"]}, max_words: {0: 120, 1: 80, 3: 60, 4: 60}, links_in_step0: false, exclamation: false}
+sequence:
+  - {step: 0, type: email}
+  - {step: 1, type: email, after_business_days: 3}
+  - {step: 2, type: call,  after_business_days: 2, when: has_callable_phone}
+  - {step: 3, type: email, after_business_days: 1, when: call_not_connected}
+  - {step: 4, type: email, after_business_days: 5}
+templates_dir: templates

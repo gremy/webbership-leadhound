@@ -167,7 +167,7 @@ func runLeadsSenders(ctx context.Context, args []string) error {
 	defer s.Close()
 	lq := leadstore.NewQueries(s.Pool())
 	now := leadsNow()
-	boxes, err := lq.Mailboxes(ctx, now)
+	boxes, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, now)
 	if err != nil {
 		return err
 	}

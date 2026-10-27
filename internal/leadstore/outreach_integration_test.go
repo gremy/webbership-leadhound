@@ -304,7 +304,7 @@ func TestCandidateLeadsFilterAndOrder(t *testing.T) {
 		{leadstore.SuppressAddress, "INFO@byaddr.localhost", leadstore.ReasonOptOut},
 		{leadstore.SuppressDomain, "bydom.localhost", leadstore.ReasonManual},
 	} {
-		if _, err := f.q.Suppress(ctx, s[0], s[1], s[2], "cli"); err != nil {
+		if _, err := f.q.Suppress(ctx, 0, s[0], s[1], s[2], "cli"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -533,7 +533,7 @@ func TestSuppressGrid(t *testing.T) {
 				{bounced, leadstore.SuppressAddress, "info@bounced.localhost", leadstore.ReasonBounce, leadstore.LeadBounced, 0, 0},
 				{skipped, leadstore.SuppressDomain, "skipped.localhost", leadstore.ReasonManual, leadstore.LeadSkipped, 0, 0},
 			} {
-				res, err := f.q.Suppress(ctx, c.kind, c.value, c.reason, "cli")
+				res, err := f.q.Suppress(ctx, 0, c.kind, c.value, c.reason, "cli")
 				if err != nil {
 					t.Fatalf("suppress %s: %v", c.value, err)
 				}
@@ -544,7 +544,7 @@ func TestSuppressGrid(t *testing.T) {
 					t.Errorf("lead %s after suppress = %s, want %s", c.value, got, c.wantState)
 				}
 				// The same suppression again is idempotent: no new row, nothing moves.
-				res, err = f.q.Suppress(ctx, c.kind, c.value, c.reason, "cli")
+				res, err = f.q.Suppress(ctx, 0, c.kind, c.value, c.reason, "cli")
 				if err != nil || res.Recorded || res.Moved != 0 || res.Cancelled != 0 {
 					t.Errorf("suppress %s again = %+v, %v; want a no-op", c.value, res, err)
 				}
@@ -552,14 +552,14 @@ func TestSuppressGrid(t *testing.T) {
 			eqStates(t, "batched", f.msgStates(t, id, batched), "cancelled", "cancelled")
 			eqStates(t, "contacted", f.msgStates(t, id, contacted), "cancelled", "cancelled")
 			// A suppression is only ever added: another reason is a second row.
-			if res, _ := f.q.Suppress(ctx, leadstore.SuppressDomain, "replied.localhost", leadstore.ReasonManual, "cli"); !res.Recorded {
+			if res, _ := f.q.Suppress(ctx, 0, leadstore.SuppressDomain, "replied.localhost", leadstore.ReasonManual, "cli"); !res.Recorded {
 				t.Error("a second reason for one value was not recorded")
 			}
 			var n int
 			if err := f.owner.QueryRow(ctx, "SELECT count(*) FROM suppression").Scan(&n); err != nil || n != 7 {
 				t.Errorf("suppression rows = %d, %v; want 7", n, err)
 			}
-			set, err := f.q.SuppressionSet(ctx)
+			set, err := f.q.SuppressionSet(ctx, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -584,7 +584,7 @@ func TestSuppressGrid(t *testing.T) {
 			}
 			lift(leadstore.SuppressDomain, "replied.localhost", leadstore.ReasonManual, "replied.localhost")
 			lift(leadstore.SuppressDomain, "skipped.localhost", leadstore.ReasonManual, "skipped.localhost")
-			set, err = f.q.SuppressionSet(ctx)
+			set, err = f.q.SuppressionSet(ctx, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -596,7 +596,7 @@ func TestSuppressGrid(t *testing.T) {
 				{"address", "no-at.localhost", "manual"}, {"domain", "a@b.localhost", "manual"},
 				{"address", " ", "manual"}, {"phone", "x", "manual"}, {"domain", "x.localhost", "angry"},
 			} {
-				if _, err := f.q.Suppress(ctx, bad[0], bad[1], bad[2], "cli"); err == nil {
+				if _, err := f.q.Suppress(ctx, 0, bad[0], bad[1], bad[2], "cli"); err == nil {
 					t.Errorf("suppress %v: want an error", bad)
 				}
 			}
@@ -613,7 +613,7 @@ func TestSuppressionBetweenApproveAndSendCancels(t *testing.T) {
 	if due, _ := f.q.DueMessages(ctx, dueBase, false); len(due) != 1 {
 		t.Fatalf("due before suppress = %d, want 1", len(due))
 	}
-	if _, err := f.q.Suppress(ctx, leadstore.SuppressAddress, "info@northwind.localhost", leadstore.ReasonOptOut, "mailbox:INBOX:7"); err != nil {
+	if _, err := f.q.Suppress(ctx, 0, leadstore.SuppressAddress, "info@northwind.localhost", leadstore.ReasonOptOut, "mailbox:INBOX:7"); err != nil {
 		t.Fatal(err)
 	}
 	eqStates(t, "after suppress", f.msgStates(t, id, lead), "cancelled", "cancelled")
@@ -754,7 +754,7 @@ func TestMarkContacted(t *testing.T) {
 	ctx := context.Background()
 
 	// A fresh domain: no site, no org. An org and a hand lead appear, contacted by gremy.
-	res, err := f.q.MarkContacted(ctx, "www.Fresh.localhost", "wrote by hand")
+	res, err := f.q.MarkContacted(ctx, 0, "www.Fresh.localhost", "wrote by hand")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +771,7 @@ func TestMarkContacted(t *testing.T) {
 		t.Errorf("last event = %q, %v", ev, err)
 	}
 	// Again: a no-op.
-	if again, err := f.q.MarkContacted(ctx, "fresh.localhost", ""); err != nil || again.Moved || again.OrgCreated || again.LeadID != res.LeadID {
+	if again, err := f.q.MarkContacted(ctx, 0, "fresh.localhost", ""); err != nil || again.Moved || again.OrgCreated || again.LeadID != res.LeadID {
 		t.Errorf("again = %+v, %v", again, err)
 	}
 
@@ -784,7 +784,7 @@ func TestMarkContacted(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	res, err = f.q.MarkContacted(ctx, "probed.localhost", "")
+	res, err = f.q.MarkContacted(ctx, 0, "probed.localhost", "")
 	if err != nil || res.LeadKind != leadstore.LeadD10 || res.State != leadstore.LeadContacted {
 		t.Errorf("probed site = %+v, %v", res, err)
 	}
@@ -796,7 +796,7 @@ func TestMarkContacted(t *testing.T) {
 	lead := f.siteLead(t, "batched.localhost", intp(1), 7, "info@batched.localhost")
 	id, sum := f.batch(t, false, lead)
 	f.approve(t, id, sum)
-	res, err = f.q.MarkContacted(ctx, "batched.localhost", "")
+	res, err = f.q.MarkContacted(ctx, 0, "batched.localhost", "")
 	if err != nil || res.LeadID != lead || res.Cancelled != 2 || res.State != leadstore.LeadContacted || res.OrgCreated {
 		t.Errorf("batched lead = %+v, %v", res, err)
 	}
@@ -809,7 +809,7 @@ func TestMarkContacted(t *testing.T) {
 	if got := candidateIDs(t, f.q); len(got) != 0 {
 		t.Errorf("candidates = %v, want none", got)
 	}
-	if _, err := f.q.MarkContacted(ctx, "not a domain", ""); !errors.Is(err, leadstore.ErrNoDomain) {
+	if _, err := f.q.MarkContacted(ctx, 0, "not a domain", ""); !errors.Is(err, leadstore.ErrNoDomain) {
 		t.Errorf("bad domain: err = %v", err)
 	}
 }
@@ -819,7 +819,7 @@ func TestAppRoleCannotRewriteOutreach(t *testing.T) {
 	ctx := context.Background()
 	lead := f.siteLead(t, "northwind.localhost", intp(1), 7, "info@northwind.localhost")
 	f.batch(t, false, lead)
-	if _, err := f.q.Suppress(ctx, leadstore.SuppressAddress, "x@northwind.localhost", leadstore.ReasonManual, "cli"); err != nil {
+	if _, err := f.q.Suppress(ctx, 0, leadstore.SuppressAddress, "x@northwind.localhost", leadstore.ReasonManual, "cli"); err != nil {
 		t.Fatal(err)
 	}
 	app := storetest.AppConn(t)
@@ -1032,13 +1032,13 @@ func TestSuppressDomainIsRegistrable(t *testing.T) {
 	id, sum := f.batch(t, true, acme, other) // shadow: leads stay new
 	drafts := f.drafts(t, acme)
 
-	if _, err := f.q.Suppress(ctx, leadstore.SuppressDomain, "localhost", leadstore.ReasonManual, "cli"); !errors.Is(err, leadstore.ErrSuppressNotRegistrable) {
+	if _, err := f.q.Suppress(ctx, 0, leadstore.SuppressDomain, "localhost", leadstore.ReasonManual, "cli"); !errors.Is(err, leadstore.ErrSuppressNotRegistrable) {
 		t.Errorf("suppress a bare TLD: err = %v, want ErrSuppressNotRegistrable", err)
 	}
-	if _, err := f.q.Suppress(ctx, leadstore.SuppressDomain, "Mail.Acme.localhost", leadstore.ReasonManual, "cli"); err != nil {
+	if _, err := f.q.Suppress(ctx, 0, leadstore.SuppressDomain, "Mail.Acme.localhost", leadstore.ReasonManual, "cli"); err != nil {
 		t.Fatal(err)
 	}
-	set, _ := f.q.SuppressionSet(ctx)
+	set, _ := f.q.SuppressionSet(ctx, 0)
 	if !reflect.DeepEqual(set.Domains, []string{"acme.localhost"}) {
 		t.Errorf("suppressed domains = %v, want [acme.localhost]", set.Domains)
 	}

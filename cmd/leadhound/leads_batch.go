@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
@@ -41,7 +42,7 @@ const (
 	evidenceSpan = 50 // leads whose evidence one query reads
 )
 
-const leadsBatchUsage = "usage: leadhound leads batch new [--size N] | show N [--item K] | approve N --hash H [--skip 3,5] | discard N"
+const leadsBatchUsage = "usage: leadhound leads batch new [--size N] [--campaign SLUG] | show N [--item K] | approve N --hash H [--skip 3,5] | discard N"
 
 func runLeadsBatch(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -76,6 +77,7 @@ func batchMode(env leadconfig.Env) (shadow bool) {
 func runBatchNew(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads batch new", flag.ContinueOnError)
 	size := fs.Int("size", 0, "most leads in the batch (default caps.batch_size)")
+	slug := fs.String("campaign", campaign.LegacySlug, campaignFlagUsage)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -88,6 +90,10 @@ func runBatchNew(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	c, err := activeCampaign(ctx, leadstore.NewQueries(s.Pool()), *slug)
+	if err != nil {
+		return err
+	}
 	loc, err := leadsZone()
 	if err != nil {
 		return err
@@ -99,7 +105,10 @@ func runBatchNew(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	out, err := makeBatch(ctx, s, bs, now, NewBatchRequest{Size: *size})
+	out, err := makeBatch(ctx, s, bs, now, NewBatchRequest{Size: *size, CampaignID: c.ID})
+	for _, d := range out.Skipped {
+		_, _ = fmt.Fprintf(stdout, "skipped %s\n", d)
+	}
 	if errors.Is(err, console.ErrUserFixable) {
 		return usageError("%s", strings.TrimPrefix(err.Error(), console.ErrUserFixable.Error()+": "))
 	}
@@ -147,7 +156,7 @@ func runBatchNew(ctx context.Context, args []string) error {
 // address host and selector of an active mailbox that has no pass since the start of the
 // operator's day. A failed check is recorded too, so newBatch can say what is missing.
 func checkMailboxDomains(ctx context.Context, lq leadstore.Queries, loc *time.Location, now time.Time) error {
-	mbs, err := lq.Mailboxes(ctx, startOfDay(now, loc))
+	mbs, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(now, loc))
 	if err != nil {
 		return err
 	}

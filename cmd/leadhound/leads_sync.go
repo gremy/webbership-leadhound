@@ -262,7 +262,7 @@ func syncAll(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, 
 	defer lock.Release()
 
 	lq := leadstore.NewQueries(pool)
-	boxes, err := lq.Mailboxes(ctx, leadsNow())
+	boxes, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, leadsNow())
 	if err != nil {
 		return nil, fmt.Errorf("leads sync: %w", err)
 	}
@@ -335,7 +335,7 @@ func checkBounceHealth(ctx context.Context, lq leadstore.Queries, cfg leadconfig
 	if n < bounces {
 		return false, nil
 	}
-	all, err := lq.Mailboxes(ctx, leadsNow())
+	all, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, leadsNow())
 	if err != nil {
 		return false, err
 	}
@@ -400,7 +400,7 @@ func runLeadsSync(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	boxes, err := leadstore.NewQueries(s.Pool()).Mailboxes(ctx, leadsNow())
+	boxes, err := leadstore.NewQueries(s.Pool()).Mailboxes(ctx, leadstore.DefaultAccountID, leadsNow())
 	if err != nil {
 		return err
 	}

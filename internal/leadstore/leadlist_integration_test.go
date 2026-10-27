@@ -463,7 +463,7 @@ func TestLeadListColdStart(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
 	site := f.siteLead(t, "cold.localhost", nil, 7, "")
-	hand, err := f.q.MarkContacted(ctx, "hand.localhost", "")
+	hand, err := f.q.MarkContacted(ctx, 0, "hand.localhost", "")
 	if err != nil {
 		t.Fatal(err)
 	}

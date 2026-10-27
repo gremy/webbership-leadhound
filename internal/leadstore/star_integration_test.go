@@ -160,11 +160,9 @@ func TestPinsBecomeStars(t *testing.T) {
 	q := leadstore.NewQueries(owner)
 	lead := func(domain string) int64 {
 		org := ownerInt(t, owner, `INSERT INTO org (kind, domain, source) VALUES ('site_owner', $1, 'probe') RETURNING id`, domain)
-		id, _, err := q.UpsertLead(ctx, leadstore.LeadRow{OrgID: org, Kind: leadstore.LeadHand, Channel: leadstore.ChannelNone})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
+		// The schema is at 00010, before campaigns (00016): the lead is written by hand, as
+		// UpsertLead writes a hand lead there.
+		return ownerInt(t, owner, `INSERT INTO lead (org_id, kind, channel) VALUES ($1, 'hand', 'none') RETURNING id`, org)
 	}
 	older, newer, cleared, deferred := lead("older.localhost"), lead("newer.localhost"), lead("cleared.localhost"), lead("deferred.localhost")
 	priority := func(id int64, action string) {

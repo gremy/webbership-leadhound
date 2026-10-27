@@ -13,6 +13,7 @@
     <div><dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd></div>
     <div><dt>Domain</dt><dd>{{$d.Domain}}</dd></div>
     {{with $d.Country}}<div><dt>Country</dt><dd>{{.}}</dd></div>{{end}}
+    {{with $d.Campaign}}<div><dt>Campaign</dt><dd>{{.}}</dd></div>{{end}}
     <div><dt>Kind</dt><dd>{{$d.Kind}}</dd></div>
     <div><dt>State</dt><dd>{{$d.State}}</dd></div>
     <div><dt>Relevance</dt><dd>{{or $d.Relevance "not rated yet"}}

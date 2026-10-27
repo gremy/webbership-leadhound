@@ -169,5 +169,17 @@ BEGIN
   IF to_regclass('public.lead_label') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_label FROM leadhound_app;
   END IF;
+  -- Accounts and campaigns (00016): account and campaign_version take no UPDATE; campaign
+  -- takes UPDATE on its one pointer, retired_at.
+  IF to_regclass('public.account') IS NOT NULL THEN
+    REVOKE UPDATE ON public.account FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.campaign') IS NOT NULL THEN
+    REVOKE UPDATE ON public.campaign FROM leadhound_app;
+    GRANT UPDATE (retired_at) ON public.campaign TO leadhound_app;
+  END IF;
+  IF to_regclass('public.campaign_version') IS NOT NULL THEN
+    REVOKE UPDATE ON public.campaign_version FROM leadhound_app;
+  END IF;
 END
 $$;

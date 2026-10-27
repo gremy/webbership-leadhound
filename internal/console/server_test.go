@@ -40,22 +40,23 @@ type fakeBackend struct {
 	err     error // returned by Track
 	readErr error // returned by every read
 
-	job      JobPage
-	ruleMsg  string
-	ruleErr  error // returned by AddRule and DisableRule
-	lastRule RuleRequest
-	leads    LeadsPage
-	batch    LeadBatch
-	settings LeadSettingsPage
-	saveErr  error // returned by SaveLeadSettings
-	saves    []settingsSave
-	leadOut  LeadOutcome
-	leadErr  error // returned by LeadAct
-	leadsErr error // returned by every leads read, after readErr
-	lastLead LeadAction
-	list     LeadListPage
-	listQ    LeadListQuery // the query the last LeadList call asked for
-	detail   LeadDetailPage
+	job       JobPage
+	ruleMsg   string
+	ruleErr   error // returned by AddRule and DisableRule
+	lastRule  RuleRequest
+	leads     LeadsPage
+	batch     LeadBatch
+	settings  LeadSettingsPage
+	saveErr   error // returned by SaveLeadSettings
+	saves     []settingsSave
+	leadOut   LeadOutcome
+	leadErr   error // returned by LeadAct
+	leadsErr  error // returned by every leads read, after readErr
+	lastLead  LeadAction
+	list      LeadListPage
+	listQ     LeadListQuery // the query the last LeadList call asked for
+	detail    LeadDetailPage
+	campaigns []CampaignView
 
 	runOut     RunOutcome
 	runErr     error // returned by RunNow
@@ -220,17 +221,18 @@ func richBackend(text string) *fakeBackend {
 			Job:  BriefJob{N: 1, JobID: 42, Title: "Go Engineer", Company: "Acme", Status: "applied", URL: "https://jobs.example/42"},
 			From: "shortlisted", To: "applied", Message: "shortlisted → applied",
 		},
-		job:      richJob(text),
-		ruleMsg:  "rule 8 added",
-		leads:    richLeads(text),
-		batch:    richBatch(text),
-		settings: richSettings(text),
-		leadOut:  LeadOutcome{Message: text},
-		list:     richLeadList(text),
-		detail:   richLeadDetail(text),
-		runOut:   RunOutcome{Message: text},
-		runCard:  richCard(text),
-		results:  richResults(text),
+		job:       richJob(text),
+		ruleMsg:   "rule 8 added",
+		leads:     richLeads(text),
+		batch:     richBatch(text),
+		settings:  richSettings(text),
+		leadOut:   LeadOutcome{Message: text},
+		list:      richLeadList(text),
+		detail:    richLeadDetail(text),
+		campaigns: richCampaigns(text),
+		runOut:    RunOutcome{Message: text},
+		runCard:   richCard(text),
+		results:   richResults(text),
 
 		mailboxes: richMailboxes(text),
 		mailbox:   richMailbox(text),

@@ -102,7 +102,7 @@ type leadSettingsRead struct {
 // fallback order are not here: they live in priority_profile. Only a failed read of the
 // store is an error.
 func applyLeadSettings(ctx context.Context, lq leadstore.Queries, setup leadsSetup) (leadsSetup, error) {
-	raw, id, at, fromDB, err := lq.LatestSettings(ctx)
+	raw, id, at, fromDB, err := lq.LatestSettings(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return leadsSetup{}, err
 	}

@@ -27,7 +27,7 @@ func newMailbox(address string) leadstore.Mailbox {
 
 func addMailbox(t *testing.T, q leadstore.Queries, address string) int64 {
 	t.Helper()
-	id, err := q.AddMailbox(context.Background(), newMailbox(address), leadstore.ActorOperator)
+	id, err := q.AddMailbox(context.Background(), leadstore.DefaultAccountID, newMailbox(address), leadstore.ActorOperator)
 	if err != nil {
 		t.Fatalf("add mailbox %s: %v", address, err)
 	}
@@ -36,7 +36,7 @@ func addMailbox(t *testing.T, q leadstore.Queries, address string) int64 {
 
 func statusOf(t *testing.T, q leadstore.Queries, id int64, since time.Time) leadstore.MailboxStatus {
 	t.Helper()
-	all, err := q.Mailboxes(context.Background(), since)
+	all, err := q.Mailboxes(context.Background(), leadstore.DefaultAccountID, since)
 	if err != nil {
 		t.Fatalf("mailboxes: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestMailboxesColdStart(t *testing.T) {
 	leadstoretest.Reset(t)
 	q := leadstoretest.Q(t)
 	ctx := context.Background()
-	all, err := q.Mailboxes(ctx, time.Now())
+	all, err := q.Mailboxes(ctx, leadstore.DefaultAccountID, time.Now())
 	if err != nil || len(all) != 0 {
 		t.Fatalf("mailboxes on an empty table = %v, %v; want none, no error", all, err)
 	}
@@ -207,7 +207,7 @@ func TestAddMailbox(t *testing.T) {
 	ctx := context.Background()
 	m := newMailbox("  Out@Sub.Mail.Example ")
 	m.FromName = "The Operator"
-	id, err := q.AddMailbox(ctx, m, leadstore.ActorOperator)
+	id, err := q.AddMailbox(ctx, leadstore.DefaultAccountID, m, leadstore.ActorOperator)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestAddMailbox(t *testing.T) {
 		t.Errorf("status of a new mailbox = %+v", st)
 	}
 
-	if _, err := q.AddMailbox(ctx, newMailbox("out@sub.mail.example"), leadstore.ActorOperator); !errors.Is(err, leadstore.ErrMailboxExists) {
+	if _, err := q.AddMailbox(ctx, leadstore.DefaultAccountID, newMailbox("out@sub.mail.example"), leadstore.ActorOperator); !errors.Is(err, leadstore.ErrMailboxExists) {
 		t.Errorf("second add of the same address: %v, want ErrMailboxExists", err)
 	}
 	for name, edit := range map[string]func(*leadstore.Mailbox){
@@ -245,16 +245,16 @@ func TestAddMailbox(t *testing.T) {
 	} {
 		m := newMailbox("bad@mail.example")
 		edit(&m)
-		if _, err := q.AddMailbox(ctx, m, leadstore.ActorOperator); !errors.Is(err, leadstore.ErrBadMailbox) {
+		if _, err := q.AddMailbox(ctx, leadstore.DefaultAccountID, m, leadstore.ActorOperator); !errors.Is(err, leadstore.ErrBadMailbox) {
 			t.Errorf("%s: add = %v, want ErrBadMailbox", name, err)
 		}
 	}
-	if _, err := q.AddMailbox(ctx, newMailbox("x@mail.example"), "someone"); !errors.Is(err, leadstore.ErrUnknownActor) {
+	if _, err := q.AddMailbox(ctx, leadstore.DefaultAccountID, newMailbox("x@mail.example"), "someone"); !errors.Is(err, leadstore.ErrUnknownActor) {
 		t.Errorf("unknown actor: %v", err)
 	}
 	m = newMailbox("port@mail.example")
 	m.SMTPAddr = "smtp.mail.example:25"
-	if _, err := q.AddMailbox(ctx, m, leadstore.ActorOperator); err == nil || sqlState(err) != "23514" {
+	if _, err := q.AddMailbox(ctx, leadstore.DefaultAccountID, m, leadstore.ActorOperator); err == nil || sqlState(err) != "23514" {
 		t.Errorf("smtp port 25: %v, want a check violation", err)
 	}
 }

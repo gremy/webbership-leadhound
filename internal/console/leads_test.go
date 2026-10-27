@@ -387,7 +387,7 @@ func TestNoLeadsWriteOnGet(t *testing.T) {
 			t.Errorf("a GET called %s %d times", name, n)
 		}
 	}
-	for _, name := range []string{"LeadList", "LeadDetail", "Leads", "LeadSettings"} {
+	for _, name := range []string{"LeadList", "LeadDetail", "Leads", "LeadSettings", "Campaigns"} {
 		if h.b.n(name) == 0 {
 			t.Errorf("the sweep never reached %s", name)
 		}
@@ -680,7 +680,8 @@ func (f *fakeBackend) LeadDetail(_ context.Context, id int64) (LeadDetailPage, e
 func richLeadList(text string) LeadListPage {
 	return LeadListPage{
 		Rows: []LeadListRow{{LeadID: 5, OrgID: 2, Name: text, Domain: text, Country: "GB", Kind: text, Finding: text,
-			Relevance: text, Position: "3", State: "new", HasEmail: true, HasPhone: true, Starred: true, SmallSite: true}},
+			Relevance: text, Position: "3", State: "new", HasEmail: true, HasPhone: true, Starred: true, SmallSite: true,
+			Campaign: "Drupal end-of-life"}},
 		Total: 120, TotalLeads: 130, Page: 2, PerPage: 50,
 		Options: LeadFilterOptions{
 			Kinds:     []FilterOption{{"d10", "Drupal 10"}, {"unsupported", text}},
@@ -688,6 +689,7 @@ func richLeadList(text string) LeadListPage {
 			Channels:  []FilterOption{{"email", "Email"}, {"form", "Contact form"}},
 			Statuses:  []FilterOption{{"open", "Open"}, {"contacted", "Contacted"}, {"all", "All"}},
 			Sorts:     []FilterOption{{"relevance", "Relevance"}, {"newest", "Newest"}, {"order", "Outreach order"}},
+			Campaigns: []FilterOption{{"drupal-eol", "Drupal end-of-life"}, {"wp-eol", "WordPress end-of-life"}},
 		},
 		Notes: []string{text},
 	}
@@ -697,7 +699,7 @@ func richLeadDetail(text string) LeadDetailPage {
 	at := testSent
 	return LeadDetailPage{
 		LeadListRow: LeadListRow{LeadID: 5, OrgID: 2, Name: text, Domain: text, Country: "GB", Kind: text, Finding: text,
-			Relevance: text, Position: "3", State: "new", HasEmail: true, HasForm: true},
+			Relevance: text, Position: "3", State: "new", HasEmail: true, HasForm: true, Campaign: "Drupal end-of-life"},
 		Signals: []LeadSignal{{Name: "generator", Value: text, FetchURL: "https://northwind.example/",
 			FinalURL: "https://www.northwind.example/", Status: "200 OK", FetchedAt: &at}},
 		Routes: []LeadRoute{{Kind: "email", Value: "info@northwind.example", Note: "mail server found",
@@ -733,6 +735,8 @@ func TestLeadListPage(t *testing.T) {
 		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="tag">small site</span>`,
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
 		`<p class="hint">Northwind Trading</p>`,
+		`<span class="item-meta">Drupal end-of-life</span>`, `<td>Northwind Trading<span class="item-meta">Drupal end-of-life</span></td>`,
+		`<a href="/leads/campaigns">Campaigns</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/leads lacks %q", want)
@@ -777,10 +781,10 @@ func TestLeadListFiltersEchoed(t *testing.T) {
 	b := richBackend("x")
 	h := newHarness(t, b, false)
 	target := "/leads?kind=d10&kind=+unsupported+&kind=&country=GB&channel=email&starred=yes&has_phone=1" +
-		"&min_relevance=+40&status=all&sort=newest&page=2"
+		"&min_relevance=+40&status=all&sort=newest&campaign=+drupal-eol+&page=2"
 	body := h.do(get(target, h.session(t))).Body.String()
 	want := LeadListQuery{Kinds: []string{"d10", "unsupported"}, Countries: []string{"GB"}, Channels: []string{"email"},
-		Starred: "yes", HasPhone: "1", MinRelevance: "40", Status: "all", Sort: "newest", Page: "2"}
+		Starred: "yes", HasPhone: "1", MinRelevance: "40", Status: "all", Sort: "newest", Page: "2", Campaign: "drupal-eol"}
 	if fmt.Sprint(b.listQ) != fmt.Sprint(want) {
 		t.Errorf("asked %+v, want %+v", b.listQ, want)
 	}
@@ -791,6 +795,7 @@ func TestLeadListFiltersEchoed(t *testing.T) {
 		`name="has_phone" value="1" checked`, `<option value="yes" selected>Starred</option>`,
 		`name="min_relevance" type="number" min="0" max="100" step="1" inputmode="numeric" value="40"`,
 		`<option value="all" selected>All</option>`, `<option value="newest" selected>Newest</option>`,
+		`<option value="drupal-eol" selected>Drupal end-of-life</option>`, `<option value="wp-eol">WordPress end-of-life</option>`,
 	} {
 		if !strings.Contains(body, w) {
 			t.Errorf("the form lacks %q", w)
@@ -798,7 +803,8 @@ func TestLeadListFiltersEchoed(t *testing.T) {
 	}
 	next := leadListURL(want, 3)
 	prev := leadListURL(want, 1)
-	if !strings.Contains(next, "kind=d10&kind=unsupported") || !strings.Contains(next, "page=3") || strings.Contains(prev, "page=") {
+	if !strings.Contains(next, "kind=d10&kind=unsupported") || !strings.Contains(next, "page=3") || strings.Contains(prev, "page=") ||
+		!strings.Contains(next, "campaign=drupal-eol") || !strings.Contains(prev, "campaign=drupal-eol") {
 		t.Errorf("pager URLs %q %q", next, prev)
 	}
 	for _, u := range []string{next, prev} {
@@ -842,6 +848,7 @@ func TestLeadDetailPage(t *testing.T) {
 		"<dt>Relevance</dt><dd>Northwind Trading\n", "<summary>1 rating so far</summary>",
 		`<li><span class="item-head">Northwind Trading</span><span class="item-meta">Sat 24 Oct 04:50</span></li>`,
 		"<dt>Reach by</dt><dd>email · form</dd>", "<dt>Outreach order</dt><dd>number 3</dd>",
+		"<dt>Campaign</dt><dd>Drupal end-of-life</dd>",
 		"generator: Northwind Trading",
 		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow">https://northwind.example/</a>`,
 		`ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
@@ -991,6 +998,7 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		{"/leads", "LeadList", http.StatusOK},
 		{"/leads/outreach", "Leads", http.StatusOK},
 		{"/leads/settings", "LeadSettings", http.StatusOK},
+		{"/leads/campaigns", "Campaigns", http.StatusOK},
 		{"/leads/priorities", "", http.StatusSeeOther},
 		{"/leads/batches/3", "LeadBatch", http.StatusOK},
 		{"/leads/5", "LeadDetail", http.StatusOK},

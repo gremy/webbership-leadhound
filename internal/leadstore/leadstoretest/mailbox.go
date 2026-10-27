@@ -15,7 +15,7 @@ import (
 func SeedMailbox(t testing.TB, q leadstore.Queries, address string) leadstore.Mailbox {
 	t.Helper()
 	ctx := context.Background()
-	id, err := q.AddMailbox(ctx, leadstore.Mailbox{
+	id, err := q.AddMailbox(ctx, leadstore.DefaultAccountID, leadstore.Mailbox{
 		Address: address, Login: address,
 		SMTPAddr: "smtp.seed.invalid:465", IMAPAddr: "imap.seed.invalid:993",
 		DKIMSelector: "lh", PasswordSealed: []byte("placeholder, sealed by no key"), SealedBy: "placeholder",

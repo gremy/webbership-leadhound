@@ -321,7 +321,7 @@ func TestScaleLeadsBuildAndBatch(t *testing.T) {
 	peak, took := measure(t, func() error {
 		return rolledBack(func(lq leadstore.Queries) error {
 			var err error
-			sum, err = buildLeads(ctx, lq, cfg)
+			sum, err = buildLeads(ctx, lq, cfg, leadstore.DefaultCampaignID)
 			return err
 		})
 	})

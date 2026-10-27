@@ -473,13 +473,13 @@ func saveLeadSettings(ctx context.Context, s *store.Store, setup leadsSetup, sec
 // resetAllSettings puts every setting back to the file: a reset row for the settings and for
 // the profile, each only when something is saved.
 func resetAllSettings(ctx context.Context, q leadstore.Queries, setup leadsSetup) (bool, error) {
-	_, _, _, saved, err := q.LatestSettings(ctx)
+	_, _, _, saved, err := q.LatestSettings(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return false, err
 	}
 	wrote := false
 	if saved {
-		if _, err := q.ResetSettings(ctx, leadstore.ActorOperator); err != nil {
+		if _, err := q.ResetSettings(ctx, leadstore.DefaultAccountID, leadstore.ActorOperator); err != nil {
 			return false, err
 		}
 		wrote = true
@@ -499,7 +499,7 @@ func resetAllSettings(ctx context.Context, q leadstore.Queries, setup leadsSetup
 
 // saveOverrideSection saves or resets one lead_setting section.
 func saveOverrideSection(ctx context.Context, q leadstore.Queries, setup leadsSetup, section string, v console.LeadSettingsValues, reset bool) (bool, error) {
-	raw, _, _, saved, err := q.LatestSettings(ctx)
+	raw, _, _, saved, err := q.LatestSettings(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return false, err
 	}
@@ -520,7 +520,7 @@ func saveOverrideSection(ctx context.Context, q leadstore.Queries, setup leadsSe
 		if !saved {
 			return false, nil
 		}
-		_, err := q.ResetSettings(ctx, leadstore.ActorOperator)
+		_, err := q.ResetSettings(ctx, leadstore.DefaultAccountID, leadstore.ActorOperator)
 		return err == nil, err
 	}
 	doc, err := json.Marshal(base)
@@ -538,7 +538,7 @@ func saveOverrideSection(ctx context.Context, q leadstore.Queries, setup leadsSe
 		}
 		return false, &console.SettingsRefused{Problems: words}
 	}
-	if _, err := q.SaveSettings(ctx, doc, leadstore.ActorOperator); err != nil {
+	if _, err := q.SaveSettings(ctx, leadstore.DefaultAccountID, doc, leadstore.ActorOperator); err != nil {
 		return false, err
 	}
 	return true, nil

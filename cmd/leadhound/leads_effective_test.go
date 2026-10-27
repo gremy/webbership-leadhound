@@ -24,6 +24,7 @@ var directLeadsReaders = map[string]string{
 	"leads_agencies.go":    "probe-only knobs: agency_finding_pattern and the probe rate",
 	"leads_enrich.go":      "probe-only knobs: the probe rate and concurrency",
 	"leads_checkconfig.go": "check-config checks leads.yaml itself, as the file stands",
+	"leads_campaigns.go":   "campaigns check and register record the Drupal campaign leads.yaml gives, as the file stands (a spec is registered from its file)",
 }
 
 // leadsDoors are the functions that read leads.yaml through leadsEnv and must apply the

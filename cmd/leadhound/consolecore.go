@@ -249,7 +249,7 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 	if p.CheckByHand, err = checkItems(ctx, b.s.Pool()); err != nil {
 		return console.LeadsPage{}, err
 	}
-	counts, err := lq.SuppressionCounts(ctx)
+	counts, err := lq.SuppressionCounts(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return console.LeadsPage{}, err
 	}
@@ -297,7 +297,7 @@ func suppressionRow(r leadstore.SuppressionRow) console.SuppressionRow {
 func mailboxesSending(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg leadconfig.Config, loc *time.Location, now time.Time) (
 	capToday int, dns *console.SenderCheck, rows []console.SendingMailbox, err error) {
 	today := startOfDay(now, loc)
-	mbs, err := lq.Mailboxes(ctx, today)
+	mbs, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, today)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -422,7 +422,7 @@ func senderCheckSince(ctx context.Context, db store.DBTX, domainSHA []byte, sele
 	return &c, nil
 }
 
-// waitingBatches is every batch neither approved nor discarded, newest first, with its
+// waitingBatches is every batch of the operator's account neither approved nor discarded, newest first, with its
 // leads and items counted by channel (a follow-up is not an item).
 func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch, error) {
 	rows, err := db.Query(ctx,
@@ -431,8 +431,8 @@ func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch,
 		   count(*) FILTER (WHERE m.channel = 'form')::int,
 		   count(*) FILTER (WHERE m.channel = 'linkedin')::int
 		 FROM outreach_batch b JOIN outreach_message m ON m.batch_id = b.id
-		 WHERE b.approved_at IS NULL AND b.discarded_at IS NULL
-		 GROUP BY b.id, b.shadow, b.created_at ORDER BY b.id DESC`)
+		 WHERE b.approved_at IS NULL AND b.discarded_at IS NULL AND b.account_id = $1
+		 GROUP BY b.id, b.shadow, b.created_at ORDER BY b.id DESC`, leadstore.DefaultAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("console: waiting batches: %w", err)
 	}
@@ -843,7 +843,7 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 		return console.LeadOutcome{}, err
 	}
 	var dropped []string
-	for _, d := range out.Dropped {
+	for _, d := range append(slices.Clone(out.Skipped), out.Dropped...) {
 		dropped = append(dropped, d.String())
 	}
 	if out.BatchID == 0 {
@@ -1148,7 +1148,7 @@ func (b *backend) mailboxStatus(ctx context.Context, id int64) (leadstore.Mailbo
 		return leadstore.MailboxStatus{}, leadsSetup{}, time.Time{}, err
 	}
 	now := b.now()
-	ms, err := b.lq().Mailboxes(ctx, startOfDay(now, b.loc))
+	ms, err := b.lq().Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(now, b.loc))
 	if err != nil {
 		return leadstore.MailboxStatus{}, leadsSetup{}, time.Time{}, err
 	}
@@ -1172,7 +1172,7 @@ func (b *backend) Mailboxes(ctx context.Context) (console.MailboxesPage, error) 
 	}
 	now := b.now()
 	today := startOfDay(now, b.loc)
-	ms, err := b.lq().Mailboxes(ctx, today)
+	ms, err := b.lq().Mailboxes(ctx, leadstore.DefaultAccountID, today)
 	if err != nil {
 		return console.MailboxesPage{}, err
 	}

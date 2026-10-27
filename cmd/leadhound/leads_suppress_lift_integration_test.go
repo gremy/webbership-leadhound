@@ -282,7 +282,7 @@ func liftAgreeState(t *testing.T) (rows, sources []string, set string) {
 	if err := r.Err(); err != nil {
 		t.Fatal(err)
 	}
-	ss, err := leadstoretest.Q(t).SuppressionSet(ctx)
+	ss, err := leadstoretest.Q(t).SuppressionSet(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

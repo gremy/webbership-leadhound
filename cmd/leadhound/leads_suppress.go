@@ -108,7 +108,7 @@ func runSuppressList(ctx context.Context, args []string) error {
 	}
 	defer s.Close()
 	lq := leadstore.NewQueries(s.Pool())
-	counts, err := lq.SuppressionCounts(ctx)
+	counts, err := lq.SuppressionCounts(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func runSuppressCheck(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	sup, err := leadstore.NewQueries(s.Pool()).SuppressionSet(ctx)
+	sup, err := leadstore.NewQueries(s.Pool()).SuppressionSet(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return err
 	}

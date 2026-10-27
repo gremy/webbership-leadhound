@@ -265,7 +265,7 @@ func TestFindingIdempotent(t *testing.T) {
 		t.Errorf("findings = %d, want 2", n)
 	}
 	// A hand lead has none; a missing lead is ErrLeadNotFound.
-	hand, err := f.q.MarkContacted(ctx, "byhand.localhost", "")
+	hand, err := f.q.MarkContacted(ctx, 0, "byhand.localhost", "")
 	if err != nil {
 		t.Fatal(err)
 	}

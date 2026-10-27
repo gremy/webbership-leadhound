@@ -65,9 +65,9 @@ func (q Queries) LeadsToRate(ctx context.Context, c ListContext) ([]RateLead, er
 	}
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[RateLead],
 		rateLeadSQL+`
-		 WHERE m.state = 'new'
+		 WHERE m.state = 'new' AND ($3::bigint = 0 OR m.campaign_id = $3::bigint)
 		 ORDER BY m.starred DESC, m.position, CASE WHEN m.starred THEN m.lead_id END, `+order,
-		profileOrEmpty(c.ProfileJSON), c.SkipRankOver)
+		profileOrEmpty(c.ProfileJSON), c.SkipRankOver, c.CampaignID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: leads to rate: %w", err)
 	}

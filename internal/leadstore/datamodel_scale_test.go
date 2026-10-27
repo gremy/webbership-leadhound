@@ -117,7 +117,7 @@ func TestScaleDataModelSeed(t *testing.T) {
 		return err
 	})
 	within(t, "LatestSettings", 100*time.Millisecond, func() error {
-		raw, _, _, fromDB, err := q.LatestSettings(ctx)
+		raw, _, _, fromDB, err := q.LatestSettings(ctx, leadstore.DefaultAccountID)
 		if err == nil && (!fromDB || raw == nil) {
 			t.Errorf("latest settings: fromDB %v, raw %q, want the third save", fromDB, raw)
 		}

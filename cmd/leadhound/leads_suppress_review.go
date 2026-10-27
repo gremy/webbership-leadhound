@@ -62,7 +62,7 @@ func runSuppressReview(ctx context.Context, args []string) error {
 		_, _ = fmt.Fprintf(stdout, "No review: the mailbox key is missing (%v); nothing was read.\n", err)
 		return errors.New("leads suppress review: the mailbox key is missing")
 	}
-	boxes, err := lq.Mailboxes(ctx, leadsNow())
+	boxes, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, leadsNow())
 	if err != nil {
 		return err
 	}

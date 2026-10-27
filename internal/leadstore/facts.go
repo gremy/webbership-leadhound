@@ -110,7 +110,8 @@ func (q Queries) RecordEnrichAttempt(ctx context.Context, orgID, runID int64, fa
 	return nil
 }
 
-// OrgsNeedingEnrich returns up to limit orgs (limit <= 0: all of them) that have a lead and
+// OrgsNeedingEnrich returns up to limit orgs (limit <= 0: all of them), each once however many
+// campaigns it is a lead in, that have a lead and
 // no enrichment in the EnrichRetryAfter before now, the newest lead first. Selftest orgs and
 // selftest leads are never returned.
 func (q Queries) OrgsNeedingEnrich(ctx context.Context, limit int, now time.Time) ([]Org, error) {
@@ -120,8 +121,9 @@ func (q Queries) OrgsNeedingEnrich(ctx context.Context, limit int, now time.Time
 	}
 	orgs, err := collect(ctx, q.db, pgx.RowToStructByName[Org],
 		`SELECT o.id, o.kind, o.domain, o.name, o.country, o.site_id, o.source, o.source_fetch_id, o.created_at
-		 FROM lead l JOIN org o ON o.id = l.org_id
-		 WHERE o.kind <> 'selftest' AND l.kind <> 'selftest'
+		 FROM (SELECT org_id, max(id) AS id FROM lead WHERE kind <> 'selftest' GROUP BY org_id) l
+		 JOIN org o ON o.id = l.org_id
+		 WHERE o.kind <> 'selftest'
 		   AND NOT EXISTS (SELECT 1 FROM enrich_attempt a WHERE a.org_id = o.id AND a.attempted_at > $1)
 		 ORDER BY l.id DESC
 		 LIMIT $2`, now.Add(-EnrichRetryAfter), lim)

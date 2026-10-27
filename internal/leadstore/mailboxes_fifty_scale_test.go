@@ -176,7 +176,7 @@ func TestScaleFiftyMailboxes(t *testing.T) {
 	// 1. The mailbox list, as the console, the brief and every run read it.
 	var mbs []leadstore.MailboxStatus
 	within(t, "Mailboxes(50)", budget, func() (err error) {
-		mbs, err = q.Mailboxes(ctx, day)
+		mbs, err = q.Mailboxes(ctx, leadstore.DefaultAccountID, day)
 		return err
 	})
 	if len(mbs) != fiftyMailboxes {
@@ -211,7 +211,7 @@ func TestScaleFiftyMailboxes(t *testing.T) {
 	var assigned map[int64]int64
 	steps := 1 + len(cfg.Schedule.FollowupBusinessDays)
 	within(t, "sizing: Mailboxes+WaitingByMailbox+RoomOver+Assign(10)", budget, func() error {
-		ms, err := q.Mailboxes(ctx, day)
+		ms, err := q.Mailboxes(ctx, leadstore.DefaultAccountID, day)
 		if err != nil {
 			return err
 		}
@@ -267,7 +267,7 @@ func TestScaleFiftyMailboxes(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		ms, err := q.Mailboxes(ctx, runDay)
+		ms, err := q.Mailboxes(ctx, leadstore.DefaultAccountID, runDay)
 		if err != nil {
 			return err
 		}

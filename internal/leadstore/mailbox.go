@@ -258,11 +258,17 @@ func (q Queries) applyEffects(ctx context.Context, in Incoming, source string, r
 		return err
 	}
 	res.Moved = moved
+	// A bounce or an opt-out is recorded for the matched lead's account: it then blocks every
+	// campaign of that account.
+	accountID, err := q.leadAccount(ctx, m.LeadID)
+	if err != nil {
+		return err
+	}
 	suppress := func(kind, value, why string) error {
 		if value == "" {
 			return nil
 		}
-		s, err := q.Suppress(ctx, kind, value, why, source)
+		s, err := q.Suppress(ctx, accountID, kind, value, why, source)
 		if err != nil {
 			return err
 		}

@@ -266,6 +266,7 @@ type LeadListQuery struct {
 	Sort                       string   // "" (relevance) | relevance | newest | order
 	Page                       string   // 1 and up
 	ToLabel                    string   // "" any | "1" the leads to label: the spread sample and the leads with a call
+	Campaign                   string   // "" every campaign | one campaign's slug
 }
 
 // LeadListPage is one page of the Leads list. Total is how many leads match the filter,
@@ -289,6 +290,7 @@ type LeadListPage struct {
 type LeadFilterOptions struct {
 	Kinds, Countries, Channels []FilterOption
 	Statuses, Sorts            []FilterOption
+	Campaigns                  []FilterOption // each campaign's slug and name
 }
 
 // FilterOption is one choice of a filter: the value the query carries and its label.
@@ -297,10 +299,12 @@ type FilterOption struct{ Value, Label string }
 // LeadListRow is one lead of the list, worded by the backend. Kind is the kind's label,
 // Finding the finding in one line, Relevance the relevance in words ("" when not rated),
 // Position the lead's place in the outreach order ("" when it has none), Call the operator's
-// own band for it ("" when he has made no call).
+// own band for it ("" when he has made no call), Campaign the name of the campaign the lead
+// belongs to.
 type LeadListRow struct {
 	LeadID, OrgID                int64
 	Name, Domain, Country, Kind  string
+	Campaign                     string
 	Finding, Relevance, Position string
 	State, Call                  string
 	HasEmail, HasForm, HasPhone  bool

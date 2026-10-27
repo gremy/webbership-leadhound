@@ -161,12 +161,17 @@ func (q Queries) LiftSuppression(ctx context.Context, id int64, domain, reason, 
 	if res.Row, err = q.SuppressionByID(ctx, id); err != nil {
 		return Lifted{}, fmt.Errorf("leadstore: lift: %w", err)
 	}
+	var accountID int64
+	if err := q.db.QueryRow(ctx, `SELECT account_id FROM suppression WHERE id = $1 -- reads lifted rows on purpose: the row just lifted`, id).Scan(&accountID); err != nil {
+		return Lifted{}, fmt.Errorf("leadstore: lift: account: %w", err)
+	}
 	if err := q.db.QueryRow(ctx,
 		`SELECT count(*)::int FROM lead l JOIN org o ON o.id = l.org_id LEFT JOIN contact_route r ON r.id = l.route_id
-		 WHERE l.state IN ('suppressed', 'opted_out') AND `+reachSQL(row.Kind), row.Value).Scan(&res.LeadsSuppressed); err != nil {
+		 WHERE l.state IN ('suppressed', 'opted_out') AND `+reachSQL(row.Kind)+` AND `+inAccountSQL,
+		row.Value, accountID).Scan(&res.LeadsSuppressed); err != nil {
 		return Lifted{}, fmt.Errorf("leadstore: lift: leads: %w", err)
 	}
-	if res.StillBlockedBy, err = q.stillBlocking(ctx, row); err != nil {
+	if res.StillBlockedBy, err = q.stillBlocking(ctx, accountID, row); err != nil {
 		return Lifted{}, fmt.Errorf("leadstore: lift: %w", err)
 	}
 	return res, nil
@@ -174,13 +179,13 @@ func (q Queries) LiftSuppression(ctx context.Context, id int64, domain, reason, 
 
 // stillBlocking returns the active rows that, after row's lift, still block its value: through
 // outreach.Suppressed over SuppressionSet (the send-time check), each active row that matches
-// on its own.
-func (q Queries) stillBlocking(ctx context.Context, row SuppressionRow) ([]SuppressionRow, error) {
+// on its own. Only the rows of the lifted row's account accountID count.
+func (q Queries) stillBlocking(ctx context.Context, accountID int64, row SuppressionRow) ([]SuppressionRow, error) {
 	addr, dom := "", row.Value
 	if row.Kind == SuppressAddress {
 		addr, dom = row.Value, ""
 	}
-	set, err := q.SuppressionSet(ctx)
+	set, err := q.SuppressionSet(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -191,8 +196,8 @@ func (q Queries) stillBlocking(ctx context.Context, row SuppressionRow) ([]Suppr
 		`SELECT s.id, s.kind, s.value, s.reason, s.source, s.created_at,
 		   NULL::timestamptz, '', ''
 		 FROM suppression_active s
-		 WHERE (s.kind = 'address' AND s.value = $1) OR s.kind = 'domain'
-		 ORDER BY s.id`, addr)
+		 WHERE s.account_id = $2 AND ((s.kind = 'address' AND s.value = $1) OR s.kind = 'domain')
+		 ORDER BY s.id`, addr, accountID)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
@@ -54,7 +55,7 @@ const (
 // ratingOffWords is the refusal while relevance rating is switched off.
 const ratingOffWords = "Relevance rating is off: turn it on in Leads → Settings."
 
-const leadsRateUsage = "usage: leadhound leads rate [--max N (at least 1)] [--decider fake|jev]"
+const leadsRateUsage = "usage: leadhound leads rate [--max N (at least 1)] [--decider fake|jev] [--campaign SLUG]"
 
 // runLeadsRate is `leads rate [--max 10000] [--decider fake|jev]`: it asks the relevance
 // question (leadrate, D8) about every open lead whose input changed since its latest rating,
@@ -70,6 +71,7 @@ func runLeadsRate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads rate", flag.ContinueOnError)
 	maxCalls := fs.Int("max", defaultRateMax, "most decider calls in this run")
 	deciderName := fs.String("decider", "", "jev or fake (default jev, which needs TYPESAFE_API_KEY and LEADHOUND_LIVE=1)")
+	slug := fs.String("campaign", campaign.LegacySlug, campaignFlagUsage)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -82,6 +84,10 @@ func runLeadsRate(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	c, err := activeCampaign(ctx, leadstore.NewQueries(s.Pool()), *slug)
+	if err != nil {
+		return err
+	}
 	if !setup.leads.Relevance.RatingOn() {
 		return usageError("%s", ratingOffWords)
 	}
@@ -121,7 +127,7 @@ func runLeadsRate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	leads, err := lq.LeadsToRate(ctx, leadstore.ListContext{ProfileJSON: pf, SortByRelevance: w.trusted})
+	leads, err := lq.LeadsToRate(ctx, leadstore.ListContext{ProfileJSON: pf, SortByRelevance: w.trusted, CampaignID: c.ID})
 	if err != nil {
 		return err
 	}

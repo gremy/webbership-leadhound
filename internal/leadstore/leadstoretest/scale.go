@@ -126,6 +126,10 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 	if err != nil {
 		return err
 	}
+	// The core seed's TRUNCATE of every table took the default account and campaign too.
+	if err := SeedDefaults(ctx, conn); err != nil {
+		return fmt.Errorf("seed leads: %w", err)
+	}
 	day := info.Day
 	// Probe k (1..1,000,000) probes site k, or site k-700,000 for its second probe. The
 	// 400,000 probes with k % 5 < 2 kept a fetch: the homepage (k % 5 = 0) or robots.txt.

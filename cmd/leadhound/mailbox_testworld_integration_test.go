@@ -421,7 +421,7 @@ func TestCheckSenderFor(t *testing.T) {
 
 func dnsPassedToday(t *testing.T, lq leadstore.Queries, id int64, since time.Time) bool {
 	t.Helper()
-	ms, err := lq.Mailboxes(context.Background(), since.Add(-time.Hour))
+	ms, err := lq.Mailboxes(context.Background(), leadstore.DefaultAccountID, since.Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestSeedMailboxWorld(t *testing.T) {
 	if loaded, err := secretbox.LoadPrivateKey(os.Getenv); err != nil || loaded != key {
 		t.Errorf("the key file does not hold the test key: %v", err)
 	}
-	ms, err := lq.Mailboxes(ctx, day.Add(-time.Hour))
+	ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, day.Add(-time.Hour))
 	if err != nil || len(ms) != 2 {
 		t.Fatalf("mailboxes = %d, %v", len(ms), err)
 	}

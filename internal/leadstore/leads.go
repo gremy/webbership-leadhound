@@ -67,20 +67,22 @@ func reservedDomainRE() string {
 	return `\.(` + strings.Join(ReservedTLDs, "|") + `)$`
 }
 
-// suppressedSQL is a SQL condition that is true when an active suppression (FO6) blocks the address
-// addr (an SQL expression, empty for none) or the domain dom: the address itself, or a domain
-// suppression on dom, on the address's domain, or on a parent of either.
-func suppressedSQL(dom, addr string) string {
-	return fmt.Sprintf(`EXISTS (SELECT 1 FROM suppression_active x WHERE
+// suppressedSQL is a SQL condition that is true when an active suppression (FO6) of account
+// acct (an SQL expression) blocks the address addr (an SQL expression, empty for none) or the
+// domain dom: the address itself, or a domain suppression on dom, on the address's domain, or
+// on a parent of either. Suppression is per account, across all its campaigns.
+func suppressedSQL(acct, dom, addr string) string {
+	return fmt.Sprintf(`EXISTS (SELECT 1 FROM suppression_active x WHERE x.account_id = %[3]s AND (
 	  (x.kind = 'address' AND x.value = lower(%[2]s))
 	  OR (x.kind = 'domain' AND (
 	    x.value = lower(%[1]s) OR right(lower(%[1]s), length(x.value) + 1) = '.' || x.value
 	    OR x.value = lower(split_part(%[2]s, '@', 2))
-	    OR right(lower(split_part(%[2]s, '@', 2)), length(x.value) + 1) = '.' || x.value)))`, dom, addr)
+	    OR right(lower(split_part(%[2]s, '@', 2)), length(x.value) + 1) = '.' || x.value))))`, dom, addr, acct)
 }
 
 // LeadRow is one lead to create.
 type LeadRow struct {
+	CampaignID      int64 // the campaign the lead is in; 0 is DefaultCampaignID
 	OrgID           int64
 	Kind            string // a Lead* kind
 	ProbeID         *int64 // the finding of a site lead
@@ -89,15 +91,18 @@ type LeadRow struct {
 	RouteID         *int64
 }
 
-// UpsertLead creates the lead for l.OrgID unless the org already has one: a lead is
-// created once (ON CONFLICT (org_id) DO NOTHING) and an existing lead is left as it is.
+// UpsertLead creates the lead for l.OrgID in campaign l.CampaignID unless the org already
+// has one there: a lead is created once per campaign (ON CONFLICT (campaign_id, org_id) DO
+// NOTHING) and an existing lead is left as it is.
 // A new lead starts in state new with its first lead_event, pointing at the finding its
 // probe or agency finding gives (looked up, or inserted once). It returns the lead's id and
 // whether this call created it.
 func (q Queries) UpsertLead(ctx context.Context, l LeadRow) (leadID int64, created bool, err error) {
+	l.CampaignID = orCampaign(l.CampaignID)
 	existing := func() (int64, error) {
 		var id int64
-		return id, q.db.QueryRow(ctx, `SELECT id FROM lead WHERE org_id = $1`, l.OrgID).Scan(&id)
+		return id, q.db.QueryRow(ctx, `SELECT id FROM lead WHERE campaign_id = $1 AND org_id = $2`,
+			l.CampaignID, l.OrgID).Scan(&id)
 	}
 	// An org that has its lead already gets no finding written for it here.
 	if id, err := existing(); err == nil {
@@ -111,15 +116,15 @@ func (q Queries) UpsertLead(ctx context.Context, l LeadRow) (leadID int64, creat
 	}
 	err = q.db.QueryRow(ctx,
 		`WITH ins AS (
-		   INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, finding_id, channel, route_id)
-		   VALUES ($1, $2, $3, $4, $7, $5, $6)
-		   ON CONFLICT (org_id) DO NOTHING RETURNING id
+		   INSERT INTO lead (org_id, kind, probe_id, agency_finding_id, finding_id, channel, route_id, campaign_id)
+		   VALUES ($1, $2, $3, $4, $7, $5, $6, $8)
+		   ON CONFLICT (campaign_id, org_id) DO NOTHING RETURNING id
 		 ), ev AS (
 		   INSERT INTO lead_event (lead_id, state, reason, actor)
 		   SELECT id, 'new', 'created', 'system' FROM ins
 		 )
 		 SELECT id FROM ins`,
-		l.OrgID, l.Kind, l.ProbeID, l.AgencyFindingID, l.Channel, l.RouteID, findingID).Scan(&leadID)
+		l.OrgID, l.Kind, l.ProbeID, l.AgencyFindingID, l.Channel, l.RouteID, findingID, l.CampaignID).Scan(&leadID)
 	if err == nil {
 		return leadID, true, nil
 	}
@@ -132,7 +137,7 @@ func (q Queries) UpsertLead(ctx context.Context, l LeadRow) (leadID int64, creat
 	return leadID, false, nil
 }
 
-// RefreshLead brings the lead of l.OrgID up to the latest facts while it is still new: its
+// RefreshLead brings the lead of l.OrgID in campaign l.CampaignID (0: DefaultCampaignID) up to the latest facts while it is still new: its
 // kind, finding, channel and route become l's (lead_finding_check still holds). finding_id
 // moves only when the probe or agency pointer does, to the finding of l's new source row
 // (looked up, or inserted once); the earlier finding stays as history. A lead past new
@@ -140,9 +145,10 @@ func (q Queries) UpsertLead(ctx context.Context, l LeadRow) (leadID int64, creat
 // nothing differed). A caller whose classification now gives no lead moves it to skipped
 // with SetLeadState.
 func (q Queries) RefreshLead(ctx context.Context, l LeadRow) (changed bool, err error) {
+	l.CampaignID = orCampaign(l.CampaignID)
 	var probeID, agencyID *int64
-	err = q.db.QueryRow(ctx, `SELECT probe_id, agency_finding_id FROM lead WHERE org_id = $1 AND state = 'new'`,
-		l.OrgID).Scan(&probeID, &agencyID)
+	err = q.db.QueryRow(ctx, `SELECT probe_id, agency_finding_id FROM lead WHERE org_id = $1 AND campaign_id = $2 AND state = 'new'`,
+		l.OrgID, l.CampaignID).Scan(&probeID, &agencyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -163,10 +169,10 @@ func (q Queries) RefreshLead(ctx context.Context, l LeadRow) (changed bool, err 
 		           WHERE f.source_table = CASE WHEN $3::bigint IS NOT NULL THEN 'site_probe' ELSE 'agency_finding' END
 		             AND f.source_id = coalesce($3::bigint, $4::bigint))
 		     ELSE finding_id END
-		 WHERE org_id = $1 AND state = 'new'
+		 WHERE org_id = $1 AND campaign_id = $7 AND state = 'new'
 		   AND (kind, probe_id, agency_finding_id, channel, route_id)
 		     IS DISTINCT FROM ($2::text, $3::bigint, $4::bigint, $5::text, $6::bigint)`,
-		l.OrgID, l.Kind, l.ProbeID, l.AgencyFindingID, l.Channel, l.RouteID)
+		l.OrgID, l.Kind, l.ProbeID, l.AgencyFindingID, l.Channel, l.RouteID, l.CampaignID)
 	if err != nil {
 		return false, fmt.Errorf("leadstore: refresh lead: %w", err)
 	}
@@ -246,6 +252,7 @@ func (q Queries) setLeadStateFrom(ctx context.Context, leadID int64, from []stri
 // Lead is one lead row.
 type Lead struct {
 	ID              int64  `db:"id"`
+	CampaignID      int64  `db:"campaign_id"`
 	OrgID           int64  `db:"org_id"`
 	Kind            string `db:"kind"`
 	ProbeID         *int64 `db:"probe_id"`
@@ -258,7 +265,7 @@ type Lead struct {
 // LeadByID returns lead id, or ErrLeadNotFound.
 func (q Queries) LeadByID(ctx context.Context, id int64) (Lead, error) {
 	leads, err := collect(ctx, q.db, pgx.RowToStructByName[Lead],
-		`SELECT id, org_id, kind, probe_id, agency_finding_id, channel, route_id, state FROM lead WHERE id = $1`, id)
+		`SELECT id, campaign_id, org_id, kind, probe_id, agency_finding_id, channel, route_id, state FROM lead WHERE id = $1`, id)
 	if err != nil {
 		return Lead{}, fmt.Errorf("leadstore: lead by id: %w", err)
 	}
@@ -323,9 +330,17 @@ type CandidateOptions struct {
 	// SortByRelevance orders the unstarred leads by their latest relevance (unrated last)
 	// before their score: set only when the trust gate passed (D9).
 	SortByRelevance bool
+	// CampaignID offers only the leads of that campaign; 0 offers every campaign's of the
+	// account (today: campaign 1's alone).
+	CampaignID int64
+	// AccountID is the account whose leads are offered and whose suppressions and reached
+	// leads block them (suppression is per account, across its campaigns); 0 is
+	// DefaultAccountID.
+	AccountID int64
 }
 
-// CandidateLeads returns the leads a new batch may draft: state new, a channel other than
+// CandidateLeads returns the leads a new batch may draft, of campaign o.CampaignID (0: every
+// campaign of the account): state new, a channel other than
 // none, no suppression on the route's address, the org's domain or the address's domain,
 // no other lead on one of those domains already reached (batched, contacted, replied,
 // bounced or opted out), of a kind batches draft (lead_kind.outreach), a site lead's probe still its site's
@@ -389,6 +404,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     lower(a.addr) AS laddr, lower(o.domain) AS ldom, lower(split_part(a.addr, '@', 2)) AS sdom, ad.adom
 		   FROM lead l
 		   CROSS JOIN (SELECT $2::jsonb AS pf) pf
+		   JOIN campaign cg ON cg.id = l.campaign_id AND cg.account_id = $10
 		   JOIN org o ON o.id = l.org_id
 		   JOIN lead_kind lk ON lk.name = l.kind AND lk.outreach
 		   LEFT JOIN contact_route r ON r.id = l.route_id
@@ -423,13 +439,18 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     AND NOT l.kind = ANY($6::text[])
 		     AND NOT (l.probe_id IS NOT NULL AND $7::int > 0 AND (s.list_rank IS NULL OR s.list_rank > $7::int))
 		     AND (NOT $8::bool OR coalesce(st.action <> 'unstar', false))
+		     AND ($11::bigint = 0 OR l.campaign_id = $11::bigint)
+		 ), acct AS MATERIALIZED (
+		   SELECT id FROM campaign WHERE account_id = $10
 		 ), reached AS MATERIALIZED (
 		   SELECT l2.id AS lead_id, o2.domain AS d FROM lead l2 JOIN org o2 ON o2.id = l2.org_id
 		   WHERE l2.state IN ('batched', 'contacted', 'replied', 'bounced', 'opted_out')
+		     AND l2.campaign_id IN (SELECT id FROM acct)
 		   UNION ALL
 		   SELECT l2.id, nullif(lower(split_part(r2.value, '@', 2)), '') FROM lead l2
 		   JOIN contact_route r2 ON r2.id = l2.route_id AND r2.kind = 'email'
 		   WHERE l2.state IN ('batched', 'contacted', 'replied', 'bounced', 'opted_out')
+		     AND l2.campaign_id IN (SELECT id FROM acct)
 		 ), domain_keys AS (
 		   SELECT c.lead_id, k.key FROM c
 		   CROSS JOIN LATERAL (
@@ -441,9 +462,9 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     WHERE i > 1
 		   ) k
 		 ), blocked AS (
-		   SELECT c.lead_id FROM c JOIN suppression_active x ON x.kind = 'address' AND x.value = c.laddr
+		   SELECT c.lead_id FROM c JOIN suppression_active x ON x.account_id = $10 AND x.kind = 'address' AND x.value = c.laddr
 		   UNION
-		   SELECT k.lead_id FROM domain_keys k JOIN suppression_active x ON x.kind = 'domain' AND x.value = k.key
+		   SELECT k.lead_id FROM domain_keys k JOIN suppression_active x ON x.account_id = $10 AND x.kind = 'domain' AND x.value = k.key
 		   UNION
 		   SELECT c.lead_id FROM c JOIN reached x ON x.d = c.domain AND x.lead_id <> c.lead_id
 		   UNION
@@ -458,7 +479,8 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   CASE WHEN $9::bool THEN relevance END DESC NULLS LAST,
 		   score DESC, list_rank NULLS LAST, lead_id
 		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today,
-		kindsOff, o.SkipRankOver, o.StarredOnly, o.SortByRelevance)
+		kindsOff, o.SkipRankOver, o.StarredOnly, o.SortByRelevance,
+		orAccount(o.AccountID), o.CampaignID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
 	}
@@ -481,14 +503,16 @@ type Contacted struct {
 	Cancelled int64 // pending messages cancelled ('hand-contacted')
 }
 
-// MarkContacted records that the operator reached domain by hand (RA15). It makes sure a
+// MarkContacted records that the operator reached domain by hand (RA15), in campaign
+// campaignID (0: DefaultCampaignID): the lead it marks is that campaign's, and a lead of the
+// same org in another campaign is left as it is. It makes sure a
 // site_owner org exists for the domain's registrable domain (source probe, linked to its
 // site row when one exists), then upserts its lead: from the org's finding when there is
 // one (a Drupal 6–9 probe → unsupported, 10 → d10; an agency's first finding →
 // agency_partner), else kind hand with no finding. A lead in state new, batched or skipped
 // moves to contacted (actor gremy, reason note), and its pending messages are cancelled
 // with cancel_reason 'hand-contacted'. No batch drafts it again. Run it in a transaction.
-func (q Queries) MarkContacted(ctx context.Context, domain, note string) (Contacted, error) {
+func (q Queries) MarkContacted(ctx context.Context, campaignID int64, domain, note string) (Contacted, error) {
 	d, err := sitelist.Registrable(domain)
 	if err != nil {
 		return Contacted{}, fmt.Errorf("leadstore: mark contacted: %w: %w", ErrNoDomain, err)
@@ -514,6 +538,7 @@ func (q Queries) MarkContacted(ctx context.Context, domain, note string) (Contac
 	if err != nil {
 		return Contacted{}, fmt.Errorf("leadstore: mark contacted: %w", err)
 	}
+	row.CampaignID = orCampaign(campaignID)
 	leadID, _, err := q.UpsertLead(ctx, row)
 	if err != nil {
 		return Contacted{}, fmt.Errorf("leadstore: mark contacted: %w", err)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
@@ -76,24 +77,37 @@ type buildSummary struct {
 	NoLead    map[string]int            // reason → orgs
 }
 
-// runLeadsBuild is `leads build`: it classifies every org that has a finding (a site's
-// last Drupal probe, or an agency's finding) and its routes into a lead, one per org. A
-// lead still new is classified again from the latest facts: refreshed, or skipped when
-// they no longer make a lead. A lead past new is left as it is.
+// buildCP7Words refuses a build for any campaign but the legacy Drupal one: its own detectors
+// and sources arrive in CP7.
+const buildCP7Words = "only the %s campaign builds leads for now; per-campaign build comes in CP7"
+
+// runLeadsBuild is `leads build [--campaign SLUG]`: it classifies every org that has a
+// finding (a site's last Drupal probe, or an agency's finding) and its routes into a lead of
+// the campaign, one per org. A lead still new is classified again from the latest facts:
+// refreshed, or skipped when they no longer make a lead. A lead past new is left as it is.
+// Only the legacy Drupal campaign builds; an unknown or retired campaign is a usage error.
 func runLeadsBuild(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads build", flag.ContinueOnError)
+	slug := fs.String("campaign", campaign.LegacySlug, campaignFlagUsage)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 0 {
-		return usageError("usage: leadhound leads build")
+		return usageError("usage: leadhound leads build [--campaign SLUG]")
 	}
 	s, setup, err := leadsOpen(ctx, leadsForProbe)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	c, err := activeCampaign(ctx, leadstore.NewQueries(s.Pool()), *slug)
+	if err != nil {
+		return err
+	}
+	if c.Slug != campaign.LegacySlug {
+		return usageError(buildCP7Words, campaign.LegacySlug)
+	}
 	q := s.Q()
 	runID, err := q.StartRun(ctx, commandLeadsBuild, sourceLeads)
 	if err != nil {
@@ -102,7 +116,7 @@ func runLeadsBuild(ctx context.Context, args []string) error {
 	var sum buildSummary
 	runErr := leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
 		var err error
-		sum, err = buildLeads(ctx, lq, setup.leads)
+		sum, err = buildLeads(ctx, lq, setup.leads, c.ID)
 		return err
 	})
 	result := store.RunResult{Note: fmt.Sprintf("%d orgs, %d leads, %d new", sum.Orgs, sum.Leads, sum.Created)}
@@ -119,10 +133,10 @@ func runLeadsBuild(ctx context.Context, args []string) error {
 	return nil
 }
 
-// buildLeads classifies every org and upserts its lead.
-func buildLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config) (buildSummary, error) {
+// buildLeads classifies every org and upserts its lead in campaign campaignID.
+func buildLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, campaignID int64) (buildSummary, error) {
 	sum := buildSummary{ByKind: map[string]map[string]int{}, NoLead: map[string]int{}}
-	orgs, err := lq.OrgsForBuild(ctx)
+	orgs, err := lq.OrgsForBuild(ctx, campaignID)
 	if err != nil {
 		return sum, err
 	}
@@ -171,7 +185,7 @@ func buildLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 		}
 		row := leadstore.LeadRow{
 			OrgID: l.OrgID, Kind: l.Kind, ProbeID: l.ProbeID, AgencyFindingID: l.AgencyFindingID,
-			Channel: l.Channel, RouteID: l.RouteID,
+			Channel: l.Channel, RouteID: l.RouteID, CampaignID: campaignID,
 		}
 		if o.LeadID != nil {
 			changed, err := lq.RefreshLead(ctx, row)

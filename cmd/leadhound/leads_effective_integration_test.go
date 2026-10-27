@@ -52,7 +52,7 @@ func settingsNotes(t *testing.T, logs *bytes.Buffer) []string {
 // saveSettings saves doc as the operator's latest leads settings and returns its id.
 func saveSettings(t *testing.T, doc string) int64 {
 	t.Helper()
-	id, err := leadstoretest.Q(t).SaveSettings(context.Background(), []byte(doc), leadstore.ActorOperator)
+	id, err := leadstoretest.Q(t).SaveSettings(context.Background(), leadstore.DefaultAccountID, []byte(doc), leadstore.ActorOperator)
 	if err != nil {
 		t.Fatalf("save %s: %v", doc, err)
 	}
@@ -145,7 +145,7 @@ func TestStaleOverrideIgnored(t *testing.T) {
 		}
 	}
 
-	reset, err := leadstoretest.Q(t).ResetSettings(ctx, leadstore.ActorOperator)
+	reset, err := leadstoretest.Q(t).ResetSettings(ctx, leadstore.DefaultAccountID, leadstore.ActorOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestBatchUsesEffectiveKindsOff(t *testing.T) {
 		t.Errorf("batch new, unranked sites skipped:\n%s", out)
 	}
 
-	if _, err := leadstoretest.Q(t).ResetSettings(ctx, leadstore.ActorOperator); err != nil {
+	if _, err := leadstoretest.Q(t).ResetSettings(ctx, leadstore.DefaultAccountID, leadstore.ActorOperator); err != nil {
 		t.Fatal(err)
 	}
 	if out := mustRun(t, "leads", "batch", "new"); !strings.Contains(out, noStarredWords) {

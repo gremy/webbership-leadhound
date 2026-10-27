@@ -150,12 +150,22 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		return console.LeadListPage{}, err
 	}
 	opts := leadFilterOptions(kinds, w.cfg, w.trusted)
-	f, echo, notes := leadListFilter(q, opts)
 	lq := b.lq()
+	campaigns, err := lq.Campaigns(ctx, leadstore.DefaultAccountID)
+	if err != nil {
+		return console.LeadListPage{}, err
+	}
+	for _, c := range campaigns {
+		opts.Campaigns = append(opts.Campaigns, console.FilterOption{Value: c.Slug, Label: c.Name})
+	}
+	f, echo, notes := leadListFilter(q, opts)
 	if echo.ToLabel != "" {
 		if f.LeadIDs, err = toLabelIDs(ctx, lq); err != nil {
 			return console.LeadListPage{}, err
 		}
+	}
+	if err := campaignFilter(ctx, lq, q.Campaign, &f, &echo, &notes); err != nil {
+		return console.LeadListPage{}, err
 	}
 	pf, err := leadstore.ListProfileJSON(w.profile)
 	if err != nil {
@@ -206,6 +216,27 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		p.Rows = append(p.Rows, row)
 	}
 	return p, nil
+}
+
+// campaignFilter narrows f to campaign slug of the operator's account, echoed so it
+// survives paging. An unknown slug lists no lead, with a note: never an error page.
+func campaignFilter(ctx context.Context, lq leadstore.Queries, slug string, f *leadstore.ListFilter, echo *console.LeadListQuery, notes *[]string) error {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return nil
+	}
+	echo.Campaign = slug
+	c, err := lq.CampaignBySlug(ctx, leadstore.DefaultAccountID, slug)
+	if errors.Is(err, leadstore.ErrCampaignNotFound) {
+		*notes = append(*notes, fmt.Sprintf("No campaign is called %s, so no lead is listed.", noteValue(slug)))
+		f.LeadIDs = []int64{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	f.CampaignID = c.ID
+	return nil
 }
 
 // labelGoal is how many leads with the operator's call the trust gate needs (D9).
@@ -467,6 +498,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 	row := console.LeadListRow{
 		LeadID: r.LeadID, OrgID: r.OrgID, Name: r.Name, Domain: r.Domain, Country: r.Country,
 		Kind:     kindLabel(kinds, r.Kind),
+		Campaign: r.CampaignName,
 		Finding:  leadview.FindingLine(r.Finding, w.cfg.Facts, today),
 		State:    leadStateWords(r.State),
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,

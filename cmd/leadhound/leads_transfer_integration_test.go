@@ -140,7 +140,7 @@ func transferFixture(t *testing.T) (homeURL string, homeAt time.Time, homeSHA []
 	_, _, err = lq.UpsertLead(ctx, leadstore.LeadRow{OrgID: resOrg, Kind: leadstore.LeadD10, ProbeID: &pRes,
 		Channel: leadstore.ChannelEmail, RouteID: &rRes})
 	must(err)
-	_, err = lq.MarkContacted(ctx, "epsilon.example", "met at an event")
+	_, err = lq.MarkContacted(ctx, 0, "epsilon.example", "met at an event")
 	must(err)
 	// A live batch holding the agency lead: the batch stays behind, the lead arrives new.
 	_, _, err = lq.CreateBatch(ctx, false, []leadstore.DraftRow{{LeadID: agLead, Step: 0, Channel: leadstore.ChannelEmail,
@@ -156,7 +156,7 @@ func transferFixture(t *testing.T) (homeURL string, homeAt time.Time, homeSHA []
 		{leadstore.SuppressAddress, "operator@sender.example", leadstore.ReasonOptOut}, // the selftest's own address
 		{leadstore.SuppressDomain, "spam.invalid", leadstore.ReasonManual},
 	} {
-		_, err := lq.Suppress(ctx, s[0], s[1], s[2], "cli")
+		_, err := lq.Suppress(ctx, 0, s[0], s[1], s[2], "cli")
 		must(err)
 	}
 	must(conn.QueryRow(ctx, `SELECT url, fetched_at, body_sha256 FROM http_fetch WHERE id = $1`, fA1).Scan(&homeURL, &homeAt, &homeSHA))
@@ -486,6 +486,7 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 		{"the agency lead's finding is its agency finding's", `SELECT count(*) FROM lead l JOIN finding f ON f.id = l.finding_id
 			JOIN org o ON o.id = l.org_id WHERE o.domain = '` + batchedOrg + `' AND f.source_table = 'agency_finding' AND f.detector = 'agencies@1'`, 1},
 		{"the hand lead has none", `SELECT count(*) FROM lead WHERE kind = 'hand' AND finding_id IS NOT NULL`, 0},
+		{"every lead arrives in campaign 1, the one it left", `SELECT count(*) FROM lead WHERE campaign_id <> 1`, 0},
 	}
 	for _, c := range checks {
 		var args []any
@@ -535,20 +536,49 @@ func TestLeadsTransferRoundTrip(t *testing.T) {
 		}
 	}
 
-	// An export from before findings (format 1) is refused in plain words naming both
-	// versions, before anything is written.
+	// Every lead and event names its campaign (format 3).
+	for _, name := range []string{tfLeads, tfEvents} {
+		body, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- the test's temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+		if n := strings.Count(string(body), `"campaign":"drupal-eol"`); n != len(lines) {
+			t.Errorf("%s: %d of %d rows name campaign drupal-eol", name, n, len(lines))
+		}
+	}
+
+	// A format 2 export (before campaigns: no campaign on a lead or an event) imports into
+	// campaign 1.
+	f2 := formatTwo(t, dir)
+	leadstoretest.Reset(t)
+	code, out, errOut = leadsRun(t, "leads", "transfer", "import", f2)
+	if code != 0 {
+		t.Fatalf("format 2 import exited %d: %s", code, errOut)
+	}
+	wantLines(t, "format 2 import", out, "leads: 3 added", "events: ")
+	if n := one(`SELECT count(*) FROM lead WHERE campaign_id = 1`); n != 3 {
+		t.Errorf("format 2 leads in campaign 1: %d, want 3", n)
+	}
+	if n := one(`SELECT count(*) FROM lead_event`); n == 0 {
+		t.Error("format 2 import wrote no events")
+	}
+
+	// An export from before findings (format 1) is refused in plain words naming the
+	// versions read, before anything is written.
 	older := filepath.Join(t.TempDir(), "older")
 	if err := os.CopyFS(older, os.DirFS(dir)); err != nil {
 		t.Fatal(err)
 	}
+	leadstoretest.Reset(t)
 	m.Files[0].Rows--
-	m.Format = transferFormat - 1
+	m.Format = transferFormatOldest - 1
 	b, _ = json.Marshal(m)
 	if err := os.WriteFile(filepath.Join(older, transferManifestName), b, 0o600); err != nil { // #nosec G703 -- a test temp dir
 		t.Fatal(err)
 	}
 	code, out, errOut = leadsRun(t, "leads", "transfer", "import", older)
-	if want := fmt.Sprintf("exported by an older leadhound (format %d); this one reads format %d only", transferFormat-1, transferFormat); code != 2 || !strings.Contains(errOut, want) {
+	if want := fmt.Sprintf("exported by an older leadhound (format %d); this one reads formats %d to %d only", transferFormatOldest-1, transferFormatOldest, transferFormat); code != 2 || !strings.Contains(errOut, want) {
 		t.Errorf("older-format import: exit %d, stderr %q, want %q", code, errOut, want)
 	}
 	noValues(t, "older-format import", out+errOut)
@@ -574,7 +604,7 @@ func TestLeadsTransferLiftedSuppressions(t *testing.T) {
 	conn := storetest.AppConn(t)
 	suppress := func(value string) int64 {
 		t.Helper()
-		if _, err := leadstore.NewQueries(conn).Suppress(ctx, leadstore.SuppressDomain, value, leadstore.ReasonManual, "cli"); err != nil {
+		if _, err := leadstore.NewQueries(conn).Suppress(ctx, 0, leadstore.SuppressDomain, value, leadstore.ReasonManual, "cli"); err != nil {
 			t.Fatal(err)
 		}
 		var id int64
@@ -645,10 +675,135 @@ func TestLeadsTransferLiftedSuppressions(t *testing.T) {
 	}
 }
 
+// formatTwo copies the transfer in dir as a format 2 export would have written it: no
+// campaign on any lead or event, the manifest at format 2 with the new sizes.
+func formatTwo(t *testing.T, dir string) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "format2")
+	if err := os.CopyFS(out, os.DirFS(dir)); err != nil {
+		t.Fatal(err)
+	}
+	var m transferManifest
+	b, err := os.ReadFile(filepath.Join(out, transferManifestName)) // #nosec G304 -- the test's temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	for i, f := range m.Files {
+		if f.Name != tfLeads && f.Name != tfEvents {
+			continue
+		}
+		path := filepath.Join(out, f.Name)
+		body, err := os.ReadFile(path) // #nosec G304 -- the test's temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = []byte(strings.ReplaceAll(string(body), `"campaign":"drupal-eol",`, ""))
+		if strings.Contains(string(body), `"campaign"`) {
+			t.Fatalf("%s still names a campaign", f.Name)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil { // #nosec G703 -- a test temp dir
+			t.Fatal(err)
+		}
+		m.Files[i].Bytes = int64(len(body))
+	}
+	m.Format = 2
+	b, _ = json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(out, transferManifestName), b, 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestLeadsTransferCampaigns: a lead in a second campaign crosses keyed by its campaign's
+// slug beside the same org's campaign 1 lead; a target without that campaign refuses the
+// import before writing anything, and imports it once the campaign is registered there.
+func TestLeadsTransferCampaigns(t *testing.T) {
+	leadstoretest.Reset(t)
+	t.Setenv("LEADHOUND_DATABASE_URL", storetest.AppDSN())
+	saved := transferReservedTLDs
+	transferReservedTLDs = []string{"invalid"}
+	t.Cleanup(func() { transferReservedTLDs = saved })
+	ctx := context.Background()
+	transferFixture(t)
+
+	conn := storetest.AppConn(t)
+	q := leadstore.NewQueries(conn)
+	const spec = `{"slug": "second-campaign"}`
+	sha := "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945" // any 64 hex: provenance only
+	registerSecond := func() int64 {
+		t.Helper()
+		id, _, err := q.RegisterCampaign(ctx, 0, "second-campaign", "Second", []byte(spec), sha, leadstore.CampaignFromFile, leadstore.ActorOperator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	c2 := registerSecond()
+	var orgID int64
+	if err := conn.QueryRow(ctx, `SELECT id FROM org WHERE domain = 'alpha.example'`).Scan(&orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := q.UpsertLead(ctx, leadstore.LeadRow{CampaignID: c2, OrgID: orgID, Kind: leadstore.LeadHand, Channel: leadstore.ChannelNone}); err != nil || !created {
+		t.Fatalf("second campaign lead: %v %v", created, err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "transfer")
+	code, out, errOut := leadsRun(t, "leads", "transfer", "export", dir)
+	if code != 0 {
+		t.Fatalf("export exited %d: %s", code, errOut)
+	}
+	wantLines(t, "export", out, "leads 4 (1 batched")
+	body, err := os.ReadFile(filepath.Join(dir, tfLeads)) // #nosec G304 -- the test's temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(body), `"campaign":"second-campaign","org":"alpha.example"`); n != 1 {
+		t.Errorf("leads file: %d alpha leads in second-campaign, want 1:\n%s", n, body)
+	}
+
+	// The target lacks the campaign: refused, nothing written.
+	leadstoretest.Reset(t)
+	code, out, errOut = leadsRun(t, "leads", "transfer", "import", dir)
+	if code != 2 || !strings.Contains(errOut, `campaign "second-campaign" is not on this machine`) {
+		t.Fatalf("import without the campaign: exit %d, stderr %q", code, errOut)
+	}
+	noValues(t, "refused import", out+errOut)
+	for tbl, n := range tableCounts(t) {
+		if n != 0 {
+			t.Errorf("refused import wrote %d rows to %s", n, tbl)
+		}
+	}
+
+	// Registered on the target (its own id), the import carries both of alpha's leads.
+	ownerExecCmd(t, `INSERT INTO campaign (account_id, slug, name) VALUES (1, 'placeholder', 'Moves the ids on')`)
+	c2 = registerSecond()
+	code, out, errOut = leadsRun(t, "leads", "transfer", "import", dir)
+	if code != 0 {
+		t.Fatalf("import exited %d: %s", code, errOut)
+	}
+	wantLines(t, "import", out, "leads: 4 added")
+	var n int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM lead l JOIN org o ON o.id = l.org_id
+		WHERE o.domain = 'alpha.example' AND l.campaign_id IN (1, $1)`, c2).Scan(&n); err != nil || n != 2 {
+		t.Errorf("alpha's leads on the target = %d (%v), want 2: campaign 1's and second-campaign's", n, err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM lead_event e JOIN lead l ON l.id = e.lead_id WHERE l.campaign_id = $1`, c2).Scan(&n); err != nil || n == 0 {
+		t.Errorf("second-campaign lead events on the target = %d (%v), want its history", n, err)
+	}
+	code, out, errOut = leadsRun(t, "leads", "transfer", "import", dir)
+	if code != 0 {
+		t.Fatalf("second import exited %d: %s", code, errOut)
+	}
+	wantLines(t, "second import", out, "leads: 0 added · 4 already there")
+}
+
 // mustSuppressionSet is the target's active suppressed domains.
 func mustSuppressionSet(t *testing.T, conn *pgx.Conn) []string {
 	t.Helper()
-	set, err := leadstore.NewQueries(conn).SuppressionSet(context.Background())
+	set, err := leadstore.NewQueries(conn).SuppressionSet(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

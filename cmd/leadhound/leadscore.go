@@ -285,6 +285,9 @@ func newBatchSetup(setup leadsSetup, loc *time.Location) batchSetup {
 type NewBatchRequest struct {
 	Size     int  // most leads; 0 is caps.batch_size
 	LiveOnly bool // refuse rather than draft a shadow batch (the console never drafts shadow)
+	// CampaignID is the campaign whose leads the batch drafts; 0 is the legacy Drupal
+	// campaign (leadstore.DefaultCampaignID).
+	CampaignID int64
 }
 
 // BatchCounts are a batch's first emails, contact forms and LinkedIn notes.
@@ -310,6 +313,9 @@ type NewBatchOutcome struct {
 	Leads   int
 	Counts  BatchCounts
 	Dropped []DroppedLead
+	// Skipped are the campaign's new leads whose business is already in a conversation in
+	// another campaign of the account (one business, one conversation), each with why.
+	Skipped []DroppedLead
 	Sizing  *BatchSizing  // a live batch's sizing; nil for shadow
 	Rooms   map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
 }
@@ -337,7 +343,8 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if err := lq.LockBatchNew(ctx); err != nil {
 		return out, err
 	}
-	if id, ok, err := lq.UnapprovedBatch(ctx, bs.shadow); err != nil {
+	campaignID := cmp.Or(req.CampaignID, leadstore.DefaultCampaignID)
+	if id, ok, err := lq.UnapprovedBatch(ctx, leadstore.DefaultAccountID, bs.shadow); err != nil {
 		return out, err
 	} else if ok {
 		return out, &LeadRefusal{Kind: RefuseBatchWaiting, BatchID: id}
@@ -346,7 +353,7 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if n <= 0 {
 		n = bs.leads.Caps.BatchSize
 	}
-	mbs, err := lq.Mailboxes(ctx, startOfDay(now, bs.loc))
+	mbs, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(now, bs.loc))
 	if err != nil {
 		return out, err
 	}
@@ -364,10 +371,16 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if err != nil {
 		return out, err
 	}
+	opts.CampaignID, opts.AccountID = campaignID, leadstore.DefaultAccountID
 	cands, err := lq.CandidateLeads(ctx, opts)
 	if err != nil {
 		return out, err
 	}
+	var elsewhere map[int64]bool
+	if out.Skipped, elsewhere, err = crossCampaignSkips(ctx, lq, campaignID); err != nil {
+		return out, err
+	}
+	cands = slices.DeleteFunc(cands, func(c leadstore.Candidate) bool { return elsewhere[c.OrgID] })
 	if len(cands) == 0 {
 		if opts.StarredOnly {
 			return out, &LeadRefusal{Kind: RefuseNoStarred}
@@ -436,6 +449,37 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	}
 	out.Counts = countDrafts(drafts)
 	return out, nil
+}
+
+// crossCampaignSkips are the new leads of campaign campaignID whose org already has a
+// conversation in another campaign of the operator's account (leadstore.OpenElsewhere: a
+// reply, or a message approved, sending or maybe sent), by domain, each with why, and those
+// orgs. A batch never drafts them: one business, one conversation.
+func crossCampaignSkips(ctx context.Context, lq leadstore.Queries, campaignID int64) ([]DroppedLead, map[int64]bool, error) {
+	leads, err := lq.SharedNewLeads(ctx, leadstore.DefaultAccountID, campaignID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(leads) == 0 {
+		return nil, nil, nil
+	}
+	ids := make([]int64, len(leads))
+	for i, l := range leads {
+		ids[i] = l.OrgID
+	}
+	why, err := lq.OpenElsewhere(ctx, leadstore.DefaultAccountID, campaignID, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	var out []DroppedLead
+	orgs := map[int64]bool{}
+	for _, l := range leads {
+		if w, ok := why[l.OrgID]; ok {
+			out = append(out, DroppedLead{Domain: l.Domain, Kind: l.Kind, Channel: l.Channel, Why: w})
+			orgs[l.OrgID] = true
+		}
+	}
+	return out, orgs, nil
 }
 
 // batchCandidateOptions is the queue a batch drafts from (D6, D11): starred leads only
@@ -847,7 +891,7 @@ func suppressAdd(ctx context.Context, s *store.Store, kind, value, reason, sourc
 	var res leadstore.Suppressed
 	err := leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
 		var err error
-		res, err = lq.Suppress(ctx, kind, value, reason, source)
+		res, err = lq.Suppress(ctx, leadstore.DefaultAccountID, kind, value, reason, source)
 		return err
 	})
 	switch {
@@ -973,7 +1017,7 @@ func markContacted(ctx context.Context, s *store.Store, domain, note string) (le
 	var c leadstore.Contacted
 	err := leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
 		var err error
-		c, err = lq.MarkContacted(ctx, domain, note)
+		c, err = lq.MarkContacted(ctx, leadstore.DefaultCampaignID, domain, note)
 		return err
 	})
 	if errors.Is(err, leadstore.ErrNoDomain) {

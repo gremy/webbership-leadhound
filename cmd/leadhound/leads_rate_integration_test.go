@@ -27,7 +27,7 @@ import (
 // saveRateSettings saves doc as the console would, as the latest leads settings.
 func saveRateSettings(t *testing.T, doc string) {
 	t.Helper()
-	if _, err := leadstoretest.Q(t).SaveSettings(context.Background(), []byte(doc), leadstore.ActorOperator); err != nil {
+	if _, err := leadstoretest.Q(t).SaveSettings(context.Background(), leadstore.DefaultAccountID, []byte(doc), leadstore.ActorOperator); err != nil {
 		t.Fatal(err)
 	}
 }

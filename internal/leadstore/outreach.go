@@ -157,8 +157,8 @@ func MessageSHA256(to, subject, body, inReplyTo string) []byte {
 // touches lead.state (RA1), so its leads come up again for the first live batch. Messages
 // start as drafts, written in draft order (each lead where it first appears in drafts, its
 // steps in order), so BatchMessages reads the batch in the order it was drafted; the content
-// hash does not depend on that order. templatesSHA is provenance only. Run it in a
-// transaction.
+// hash does not depend on that order. templatesSHA is provenance only. The batch belongs to
+// its leads' account (every lead must be of one account). Run it in a transaction.
 func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow, templatesSHA []byte) (batchID int64, contentSHA []byte, err error) {
 	if len(drafts) == 0 {
 		return 0, nil, ErrEmptyBatch
@@ -206,9 +206,19 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 			return 0, nil, fmt.Errorf("leadstore: create batch: lead %d (%s): %w", id, why, ErrNotDraftable)
 		}
 	}
+	// The batch is its leads' account's, through their campaigns; one batch never spans two.
+	var accounts []int64
+	if accounts, err = collect(ctx, q.db, pgx.RowTo[int64],
+		`SELECT DISTINCT c.account_id FROM lead l JOIN campaign c ON c.id = l.campaign_id
+		 WHERE l.id = ANY($1::bigint[]) ORDER BY 1`, leadIDs); err != nil {
+		return 0, nil, fmt.Errorf("leadstore: create batch: account: %w", err)
+	}
+	if len(accounts) != 1 {
+		return 0, nil, fmt.Errorf("leadstore: create batch: leads of %d accounts: %w", len(accounts), ErrNotDraftable)
+	}
 	if err := q.db.QueryRow(ctx,
-		`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256) VALUES ($1, $2, $3) RETURNING id`,
-		shadow, contentSHA, templatesSHA).Scan(&batchID); err != nil {
+		`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256, account_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+		shadow, contentSHA, templatesSHA, accounts[0]).Scan(&batchID); err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
 	}
 	for _, d := range draftOrder(drafts, c) {
@@ -280,8 +290,8 @@ type leadStatus struct {
 	stale      bool // a site lead whose probe is no longer its site's latest
 }
 
-// leadCheck locks lead id and returns its state and whether a suppression blocks its route
-// address, its org's domain, or any of tos.
+// leadCheck locks lead id and returns its state and whether a suppression of its campaign's
+// account blocks its route address, its org's domain, or any of tos.
 func (q Queries) leadCheck(ctx context.Context, id int64, tos []string) (leadStatus, error) {
 	if tos == nil {
 		tos = []string{}
@@ -289,11 +299,12 @@ func (q Queries) leadCheck(ctx context.Context, id int64, tos []string) (leadSta
 	var st leadStatus
 	err := q.db.QueryRow(ctx,
 		`SELECT l.state,
-		   `+suppressedSQL("o.domain", "CASE WHEN r.kind = 'email' THEN r.value ELSE '' END")+`
-		   OR EXISTS (SELECT 1 FROM unnest($2::text[]) t(addr) WHERE `+suppressedSQL("o.domain", "t.addr")+`)
+		   `+suppressedSQL("cg.account_id", "o.domain", "CASE WHEN r.kind = 'email' THEN r.value ELSE '' END")+`
+		   OR EXISTS (SELECT 1 FROM unnest($2::text[]) t(addr) WHERE `+suppressedSQL("cg.account_id", "o.domain", "t.addr")+`)
 		   , l.probe_id IS NOT NULL AND l.probe_id IS DISTINCT FROM
 		       (SELECT s.last_probe_id FROM site_probe p JOIN site s ON s.id = p.site_id WHERE p.id = l.probe_id)
-		 FROM lead l JOIN org o ON o.id = l.org_id LEFT JOIN contact_route r ON r.id = l.route_id
+		 FROM lead l JOIN org o ON o.id = l.org_id JOIN campaign cg ON cg.id = l.campaign_id
+		 LEFT JOIN contact_route r ON r.id = l.route_id
 		 WHERE l.id = $1 FOR UPDATE OF l`, id, tos).Scan(&st.state, &st.suppressed, &st.stale)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return leadStatus{}, fmt.Errorf("lead %d: %w", id, ErrLeadNotFound)

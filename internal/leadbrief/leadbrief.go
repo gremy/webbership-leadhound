@@ -298,7 +298,7 @@ func sendNote(ctx context.Context, q store.DBTX, from time.Time) (string, error)
 // day), leaving out those on a reserved TLD (re, a regular expression Go and Postgres read
 // alike).
 func keptMailboxes(ctx context.Context, q store.DBTX, re string, since time.Time) ([]leadstore.MailboxStatus, error) {
-	all, err := leadstore.NewQueries(q).Mailboxes(ctx, since)
+	all, err := leadstore.NewQueries(q).Mailboxes(ctx, leadstore.DefaultAccountID, since)
 	if err != nil {
 		return nil, fmt.Errorf("mailboxes: %w", err)
 	}

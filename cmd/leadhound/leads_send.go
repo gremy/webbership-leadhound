@@ -404,7 +404,7 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 // its address), or with want empty the only mailbox that is not retired. The address is
 // never echoed.
 func selftestMailbox(ctx context.Context, lq leadstore.Queries, want string, since time.Time) (int64, error) {
-	ms, err := lq.Mailboxes(ctx, since)
+	ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, since)
 	if err != nil {
 		return 0, err
 	}
@@ -459,7 +459,7 @@ func (r *sendRun) checkPaused(ctx context.Context, lq leadstore.Queries) error {
 // retired, paused or (live) without a passed latest check is blocked; a block, once set,
 // stays for the run.
 func (r *sendRun) refresh(ctx context.Context, now time.Time) error {
-	ms, err := r.lq.Mailboxes(ctx, startOfDay(now, r.loc))
+	ms, err := r.lq.Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(now, r.loc))
 	if err != nil {
 		return err
 	}
@@ -833,7 +833,7 @@ var (
 
 // mailboxState reads mailbox id's latest state through tq (the claim's transaction).
 func (r *sendRun) mailboxState(ctx context.Context, tq leadstore.Queries, id int64) (string, error) {
-	ms, err := tq.Mailboxes(ctx, startOfDay(leadsNow(), r.loc))
+	ms, err := tq.Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(leadsNow(), r.loc))
 	if err != nil {
 		return "", err
 	}
@@ -900,7 +900,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	label := fmt.Sprintf("message %d", row.ID)
 
 	// Suppression, the third point.
-	set, err := r.lq.SuppressionSet(ctx)
+	set, err := r.lq.SuppressionSet(ctx, leadstore.DefaultAccountID)
 	if err != nil {
 		return false, err
 	}
@@ -1053,7 +1053,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 				if err := tq.MarkHardBounce(wctx, row.ID); err != nil {
 					return err
 				}
-				_, err := tq.Suppress(wctx, leadstore.SuppressAddress, row.ToAddress, leadstore.ReasonBounce, "smtp")
+				_, err := tq.Suppress(wctx, leadstore.DefaultAccountID, leadstore.SuppressAddress, row.ToAddress, leadstore.ReasonBounce, "smtp")
 				return err
 			}
 			return nil

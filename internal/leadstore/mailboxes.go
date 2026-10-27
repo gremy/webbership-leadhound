@@ -160,12 +160,13 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-// AddMailbox stores m (its Address trimmed and in lower case, its Domain the address's
+// AddMailbox stores m for account accountID (0: DefaultAccountID; an address stays unique
+// across accounts) (its Address trimmed and in lower case, its Domain the address's
 // registrable domain) and requests its first check by actor, in one statement. It returns
 // the new id. A blank login, server, selector, sealed password or fingerprint, an address
 // that is not one local part and a domain, a Domain that is not the address's, or a From
 // name with a line break is ErrBadMailbox; an address already added is ErrMailboxExists.
-func (q Queries) AddMailbox(ctx context.Context, m Mailbox, actor string) (int64, error) {
+func (q Queries) AddMailbox(ctx context.Context, accountID int64, m Mailbox, actor string) (int64, error) {
 	if err := checkMailboxActor(actor); err != nil {
 		return 0, fmt.Errorf("leadstore: add mailbox: %w", err)
 	}
@@ -198,14 +199,15 @@ func (q Queries) AddMailbox(ctx context.Context, m Mailbox, actor string) (int64
 	var id int64
 	err = q.db.QueryRow(ctx,
 		`WITH mb AS (
-		   INSERT INTO sender_mailbox (address, domain, login, smtp_addr, imap_addr, dkim_selector, from_name, password_sealed, sealed_by)
-		   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id
+		   INSERT INTO sender_mailbox (address, domain, login, smtp_addr, imap_addr, dkim_selector, from_name, password_sealed, sealed_by, account_id)
+		   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11) RETURNING id
 		 ), ck AS (
 		   INSERT INTO mailbox_check (mailbox_id, actor) SELECT id, $10 FROM mb
 		 )
 		 SELECT id FROM mb`,
 		addr, domain, strings.TrimSpace(m.Login), strings.TrimSpace(m.SMTPAddr), strings.TrimSpace(m.IMAPAddr),
-		strings.TrimSpace(m.DKIMSelector), strings.TrimSpace(m.FromName), m.PasswordSealed, m.SealedBy, actor).Scan(&id)
+		strings.TrimSpace(m.DKIMSelector), strings.TrimSpace(m.FromName), m.PasswordSealed, m.SealedBy, actor,
+		orAccount(accountID)).Scan(&id)
 	if isUniqueViolation(err) {
 		return 0, fmt.Errorf("leadstore: add mailbox: %w", ErrMailboxExists)
 	}
@@ -512,10 +514,10 @@ func (q Queries) MailboxesOnDomain(ctx context.Context, domain string) (int, err
 // liveSentStates are the states SentSince counts toward a day.
 const liveSentStates = `('sending', 'sent', 'maybe_sent')`
 
-// Mailboxes returns every mailbox, by id, with its latest state and check, its first live
+// Mailboxes returns every mailbox of account accountID (0: DefaultAccountID), by id, with its latest state and check, its first live
 // send, what it sent since since and whether its host and selector passed a DNS check
 // since since: one query. since is the start of the operator's day.
-func (q Queries) Mailboxes(ctx context.Context, since time.Time) ([]MailboxStatus, error) {
+func (q Queries) Mailboxes(ctx context.Context, accountID int64, since time.Time) ([]MailboxStatus, error) {
 	rows, err := q.db.Query(ctx,
 		`SELECT `+mailboxCols+`,
 		   coalesce(st.state, 'active'), coalesce(st.reason, ''), coalesce(st.scope, 'mailbox'), st.at,
@@ -539,7 +541,8 @@ func (q Queries) Mailboxes(ctx context.Context, since time.Time) ([]MailboxStatu
 		   SELECT count(*) AS n FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
 		   WHERE m.mailbox_id = mb.id AND m.state IN `+liveSentStates+` AND m.sent_at >= $1 AND NOT b.shadow
 		 ) sd ON true
-		 ORDER BY mb.id`, since)
+		 WHERE mb.account_id = $2
+		 ORDER BY mb.id`, since, orAccount(accountID))
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: mailboxes: %w", err)
 	}

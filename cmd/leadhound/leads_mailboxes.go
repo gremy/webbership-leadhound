@@ -141,7 +141,7 @@ func mailboxesList(ctx context.Context) error {
 		return err
 	}
 	defer done()
-	ms, err := lq.Mailboxes(ctx, startOfDay(leadsNow(), loc))
+	ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(leadsNow(), loc))
 	if err != nil {
 		return err
 	}

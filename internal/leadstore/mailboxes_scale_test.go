@@ -24,7 +24,7 @@ func TestScaleMailboxSeed(t *testing.T) {
 
 	var mbs []leadstore.MailboxStatus
 	within(t, "Mailboxes", 200*time.Millisecond, func() (err error) {
-		mbs, err = q.Mailboxes(ctx, since)
+		mbs, err = q.Mailboxes(ctx, leadstore.DefaultAccountID, since)
 		return err
 	})
 	if len(mbs) != 10 {

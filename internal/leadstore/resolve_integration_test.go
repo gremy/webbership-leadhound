@@ -23,10 +23,10 @@ func TestDiscardBatch(t *testing.T) {
 	first, hash1 := f.batch(t, false, a, b)
 	other, _ := f.batch(t, false, c)
 
-	if id, ok, err := f.q.UnapprovedBatch(ctx, false); err != nil || !ok || id != first {
+	if id, ok, err := f.q.UnapprovedBatch(ctx, leadstore.DefaultAccountID, false); err != nil || !ok || id != first {
 		t.Fatalf("waiting live batch = %d %v %v, want %d", id, ok, err, first)
 	}
-	if _, ok, err := f.q.UnapprovedBatch(ctx, true); err != nil || ok {
+	if _, ok, err := f.q.UnapprovedBatch(ctx, leadstore.DefaultAccountID, true); err != nil || ok {
 		t.Errorf("a shadow batch waits: %v %v", ok, err)
 	}
 
@@ -56,7 +56,7 @@ func TestDiscardBatch(t *testing.T) {
 	if err != nil || got.DiscardedAt == nil {
 		t.Errorf("batch %d not marked discarded: %+v %v", first, got, err)
 	}
-	if id, ok, _ := f.q.UnapprovedBatch(ctx, false); !ok || id != other {
+	if id, ok, _ := f.q.UnapprovedBatch(ctx, leadstore.DefaultAccountID, false); !ok || id != other {
 		t.Errorf("waiting live batch after discard = %d %v, want %d", id, ok, other)
 	}
 
@@ -86,7 +86,7 @@ func TestDiscardBatch(t *testing.T) {
 	// A shadow batch never moved its leads: they stay new.
 	s := f.siteLead(t, "discard-s.localhost", nil, 7, "info@discard-s.localhost")
 	shadow, _ := f.batch(t, true, s)
-	if id, ok, _ := f.q.UnapprovedBatch(ctx, true); !ok || id != shadow {
+	if id, ok, _ := f.q.UnapprovedBatch(ctx, leadstore.DefaultAccountID, true); !ok || id != shadow {
 		t.Errorf("waiting shadow batch = %d %v, want %d", id, ok, shadow)
 	}
 	if d, err := f.q.DiscardBatch(ctx, shadow); err != nil || !d.Shadow || d.LeadsBack != 0 || d.Cancelled != 2 {
@@ -95,7 +95,7 @@ func TestDiscardBatch(t *testing.T) {
 	if st := f.leadState(t, s); st != leadstore.LeadNew {
 		t.Errorf("shadow lead is %s", st)
 	}
-	if _, ok, _ := f.q.UnapprovedBatch(ctx, true); ok {
+	if _, ok, _ := f.q.UnapprovedBatch(ctx, leadstore.DefaultAccountID, true); ok {
 		t.Errorf("a discarded shadow batch still waits")
 	}
 }

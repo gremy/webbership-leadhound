@@ -182,7 +182,7 @@ func mailboxFromInput(cfg leadconfig.Config, in MailboxInput) (leadstore.Mailbox
 // mailboxStatusByID is mailbox id with its latest state and check, for the operator's day
 // starting at since; a missing one is refused.
 func mailboxStatusByID(ctx context.Context, lq leadstore.Queries, id int64, since time.Time) (leadstore.MailboxStatus, error) {
-	ms, err := lq.Mailboxes(ctx, since)
+	ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, since)
 	if err != nil {
 		return leadstore.MailboxStatus{}, err
 	}
@@ -216,7 +216,7 @@ func addMailbox(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 	if outreach.ReservedDomain(m.Domain) && !leadsMail.allowReserved {
 		return 0, refused("%s is a reserved test name; a real mailbox needs a real domain.", m.Domain)
 	}
-	ms, err := lq.Mailboxes(ctx, now)
+	ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, now)
 	if err != nil {
 		return 0, err
 	}
@@ -237,7 +237,7 @@ func addMailbox(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 	if m.PasswordSealed, m.SealedBy, err = sealFor(pub, m, in.Password); err != nil {
 		return 0, err
 	}
-	id, err := lq.AddMailbox(ctx, m, leadstore.ActorOperator)
+	id, err := lq.AddMailbox(ctx, leadstore.DefaultAccountID, m, leadstore.ActorOperator)
 	if errors.Is(err, leadstore.ErrMailboxExists) {
 		return 0, refused("%s is already a mailbox.", m.Address)
 	}
@@ -388,7 +388,7 @@ func normalizeDomain(raw string) string {
 // with no mailbox that is not retired is refused.
 func setDomainPause(ctx context.Context, lq leadstore.Queries, now time.Time, domain string, pause bool, reason string) (DomainSwitch, error) {
 	d := normalizeDomain(domain)
-	ms, err := lq.Mailboxes(ctx, now)
+	ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, now)
 	if err != nil {
 		return DomainSwitch{}, err
 	}
@@ -489,7 +489,7 @@ func runChecks(ctx context.Context, lq leadstore.Queries, key secretbox.PrivateK
 		if len(cs) == 0 {
 			return done, nil
 		}
-		ms, err := lq.Mailboxes(ctx, now)
+		ms, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, now)
 		if err != nil {
 			return done, err
 		}

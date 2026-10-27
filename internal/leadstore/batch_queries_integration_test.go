@@ -76,7 +76,7 @@ func TestOrgsForBuild(t *testing.T) {
 	if _, err := f.owner.Exec(ctx, `INSERT INTO org (kind, domain, source) VALUES ('selftest', 'selftest-1', 'selftest')`); err != nil {
 		t.Fatal(err)
 	}
-	orgs, err := f.q.OrgsForBuild(ctx)
+	orgs, err := f.q.OrgsForBuild(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestMarkDone(t *testing.T) {
 func TestSuppressionCounts(t *testing.T) {
 	f := newOutreachFixture(t)
 	ctx := context.Background()
-	if c, err := f.q.SuppressionCounts(ctx); err != nil || len(c) != 0 {
+	if c, err := f.q.SuppressionCounts(ctx, 0); err != nil || len(c) != 0 {
 		t.Fatalf("empty: %v %v", c, err)
 	}
 	for _, s := range [][3]string{
@@ -228,11 +228,11 @@ func TestSuppressionCounts(t *testing.T) {
 		{leadstore.SuppressAddress, "c@one.localhost", leadstore.ReasonBounce},
 		{leadstore.SuppressDomain, "two.localhost", leadstore.ReasonManual},
 	} {
-		if _, err := f.q.Suppress(ctx, s[0], s[1], s[2], "test"); err != nil {
+		if _, err := f.q.Suppress(ctx, 0, s[0], s[1], s[2], "test"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, err := f.q.SuppressionCounts(ctx)
+	got, err := f.q.SuppressionCounts(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

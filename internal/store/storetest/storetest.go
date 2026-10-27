@@ -80,7 +80,8 @@ const resetTablesSQL = `SELECT quote_ident(tablename) FROM pg_tables
 // (TRUNCATE … RESTART IDENTITY CASCADE as the owner), so a test starts from an empty database
 // with ids from 1. Every goose version table (goose_db_version, goose_db_version_leads) and
 // every KeptTables reference table is left alone; CASCADE never reaches them, as they
-// reference no emptied table.
+// reference no emptied table. The leads seed rows (the default account and campaign) are
+// put back after the truncate.
 func ResetDB(t testing.TB) {
 	t.Helper()
 	Migrated(t)
@@ -102,7 +103,27 @@ func ResetDB(t testing.TB) {
 	if _, err := conn.Exec(ctx, q); err != nil {
 		t.Fatalf("storetest: truncate: %v", err)
 	}
+	// The leads tables, once migrated, hold seed rows a truncate empties: the default account
+	// and campaign (leads 00016). They are put back rather than kept, so a test's own
+	// accounts and campaigns never reach the next test.
+	if _, err := conn.Exec(ctx, reseedSQL); err != nil {
+		t.Fatalf("storetest: reseed: %v", err)
+	}
 }
+
+// reseedSQL puts back leads migration 00016's seed rows when its tables exist: account 1
+// (operator) and its campaign 1 (drupal-eol), the next ids from 2. It mirrors
+// leadstoretest.SeedDefaults, which a plain ResetDB caller does not import.
+const reseedSQL = `DO $$
+BEGIN
+  IF to_regclass('public.account') IS NOT NULL AND to_regclass('public.campaign') IS NOT NULL THEN
+    INSERT INTO account (id, slug, name) VALUES (1, 'operator', 'Operator') ON CONFLICT DO NOTHING;
+    INSERT INTO campaign (id, account_id, slug, name) VALUES (1, 1, 'drupal-eol', 'Drupal end-of-life') ON CONFLICT DO NOTHING;
+    PERFORM setval(pg_get_serial_sequence('account', 'id'), (SELECT max(id) FROM account));
+    PERFORM setval(pg_get_serial_sequence('campaign', 'id'), (SELECT max(id) FROM campaign));
+  END IF;
+END
+$$`
 
 // AppConn opens a connection to the test database as the app role, closed when the test ends.
 func AppConn(t testing.TB) *pgx.Conn {

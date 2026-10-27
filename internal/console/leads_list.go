@@ -76,7 +76,7 @@ type leadActView struct {
 // leadsTabView is the Leads sub-nav: which tab is current, and whether the page is that
 // tab itself (aria-current="page") or a page inside it (aria-current="true").
 type leadsTabView struct {
-	Tab   string // list | outreach | settings
+	Tab   string // list | outreach | campaigns | settings
 	Exact bool
 }
 
@@ -247,6 +247,7 @@ func leadListQuery(v url.Values) LeadListQuery {
 		Sort:         one("sort"),
 		Page:         one("page"),
 		ToLabel:      one("to_label"),
+		Campaign:     one("campaign"),
 	}
 }
 
@@ -271,7 +272,8 @@ func newLeadListView(p LeadListPage) leadListView {
 		v.ShowCall = v.ShowCall || row.Call != ""
 	}
 	for _, on := range []bool{len(p.Filter.Kinds) > 0, len(p.Filter.Countries) > 0, len(p.Filter.Channels) > 0,
-		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", v.ShowState, v.ToLabel} {
+		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", v.ShowState, v.ToLabel,
+		p.Filter.Campaign != ""} {
 		if on {
 			v.Filters++
 		}
@@ -300,7 +302,7 @@ func leadListURL(f LeadListQuery, n int) string {
 		}
 	}
 	for k, v := range map[string]string{"starred": f.Starred, "has_phone": f.HasPhone, "min_relevance": f.MinRelevance,
-		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel} {
+		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel, "campaign": f.Campaign} {
 		if v != "" {
 			q.Set(k, v)
 		}

@@ -47,6 +47,15 @@
       </div>
     </fieldset>
     <div class="filter-fields">
+      {{with $o.Campaigns}}
+      <div>
+        <label for="filter-campaign">Campaign</label>
+        <select id="filter-campaign" name="campaign">
+          <option value="">Every campaign</option>
+          {{range .}}<option value="{{.Value}}"{{if eq .Value $f.Campaign}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </div>
+      {{end}}
       <div>
         <label for="filter-starred">Starred</label>
         <select id="filter-starred" name="starred">
@@ -98,6 +107,7 @@
         <span class="item-head"><a href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</span>
       </div>
       <span class="item-meta">{{.Domain}}{{with .Country}} · {{.}}{{end}} · {{.Kind}}{{with .State}} · {{.}}{{end}}</span>
+      {{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
       <span class="item-meta">{{template "lead_channels" .}}{{with .Relevance}} · {{.}}{{end}}{{with .Position}} · number {{.}} in the outreach order{{end}}</span>
       {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="tag call-tag">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
@@ -124,7 +134,7 @@
       <td class="star-cell">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
       <td class="lead-cell"><a href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a><span class="item-meta" title="{{.Domain}}">{{.Domain}}</span>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</td>
       <td>{{.Country}}</td>
-      <td>{{.Kind}}</td>
+      <td>{{.Kind}}{{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}</td>
       <td>{{.Finding}}</td>
       <td>{{template "lead_channels" .}}</td>
       {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}

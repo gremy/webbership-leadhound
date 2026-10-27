@@ -85,6 +85,8 @@ type ListFilter struct {
 	// LeadIDs, when not nil, keeps only these leads (the To label filter); an empty, non-nil
 	// slice matches no lead.
 	LeadIDs []int64
+	// CampaignID keeps only the leads of that campaign; 0 lists every campaign's.
+	CampaignID int64
 }
 
 // ListContext is what the list is weighed by.
@@ -92,11 +94,15 @@ type ListContext struct {
 	ProfileJSON     string // the effective priority profile, for points
 	SkipRankOver    int
 	SortByRelevance bool // the trust gate passed (D9)
+	// CampaignID keeps LeadsToRate to that campaign's leads; 0 is every campaign's.
+	CampaignID int64
 }
 
 // ListRow is one lead of the list.
 type ListRow struct {
 	LeadID, OrgID               int64
+	CampaignID                  int64
+	CampaignSlug, CampaignName  string
 	Domain, Name                string // Name: site_name, else org.name, else domain
 	Country, Kind, State        string
 	HasEmail, HasForm, HasPhone bool
@@ -221,6 +227,9 @@ func ListProfileJSON(p leadconfig.Profile) (string, error) {
 type listRow struct {
 	LeadID          int64      `db:"lead_id"`
 	OrgID           int64      `db:"org_id"`
+	CampaignID      int64      `db:"campaign_id"`
+	CampaignSlug    string     `db:"campaign_slug"`
+	CampaignName    string     `db:"campaign_name"`
 	Domain          string     `db:"domain"`
 	Name            string     `db:"name"`
 	Country         string     `db:"country"`
@@ -257,6 +266,7 @@ type listRow struct {
 func (r listRow) row() ListRow {
 	return ListRow{
 		LeadID: r.LeadID, OrgID: r.OrgID, Domain: r.Domain, Name: r.Name,
+		CampaignID: r.CampaignID, CampaignSlug: r.CampaignSlug, CampaignName: r.CampaignName,
 		Country: r.Country, Kind: r.Kind, State: r.State,
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
 		Relevance: r.Relevance, Band: r.Band, RatedAt: r.RatedAt, Points: r.Points,
@@ -275,7 +285,8 @@ func (r listRow) row() ListRow {
 // CandidateLeads scores it; unlike the queue, a lead whose probe is no longer its site's
 // latest is listed with its own finding. A site lead is one with a probe. No message body
 // is read.
-const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, o.domain,
+const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
+	   cg.name AS campaign_name, o.domain,
 	   coalesce(nullif(p.site_name, ''), nullif(o.name, ''), o.domain) AS name,
 	   o.country, l.kind, l.state, l.channel, l.probe_id, l.agency_finding_id, l.created_at,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'email') AS has_email,
@@ -297,6 +308,7 @@ const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, o.domain,
 	 FROM lead l
 	 CROSS JOIN (SELECT $1::jsonb AS pf) pf
 	 JOIN org o ON o.id = l.org_id
+	 JOIN campaign cg ON cg.id = l.campaign_id
 	 LEFT JOIN site_probe p ON p.id = l.probe_id
 	 LEFT JOIN site s ON s.id = coalesce(p.site_id, o.site_id)
 	 LEFT JOIN finding f ON f.id = l.finding_id
@@ -357,6 +369,9 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 	}
 	if f.HasPhone {
 		conds = append(conds, "m.has_phone")
+	}
+	if f.CampaignID > 0 {
+		conds = append(conds, "m.campaign_id = "+arg(f.CampaignID))
 	}
 	if f.LeadIDs != nil {
 		conds = append(conds, "m.lead_id = ANY("+arg(f.LeadIDs)+"::bigint[])")

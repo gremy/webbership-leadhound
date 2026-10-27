@@ -111,7 +111,7 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 // appendOnlyLeadTables are the append-only lead tables from 00010 on: INSERT and SELECT, no
 // UPDATE, no DELETE.
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
-	"lead_relevance_eval", "lead_setting", "lead_label"}
+	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -177,7 +177,7 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 		}
 	}
 	for _, table := range append([]string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
-		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check"}, appendOnlyLeadTables...) {
+		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check", "campaign"}, appendOnlyLeadTables...) {
 		if appHas(t, owner, table, "DELETE") || appHas(t, owner, table, "TRUNCATE") {
 			t.Errorf("%s: leadhound_app may DELETE or TRUNCATE %s", when, table)
 		}
@@ -188,9 +188,11 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 // (00003's header): table → pointer columns, then the columns that must stay fixed.
 var pointerColumns = map[string][2][]string{
 	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "finding_id", "channel", "route_id"},
-		{"org_id", "created_at"}},
+		{"org_id", "created_at", "campaign_id"}},
 	"outreach_batch": {{"approved_at", "approved_hash"},
-		{"shadow", "created_at", "content_sha256", "templates_sha256"}},
+		{"shadow", "created_at", "content_sha256", "templates_sha256", "account_id"}},
+	// 00016: a campaign's one pointer is retired_at; its owner, slug and name are fixed.
+	"campaign": {{"retired_at"}, {"account_id", "slug", "name", "created_at"}},
 	"outreach_message": {{"state", "due_at", "sent_at", "smtp_reply", "cancel_reason", "approved_sha256"},
 		{"batch_id", "lead_id", "step", "channel", "to_address", "subject", "body_text", "message_id",
 			"in_reply_to", "slots", "created_at"}},
@@ -249,6 +251,13 @@ func TestLeadsMigrateFromEmpty(t *testing.T) {
 		t.Fatalf("leads goose rows = %d, want %d", got, count)
 	}
 
+	// 00016 seeds the default account and its Drupal campaign.
+	var acct, camp string
+	if err := owner.QueryRow(ctx, `SELECT a.slug, c.slug FROM campaign c JOIN account a ON a.id = c.account_id
+		WHERE a.id = 1 AND c.id = 1`).Scan(&acct, &camp); err != nil || acct != "operator" || camp != "drupal-eol" {
+		t.Fatalf("seeded account and campaign = %q %q (%v), want operator drupal-eol", acct, camp, err)
+	}
+
 	// The app role can write the new tables through the owner's default privileges.
 	app := storetest.AppConn(t)
 	var runID, fetchID, siteID int64
@@ -304,6 +313,8 @@ func TestLeadsMigrateIdempotent(t *testing.T) {
 	if got := appliedCount(t, owner, "goose_db_version"); got != coreBefore {
 		t.Fatalf("core goose rows after leads migrate = %d, want %d", got, coreBefore)
 	}
+	// A no-op migrate still runs the revokes: 00016's grants hold after it.
+	assertLeadPrivileges(t, owner, "after a no-op migrate")
 }
 
 func TestLeadsMigrateNeedsCoreSchema(t *testing.T) {
@@ -356,6 +367,10 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM lead_relevance_eval",
 		"DELETE FROM lead_setting",
 		"DELETE FROM lead_label",
+		"DELETE FROM account",
+		"DELETE FROM campaign",
+		"DELETE FROM campaign_version",
+		"TRUNCATE campaign",
 		"DELETE FROM lead_kind",
 		"DELETE FROM lead_channel",
 		"TRUNCATE lead_kind",
@@ -402,6 +417,20 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE lead_relevance_eval SET trusted = true",
 		"UPDATE lead_setting SET settings = NULL",
 		"UPDATE lead_label SET band = NULL",
+		// 00016: accounts are fixed, a campaign changes only its retired_at, versions are
+		// append-only, and no row moves to another account or campaign.
+		"UPDATE account SET name = 'renamed'",
+		"UPDATE account SET slug = 'other'",
+		"UPDATE campaign SET name = 'renamed'",
+		"UPDATE campaign SET slug = 'other'",
+		"UPDATE campaign SET account_id = 1",
+		"UPDATE campaign_version SET spec = '{}'",
+		"UPDATE campaign_version SET spec_sha256 = ''",
+		"UPDATE lead SET campaign_id = 1",
+		"UPDATE outreach_batch SET account_id = 1",
+		"UPDATE sender_mailbox SET account_id = 1",
+		"UPDATE suppression SET account_id = 1",
+		"UPDATE lead_setting SET account_id = 1",
 		// The reference rows change only by migration.
 		"UPDATE lead_kind SET outreach = true",
 		"UPDATE lead_channel SET label = ''",

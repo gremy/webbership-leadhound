@@ -1,0 +1,38 @@
+{{define "content"}}
+{{$cs := .Data}}
+<div class="page-head">
+  <h1>Campaigns</h1>
+</div>
+{{template "leads_tabs" (leadsTab "campaigns" true)}}
+<p class="lede">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server.</p>
+{{if $cs}}
+{{range $cs}}
+<section class="card settings-section campaign" id="campaign-{{.Slug}}" aria-labelledby="campaign-{{.Slug}}-title">
+  <h2 id="campaign-{{.Slug}}-title">{{or .Name .Slug}}{{if .Retired}} <span class="tag">retired</span>{{end}}</h2>
+  <dl class="fields">
+    <div><dt>Short name</dt><dd><code>{{.Slug}}</code></dd></div>
+    <div><dt>Version</dt><dd>{{with .SpecSHA}}<code>{{shortSHA .}}</code>{{else}}none registered{{end}}{{if not .SpecAt.IsZero}} · {{when .SpecAt}}{{end}}{{if eq .SpecSource "console"}} · changed in the console{{else if eq .SpecSource "file"}} · from its file{{end}}</dd></div>
+    <div><dt>Lead kinds</dt><dd>{{if .Kinds}}{{join .Kinds ", "}}{{else}}none{{end}}</dd></div>
+    <div><dt>Drafted by</dt><dd>{{writerWords .Writer}}</dd></div>
+    <div><dt>Claude spend today</dt><dd>{{or .ClaudeSpendToday "not in use yet"}}</dd></div>
+  </dl>
+
+  <h3>Countries</h3>
+  {{if .Countries}}
+  <ul class="item-list settings-readonly">
+    {{range .Countries}}<li><span class="item-head">{{or .Label .Code}}</span> <span class="item-meta">email {{if .Email}}on{{else}}off{{end}} · calls {{if .Call}}on{{else}}off{{end}}{{with .Language}} · writes in {{.}}{{end}}</span></li>{{end}}
+  </ul>
+  {{else}}<p class="empty">No countries: this campaign reaches no one.</p>{{end}}
+
+  <h3>Steps</h3>
+  {{if .Steps}}
+  <ol class="item-list settings-readonly campaign-steps">
+    {{range .Steps}}<li><span class="item-head">Step {{add .Step 1}}: {{if eq .Type "call"}}a phone call{{else if eq .Type "email"}}an email{{else}}{{.Type}}{{end}}</span> <span class="item-meta">{{if eq .Step 0}}first{{else if .AfterBusinessDays}}{{plural .AfterBusinessDays "business day" "business days"}} after the step before{{else}}straight after the step before{{end}}{{with stepWhen .When}} · {{.}}{{end}}</span></li>{{end}}
+  </ol>
+  {{else}}<p class="empty">No steps.</p>{{end}}
+</section>
+{{end}}
+{{else}}
+<p class="empty">No campaigns yet. The first one is registered from its file when LeadHound next builds leads.</p>
+{{end}}
+{{end}}

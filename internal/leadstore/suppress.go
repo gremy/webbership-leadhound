@@ -50,8 +50,10 @@ type Suppressed struct {
 // reaches (its route address, its org's domain, or a pending message's recipient, a
 // domain reaching its subdomains too) has its pending messages cancelled, and a lead in
 // state new or batched moves to suppressed. A lead in another state keeps it. Run it in a
-// transaction.
-func (q Queries) Suppress(ctx context.Context, kind, value, reason, source string) (Suppressed, error) {
+// transaction. The suppression is account accountID's (0: DefaultAccountID): it blocks every
+// campaign of that account and reaches only that account's leads.
+func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, reason, source string) (Suppressed, error) {
+	accountID = orAccount(accountID)
 	v := strings.ToLower(strings.TrimSpace(value))
 	if (kind != SuppressAddress && kind != SuppressDomain) ||
 		(reason != ReasonOptOut && reason != ReasonBounce && reason != ReasonRepliedNo && reason != ReasonManual) {
@@ -75,10 +77,11 @@ func (q Queries) Suppress(ctx context.Context, kind, value, reason, source strin
 		v = r
 	}
 	tag, err := q.db.Exec(ctx,
-		`INSERT INTO suppression (kind, value, reason, source)
-		 SELECT $1::text, $2::text, $3::text, $4::text
-		 WHERE NOT EXISTS (SELECT 1 FROM suppression_active WHERE kind = $1 AND value = $2 AND reason = $3)`,
-		kind, v, reason, source)
+		`INSERT INTO suppression (kind, value, reason, source, account_id)
+		 SELECT $1::text, $2::text, $3::text, $4::text, $5::bigint
+		 WHERE NOT EXISTS (SELECT 1 FROM suppression_active
+		   WHERE account_id = $5 AND kind = $1 AND value = $2 AND reason = $3)`,
+		kind, v, reason, source, accountID)
 	if err != nil {
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
 	}
@@ -87,7 +90,7 @@ func (q Queries) Suppress(ctx context.Context, kind, value, reason, source strin
 	// The leads this one suppression reaches, locked.
 	ids, err := collect(ctx, q.db, pgx.RowTo[int64],
 		`SELECT l.id FROM lead l JOIN org o ON o.id = l.org_id LEFT JOIN contact_route r ON r.id = l.route_id
-		 WHERE `+reachSQL(kind)+` ORDER BY l.id FOR UPDATE OF l`, v)
+		 WHERE `+reachSQL(kind)+` AND `+inAccountSQL+` ORDER BY l.id FOR UPDATE OF l`, v, accountID)
 	if err != nil {
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
 	}
@@ -136,6 +139,9 @@ func reachSQL(kind string) string {
 		      OR right(lower(split_part(m.to_address, '@', 2)), length($1) + 1) = '.' || $1)))`
 }
 
+// inAccountSQL is the SQL condition on lead l that is true when its campaign is account $2's.
+const inAccountSQL = `l.campaign_id IN (SELECT c.id FROM campaign c WHERE c.account_id = $2)`
+
 // Suppressions is every suppressed address and domain, lower case, sorted, each once
 // (outreach.NewSuppressionSet takes the two lists).
 type Suppressions struct {
@@ -143,14 +149,16 @@ type Suppressions struct {
 	Domains   []string
 }
 
-// SuppressionSet returns every active suppression (none lifted, FO6), whatever its reason.
-func (q Queries) SuppressionSet(ctx context.Context) (Suppressions, error) {
+// SuppressionSet returns every active suppression (none lifted, FO6) of account accountID
+// (0: DefaultAccountID), whatever its reason.
+func (q Queries) SuppressionSet(ctx context.Context, accountID int64) (Suppressions, error) {
 	type row struct {
 		Kind  string `db:"kind"`
 		Value string `db:"value"`
 	}
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[row],
-		`SELECT DISTINCT kind, value FROM suppression_active ORDER BY kind, value`)
+		`SELECT DISTINCT kind, value FROM suppression_active WHERE account_id = $1 ORDER BY kind, value`,
+		orAccount(accountID))
 	if err != nil {
 		return Suppressions{}, fmt.Errorf("leadstore: suppression set: %w", err)
 	}

@@ -78,7 +78,7 @@ func newLiftWorld(t *testing.T) liftWorld {
 	dom := liftDomain("northwind")
 	addr := liftAddr("contact", dom)
 	lead := f.siteLead(t, dom, intp(1), 7, addr)
-	if _, err := f.q.Suppress(context.Background(), leadstore.SuppressAddress, addr, leadstore.ReasonOptOut, "mailbox:1:INBOX:3"); err != nil {
+	if _, err := f.q.Suppress(context.Background(), 0, leadstore.SuppressAddress, addr, leadstore.ReasonOptOut, "mailbox:1:INBOX:3"); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.leadState(t, lead); got != leadstore.LeadSuppressed {
@@ -126,7 +126,7 @@ func TestLiftGrid(t *testing.T) {
 		})
 		t.Run(status+"/suppress same key", func(t *testing.T) {
 			w := setup(t)
-			res, err := w.f.q.Suppress(ctx, leadstore.SuppressAddress, w.addr, leadstore.ReasonOptOut, "mailbox:1:INBOX:4")
+			res, err := w.f.q.Suppress(ctx, 0, leadstore.SuppressAddress, w.addr, leadstore.ReasonOptOut, "mailbox:1:INBOX:4")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -136,7 +136,7 @@ func TestLiftGrid(t *testing.T) {
 		})
 		t.Run(status+"/suppression set", func(t *testing.T) {
 			w := setup(t)
-			set, err := w.f.q.SuppressionSet(ctx)
+			set, err := w.f.q.SuppressionSet(ctx, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -163,7 +163,7 @@ func TestLiftGrid(t *testing.T) {
 		})
 		t.Run(status+"/counts", func(t *testing.T) {
 			w := setup(t)
-			counts, err := w.f.q.SuppressionCounts(ctx)
+			counts, err := w.f.q.SuppressionCounts(ctx, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestSuppressAfterLiftRecordsAgain(t *testing.T) {
 	ctx := context.Background()
 	w := newLiftWorld(t)
 	w.lift(t)
-	res, err := w.f.q.Suppress(ctx, leadstore.SuppressAddress, w.addr, leadstore.ReasonOptOut, "mailbox:1:INBOX:9")
+	res, err := w.f.q.Suppress(ctx, 0, leadstore.SuppressAddress, w.addr, leadstore.ReasonOptOut, "mailbox:1:INBOX:9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestSuppressAfterLiftRecordsAgain(t *testing.T) {
 	if got := w.f.leadState(t, w.lead); got != leadstore.LeadSuppressed {
 		t.Errorf("lead = %s, want suppressed", got)
 	}
-	set, _ := w.f.q.SuppressionSet(ctx)
+	set, _ := w.f.q.SuppressionSet(ctx, 0)
 	if !slices.Contains(set.Addresses, w.addr) {
 		t.Error("the new suppression is not active")
 	}
@@ -256,7 +256,7 @@ func TestLiftRecordsAndReports(t *testing.T) {
 
 	// A domain suppression is confirmed by its domain.
 	dom := liftDomain("contoso")
-	if _, err := w.f.q.Suppress(ctx, leadstore.SuppressDomain, dom, leadstore.ReasonManual, "cli"); err != nil {
+	if _, err := w.f.q.Suppress(ctx, 0, leadstore.SuppressDomain, dom, leadstore.ReasonManual, "cli"); err != nil {
 		t.Fatal(err)
 	}
 	id := w.f.suppressionID(t, leadstore.SuppressDomain, dom, leadstore.ReasonManual)
@@ -268,7 +268,7 @@ func TestLiftRecordsAndReports(t *testing.T) {
 func TestLiftStillBlockedByDomain(t *testing.T) {
 	ctx := context.Background()
 	w := newLiftWorld(t)
-	if _, err := w.f.q.Suppress(ctx, leadstore.SuppressDomain, w.dom, leadstore.ReasonManual, "cli"); err != nil {
+	if _, err := w.f.q.Suppress(ctx, 0, leadstore.SuppressDomain, w.dom, leadstore.ReasonManual, "cli"); err != nil {
 		t.Fatal(err)
 	}
 	domID := w.f.suppressionID(t, leadstore.SuppressDomain, w.dom, leadstore.ReasonManual)
@@ -301,7 +301,7 @@ func TestLiftRefusals(t *testing.T) {
 		t.Errorf("a 300-character reason: %v", err)
 	}
 	// The CHECK is the backstop: a raw insert of a bad reason fails as the app role.
-	if _, err := w.f.q.Suppress(ctx, leadstore.SuppressDomain, liftDomain("fabrikam"), leadstore.ReasonManual, "cli"); err != nil {
+	if _, err := w.f.q.Suppress(ctx, 0, leadstore.SuppressDomain, liftDomain("fabrikam"), leadstore.ReasonManual, "cli"); err != nil {
 		t.Fatal(err)
 	}
 	other := w.f.suppressionID(t, leadstore.SuppressDomain, liftDomain("fabrikam"), leadstore.ReasonManual)

@@ -121,37 +121,37 @@ func TestSettingsLatestWins(t *testing.T) {
 	leadstoretest.Reset(t)
 	ctx := context.Background()
 	q := leadstoretest.Q(t)
-	raw, id, _, fromDB, err := q.LatestSettings(ctx)
+	raw, id, _, fromDB, err := q.LatestSettings(ctx, leadstore.DefaultAccountID)
 	if err != nil || raw != nil || id != 0 || fromDB {
 		t.Fatalf("cold start: %q %d %v %v", raw, id, fromDB, err)
 	}
-	first, err := q.SaveSettings(ctx, []byte(`{"skip_rank_over": 100000}`), leadstore.ActorOperator)
+	first, err := q.SaveSettings(ctx, leadstore.DefaultAccountID, []byte(`{"skip_rank_over": 100000}`), leadstore.ActorOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := q.SaveSettings(ctx, []byte(`{"batches_from": "starred_then_rest"}`), leadstore.ActorOperator)
+	second, err := q.SaveSettings(ctx, leadstore.DefaultAccountID, []byte(`{"batches_from": "starred_then_rest"}`), leadstore.ActorOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, id, at, fromDB, err := q.LatestSettings(ctx)
+	raw, id, at, fromDB, err := q.LatestSettings(ctx, leadstore.DefaultAccountID)
 	var doc map[string]any
 	if err != nil || id != second || !fromDB || at.IsZero() || json.Unmarshal(raw, &doc) != nil || doc["batches_from"] != "starred_then_rest" || len(doc) != 1 {
 		t.Errorf("latest = %q %d %v %v, want the second save (id %d, first %d)", raw, id, fromDB, err, second, first)
 	}
-	reset, err := q.ResetSettings(ctx, leadstore.ActorOperator)
+	reset, err := q.ResetSettings(ctx, leadstore.DefaultAccountID, leadstore.ActorOperator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, id, at, fromDB, err = q.LatestSettings(ctx)
+	raw, id, at, fromDB, err = q.LatestSettings(ctx, leadstore.DefaultAccountID)
 	if err != nil || raw != nil || id != reset || fromDB || at.IsZero() {
 		t.Errorf("after reset: %q %d %v %v, want no document, the reset's id %d", raw, id, fromDB, err, reset)
 	}
 	for name, doc := range map[string]string{"array": `[1]`, "invalid": `{"a":`, "string": `"x"`} {
-		if _, err := q.SaveSettings(ctx, []byte(doc), leadstore.ActorOperator); !errors.Is(err, leadstore.ErrSettingsNotObject) {
+		if _, err := q.SaveSettings(ctx, leadstore.DefaultAccountID, []byte(doc), leadstore.ActorOperator); !errors.Is(err, leadstore.ErrSettingsNotObject) {
 			t.Errorf("%s: %v, want ErrSettingsNotObject", name, err)
 		}
 	}
-	if _, err := q.SaveSettings(ctx, []byte(`{}`), leadstore.ActorGremy); !errors.Is(err, leadstore.ErrUnknownActor) {
+	if _, err := q.SaveSettings(ctx, leadstore.DefaultAccountID, []byte(`{}`), leadstore.ActorGremy); !errors.Is(err, leadstore.ErrUnknownActor) {
 		t.Errorf("as gremy: %v, want ErrUnknownActor", err)
 	}
 	app := storetest.AppConn(t)
