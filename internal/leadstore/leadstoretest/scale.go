@@ -21,7 +21,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v5"
+	scaleLeadsVersion = "v6"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -50,7 +50,7 @@ const (
 // The reference tables lead_kind and lead_channel are never in it: their rows come with the
 // migration (storetest.KeptTables).
 var leadsTables = []string{
-	"lead_setting", "lead_relevance_eval", "lead_relevance", "enrich_attempt", "org_fact", "lead_star", "finding",
+	"lead_label", "lead_setting", "lead_relevance_eval", "lead_relevance", "enrich_attempt", "org_fact", "lead_star", "finding",
 	"mailbox_check", "mailbox_state", "sender_mailbox",
 	"lead_priority", "priority_profile", "send_pause", "sender_check", "mailbox_cursor",
 	"mailbox_event", "suppression_lift", "suppression", "outreach_message", "outreach_batch", "lead_event", "lead",
@@ -449,6 +449,18 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			VALUES ('{"batches_from": "starred_then_rest"}'::jsonb, 'operator', $1::timestamptz - interval '20 days'),
 			       (NULL, 'operator', $1::timestamptz - interval '10 days'),
 			       ('{"skip_rank_over": 0, "kinds_off": []}'::jsonb, 'operator', $1::timestamptz - interval '1 day')`, []any{day}},
+		// The operator's calls: 40 leads labelled, 10 of them labelled again and 5 of those
+		// cleared since, so 35 leads carry a call.
+		{"lead_label", `WITH c AS (
+			  SELECT l.id, l.kind, g.k FROM lead l CROSS JOIN generate_series(0, 2) g(k)
+			  WHERE l.id <= 40 AND (g.k = 0 OR (g.k = 1 AND l.id <= 10) OR (g.k = 2 AND l.id <= 5))
+			)
+			INSERT INTO lead_label (lead_id, band, input, actor, created_at)
+			SELECT c.id,
+			       CASE WHEN c.k = 2 THEN NULL ELSE (ARRAY['strong', 'likely', 'maybe', 'unlikely', 'no'])[1 + (c.id + c.k) % 5] END,
+			       CASE WHEN c.k = 2 THEN NULL ELSE jsonb_build_object('kind', c.kind, 'major', 7, 'country', 'GB') END,
+			       'operator', $1::timestamptz - (3 - c.k) * interval '1 day'
+			FROM c ORDER BY c.k, c.id`, []any{day}},
 	}
 	for _, s := range steps {
 		if reuse && (s.name == "run" || s.name == "http_fetch") {

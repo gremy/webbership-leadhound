@@ -57,6 +57,7 @@ const (
 	RefuseRuleInvalid                            // ruleAdd, ruleDisable: Detail says what is wrong
 	RefuseRuleNotFound                           // ruleDisable: RuleID does not exist
 	RefuseRuleDisabled                           // ruleDisable: RuleID is already disabled
+	RefuseSettingsIgnored                        // newBatch: the saved settings fail leads.yaml's checks, so kinds_off and the rest are not applied
 )
 
 // LeadRefusal is a core's refusal with the facts its words need. Nothing was written.
@@ -271,10 +272,13 @@ type batchSetup struct {
 	leads  leadconfig.Config
 	shadow bool           // batchMode: the batch would be shadow
 	loc    *time.Location // the operator's zone (LEADHOUND_TZ): the days the ramp counts
+	// settingsIgnored: the saved settings no longer pass leads.yaml's checks, so leads is the
+	// file alone, without the operator's kinds_off, skip_rank_over and the rest.
+	settingsIgnored bool
 }
 
 func newBatchSetup(setup leadsSetup, loc *time.Location) batchSetup {
-	return batchSetup{leads: setup.leads, shadow: batchMode(setup.env), loc: loc}
+	return batchSetup{leads: setup.leads, shadow: batchMode(setup.env), loc: loc, settingsIgnored: len(setup.settings.Ignored) > 0}
 }
 
 // NewBatchRequest is one `batch new`.
@@ -324,6 +328,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	out := NewBatchOutcome{Shadow: bs.shadow}
 	if bs.shadow && req.LiveOnly {
 		return out, &LeadRefusal{Kind: RefuseNotLive}
+	}
+	// Ignored settings would draft from the file's kinds and ranks, so a kind the operator
+	// turned off could be drafted: no batch until the settings are fixed or reset.
+	if bs.settingsIgnored {
+		return out, &LeadRefusal{Kind: RefuseSettingsIgnored}
 	}
 	if err := lq.LockBatchNew(ctx); err != nil {
 		return out, err
@@ -452,6 +461,10 @@ func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSe
 // noStarredWords is RefuseNoStarred in plain words, for the CLI and the console alike.
 const noStarredWords = "No starred leads are ready: star some on Leads."
 
+// settingsIgnoredWords is RefuseSettingsIgnored in plain words, for the CLI and the console
+// alike.
+const settingsIgnoredWords = "Your saved settings no longer fit leads.yaml, so they are not applied: open Leads → Settings to fix or reset them before making a batch."
+
 // readyForLeads is decision 5's readiness to be given new leads: active, its latest check
 // passed, and a DNS pass today for its domain and selector (mbs was read from the start of
 // the operator's day).
@@ -559,6 +572,8 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 		note = "no room in the ramp"
 	case r != nil && r.Kind == RefuseNoStarred:
 		note = "no starred leads ready"
+	case r != nil && r.Kind == RefuseSettingsIgnored:
+		note = "saved settings ignored"
 	case runErr != nil:
 		note = runErr.Error()
 	}

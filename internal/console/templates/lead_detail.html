@@ -5,7 +5,7 @@
   <p><a href="/leads">Back to the list</a></p>
 </div>
 {{template "leads_tabs" (leadsTab "list" false)}}
-{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+{{if and $v.Message (not $v.AtCall)}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 <article class="record lead-record" id="lead-{{$d.LeadID}}">
   <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
@@ -15,7 +15,11 @@
     {{with $d.Country}}<div><dt>Country</dt><dd>{{.}}</dd></div>{{end}}
     <div><dt>Kind</dt><dd>{{$d.Kind}}</dd></div>
     <div><dt>State</dt><dd>{{$d.State}}</dd></div>
-    <div><dt>Relevance</dt><dd>{{or $d.Relevance "not rated yet"}}</dd></div>
+    <div><dt>Relevance</dt><dd>{{or $d.Relevance "not rated yet"}}
+      {{with $d.RelevanceHistory}}<details class="fact-more">
+        <summary>{{plural (len .) "rating" "ratings"}} so far</summary>
+        <ul class="item-list">{{range .}}<li><span class="item-head">{{.Words}}</span><span class="item-meta">{{when .At}}</span></li>{{end}}</ul>
+      </details>{{end}}</dd></div>
     <div><dt>Reach by</dt><dd>{{template "lead_channels" $d}}</dd></div>
     <div><dt>Outreach order</dt><dd>{{with $d.Position}}number {{.}}{{else}}not in the order{{end}}</dd></div>
     <div><dt>Starred</dt><dd>{{if $d.Starred}}yes{{else}}no{{end}}</dd></div>
@@ -67,6 +71,27 @@
     {{else}}<p class="muted">None found.</p>{{end}}
   </section>
 
+  {{$c := $d.YourCall}}
+  <section class="lead-call" id="your-call" aria-labelledby="call-title">
+    <h2 id="call-title">Your call</h2>
+    {{if and $v.Message $v.AtCall}}<p class="notice call-notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+    <p class="call-now">{{if $d.Call}}You said <strong>{{$d.Call}}</strong>{{with $c.At}} on {{when .}}{{end}}.{{else}}No call yet.{{end}}
+      {{with $d.Relevance}}Jev says {{.}}.{{else}}Jev has not rated it yet.{{end}}</p>
+    <form method="post" action="/leads/{{$d.LeadID}}/label" class="call-form">
+      <input type="hidden" name="back" value="{{$v.Back}}">
+      <div class="call-bands" role="group" aria-label="Your call on this lead">
+        {{range $c.Bands}}<button type="submit" name="band" value="{{.Value}}" title="{{.Help}}"{{if eq .Value $d.Call}} class="is-current" aria-current="true"{{end}}>{{.Label}}</button>{{end}}
+      </div>
+      {{if $d.Call}}<div class="call-clear-row"><button type="submit" name="band" value="clear" class="call-clear">Clear</button></div>{{end}}
+    </form>
+    <details class="call-help">
+      <summary>What each call means</summary>
+      <dl>{{range $c.Bands}}<div><dt>{{.Label}}</dt><dd>{{.Help}}</dd></div>{{end}}</dl>
+    </details>
+    <p class="hint">Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least {{$c.LabelGoal}} leads.</p>
+    <p class="hint">{{$c.Labelled}} of {{$c.LabelGoal}} labelled · <a href="/leads?to_label=1">Leads to label</a></p>
+  </section>
+
   {{with $d.Agency}}
   <section>
     <h2>Agency page</h2>
@@ -111,13 +136,6 @@
     </details>
     {{end}}
     {{else}}<p class="muted">Nothing drafted for this lead yet.</p>{{end}}
-  </section>
-
-  <section>
-    <h2>Relevance</h2>
-    {{if $d.RelevanceHistory}}
-    <ul class="item-list">{{range $d.RelevanceHistory}}<li><span class="item-head">{{.Words}}</span><span class="item-meta">{{when .At}}</span></li>{{end}}</ul>
-    {{else}}<p class="muted">Not rated yet.</p>{{end}}
   </section>
 
   <section>

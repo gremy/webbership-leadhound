@@ -111,7 +111,7 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 // appendOnlyLeadTables are the append-only lead tables from 00010 on: INSERT and SELECT, no
 // UPDATE, no DELETE.
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
-	"lead_relevance_eval", "lead_setting"}
+	"lead_relevance_eval", "lead_setting", "lead_label"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -355,6 +355,7 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM lead_relevance",
 		"DELETE FROM lead_relevance_eval",
 		"DELETE FROM lead_setting",
+		"DELETE FROM lead_label",
 		"DELETE FROM lead_kind",
 		"DELETE FROM lead_channel",
 		"TRUNCATE lead_kind",
@@ -400,6 +401,7 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE lead_relevance SET score = 0",
 		"UPDATE lead_relevance_eval SET trusted = true",
 		"UPDATE lead_setting SET settings = NULL",
+		"UPDATE lead_label SET band = NULL",
 		// The reference rows change only by migration.
 		"UPDATE lead_kind SET outreach = true",
 		"UPDATE lead_channel SET label = ''",

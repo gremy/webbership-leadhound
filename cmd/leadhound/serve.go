@@ -360,7 +360,8 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		Updating:          v.updating && !v.at.IsZero(),
 		Building:          v.updating && v.at.IsZero(),
 		LastBuildFailedAt: v.failedAt,
-		CallCap:           b.cfg.JevDailyCallCap,
+		JobsCallCap:       b.cfg.JevDailyCallCap,
+		LeadsCallCap:      b.cfg.JevLeadsDailyCallCap,
 	}
 	if !v.at.IsZero() {
 		in, f := v.snap.in, v.snap.funnel
@@ -375,7 +376,12 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 	if err != nil {
 		return console.Dashboard{}, err
 	}
-	d.AICalls, d.AIInputTokens = u.Calls, u.InputTokens
+	d.JobsCalls, d.LeadsCalls, d.AIInputTokens = u.JobsCalls, u.LeadsCalls, u.InputTokens
+	// The leads cap in force is the one leads rate runs under: the saved settings may lower
+	// the server's cap. Without leads set up here, the server's cap stands.
+	if setup, err := b.leadsSetup(ctx, leadsForProbe); err == nil {
+		d.LeadsCallCap = setup.jevLeadsDailyCap()
+	}
 	d.AICostUSD = float64(u.InputTokens) * eval.CostPerMillionInput / 1e6
 	boards, err := q.CountBoards(ctx, store.BoardFilter{})
 	if err != nil {

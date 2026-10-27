@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,7 +41,7 @@ var orderSites = []struct {
 	{"bellows.example", 8},
 }
 
-// orderScene is a fresh leads database holding the eight orderSites as leads, shadow mode
+// orderScene is a fresh leads database holding the orderSites (eight) as leads, shadow mode
 // and the clock at leadsTuesday. It returns the data directory.
 func orderScene(t *testing.T) string {
 	t.Helper()
@@ -89,7 +90,7 @@ func orderScene(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	if out := mustRun(t, "leads", "build"); !strings.Contains(out, "8 leads (8 new") {
+	if out := mustRun(t, "leads", "build"); !strings.Contains(out, fmt.Sprintf("%d leads (%d new", len(orderSites), len(orderSites))) {
 		t.Fatalf("build:\n%s", out)
 	}
 	return dir
@@ -200,5 +201,45 @@ func TestLeadsBatchFollowsStarOrder(t *testing.T) {
 	want := append(slices.Clone(starred), "lucerne.example", "fourthcoffee.example", "proseware.example")
 	if got := batchDomains(t, h, cookie, 2); !slices.Equal(got, want) {
 		t.Errorf("batch 2 lists %v, want %v", got, want)
+	}
+}
+
+// TestLeadsBatchRefusesIgnoredSettings: while the saved settings fail leads.yaml's checks
+// they are ignored whole, kinds_off with them, so a batch drawn from starred_then_rest would
+// draft the kinds the operator turned off. batch new refuses instead, in plain words: the CLI
+// exits 2, so the 06:15 batch timer fails visibly, and the console refuses with the same
+// words. Nothing is drafted. Once the settings pass again, the batch is made and honours them.
+func TestLeadsBatchRefusesIgnoredSettings(t *testing.T) {
+	ctx := context.Background()
+	dir := orderScene(t)
+	drawFromAll(t, dir)
+	b := leadsBackend(t)
+
+	// Every order lead is unsupported: the operator turned that kind off, in a row that also
+	// carries a retired key, so the whole row is ignored.
+	saveSettings(t, `{"kinds_off":["unsupported"],"sending_pace":3}`)
+	code, out, errOut := leadsRun(t, "leads", "batch", "new")
+	if code != 2 || !strings.Contains(errOut, settingsIgnoredWords) || strings.Contains(out, "Batch ") {
+		t.Errorf("batch new with ignored settings: exit %d, stdout %q, stderr %q; want exit 2 and %q", code, out, errOut, settingsIgnoredWords)
+	}
+	func() {
+		goLive(t)
+		defer t.Setenv("LEADHOUND_OUTREACH", "")
+		_, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadNewBatch})
+		if !errors.Is(err, console.ErrUserFixable) || !strings.Contains(err.Error(), settingsIgnoredWords) {
+			t.Errorf("console new batch with ignored settings: %v", err)
+		}
+	}()
+	if n := batchCount(t, `SELECT count(*)::int FROM outreach_batch`); n != 0 {
+		t.Fatalf("%d batches drafted while the saved settings were ignored", n)
+	}
+	if n := batchCount(t, `SELECT count(*)::int FROM outreach_message`); n != 0 {
+		t.Fatalf("%d messages drafted while the saved settings were ignored", n)
+	}
+
+	// Fixed: the settings apply again and the batch leaves the turned-off kind out.
+	saveSettings(t, `{"kinds_off":["d10"]}`)
+	if out := mustRun(t, "leads", "batch", "new"); !strings.Contains(out, "Batch 1 (shadow)") {
+		t.Fatalf("batch new with sound settings:\n%s", out)
 	}
 }

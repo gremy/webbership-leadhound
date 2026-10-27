@@ -144,7 +144,7 @@ BEGIN
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.lead_channel FROM leadhound_app;
   END IF;
   -- Findings (00010), stars (00011), org facts and enrich attempts (00012), relevance and its
-  -- evals (00013) and the leads settings (00014) are append-only.
+  -- evals (00013), the leads settings (00014) and the operator's calls (00015) are append-only.
   IF to_regclass('public.finding') IS NOT NULL THEN
     REVOKE UPDATE ON public.finding FROM leadhound_app;
   END IF;
@@ -165,6 +165,9 @@ BEGIN
   END IF;
   IF to_regclass('public.lead_setting') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_setting FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_label') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_label FROM leadhound_app;
   END IF;
 END
 $$;

@@ -121,14 +121,16 @@ type Dashboard struct {
 	Health                                       []string // brief.HealthLines, verbatim
 	ApplyNow, YourCallNow, Unscored, Unreachable int
 	Funnel                                       Funnel // copy of store.Funnel's fields (no store import here)
-	AICalls, AIInputTokens                       int
-	AICostUSD                                    float64
-	CallCap                                      int
-	Boards                                       []BoardCount  // ats, state, n
-	LastRuns                                     []RunRow      // the latest 8
-	LastBrief                                    *BriefStamp   // day, sent at, listed count; nil when none sent
-	Leads                                        *LeadsSummary // nil when leads are not set up on this server
-	RunNow                                       RunNowCard    // read live, outside the snapshot
+	// JobsCalls and LeadsCalls are today's Jev calls for scoring jobs and rating leads, each
+	// against its own daily cap (JobsCallCap, LeadsCallCap; 0 when unknown).
+	JobsCalls, JobsCallCap, LeadsCalls, LeadsCallCap int
+	AIInputTokens                                    int           // both purposes together
+	AICostUSD                                        float64       // both purposes together
+	Boards                                           []BoardCount  // ats, state, n
+	LastRuns                                         []RunRow      // the latest 8
+	LastBrief                                        *BriefStamp   // day, sent at, listed count; nil when none sent
+	Leads                                            *LeadsSummary // nil when leads are not set up on this server
+	RunNow                                           RunNowCard    // read live, outside the snapshot
 }
 
 // Funnel counts the day's jobs at each step, as store.Funnel does.
@@ -263,6 +265,7 @@ type LeadListQuery struct {
 	Status                     string   // "" (open) | open | contacted | all
 	Sort                       string   // "" (relevance) | relevance | newest | order
 	Page                       string   // 1 and up
+	ToLabel                    string   // "" any | "1" the leads to label: the spread sample and the leads with a call
 }
 
 // LeadListPage is one page of the Leads list. Total is how many leads match the filter,
@@ -277,6 +280,9 @@ type LeadListPage struct {
 	Filter        LeadListQuery
 	Options       LeadFilterOptions
 	Notes         []string
+	// Labelled is how many leads carry the operator's call; LabelGoal how many the trust gate
+	// needs (30).
+	Labelled, LabelGoal int
 }
 
 // LeadFilterOptions are the choices the filter form offers, each a value and its words.
@@ -290,12 +296,13 @@ type FilterOption struct{ Value, Label string }
 
 // LeadListRow is one lead of the list, worded by the backend. Kind is the kind's label,
 // Finding the finding in one line, Relevance the relevance in words ("" when not rated),
-// Position the lead's place in the outreach order ("" when it has none).
+// Position the lead's place in the outreach order ("" when it has none), Call the operator's
+// own band for it ("" when he has made no call).
 type LeadListRow struct {
 	LeadID, OrgID                int64
 	Name, Domain, Country, Kind  string
 	Finding, Relevance, Position string
-	State                        string
+	State, Call                  string
 	HasEmail, HasForm, HasPhone  bool
 	Starred, SmallSite           bool
 }
@@ -320,7 +327,28 @@ type LeadDetailPage struct {
 	Messages         []LeadDetailMessage
 	RelevanceHistory []LeadRelevance // the latest few ratings, newest first
 	Why              []string        // why it ranks here, one plain line each
+	YourCall         LeadCall        // the operator's own call: the "Your call" block
 }
+
+// LeadCall is the operator's own call on a lead, as its page shows it: the band he chose
+// (LeadListRow.Call) and when, the bands he may choose with their plain meaning, and how
+// many leads carry a call against the trust gate's goal.
+type LeadCall struct {
+	At                  *time.Time // when the current call was made; nil with no call
+	Bands               []CallBand // best first
+	Labelled, LabelGoal int
+}
+
+// CallBand is one band the operator may choose: the value the form posts, the button's
+// words, and what the band means.
+type CallBand struct{ Value, Label, Help string }
+
+// The values the "Your call" form posts as band: one of LabelBands, or LabelClear.
+const LabelClear = "clear"
+
+// LabelBands are the bands a call may name, best first: leadrate's bands, which the backend
+// checks again.
+var LabelBands = []string{"strong", "likely", "maybe", "unlikely", "no"}
 
 // LeadSignal is one piece of the finding's evidence with the fetch it came from. Status is
 // the fetch's HTTP status in words; FetchedAt is nil when the fetch is unknown.
@@ -460,10 +488,21 @@ type SettingsSources struct {
 type LeadSettingsPage struct {
 	Values    LeadSettingsValues
 	Sources   SettingsSources
-	ServerCap int      // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the most a setting may allow a day
-	TrustGate []string // whether the list and the queue sort by relevance yet, and why, one line each
-	Notes     []string
-	ReadOnly  ReadOnlySettings
+	ServerCap int       // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the most a setting may allow a day
+	TrustGate TrustGate // whether the list and the queue sort by relevance yet, and the rule
+	// Labelled is how many leads carry the operator's call, LabelGoal how many the trust gate
+	// needs; the leads to label are at ToLabelPath.
+	Labelled, LabelGoal int
+	Notes               []string
+	ReadOnly            ReadOnlySettings
+}
+
+// TrustGate is the relevance trust gate in words: Status says whether the list and the queue
+// sort by relevance yet and what the latest check read, one line each (none when the gate
+// says nothing); Rule is the rule in plain words, and Exact its thresholds for the fold.
+type TrustGate struct {
+	Status      []string
+	Rule, Exact string
 }
 
 // ReadOnlySettings are the settings the Settings page shows and never changes: they are

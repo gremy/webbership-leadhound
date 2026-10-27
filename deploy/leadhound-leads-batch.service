@@ -4,8 +4,9 @@
 # sending is switched on (deploy/README.md, Leads on the server).
 #
 # Every subcommand exits 0 once it has recorded its outcome and non-zero only for a crash or
-# bad config. Every step but the last is written ExecStart=-..., so even a crash never stops
-# a later one.
+# bad config; saved settings that no longer fit leads.yaml count as bad config, so batch new
+# fails the unit rather than draft without them. Every step but the last is written
+# ExecStart=-..., so even a crash never stops a later one.
 [Unit]
 Description=leadhound leads build and next batch
 After=network-online.target postgresql.service

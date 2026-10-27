@@ -147,6 +147,8 @@ func leadsPosts() []leadsRoute {
 		{"/leads/5/defer", url.Values{"until": {" 2026-11-07 "}}, "/leads", LeadAction{Do: LeadDefer, ID: 5, Until: "2026-11-07"}},
 		{"/leads/5/skip", url.Values{"back": {"//evil.example"}}, "/leads", LeadAction{Do: LeadSkip, ID: 5}},
 		{"/leads/5/clear", url.Values{"until": {"2026-11-07"}}, "/leads", LeadAction{Do: LeadClear, ID: 5}},
+		{"/leads/5/label", url.Values{"band": {" likely "}, "back": {"/leads/5"}}, "/leads/5#your-call", LeadAction{Do: LeadLabel, ID: 5, Value: "likely"}},
+		{"/leads/5/label", url.Values{"band": {"clear"}, "back": {"/leads/5#lead-5"}}, "/leads/5#your-call", LeadAction{Do: LeadLabel, ID: 5, Value: "clear"}},
 	}
 }
 
@@ -497,7 +499,7 @@ func TestLeadsPages(t *testing.T) {
 		"/leads/outreach": {"Sending is on.", "2 of 4", "DMARC <span class=\"bad\">missing</span>", `href="/leads/batches/3"`,
 			`action="/leads/batches/new"`, "Make the next batch now", `action="/leads/messages/11/resolve"`, `action="/leads/items/9/done"`,
 			`name="value" value="northwind.example"`, "Pause sending", `action="/leads/contacted"`, "j***@northwind.example"},
-		"/leads/settings":  {`name="kind.unsupported" value="20"`, "Source: file", `action="/leads/settings/order"`},
+		"/leads/settings":  {`name="kind.unsupported" value="20"`, "Order changed here on 24 October 2026.", `action="/leads/settings/order"`},
 		"/leads/batches/3": {"1. northwind.example", "To: northwind.example", "Subject: northwind.example", "Finding: northwind.example"},
 	}
 	for p, wants := range pages {
@@ -826,8 +828,8 @@ func TestLeadDetailPage(t *testing.T) {
 	body := h.do(get("/leads/5", h.session(t))).Body.String()
 	last := -1
 	for _, section := range []string{"<h2>Finding</h2>", "<h2>Ways to reach them</h2>", "<h2>From their site</h2>",
-		"<h2>Agency page</h2>", "<h2>The site</h2>", "<h2>History</h2>", "<h2>Place in the queue</h2>", "<h2>Messages</h2>",
-		"<h2>Relevance</h2>", "<h2>Why it ranks here</h2>"} {
+		`<h2 id="call-title">Your call</h2>`, "<h2>Agency page</h2>", "<h2>The site</h2>", "<h2>History</h2>",
+		"<h2>Place in the queue</h2>", "<h2>Messages</h2>", "<h2>Why it ranks here</h2>"} {
 		i := strings.Index(body, section)
 		if i < 0 || i < last {
 			t.Errorf("%s missing or out of order", section)
@@ -837,7 +839,9 @@ func TestLeadDetailPage(t *testing.T) {
 	for _, want := range []string{
 		`<a href="/leads" aria-current="page">Leads</a>`, `<a href="/leads" aria-current="true">List</a>`,
 		`<article class="record lead-record" id="lead-5">`, "<h1>Northwind Trading</h1>",
-		"<dt>Relevance</dt><dd>Northwind Trading</dd>", "<dt>Reach by</dt><dd>email · form</dd>", "<dt>Outreach order</dt><dd>number 3</dd>",
+		"<dt>Relevance</dt><dd>Northwind Trading\n", "<summary>1 rating so far</summary>",
+		`<li><span class="item-head">Northwind Trading</span><span class="item-meta">Sat 24 Oct 04:50</span></li>`,
+		"<dt>Reach by</dt><dd>email · form</dd>", "<dt>Outreach order</dt><dd>number 3</dd>",
 		"generator: Northwind Trading",
 		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow">https://northwind.example/</a>`,
 		`ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
@@ -853,6 +857,11 @@ func TestLeadDetailPage(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the lead page lacks %q", want)
 		}
+	}
+	// Relevance is said once, in the facts, with its ratings folded under it: no section of
+	// its own.
+	if strings.Contains(body, "<h2>Relevance</h2>") || strings.Contains(body, "Not rated yet.") {
+		t.Error("the lead page still has a Relevance section")
 	}
 	open := strings.Index(body, `<details class="lead-message">`)
 	msg := strings.Index(body, "<div class=\"message-body\">Northwind Trading\n\nBest</div>")

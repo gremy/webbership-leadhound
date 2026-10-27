@@ -6,8 +6,8 @@
 {{template "leads_tabs" (leadsTab "settings" true)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 {{if $v.Problems}}<p class="notice notice-error" role="alert">Nothing was saved. <a href="#{{$v.Section}}">{{$v.SectionTitle}}</a> needs {{if eq (len $v.Problems) 1}}a fix{{else}}fixes{{end}} first.</p>{{end}}
-{{range $p.Notes}}<p class="notice">{{.}}</p>{{end}}
-<p class="lede">These settings sit on top of the leads settings file. Each value says where it comes from; a section's reset puts it back to the file.</p>
+{{range $p.Notes}}<p class="note">{{.}}</p>{{end}}
+<p class="lede">These settings sit on top of the leads settings file. A value changed here says when; a section's reset puts it back to the file. A change shapes what new batches draft; leads already drafted or sent stay as they are.</p>
 <nav class="settings-toc" aria-label="Settings sections">
   <ul>
     {{range $v.Sections}}<li><a href="#{{.Name}}">{{.Title}}</a></li>{{end}}
@@ -15,196 +15,257 @@
   </ul>
 </nav>
 
-<section class="card settings-section" id="who" aria-labelledby="who-title">
+<section class="card settings-section" id="who" aria-labelledby="who-title" aria-describedby="who-intro">
   <h2 id="who-title">Who to contact</h2>
   {{if eq $v.Section "who"}}{{template "settings_problems" $v}}{{end}}
+  <p id="who-intro" class="section-intro">The countries LeadHound may write to. A lead in a country that is left out never joins a new batch.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>The countries listed are the ones the leads settings file names, each with its own channel and language, shown under In the file and on the server. Leads from a country the file does not name are never written to anyway; the box below makes that rule explicit, and each such lead says "never contacted".</p>
+    <p>These countries are kept with the fallback order, but each section saves and resets on its own: resetting this one leaves the fallback order as it is.</p>
+  </details>
   <form method="post" action="/leads/settings/who" class="settings-form">
     {{with $x.Countries}}
     <fieldset>
       <legend>Countries to contact</legend>
-      <div class="checks">{{range .}}<input type="hidden" name="country" value="{{.Code}}"><label><input type="checkbox" name="wanted" value="{{.Code}}"{{if .Wanted}} checked{{end}}> {{or .Label .Code}}</label>{{end}}</div>
+      <div class="checks">{{range .}}<input type="hidden" name="country" value="{{.Code}}"><label><input type="checkbox" aria-describedby="countries-hint" name="wanted" value="{{.Code}}"{{if .Wanted}} checked{{end}}> {{or .Label .Code}}</label>{{end}}</div>
+      <p id="countries-hint" class="hint">Ticked countries are contacted. Untick one to keep its leads out of new batches; tick it again to bring them back.</p>
     </fieldset>
     {{end}}
     <div class="settings-field">
       <label for="never-contact">Never contact these other countries</label>
       <input id="never-contact" name="never_contact" value="{{$x.NeverContact}}" maxlength="{{maxText}}" aria-describedby="never-contact-hint">
-      <p id="never-contact-hint" class="hint">Country codes, for example FR, IT. A country left unticked above is never contacted either.</p>
+      <p id="never-contact-hint" class="hint">Two-letter country codes, separated by commas, for example FR, IT. Blank means none. A country left unticked above is never contacted either.</p>
     </div>
-    <p class="setting-source">Source: {{source $s.Who}}</p>
-    <p class="hint">A change applies to new leads at the next build.</p>
+    {{with changed "" $s.Who}}<p class="setting-source">{{.}}</p>{{end}}
+    <p class="hint">A change applies to the queue straight away and to the next new batch; batches already made keep their leads.</p>
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="kinds" aria-labelledby="kinds-title">
+<section class="card settings-section" id="kinds" aria-labelledby="kinds-title" aria-describedby="kinds-intro">
   <h2 id="kinds-title">Lead kinds</h2>
   {{if eq $v.Section "kinds"}}{{template "settings_problems" $v}}{{end}}
+  <p id="kinds-intro" class="section-intro">The kinds of lead LeadHound drafts, such as a site on a Drupal version past its end of life. Turn a kind off to stop drafting it, and use Up and Down to choose which kind new batches draw first.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>The order gives each kind its points in the fallback order: the first kind gets the most, 10 points more than the next. If the fallback order sets its own points for kinds, those decide instead, and a note at the top of this page says so.</p>
+    <p>Starred leads always come first, whatever their kind. Up and Down save straight away, with the ticks as they are on screen.</p>
+  </details>
   <form method="post" action="/leads/settings/kinds" class="settings-form">
     {{if $x.Kinds}}
-    <p class="hint">Batches draw the kinds in this order, first first. A kind turned off leaves the queue and new batches.</p>
     <ol class="kind-order">
       {{$last := len $x.Kinds}}
       {{range $i, $k := $x.Kinds}}
       {{$name := or $k.Label $k.Name}}
       <li>
         <input type="hidden" name="kind" value="{{$k.Name}}">
-        <label class="kind-on"><input type="checkbox" name="on" value="{{$k.Name}}"{{if $k.On}} checked{{end}}> {{$name}}</label>
+        <label class="kind-on"><input type="checkbox" aria-describedby="kinds-hint" name="on" value="{{$k.Name}}"{{if $k.On}} checked{{end}}> {{$name}}</label>
         <span class="kind-moves">
-          {{if gt $i 0}}<button type="submit" name="do" value="up:{{$k.Name}}" class="move-up">Up<span class="visually-hidden"> {{$name}}</span></button>{{end}}
-          {{if lt (add $i 1) $last}}<button type="submit" name="do" value="down:{{$k.Name}}" class="move-down">Down<span class="visually-hidden"> {{$name}}</span></button>{{end}}
+          {{if gt $i 0}}<button type="submit" name="do" value="up:{{$k.Name}}" class="move-up">Up<span class="visually-hidden"> {{$name}}</span></button>{{else}}<span class="move-up move-none" aria-hidden="true"></span>{{end}}
+          {{if lt (add $i 1) $last}}<button type="submit" name="do" value="down:{{$k.Name}}" class="move-down">Down<span class="visually-hidden"> {{$name}}</span></button>{{else}}<span class="move-down move-none" aria-hidden="true"></span>{{end}}
         </span>
       </li>
       {{end}}
     </ol>
+    <p id="kinds-hint" class="hint">Ticked kinds are drafted. Turning a kind off takes its leads out of the queue and new batches; leads already drafted stay. Batches draw the kinds in this order, first first.</p>
     {{else}}<p class="empty">No lead kinds are known.</p>{{end}}
-    <p class="setting-source">On or off · Source: {{source $s.KindsOn}}</p>
-    <p class="setting-source">Order · Source: {{source $s.KindsOrder}}</p>
+    {{with changed "Ticks" $s.KindsOn}}<p class="setting-source">{{.}}</p>{{end}}
+    {{with changed "Order" $s.KindsOrder}}<p class="setting-source">{{.}}</p>{{end}}
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="small-sites" aria-labelledby="small-sites-title">
+<section class="card settings-section" id="small-sites" aria-labelledby="small-sites-title" aria-describedby="small-sites-intro">
   <h2 id="small-sites-title">Small sites</h2>
   {{if eq $v.Section "small-sites"}}{{template "settings_problems" $v}}{{end}}
+  <p id="small-sites-intro" class="section-intro">Leave out sites too small to be worth an email. Each site has a rank from the public top-sites lists it was found on, where 1 is the busiest site.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>A site left out stays on the Leads list, marked "small site", so you can still look at it, but it leaves the queue and new batches. Raise the number, or set 0, to bring those leads back.</p>
+    <p>It applies only to leads that come from a site on those lists; other kinds of lead are never left out by it.</p>
+  </details>
   <form method="post" action="/leads/settings/small-sites" class="settings-form">
     <div class="settings-field">
       <label for="skip-rank-over">Skip sites ranked below</label>
       <input id="skip-rank-over" name="skip_rank_over" value="{{$x.SkipRankOver}}" type="number" min="0" step="1" inputmode="numeric" aria-describedby="skip-rank-hint">
-      <p id="skip-rank-hint" class="hint">A list rank, for example 100000. A site lead ranked lower, or not ranked, leaves the queue and stays in the list marked "small site". 0 is off.</p>
+      <p id="skip-rank-hint" class="hint">A rank, for example 100000: that keeps the top 100,000 sites and leaves out sites ranked lower or not ranked at all. 0 is off, the default.</p>
     </div>
-    <p class="setting-source">Source: {{source $s.SkipRankOver}}</p>
+    {{with changed "" $s.SkipRankOver}}<p class="setting-source">{{.}}</p>{{end}}
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="batches" aria-labelledby="batches-title">
+<section class="card settings-section" id="batches" aria-labelledby="batches-title" aria-describedby="batches-intro">
   <h2 id="batches-title">Batches draw from</h2>
   {{if eq $v.Section "batches"}}{{template "settings_problems" $v}}{{end}}
+  <p id="batches-intro" class="section-intro">Where a new batch takes its leads from. A batch is a set of drafts you read and approve before anything is sent.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>For example, with 5 starred leads and room for 20 in a batch: Starred leads only drafts those 5 and stops. Starred leads first, then the rest drafts the 5, then 15 more from the queue in the fallback order, or by relevance once relevance has passed its check.</p>
+    <p>With Starred leads only and no starred lead ready, a new batch drafts nothing and says so. How many leads a batch holds is under Sending pace and ramp, below.</p>
+  </details>
   <form method="post" action="/leads/settings/batches" class="settings-form">
     <fieldset>
       <legend>A new batch drafts</legend>
-      <div class="checks stacked">{{range $v.BatchSources}}<label><input type="radio" name="batches_from" value="{{.Value}}"{{if eq .Value $x.BatchesFrom}} checked{{end}}> {{.Label}}</label>{{end}}</div>
+      <div class="checks stacked">{{range $v.BatchSources}}<label><input type="radio" aria-describedby="batches-hint" name="batches_from" value="{{.Value}}"{{if eq .Value $x.BatchesFrom}} checked{{end}}> {{.Label}}</label>{{end}}</div>
+      <p id="batches-hint" class="hint">Starred leads only is the default. A change applies from the next new batch; batches already made keep their leads.</p>
     </fieldset>
-    <p class="setting-source">Source: {{source $s.BatchesFrom}}</p>
+    {{with changed "" $s.BatchesFrom}}<p class="setting-source">{{.}}</p>{{end}}
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="dates" aria-labelledby="dates-title">
+<section class="card settings-section" id="dates" aria-labelledby="dates-title" aria-describedby="dates-intro">
   <h2 id="dates-title">Dates</h2>
   {{if eq $v.Section "dates"}}{{template "settings_problems" $v}}{{end}}
+  <p id="dates-intro" class="section-intro">The end-of-life date of each Drupal version, as the emails state it. Keep them to the official dates, because the emails quote them.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>Jev reads these dates when it rates a lead, so after a change the leads on that version are rated again at the next rating run, within the daily limit under Jev relevance.</p>
+  </details>
   <form method="post" action="/leads/settings/dates" class="settings-form">
-    <p class="hint">The end-of-life date of each Drupal version, as the emails state it.</p>
     <div class="settings-dates">
       {{range $x.Dates}}
       <div class="settings-field">
         <label for="date-{{.Name}}">{{or .Label .Name}}</label>
-        <input id="date-{{.Name}}" name="{{.Name}}" value="{{.Value}}" type="date">
-        <p class="setting-source">Source: {{source .Source}}</p>
+        <input id="date-{{.Name}}" name="{{.Name}}" value="{{.Value}}" type="date" aria-describedby="dates-hint">
+        {{with changed "" .Source}}<p class="setting-source">{{.}}</p>{{end}}
       </div>
       {{end}}
     </div>
+    <p id="dates-hint" class="hint">A change shows in new drafts. Drafts already made keep the date they were written with.</p>
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="relevance" aria-labelledby="relevance-title">
+<section class="card settings-section" id="relevance" aria-labelledby="relevance-title" aria-describedby="relevance-intro">
   <h2 id="relevance-title">Jev relevance</h2>
   {{if eq $v.Section "relevance"}}{{template "settings_problems" $v}}{{end}}
+  <p id="relevance-intro" class="section-intro">Jev reads each lead and gives it a relevance number from 0 to 100: how likely the site is to want the work. The number shows on Leads; it orders the queue only once it has passed its check, below.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>A lead is rated once, and again only when what Jev reads about it changes, such as its version or an end-of-life date. Rating costs little; the daily limit is there to stop a run that goes wrong, not to keep to a budget.</p>
+  </details>
   <form method="post" action="/leads/settings/relevance" class="settings-form">
-    <div class="checks">
-      <label><input type="checkbox" name="rating" value="on"{{if $x.Rating}} checked{{end}}> Rate new leads for relevance</label>
+    <div class="settings-field check-field">
+      <div class="checks">
+        <label><input type="checkbox" aria-describedby="rating-hint" name="rating" value="on"{{if $x.Rating}} checked{{end}}> Rate new leads for relevance</label>
+      </div>
+      <p id="rating-hint" class="hint">On by default. Turned off, no lead is rated; leads keep the numbers they already have.</p>
+      {{with changed "" $s.Rating}}<p class="setting-source">{{.}}</p>{{end}}
     </div>
-    <p class="setting-source">Source: {{source $s.Rating}}</p>
     <div class="settings-field">
       <label for="leads-cap">Most ratings a day</label>
       <input id="leads-cap" name="leads_cap" value="{{$x.LeadsCap}}" type="number" min="0"{{if gt $p.ServerCap 0}} max="{{$p.ServerCap}}"{{end}} step="1" inputmode="numeric" aria-describedby="leads-cap-hint">
-      <p id="leads-cap-hint" class="hint">0 uses the server's cap{{if gt $p.ServerCap 0}} of {{thousands $p.ServerCap}} a day{{end}}. A setting may lower the server's cap, never raise it.</p>
+      <p id="leads-cap-hint" class="hint">0 uses the server's limit{{if gt $p.ServerCap 0}} of {{thousands $p.ServerCap}} a day{{end}}; you can set a lower number here, not a higher one.</p>
+      {{with changed "" $s.LeadsCap}}<p class="setting-source">{{.}}</p>{{end}}
     </div>
-    <p class="setting-source">Source: {{source $s.LeadsCap}}</p>
-    {{with $p.TrustGate}}
-    <h3>Sorting by relevance</h3>
-    {{range .}}<p>{{.}}</p>{{end}}
+    {{$g := $p.TrustGate}}
+    {{if or $g.Status $g.Rule $p.LabelGoal}}
+    <div class="trust-gate">
+      <h3>Sorting by relevance</h3>
+      {{range $g.Status}}<p class="hint">{{.}}</p>{{end}}
+      {{with $g.Rule}}<p class="hint">{{.}}</p>{{end}}
+      {{with $g.Exact}}<details class="more">
+        <summary>More about this</summary>
+        <p>{{.}}</p>
+      </details>{{end}}
+      {{if $p.LabelGoal}}<p class="hint">{{$p.Labelled}} of {{$p.LabelGoal}} labelled · <a href="/leads?to_label=1">Leads to label</a></p>{{end}}
+    </div>
     {{end}}
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="order" aria-labelledby="order-title">
+<section class="card settings-section" id="order" aria-labelledby="order-title" aria-describedby="order-intro">
   <h2 id="order-title">Fallback order</h2>
   {{if eq $v.Section "order"}}{{template "settings_problems" $v}}{{end}}
+  <p id="order-intro" class="section-intro">How leads that are not starred are ordered while relevance has not passed its check. A lead scores the sum of the points below, and higher scores come first.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>Starred leads always come first, in your own order. Once relevance passes its check, it orders the leads that are not starred, and these points decide among equal numbers and among leads not rated yet.</p>
+    <p>Leads with the same score go bigger site first. A change applies to the queue straight away and to the next new batch. Countries never to contact are under Who to contact.</p>
+  </details>
   <form method="post" action="/leads/settings/order" class="settings-form">
-    <p class="hint">Leads not starred, and not sorted by relevance yet, follow these points: a lead scores their sum. Points run from -100 to 100, and a blank box is no rule.</p>
     {{with $x.Order.Points}}
     <div class="points">
     {{range .}}
       <div>
         <label for="pt-{{.Key}}">{{.Group}} {{.Label}}</label>
-        <input id="pt-{{.Key}}" name="{{.Key}}" value="{{.Value}}" inputmode="numeric" maxlength="4">
+        <input id="pt-{{.Key}}" name="{{.Key}}" value="{{.Value}}" inputmode="numeric" maxlength="4" aria-describedby="order-points-hint">
       </div>
     {{end}}
     </div>
+    <p id="order-points-hint" class="hint">Points from -100 to 100 for each kind, Drupal version and channel. A minus number pushes those leads down, and a blank box is no rule.</p>
     {{end}}
     <div class="settings-field">
       <label for="exact-version">Exact version known</label>
-      <input id="exact-version" name="exact_version" value="{{$x.Order.ExactVersion}}" inputmode="numeric" maxlength="4">
+      <input id="exact-version" name="exact_version" value="{{$x.Order.ExactVersion}}" inputmode="numeric" maxlength="4" aria-describedby="exact-version-hint">
+      <p id="exact-version-hint" class="hint">Points for a site whose exact version is known, such as 7.98 rather than just 7. From -100 to 100; blank is no rule.</p>
     </div>
     <div class="settings-field">
       <label for="rank-bands">Bigger sites first: rank bands (rank under, points)</label>
       <input id="rank-bands" name="rank_bands" value="{{$x.Order.RankBands}}" maxlength="{{maxText}}" aria-describedby="rank-hint">
-      <p id="rank-hint" class="hint">For example 10000 15, 100000 8. A site earns the first band its rank is under.</p>
+      <p id="rank-hint" class="hint">For example 10000 15, 100000 8: a site in the top 10,000 earns 15, one in the top 100,000 earns 8. A site earns the first band its rank is under, and an unranked site earns none.</p>
     </div>
     <div class="settings-field">
       <label for="order-countries">Country order (code, points)</label>
       <input id="order-countries" name="countries" value="{{$x.Order.Countries}}" maxlength="{{maxText}}" aria-describedby="order-countries-hint">
       <p id="order-countries-hint" class="hint">For example GB 20, DE 10. A country not listed scores 0.</p>
     </div>
-    <p class="setting-source">Source: {{source $s.Order}}</p>
+    {{with changed "" $s.Order}}<p class="setting-source">{{.}}</p>{{end}}
     {{template "settings_buttons"}}
   </form>
 </section>
 
-<section class="card settings-section" id="file" aria-labelledby="file-title">
+<section class="card settings-section" id="file" aria-labelledby="file-title" aria-describedby="file-intro">
   <h2 id="file-title">In the file and on the server</h2>
-  <p class="hint">Sending reads these directly, so the console shows them and never changes them.</p>
+  <p id="file-intro" class="section-intro">Sending reads these directly, so the console shows them and never changes them. Each part says where it is edited today; making them editable here is planned.</p>
   {{$ro := $p.ReadOnly}}
   <h3>Country channels and languages</h3>
+  <p class="hint">How each country is written to: by email or contact form, in which language and time zone, with which footer.</p>
   {{if $ro.Countries}}
   <ul class="item-list settings-readonly">
     {{range $ro.Countries}}<li><span class="item-head">{{or .Label .Code}}</span> <span class="item-meta">{{.Channel}}{{with .Language}} · {{.}}{{end}}{{with .Timezone}} · {{.}}{{end}}{{with .Footer}} · footer {{.}}{{end}}</span></li>{{end}}
   </ul>
   {{else}}<p class="empty">No countries.</p>{{end}}
-  <p class="setting-source">Edit in leads.yaml.</p>
+  <p class="setting-source edit-where">Edit in leads.yaml.</p>
   <h3>Sending pace and ramp</h3>
+  <p class="hint">How many emails go out and how fast. A new mailbox starts slowly and sends a little more each day, the warm-up ramp, so mail providers learn to trust it.</p>
   {{if $ro.Pace}}<ul class="plain">{{range $ro.Pace}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="empty">Not set.</p>{{end}}
-  <p class="setting-source">Edit in leads.yaml.</p>
+  <p class="setting-source edit-where">Edit in leads.yaml.</p>
   <h3>Sender</h3>
+  <p class="hint">Who the emails come from and how they sign off. The opt-out lines are named by language only.</p>
   <dl class="fields">
     <div><dt>Name</dt><dd>{{or $ro.SenderName "not set"}}</dd></div>
     <div><dt>Identity line</dt><dd>{{or $ro.IdentityLine "not set"}}</dd></div>
     <div><dt>Site URL</dt><dd>{{or $ro.SiteURL "not set"}}</dd></div>
-    <div><dt>Opt-out lines</dt><dd>{{if $ro.OptOutLanguages}}one for each of {{join $ro.OptOutLanguages ", "}}{{else}}none{{end}}</dd></div>
+    <div><dt>Opt-out lines</dt><dd>{{if $ro.OptOutLanguages}}{{join $ro.OptOutLanguages ", "}}{{else}}none{{end}}</dd></div>
   </dl>
-  <p class="setting-source">Edit in leads.yaml.</p>
+  <p class="setting-source edit-where">Edit in leads.yaml.</p>
   <h3>Templates</h3>
+  <p class="hint">The emails and messages in use, by kind and language. Their words are in the file.</p>
   {{if $ro.Templates}}<ul class="plain">{{range $ro.Templates}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="empty">None in use.</p>{{end}}
-  <p class="setting-source">Edit in leads.yaml.</p>
+  <p class="setting-source edit-where">Edit in leads.yaml.</p>
   <h3>Environment</h3>
+  <p class="hint">Server switches and limits. The console reads them when it starts.</p>
   {{if $ro.Env}}
   <dl class="fields">
-    {{range $ro.Env}}<div><dt><code>{{.Name}}</code></dt><dd>{{or .Value "not set: the default"}}</dd></div>{{end}}
+    {{range $ro.Env}}<div><dt><code>{{.Name}}</code></dt><dd>{{or .Value "not set: the default"}}{{with index $v.EnvHelp .Name}} <span class="env-help">{{.}}</span>{{end}}</dd></div>{{end}}
   </dl>
   {{else}}<p class="empty">None shown.</p>{{end}}
-  <p class="setting-source">Set in .env on the server.</p>
+  <p class="setting-source edit-where">Set in .env on the server.</p>
 </section>
 
-<section class="card settings-section" id="reset-all" aria-labelledby="reset-all-title">
+<section class="card settings-section" id="reset-all" aria-labelledby="reset-all-title" aria-describedby="reset-all-intro">
   <h2 id="reset-all-title">Start again from the file</h2>
   {{if eq $v.Section "all"}}{{template "settings_problems" $v}}{{end}}
+  <p id="reset-all-intro" class="section-intro">Puts every section above back to the leads settings file at once. The part shown from the file and the server does not change.</p>
   <details>
     <summary>Reset everything to the file</summary>
     <form method="post" action="/leads/settings/all" class="confirm-form">
-      <p>Every section above goes back to the leads settings file. A change applies to new leads at the next build.</p>
+      <p>Every section above goes back to the leads settings file. A change applies to the queue straight away and to the next new batch; batches already made keep their leads.</p>
       <button type="submit" name="do" value="reset" class="primary">Reset everything to the file</button>
     </form>
   </details>

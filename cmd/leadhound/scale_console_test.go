@@ -81,6 +81,7 @@ func TestScaleConsolePages(t *testing.T) {
 		{"/leads", `<tr id="lead-w-`, 500 * time.Millisecond},
 		{"/leads?status=all&sort=relevance&page=100", "Previous page", 500 * time.Millisecond},
 		{fmt.Sprintf("/leads/%d", leadID), "Why it ranks here", 500 * time.Millisecond},
+		{"/leads?to_label=1", "35 of 30 labelled.", 500 * time.Millisecond},
 		{"/leads/settings", "Fallback order", 500 * time.Millisecond},
 	} {
 		r := httptest.NewRequest(http.MethodGet, p.path, nil)

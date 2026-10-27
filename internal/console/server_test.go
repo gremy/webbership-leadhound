@@ -205,8 +205,8 @@ func richBackend(text string) *fakeBackend {
 			AsOf: testSent, Day: testDay,
 			Health:   []string{"Health: " + text},
 			ApplyNow: 2, YourCallNow: 3, Unscored: 1, Unreachable: 0,
-			Funnel:  Funnel{NewBySource: map[string]int{text: 4}, Gated: 3, GateFailed: 1, Scored: 2},
-			AICalls: 2387, AIInputTokens: 2_700_000, AICostUSD: 0.12, CallCap: 10000,
+			Funnel:    Funnel{NewBySource: map[string]int{text: 4}, Gated: 3, GateFailed: 1, Scored: 2},
+			JobsCalls: 120, JobsCallCap: 300, LeadsCalls: 1400, LeadsCallCap: 10000, AIInputTokens: 2_700_000, AICostUSD: 0.12,
 			Boards:    []BoardCount{{ATS: text, State: text, N: 5}},
 			LastRuns:  []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
 			LastBrief: &BriefStamp{Day: testDay, SentAt: testSent, Listed: 1, Health: []string{"Health: " + text}},
@@ -1113,8 +1113,10 @@ func TestColdStart(t *testing.T) {
 		t.Error("the empty jobs page offers an action")
 	}
 	w = h.do(get("/", c))
-	if !strings.Contains(w.Body.String(), "$0.00 · 0 calls · 0 input tokens") {
-		t.Errorf("cold dashboard cost line: %s", w.Body.String())
+	for _, line := range []string{"Jev today: 0 calls for jobs · 0 for leads", "$0.00 · 0 input tokens"} {
+		if !strings.Contains(w.Body.String(), line) {
+			t.Errorf("cold dashboard lacks %q: %s", line, w.Body.String())
+		}
 	}
 	for _, p := range []string{"/tracked", "/runs", "/rules"} {
 		if w := h.do(get(p, c)); w.Code != http.StatusOK {
@@ -1209,7 +1211,7 @@ func TestDashboard(t *testing.T) {
 	for _, want := range []string{
 		"This morning's email", "Now", "as of 09:12",
 		"linkedin ok · 4 new · canary ok", "linkedin ok · 2 new · canary ok",
-		"$0.12 · 2,387 of 10,000 calls · 2.7M input tokens",
+		"Jev today: 120 of 300 calls for jobs · 1,400 of 10,000 for leads", "$0.12 · 2.7M input tokens",
 		"Gate failed", "Last runs", "1m 35s",
 	} {
 		if !strings.Contains(body, want) {
@@ -1284,14 +1286,34 @@ func TestCostLine(t *testing.T) {
 		d    Dashboard
 		want string
 	}{
-		{Dashboard{AICostUSD: 0.12, AICalls: 2387, CallCap: 10000, AIInputTokens: 2_700_000}, "$0.12 · 2,387 of 10,000 calls · 2.7M input tokens"},
-		{Dashboard{}, "$0.00 · 0 calls · 0 input tokens"},
-		{Dashboard{AICostUSD: 1.005, AICalls: 12, CallCap: 500, AIInputTokens: 12_400}, "$1.00 · 12 of 500 calls · 12.4K input tokens"},
-		{Dashboard{AICalls: 1_234_567, AIInputTokens: 999}, "$0.00 · 1,234,567 calls · 999 input tokens"},
+		{Dashboard{AICostUSD: 0.12, AIInputTokens: 2_700_000}, "$0.12 · 2.7M input tokens"},
+		{Dashboard{}, "$0.00 · 0 input tokens"},
+		{Dashboard{AICostUSD: 1.005, AIInputTokens: 12_400}, "$1.00 · 12.4K input tokens"},
+		{Dashboard{AIInputTokens: 999}, "$0.00 · 999 input tokens"},
 	}
 	for _, tt := range tests {
 		if got := costLine(tt.d); got != tt.want {
 			t.Errorf("costLine = %q, want %q", got, tt.want)
+		}
+	}
+}
+
+// TestCallsLine: the dashboard counts Jev's calls for jobs and for leads apart, each against
+// its own cap, never one total against the jobs cap.
+func TestCallsLine(t *testing.T) {
+	tests := []struct {
+		d    Dashboard
+		want string
+	}{
+		{Dashboard{JobsCalls: 120, JobsCallCap: 300, LeadsCalls: 1400, LeadsCallCap: 10000},
+			"Jev today: 120 of 300 calls for jobs · 1,400 of 10,000 for leads"},
+		{Dashboard{}, "Jev today: 0 calls for jobs · 0 for leads"},
+		{Dashboard{JobsCalls: 300, JobsCallCap: 300, LeadsCallCap: 2000}, "Jev today: 300 of 300 calls for jobs · 0 of 2,000 for leads"},
+		{Dashboard{JobsCalls: 1_234_567, LeadsCalls: 12}, "Jev today: 1,234,567 calls for jobs · 12 for leads"},
+	}
+	for _, tt := range tests {
+		if got := callsLine(tt.d); got != tt.want {
+			t.Errorf("callsLine = %q, want %q", got, tt.want)
 		}
 	}
 }
@@ -1359,7 +1381,7 @@ func TestDashboardSnapshotStates(t *testing.T) {
 			[]string{"updating", building, failedNew}},
 		{"failed retrying", func(d *Dashboard) { d.LastBuildFailedAt, d.Updating = &failed, true },
 			[]string{"as of 09:00 · updating…", failedOld}, []string{building}},
-		{"building", func(d *Dashboard) { *d = Dashboard{Building: true, CallCap: 10} }, []string{building, later, "0 of 10 calls"},
+		{"building", func(d *Dashboard) { *d = Dashboard{Building: true, JobsCallCap: 10, LeadsCallCap: 20} }, []string{building, later, "Jev today: 0 of 10 calls for jobs · 0 of 20 for leads"},
 			[]string{"as of", "Apply", "Gate failed", "Nothing to report yet."}},
 		{"first failed", func(d *Dashboard) { *d = Dashboard{LastBuildFailedAt: &failed} }, []string{failedNew, later},
 			[]string{"as of", building, "Apply"}},

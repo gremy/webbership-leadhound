@@ -253,6 +253,17 @@ main {
   border-color: var(--bad);
 }
 
+/* A standing note about the page, not the outcome of an action: neutral, not a flash. */
+.note {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  margin: 0 0 1rem;
+  color: var(--text);
+}
+
 /* Dashboard */
 
 .health {
@@ -746,6 +757,14 @@ select {
   .site-header nav a {
     padding: 0 0.5rem;
   }
+
+  /* Every item shows on a phone, the current one included: the nav wraps rather than
+     hiding items off to the side. */
+  .site-header nav ul {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    gap: 0;
+  }
 }
 
 .tracked .actions button {
@@ -1157,12 +1176,24 @@ details.inline summary {
   width: 1%;
   white-space: nowrap;
 }
-.lead-table .lead-cell {
-  min-width: 10rem;
-  overflow-wrap: anywhere;
+/* A lead's name and domain each keep to one line: a long one ends in an ellipsis, with the
+   whole of it in its title, rather than breaking mid-label or at a hyphen. */
+.lead-table .lead-cell > a,
+.lead-table .lead-cell > .item-meta {
+  display: block;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .lead-table .lead-cell a {
   font-weight: 600;
+}
+.lead-table .call-cell {
+  white-space: nowrap;
+}
+.lead-table .state-cell {
+  min-width: 7.5rem;
 }
 .lead-list .item-head a {
   font-weight: 600;
@@ -1367,11 +1398,32 @@ details.inline summary {
   margin: 0;
   accent-color: var(--accent);
 }
+/* Up and Down sit in two fixed columns; a kind with only one keeps the other's slot empty,
+   so every row's buttons line up. */
 .kind-moves {
   display: grid;
-  grid-template-columns: repeat(2, minmax(5rem, auto));
+  grid-template-columns: repeat(2, 5.5rem);
   gap: 0.35rem;
   margin-left: auto;
+}
+.kind-moves button {
+  width: 100%;
+}
+.kind-moves .move-none {
+  visibility: hidden;
+}
+/* Each kind keeps its name and its moves on one row at every width: a long name wraps
+   rather than pushing the moves onto a row of their own. */
+.kind-order li {
+  flex-wrap: nowrap;
+}
+.kind-on {
+  flex: 1 1 auto;
+}
+@media (max-width: 639px) {
+  .kind-moves {
+    grid-template-columns: repeat(2, 4.75rem);
+  }
 }
 .kind-moves .move-up {
   grid-column: 1;
@@ -1397,11 +1449,183 @@ details.inline summary {
 .settings-readonly {
   margin-bottom: 0.25rem;
 }
+.setting-source.edit-where {
+  margin-top: 0.5rem;
+}
+/* A checkbox and its hint read as one control. */
+.check-field .checks + .hint {
+  margin-top: -0.4rem;
+}
+/* A section-wide hint keeps to the intros' measure. */
+.settings-form > .hint,
+.settings-form fieldset .hint {
+  max-width: 44rem;
+}
+/* The trust gate: its lines are secondary to the heading, at the intros' measure. */
+.trust-gate > p,
+.trust-gate > details {
+  max-width: 44rem;
+}
+.trust-gate > .hint + .hint {
+  margin-top: 0.4rem;
+}
+.trust-gate > details.more {
+  margin: 0.25rem 0 0.5rem;
+}
 @media (max-width: 639px) {
   .settings-section .fields > div {
     grid-template-columns: minmax(0, 1fr);
   }
   .settings-buttons button {
     width: 100%;
+  }
+}
+
+/* help */
+.section-intro {
+  margin: 0 0 0.5rem;
+  max-width: 44rem;
+  color: var(--muted);
+}
+.settings-section details.more {
+  margin: 0 0 0.75rem;
+  max-width: 44rem;
+}
+.settings-section details.more summary {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+.settings-section details.more summary:hover {
+  text-decoration: underline;
+}
+.settings-section details.more p {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.settings-form fieldset .hint {
+  margin-bottom: 0.25rem;
+}
+.settings-section h3 + .hint {
+  margin-bottom: 0.4rem;
+}
+.env-help {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+@media (max-width: 639px) {
+  .card details.more summary {
+    width: auto;
+    justify-content: flex-start;
+  }
+}
+
+/* labels */
+.lead-call {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+.lead-call {
+  scroll-margin-top: 1rem;
+}
+.lead-call h2 {
+  margin-top: 0;
+}
+.lead-call .call-notice {
+  margin: 0 0 0.75rem;
+  background: var(--surface);
+}
+.call-now {
+  margin: 0 0 0.5rem;
+}
+.call-bands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+/* Every band has the same floor width, so the current one's bold never moves its neighbours. */
+.call-bands button {
+  min-width: 6rem;
+}
+.call-bands button.is-current {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+/* Clear is an action in the bands' frame, quieter than a band, on a row of its own so a
+   saved call never changes the bands' widths. */
+.call-clear-row {
+  margin-top: 0.5rem;
+}
+.call-clear-row button.call-clear {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+.call-clear-row button.call-clear:hover {
+  border-color: var(--muted);
+}
+/* A rating history under the relevance in the facts. */
+.fact-more {
+  margin-top: 0.15rem;
+}
+.fact-more summary {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+.fact-more .item-list {
+  margin: 0;
+}
+.call-help {
+  margin: 0.5rem 0;
+}
+.call-help summary {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+.call-help dl {
+  margin: 0.25rem 0 0;
+  max-width: 44rem;
+}
+.call-help dl > div {
+  margin: 0 0 0.4rem;
+}
+.call-help dt {
+  font-weight: 600;
+}
+.call-help dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.call-tag {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.label-progress p {
+  margin: 0.25rem 0;
+}
+@media (max-width: 639px) {
+  .call-bands {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .call-clear-row button.call-clear {
+    width: calc(50% - 0.25rem);
   }
 }

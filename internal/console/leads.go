@@ -61,6 +61,7 @@ const (
 	LeadDefer     = "defer"     // ID lead, Until ("" is the default push-back)
 	LeadSkip      = "skip"      // ID lead
 	LeadClear     = "clear"     // ID lead
+	LeadLabel     = "label"     // ID lead, Value the band (LabelBands) or LabelClear
 )
 
 // LeadAction is one write from a leads page.
@@ -218,6 +219,8 @@ const (
 	leadsOutPath   = "/leads/outreach" // sending, batches, replies and suppressions
 	leadsOrderPath = "/leads?sort=order"
 	leadsSetPath   = "/leads/settings"
+	// ToLabelPath is the list of the leads to label: the spread sample and the leads with a call.
+	ToLabelPath    = "/leads?to_label=1"
 	leadBatchPath  = "/leads/batches/"
 	maxLeadsText   = 500 // the longest reason or note a form takes, as the inputs' maxlength
 	approveLiveFmt = "Approve: these emails send in each recipient's business hours over the next days, within the warm-up ramp, a few minutes apart, and their follow-ups send automatically unless a reply stops them."
@@ -343,6 +346,10 @@ func (s *server) leadsAct(w http.ResponseWriter, r *http.Request, a LeadAction, 
 	s.leadsLog(a.Do, "ok")
 	if out.BatchID > 0 {
 		next = leadBatchPath + strconv.FormatInt(out.BatchID, 10)
+	}
+	if a.Do == LeadLabel {
+		// A call's outcome shows beside the call block, where the next one is made.
+		out.Message = callFlash + out.Message
 	}
 	s.setFlash(w, out.Message)
 	http.Redirect(w, r, next, http.StatusSeeOther)

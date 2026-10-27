@@ -46,10 +46,12 @@ const (
 	ListChannelPhone = "phone"
 )
 
-// The page sizes of a list (ListFilter.PerPage).
+// The page sizes of a list (ListFilter.PerPage), and the highest page LeadList reads: a
+// larger ListFilter.Page reads this one, so the offset never overflows.
 const (
 	ListPerPageDefault = 50
 	ListPerPageMax     = 100
+	ListPageMax        = 1_000_000
 )
 
 // contactedStates are the states ListContacted shows.
@@ -80,6 +82,9 @@ type ListFilter struct {
 	Status                     string // open (default, state new) | contacted | all
 	Sort                       string // relevance (default) | newest | order
 	Page, PerPage              int    // PerPage default 50, max 100
+	// LeadIDs, when not nil, keeps only these leads (the To label filter); an empty, non-nil
+	// slice matches no lead.
+	LeadIDs []int64
 }
 
 // ListContext is what the list is weighed by.
@@ -353,6 +358,9 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 	if f.HasPhone {
 		conds = append(conds, "m.has_phone")
 	}
+	if f.LeadIDs != nil {
+		conds = append(conds, "m.lead_id = ANY("+arg(f.LeadIDs)+"::bigint[])")
+	}
 	if f.MinRelevance > 0 {
 		conds = append(conds, "m.relevance >= "+arg(min(f.MinRelevance, 100)))
 	}
@@ -391,7 +399,7 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 	case per > ListPerPageMax:
 		per = ListPerPageMax
 	}
-	page := max(f.Page, 1)
+	page := min(max(f.Page, 1), ListPageMax)
 	countArgs := len(args)
 	sql := `SELECT m.*, count(*) OVER ()::int AS total FROM (` + listRowsSQL + `) m` + where +
 		` ORDER BY ` + order + ` LIMIT ` + arg(per) + ` OFFSET ` + arg((page-1)*per)

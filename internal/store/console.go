@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/ai"
 )
 
 // LockJob takes a row lock on the job for the rest of the transaction (SELECT 1 FROM job
@@ -73,17 +75,21 @@ func (q Queries) RunsSince(ctx context.Context, since time.Time) ([]Run, error) 
 	return runs, nil
 }
 
-// AIUsage is one day's scoring calls and input tokens over every provider and model.
-type AIUsage struct{ Calls, InputTokens int }
+// AIUsage is one day's Jev calls per purpose (each has its own daily cap) and the input
+// tokens of both together, over every provider and model.
+type AIUsage struct{ JobsCalls, LeadsCalls, InputTokens int }
 
-// AIUsageOn sums the calls and input tokens recorded on day's calendar date, read in day's
-// own location as AICallsOn reads it (the caller passes a time in LEADHOUND_TZ).
+// AIUsageOn sums the calls per purpose and the input tokens recorded on day's calendar
+// date, read in day's own location as AICallsOn reads it (the caller passes a time in
+// LEADHOUND_TZ).
 func (q Queries) AIUsageOn(ctx context.Context, day time.Time) (AIUsage, error) {
 	var u AIUsage
 	err := q.db.QueryRow(ctx,
-		`SELECT COALESCE(sum(calls), 0)::bigint, COALESCE(sum(input_tokens), 0)::bigint
+		`SELECT COALESCE(sum(calls) FILTER (WHERE purpose = $2), 0)::bigint,
+		        COALESCE(sum(calls) FILTER (WHERE purpose = $3), 0)::bigint,
+		        COALESCE(sum(input_tokens), 0)::bigint
 		 FROM ai_usage WHERE day = $1::date`,
-		day.Format(time.DateOnly)).Scan(&u.Calls, &u.InputTokens)
+		day.Format(time.DateOnly), ai.PurposeJobs, ai.PurposeLeads).Scan(&u.JobsCalls, &u.LeadsCalls, &u.InputTokens)
 	if err != nil {
 		return AIUsage{}, fmt.Errorf("store: ai usage on %s: %w", day.Format(time.DateOnly), err)
 	}

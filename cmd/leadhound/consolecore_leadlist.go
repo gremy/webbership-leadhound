@@ -151,12 +151,17 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	}
 	opts := leadFilterOptions(kinds, w.cfg, w.trusted)
 	f, echo, notes := leadListFilter(q, opts)
+	lq := b.lq()
+	if echo.ToLabel != "" {
+		if f.LeadIDs, err = toLabelIDs(ctx, lq); err != nil {
+			return console.LeadListPage{}, err
+		}
+	}
 	pf, err := leadstore.ListProfileJSON(w.profile)
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
 	lc := leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, SortByRelevance: w.trusted}
-	lq := b.lq()
 	rows, total, err := lq.LeadList(ctx, f, lc)
 	if err != nil {
 		return console.LeadListPage{}, err
@@ -173,19 +178,88 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if f.Page == 1 {
 		echo.Page = ""
 	}
-	p := console.LeadListPage{Total: total, Page: f.Page, PerPage: per, Filter: echo, Options: opts, Notes: notes}
+	p := console.LeadListPage{Total: total, Page: f.Page, PerPage: per, Filter: echo, Options: opts, Notes: notes, LabelGoal: labelGoal}
 	if p.TotalLeads, err = leadCount(ctx, b); err != nil {
+		return console.LeadListPage{}, err
+	}
+	if p.Labelled, err = lq.LabelCount(ctx); err != nil {
 		return console.LeadListPage{}, err
 	}
 	order, err := outreachOrder(ctx, b, starredIDs(rows))
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
+	ids := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.LeadID)
+	}
+	calls, err := lq.LatestLabels(ctx, ids)
+	if err != nil {
+		return console.LeadListPage{}, err
+	}
 	today := b.now().In(b.loc)
 	for _, r := range rows {
-		p.Rows = append(p.Rows, leadListRow(r, kinds, w, order, today))
+		row := leadListRow(r, kinds, w, order, today)
+		if l := calls[r.LeadID]; l.Band != nil {
+			row.Call = *l.Band
+		}
+		p.Rows = append(p.Rows, row)
 	}
 	return p, nil
+}
+
+// labelGoal is how many leads with the operator's call the trust gate needs (D9).
+const labelGoal = leadrate.TrustMinN
+
+// toLabelIDs are the leads of the To label filter: labelGoal open leads spread over kinds,
+// Drupal majors and countries, as a golden draft picks them (spreadSample), and every lead
+// that has a call, whatever its state. Never nil, so an empty set lists no lead.
+func toLabelIDs(ctx context.Context, lq leadstore.Queries) ([]int64, error) {
+	open, err := lq.LeadsToRate(ctx, leadstore.ListContext{})
+	if err != nil {
+		return nil, err
+	}
+	labelled, err := lq.LabelledLeadIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, labelGoal+len(labelled))
+	for _, l := range spreadSample(open, labelGoal) {
+		ids = append(ids, l.LeadID)
+	}
+	for _, id := range labelled {
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// callBands are the bands the "Your call" block offers, best first, each with leadrate's
+// plain description as its help.
+func callBands() []console.CallBand {
+	var out []console.CallBand
+	for _, name := range leadrate.Bands() {
+		out = append(out, console.CallBand{Value: name, Label: strings.ToUpper(name[:1]) + name[1:], Help: leadrate.Describe(name)})
+	}
+	return out
+}
+
+// leadCall is lead id's "Your call" block: its latest call and when, the bands, and how many
+// leads have a call. The row's Call is set from the same read.
+func leadCall(ctx context.Context, lq leadstore.Queries, row *console.LeadListRow) (console.LeadCall, error) {
+	c := console.LeadCall{Bands: callBands(), LabelGoal: labelGoal}
+	calls, err := lq.LatestLabels(ctx, []int64{row.LeadID})
+	if err != nil {
+		return console.LeadCall{}, err
+	}
+	if l, ok := calls[row.LeadID]; ok && l.Band != nil {
+		row.Call, c.At = *l.Band, &l.CreatedAt
+	}
+	if c.Labelled, err = lq.LabelCount(ctx); err != nil {
+		return console.LeadCall{}, err
+	}
+	return c, nil
 }
 
 // leadFilterOptions are the choices the filter form offers: the outreach kinds, the
@@ -289,7 +363,16 @@ func leadListFilter(q console.LeadListQuery, o console.LeadFilterOptions) (f lea
 			echo.MinRelevance = strconv.Itoa(f.MinRelevance)
 		}
 	}
-	f.Status = choose("status", q.Status, leadstore.ListOpen, o.Statuses, &notes)
+	statusDefault := leadstore.ListOpen
+	switch q.ToLabel {
+	case "":
+	case "1":
+		// The leads to label are every lead with a call, whatever its state.
+		echo.ToLabel, statusDefault = "1", leadstore.ListAll
+	default:
+		notes = append(notes, fmt.Sprintf("Ignored to_label %s: it takes 1.", noteValue(q.ToLabel)))
+	}
+	f.Status = choose("status", q.Status, statusDefault, o.Statuses, &notes)
 	f.Sort = choose("sort", q.Sort, leadstore.SortRelevance, o.Sorts, &notes)
 	echo.Status, echo.Sort = f.Status, f.Sort
 	f.Page = 1
@@ -441,6 +524,9 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		Origin:        d.Origin,
 		CountryPolicy: countryPolicy(w, d.Country),
 		Why:           leadview.WhyLines(d.Reasons),
+	}
+	if p.YourCall, err = leadCall(ctx, b.lq(), &p.LeadListRow); err != nil {
+		return console.LeadDetailPage{}, err
 	}
 	if d.ListRank != nil {
 		p.ListRank = strconv.Itoa(*d.ListRank)

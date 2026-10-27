@@ -19,7 +19,10 @@ const maxFilterValues = 50
 const maxBack = 2048
 
 // leadActions are the writes POST /leads/{id}/{action} takes.
-var leadActions = []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear}
+var leadActions = []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear, LeadLabel}
+
+// badBand is the refusal of a call whose band the form did not offer.
+const badBand = "Choose strong, likely, maybe, unlikely or no, or Clear; your call was not changed."
 
 // leadListView is what the Leads list renders: the backend's page, the line from the last
 // action, and the pager's links, which keep the filter.
@@ -34,9 +37,11 @@ type leadListView struct {
 	Back       string // this page, filter and page kept: where a row's action comes back to
 	Order      bool   // sorted by the outreach order: rows carry Up, Down, Pin to top, Push back, Skip
 	// The table's optional columns: State only when the filter is not the default (open
-	// leads), Relevance and Order only when a row has one.
-	ShowState, ShowRelevance, ShowOrder bool
-	Filters                             int // how many filters are on, for the folded form's summary
+	// leads), Relevance and Order only when a row has one, Your call when a row has one or
+	// the list is the leads to label.
+	ShowState, ShowRelevance, ShowOrder, ShowCall bool
+	ToLabel                                       bool // the list is the leads to label
+	Filters                                       int  // how many filters are on, for the folded form's summary
 }
 
 // leadDetailView is what a lead's page renders: the lead, its signals grouped by the fetch
@@ -47,7 +52,11 @@ type leadDetailView struct {
 	Back    string
 	Message string
 	Error   bool
+	AtCall  bool // Message is about the call: it shows inside the "Your call" block, not at the top
 }
+
+// callAnchor is the "Your call" block's id: a call goes back to it.
+const callAnchor = "your-call"
 
 // signalFetch is one fetch and the signals read from it, in the order the lead's page
 // lists them. A signal with no fetch on file sits in a group of its own with no fetch.
@@ -93,10 +102,11 @@ func (s *server) leadDetail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.renderDetail(w, r, http.StatusOK, id, s.takeFlash(w, r), false)
+	msg, atCall := s.takeFlashAt(w, r)
+	s.renderDetail(w, r, http.StatusOK, id, msg, false, atCall)
 }
 
-func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, id int64, msg string, isErr bool) {
+func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, id int64, msg string, isErr, atCall bool) {
 	d, err := s.b.LeadDetail(r.Context(), id)
 	if s.leadsRead(w, r, code, err) {
 		return
@@ -104,7 +114,7 @@ func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, 
 	title := cmp.Or(d.Name, d.Domain, "Lead "+strconv.FormatInt(id, 10))
 	s.render(w, r, code, "lead_detail", page{Title: title, Active: leadsPath, SignedIn: true,
 		Data: leadDetailView{Data: d, Fetches: signalFetches(d.Signals), Back: leadsPath + "/" + strconv.FormatInt(id, 10),
-			Message: msg, Error: isErr}})
+			Message: msg, Error: isErr, AtCall: atCall}})
 }
 
 // leadAct is POST /leads/{id}/{action}: star, unstar, up, down, top, defer, skip or clear
@@ -120,18 +130,38 @@ func (s *server) leadAct(w http.ResponseWriter, r *http.Request) {
 	if !leadsForm(w, r) {
 		return
 	}
-	a := LeadAction{Do: do, ID: id}
-	if do == LeadDefer {
-		a.Until = strings.TrimSpace(r.PostForm.Get("until"))
-	}
 	back := leadsBack(r.PostForm.Get("back"))
-	s.leadsAct(w, r, a, back, func(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
+	again := func(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
 		if u, err := url.Parse(back); err == nil && u.Path == leadsPath {
 			s.renderList(w, r, code, u.Query(), msg, isErr)
 			return
 		}
-		s.renderDetail(w, r, code, id, msg, isErr)
-	})
+		s.renderDetail(w, r, code, id, msg, isErr, do == LeadLabel)
+	}
+	a := LeadAction{Do: do, ID: id}
+	switch do {
+	case LeadDefer:
+		a.Until = strings.TrimSpace(r.PostForm.Get("until"))
+	case LeadLabel:
+		a.Value = strings.TrimSpace(r.PostForm.Get("band"))
+		if a.Value != LabelClear && !slices.Contains(LabelBands, a.Value) {
+			s.leadsLog(do, "refused")
+			again(w, r, http.StatusUnprocessableEntity, badBand, true)
+			return
+		}
+		back = atCallBlock(back)
+	}
+	s.leadsAct(w, r, a, back, again)
+}
+
+// atCallBlock is back pointed at the "Your call" block when back is a lead's own page, in
+// place of any fragment it had; the list, which has no call block, is back as it is.
+func atCallBlock(back string) string {
+	page, _, _ := strings.Cut(back, "#")
+	if u, err := url.Parse(page); err != nil || u.Path == leadsPath {
+		return back
+	}
+	return page + "#" + callAnchor
 }
 
 // leadsBack is where a lead action goes back to: back when it is a relative path on the
@@ -216,6 +246,7 @@ func leadListQuery(v url.Values) LeadListQuery {
 		Status:       one("status"),
 		Sort:         one("sort"),
 		Page:         one("page"),
+		ToLabel:      one("to_label"),
 	}
 }
 
@@ -231,14 +262,16 @@ func filterValues(in []string) []string {
 
 // newLeadListView works out the pager, the empty states and the optional columns for p.
 func newLeadListView(p LeadListPage) leadListView {
-	v := leadListView{P: p, Back: leadListURL(p.Filter, p.Page), Order: p.Filter.Sort == "order"}
+	v := leadListView{P: p, Back: leadListURL(p.Filter, p.Page), Order: p.Filter.Sort == "order", ToLabel: p.Filter.ToLabel == "1"}
 	v.ShowState = p.Filter.Status != "" && p.Filter.Status != "open"
+	v.ShowCall = v.ToLabel
 	for _, row := range p.Rows {
 		v.ShowRelevance = v.ShowRelevance || row.Relevance != ""
 		v.ShowOrder = v.ShowOrder || row.Position != ""
+		v.ShowCall = v.ShowCall || row.Call != ""
 	}
 	for _, on := range []bool{len(p.Filter.Kinds) > 0, len(p.Filter.Countries) > 0, len(p.Filter.Channels) > 0,
-		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", v.ShowState} {
+		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", v.ShowState, v.ToLabel} {
 		if on {
 			v.Filters++
 		}
@@ -267,7 +300,7 @@ func leadListURL(f LeadListQuery, n int) string {
 		}
 	}
 	for k, v := range map[string]string{"starred": f.Starred, "has_phone": f.HasPhone, "min_relevance": f.MinRelevance,
-		"status": f.Status, "sort": f.Sort} {
+		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel} {
 		if v != "" {
 			q.Set(k, v)
 		}

@@ -134,8 +134,9 @@ func TestConsoleFunnelAcrossDSTEnd(t *testing.T) {
 	}
 }
 
-// TestConsoleAIUsageOn: one day's calls and input tokens are summed over every provider and
-// model, by the local date ai_usage stores, the 25-hour day included.
+// TestConsoleAIUsageOn: one day's calls are summed per purpose (jobs and leads have their
+// own caps) and its input tokens over both, over every provider and model, by the local date
+// ai_usage stores, the 25-hour day included. A row recorded without a purpose is jobs.
 func TestConsoleAIUsageOn(t *testing.T) {
 	ctx := context.Background()
 	q := appStore(t).Q()
@@ -145,9 +146,11 @@ func TestConsoleAIUsageOn(t *testing.T) {
 	for _, r := range []ai.UsageRow{
 		{Provider: "typesafe", Model: "jev-1.13.0", Day: day(24), Calls: 1, InputTokens: 100},
 		{Provider: "typesafe", Model: "jev-1.13.0", Day: day(25), Calls: 1, InputTokens: 300},
-		{Provider: "typesafe", Model: "jev-1.14.0", Day: day(25), Calls: 2, InputTokens: 250},
+		{Provider: "typesafe", Model: "jev-1.14.0", Day: day(25), Calls: 2, InputTokens: 250, Purpose: ai.PurposeJobs},
+		{Provider: "typesafe", Model: "jev-1.14.0", Day: day(25), Calls: 5, InputTokens: 40, Purpose: ai.PurposeLeads},
 		{Provider: "fake", Model: "fake", Day: day(25), Calls: 1},
 		{Provider: "typesafe", Model: "jev-1.13.0", Day: day(26), Calls: 1, InputTokens: 10},
+		{Provider: "typesafe", Model: "jev-1.14.0", Day: day(26), Calls: 3, InputTokens: 7, Purpose: ai.PurposeLeads},
 	} {
 		if err := q.RecordAIUsage(ctx, r); err != nil {
 			t.Fatalf("RecordAIUsage %+v: %v", r, err)
@@ -158,10 +161,10 @@ func TestConsoleAIUsageOn(t *testing.T) {
 		day  time.Time
 		want store.AIUsage
 	}{
-		{"the 24th", day(24), store.AIUsage{Calls: 1, InputTokens: 100}},
-		{"the 25th", day(25), store.AIUsage{Calls: 4, InputTokens: 550}},
-		{"the 25th, 23:59 local", time.Date(2026, 10, 25, 23, 59, 0, 0, loc), store.AIUsage{Calls: 4, InputTokens: 550}},
-		{"the 26th", day(26), store.AIUsage{Calls: 1, InputTokens: 10}},
+		{"the 24th", day(24), store.AIUsage{JobsCalls: 1, InputTokens: 100}},
+		{"the 25th", day(25), store.AIUsage{JobsCalls: 4, LeadsCalls: 5, InputTokens: 590}},
+		{"the 25th, 23:59 local", time.Date(2026, 10, 25, 23, 59, 0, 0, loc), store.AIUsage{JobsCalls: 4, LeadsCalls: 5, InputTokens: 590}},
+		{"the 26th", day(26), store.AIUsage{JobsCalls: 1, LeadsCalls: 3, InputTokens: 17}},
 		{"the 27th", day(27), store.AIUsage{}},
 	}
 	for _, tc := range cases {

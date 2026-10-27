@@ -1,6 +1,16 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+The Leads console (2026-10-27, on local main, not yet pushed or deployed; plan `leadhound-leads-console`):
+- Committed: CP1 the data model (`ed6e42e`: findings, kinds and channels as rows, Jev usage counted per purpose), CP2 the list and the lead page with Outreach moved (`fc24933`), CP4 enrichment (`55afa3e`: phones, descriptions and social links from the org's own pages), CP3 stars and the outreach order (`2f48058`), CP5 Settings in the console with the priorities page retired (`cafca15`), CP6 Jev relevance with a golden set and an eval (`8efa0f7`).
+- Built, not yet committed: your calls in the database (leads migration 00015 `lead_label`, "Your call" on the lead page, the To label filter, the eval reading the calls from the database by default) and the Settings help text, with a polish pass on the console in progress.
+- New commands: `leads enrich`, `leads rate`, `leads relevance golden-draft|eval`, `leads settings show|reset`.
+- The contacts unit now runs contacts, enrich, rate and build, with `TimeoutStartSec=7h`; rating needs `LEADHOUND_LIVE=1` and the Jev key on the server.
+- Leads have their own Jev cap, `LEADHOUND_JEV_LEADS_DAILY_CALL_CAP` (10,000 by default), apart from the jobs cap.
+- Migrations: core up to 00008, leads up to 00015; dev is migrated to both.
+- Dev: 1,185 leads built, enriched (phones on 666 orgs, descriptions on 823, social links on 988), and screenshots of every Leads page at 1280 and 390 px in light and dark, outside the repo.
+- Next: the final review and `make prepush`, then push and deploy on the operator's yes, then label 30 leads under To label and run the eval.
+
 No false opt-outs (2026-10-26, on local main, not yet pushed or deployed; plan `leadhound-false-opt-outs`):
 - CP1 (detection, `b47f703`) and CP2 (lift, `4bb4a5d`) are committed: an opt-out is read from the subject and the sender's own words only, our own lines and quoted text are taken out, a multipart reply's first text part is decoded, and a draft with an opt-out word outside the opt-out line is refused.
 - A suppression is lifted by number with a reason (`leads suppress lift`, or Lift a suppression on the console's Leads page); the lift is a record, lead states do not change, transfer carries active suppressions only.
@@ -29,7 +39,7 @@ The release for the shared server is in, in seven commits from `a00d310` to `92c
 - The scorer's time budget (`score --max-duration`) and one scorer at a time; the console served from a background snapshot.
 - Memory ceilings with `GOMEMLIMIT` and no `MemoryHigh`, so a unit over its ceiling is killed and restarted instead of hanging.
 - `make test-scale` (450,000 jobs and a year of leads), which `make deploy` runs before it builds.
-- The console as the place to manage everything: a page per job, rule forms, the Leads pages (batches read and approved in full, the queue with pin, push back and skip, the priority profile, the send pause); `leads transfer` and `leads check-config`; the five leads timers.
+- The console as the place to manage everything: a page per job, rule forms, the Leads pages (batches read and approved in full, the queue with pin, push back and skip, the priority profile, the send pause; the queue and the priority profile have since given way to the List's stars and order and to Settings); `leads transfer` and `leads check-config`; the five leads timers.
 - The storage budget (`LEADHOUND_DB_MAX_BYTES`, `LEADHOUND_DISK_MIN_FREE_PCT`, stop reason `disk_budget`), dumps kept within 4 GiB, and the nightly `trim`.
 
 Measured on the production-sized local database:
@@ -54,6 +64,11 @@ The first trim, run by hand at a quiet hour: 87 batches over all 434,802 observa
 That is right: the oldest observation is from 2026-10-24, so nothing is past the 7-day rejected or 30-day expired age yet.
 The wide-net night's rejected postings (about 380,000) reach 7 days on 2026-10-31, and the 15:00 timer trims them from then on.
 
+## Eval baseline: lead relevance
+Not measured yet.
+It waits for 30 of the operator's calls under To label, then `leads relevance eval --decider jev`.
+Until a recorded eval passes the trust gate (30 or more labelled leads, within one band on at least 80%, Spearman's rho at least 0.5), the list and the queue order by the fallback order's points and the number shows as early.
+
 ## Eval baseline (jev-1.13.0, 2026-10-23)
 Private golden set, n=10, 9 of 10 non-English, 3 runs, no disagreements between runs.
 Exact match: title 90%, stack 80%, seniority 90%, location 90%, work_rights 100%, gate language 100%, gate workplace 1/1, overall 100%, all criteria 45/50 (90%).
@@ -61,16 +76,22 @@ Input tokens 56,106 (about $0.0024).
 Early number: grow the set with 10–20 English postings before treating it as the bar.
 
 ## Current focus
+Land the Leads console: the final review, push and deploy on the operator's yes, then the production steps in order ("Turning the leads on in production" in `deploy/README.md`), then the 30 calls and the relevance eval.
 Watch the first full night on the new units (the ATS score with the fixed timeout, the morning collect and brief) and the first real trim around 2026-10-31.
 Hand the leads over to the operator: finding first, sending once the mailbox passes its selftest, every batch read and approved in the console.
 
 ## Slice 2 notes
 - `fetch.WithPublicOnly` (`internal/fetch/guard.go`), `internal/robots` and `probe.HostRobots` exist for slice 1's CP6b to reuse.
-- The leads migrations are their own set (`internal/leadstore/migrations/`, six migrations), versioned in `goose_db_version_leads`; `leadhound migrate` runs the core set, then the leads set.
+- The leads migrations are their own set (`internal/leadstore/migrations/`, now up to 00015), versioned in `goose_db_version_leads`; `leadhound migrate` runs the core set, then the leads set.
 - `storetest.ResetDB` keeps every goose version table.
 - Live-unproven until the shadow week: real SMTP, IMAP and DNS (UIDVALIDITY rescan, Junk and Sent discovery, appending to Sent); the fakes cover them in tests.
 
 ## Next
+The Leads console, after its deploy:
+- [ ] The final review of the plan's diff and `make prepush`; commit the labels and help-text work.
+- [ ] Push and deploy on the operator's yes; check that `make deploy` migrated the core set to 00008 and the leads set to 00015.
+- [ ] Label 30 leads under To label (`/leads?to_label=1`), then run `leads relevance eval --decider jev` and record the numbers in "Eval baseline: lead relevance".
+
 Run now, after its deploy:
 - [ ] `systemctl list-units 'leadhound-*.path'` shows five watchers active and waiting (the four Run now ones and, after the mailboxes deploy, `leadhound-mailbox-check.path`); press Show results now and see a `preview` run and the results page; press Fetch new jobs and see collect, score, preview in that order.
 
@@ -92,6 +113,12 @@ Known follow-ups:
 - [ ] The brief says "recheck not run" when the recheck ran with nothing due (`internal/brief/compose.go:751`, `cmd/leadhound/recheck.go:52`).
 - [ ] Rename `actor` `gremy` to `operator` in the existing lead tables (a migration over append-only tables, as owner); the mailbox tables already use `operator | system`.
 - [ ] CP6e/6f/6b: remote-job sites, more sources (each checked for permission first), the employer's own apply route.
+- [ ] Harden `org.site_id` with `UNIQUE (site_id)` in a later leads migration: today a site shared by two orgs would fail 00010 or a build loudly, never corrupt; the writers prevent it and dev has none.
+- [ ] Plan B: the Claude API; a call step for phones with each country's calling rules; an editable sending pace, sender and country channels, with a review of the send path, since the send reads them from the file.
+- [ ] Plan C: more lead sources (job postings, tracking, registries), and the migration for an org with no domain.
+- [ ] The everything-configurable plan, after plan A lands: the brand voice, the templates and the message structure editable in the console, with a preview and versions; an API a local AI skill can call; a LIVE→LOCAL database sync.
+- [ ] Data gaps found while writing the Settings help text, for that plan: each kind's description, the real batch size, the env defaults, and when the rating run happens.
+- [ ] `make remote … ARGS='leads enrich …'` does not take the leads fetch lock as the contacts unit does, and `leads settings show` needs `CONFIRM=1` though it only reads.
 
 ## Key files
 - `CONTRIBUTING.md` (the public-repo rules)
@@ -102,6 +129,7 @@ Known follow-ups:
 - `internal/brief`, `internal/mail`, `internal/ats`
 - `internal/leadconfig`, `internal/leadstore`, `internal/probe`, `internal/contacts`, `internal/outreach`, `internal/mailbox`, `internal/leadbrief`
 - `internal/console`, `internal/diskfree`
+- `internal/leadview`, `internal/enrich`, `internal/leadrate` (the Leads console, enrichment, relevance)
 - `internal/preview`, `cmd/leadhound/runnow.go`, `cmd/leadhound/preview.go` (the Run now card)
 - `deploy/` (units, `install.sh`, `sql/limits.sql`, `README.md`)
 

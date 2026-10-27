@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"testing"
@@ -507,6 +508,21 @@ func TestLeadListColdStart(t *testing.T) {
 	}
 	if len(d.Signals) != 0 || d.Finding.Major != 7 || d.Finding.Detector != "drupal@1" {
 		t.Errorf("site lead with no signals: %+v %+v", d.Signals, d.Finding)
+	}
+}
+
+// TestLeadListHugePage: a page past ListPageMax reads ListPageMax, so the offset never
+// overflows into a negative OFFSET that Postgres refuses: no rows, the true total, no error.
+func TestLeadListHugePage(t *testing.T) {
+	f := newOutreachFixture(t)
+	f.siteLead(t, "page.localhost", nil, 7, "")
+	for _, page := range []int{math.MaxInt, math.MaxInt/leadstore.ListPerPageMax + 2, leadstore.ListPageMax + 1} {
+		for _, per := range []int{leadstore.ListPerPageDefault, leadstore.ListPerPageMax} {
+			rows, total, err := f.q.LeadList(context.Background(), leadstore.ListFilter{Status: leadstore.ListAll, Page: page, PerPage: per}, leadstore.ListContext{})
+			if err != nil || len(rows) != 0 || total != 1 {
+				t.Errorf("page %d of %d: %d rows, total %d, %v; want none, total 1, no error", page, per, len(rows), total, err)
+			}
+		}
 	}
 }
 

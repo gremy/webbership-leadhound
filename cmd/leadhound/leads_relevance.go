@@ -30,9 +30,9 @@ func init() { leadsCommands["relevance"] = runLeadsRelevance }
 const leadhoundModule = "github.com/gremy/webbership-leadhound"
 
 const (
-	leadsRelevanceUsage = "usage: leadhound leads relevance golden-draft --n N --out FILE | eval --golden FILE [--runs 3] [--decider fake|jev]"
+	leadsRelevanceUsage = "usage: leadhound leads relevance golden-draft --n N --out FILE | eval [--golden FILE] [--runs 3] [--decider fake|jev]"
 	goldenDraftUsage    = "usage: leadhound leads relevance golden-draft --n N (at least 1) --out FILE"
-	relevanceEvalUsage  = "usage: leadhound leads relevance eval --golden FILE [--runs 3] [--decider fake|jev]"
+	relevanceEvalUsage  = "usage: leadhound leads relevance eval [--golden FILE] [--runs 3] [--decider fake|jev]"
 )
 
 // defaultGoldenN is how many leads a golden draft holds without --n.
@@ -238,40 +238,52 @@ func spreadSample(leads []leadstore.RateLead, n int) []leadstore.RateLead {
 	return out
 }
 
-// runRelevanceEval is `leads relevance eval --golden FILE [--runs 3] [--decider fake|jev]`:
-// it asks the relevance question about every labelled golden lead runs times and prints
-// how the answers measure against the labels (leadrate.Evaluate). The decider is the fake
+// runRelevanceEval is `leads relevance eval [--golden FILE] [--runs 3] [--decider fake|jev]`:
+// it asks the relevance question about every labelled lead runs times and prints how the
+// answers measure against the labels (leadrate.Evaluate). The labels are the operator's
+// calls in the database (lead_label: the latest call per lead, on the facts he saw), or
+// with --golden a golden file instead (the demo set, tests). The decider is the fake
 // unless --decider jev is given; a jev eval needs TYPESAFE_API_KEY and LEADHOUND_LIVE=1, is
 // uncapped (eval.MaxRuns bounds it), and announces its calls before the first one. Only a
 // jev eval on at least leadrate.TrustMinN labelled leads is recorded in lead_relevance_eval,
 // where the list and the queue read the trust gate from.
 func runRelevanceEval(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads relevance eval", flag.ContinueOnError)
-	golden := fs.String("golden", "", "the golden file, one JSON lead per line")
+	golden := fs.String("golden", "", "a golden file, one JSON lead per line (default: your calls in the database)")
 	runs := fs.Int("runs", 3, "how many times to ask about each labelled lead")
 	deciderName := fs.String("decider", "", "fake or jev (default fake; jev is live and paid)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 0 || *golden == "" {
+	if len(pos) != 0 {
 		return usageError(relevanceEvalUsage)
 	}
 	if *runs < 1 || *runs > eval.MaxRuns {
 		return usageError("--runs must be 1 to %d", eval.MaxRuns)
 	}
-	lines, err := leadrate.LoadGolden(*golden)
-	if err != nil {
-		return usageError("%v", err)
+	var lines []leadrate.Golden
+	if *golden != "" {
+		if lines, err = leadrate.LoadGolden(*golden); err != nil {
+			return usageError("%v", err)
+		}
 	}
 	name := cmp.Or(*deciderName, rateDeciderFake)
 	var required []string
-	if name == rateDeciderJev {
-		required = append(required, "LEADHOUND_DATABASE_URL") // where a measured eval is recorded
+	if name == rateDeciderJev || *golden == "" {
+		required = append(required, "LEADHOUND_DATABASE_URL") // where the calls are, and a measured eval is recorded
 	}
 	cfg, err := loadConfig(required...)
 	if err != nil {
 		return err
+	}
+	if *golden == "" {
+		if lines, err = dbGolden(ctx, cfg); err != nil {
+			return err
+		}
+		if len(lines) == 0 {
+			return usageError("%s", noCallsWords)
+		}
 	}
 	if name == rateDeciderJev && cfg.Live != config.LiveAll {
 		_, _ = fmt.Fprintf(stdout, "leads relevance eval: %s (LEADHOUND_LIVE is %s); nothing requested\n", liveOffMessage, cfg.Live)
@@ -289,6 +301,9 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	}
 	announceRelevanceEval(decider, labelled, *runs)
 	rep, err := leadrate.Evaluate(ctx, decider, lines, *runs)
+	if errors.Is(err, leadrate.ErrNoLabels) && *golden == "" {
+		return usageError("%s", noCallsWords)
+	}
 	if errors.Is(err, leadrate.ErrNoLabels) {
 		return usageError("%s has no labelled line: set each \"label\" to one of %s", *golden, strings.Join(leadrate.Bands(), ", "))
 	}
@@ -320,6 +335,24 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "recorded as eval %d: %s\n", id, verdict)
 	return nil
+}
+
+// noCallsWords is the refusal of an eval from the database when no lead has a call.
+const noCallsWords = "No lead has your call yet: open Leads, choose To label, and give each lead your call on its page."
+
+// dbGolden is the operator's calls in the database as golden lines: the latest call on each
+// lead that names a band, on the facts he saw when he made it.
+func dbGolden(ctx context.Context, cfg config.Config) ([]leadrate.Golden, error) {
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	labels, err := leadstore.NewQueries(s.Pool()).LabelledLeads(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return leadrate.GoldenFromLabels(labels)
 }
 
 // evalNotRecorded says why an eval of kind on n labelled leads is not recorded; "" when it

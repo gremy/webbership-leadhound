@@ -131,7 +131,7 @@ var schedule = map[string]struct {
 	"leadhound-leads-probe": {
 		[]string{"*-*-* 13:00:00 Europe/Bucharest"},
 		true,
-		[]string{leadsFetchLock + "/usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000"},
+		[]string{leadsProbeLock + "/usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000"},
 	},
 	"leadhound-leads-contacts": {
 		[]string{"*-*-* 10:00:00 Europe/Bucharest"},
@@ -230,9 +230,14 @@ const (
 	linkedinLockPath = "/opt/leadhound/data/.linkedin.lock"
 	linkedinLock     = "/usr/bin/flock --wait "
 	scoreLock        = "/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock "
-	// leadsFetchLock is the flock call the two leads steps that read the public web start
-	// with: no wait, and exit 75 when the other holds it.
-	leadsFetchLock = "/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock "
+	// leadsFetchLockPath is the one lock every leads step that reads the public web holds.
+	leadsFetchLockPath = "/opt/leadhound/data/.leads-fetch.lock"
+	// leadsFetchLock is the flock call the contacts unit's web steps start with: no wait, and
+	// exit 75 when the probe holds it.
+	leadsFetchLock = "/usr/bin/flock --nonblock --conflict-exit-code 75 " + leadsFetchLockPath + " "
+	// leadsProbeLock is the probe's flock call: it waits out the contacts unit's web steps
+	// (TestProbeWaitsOutContacts) rather than lose its day, and fails when the wait runs out.
+	leadsProbeLock = "/usr/bin/flock --wait 11700 --conflict-exit-code 75 " + leadsFetchLockPath + " "
 )
 
 func base(path string) string {
@@ -1127,7 +1132,8 @@ func TestTrimUnit(t *testing.T) {
 // TestLeadsUnits: every leads unit, the mailbox check included, yields to the server's other
 // services (Nice, idle I/O, half the CPU share), runs each command under a /usr/bin/timeout,
 // carries no environment of its own beyond GOMEMLIMIT (hours, caps and the pause stay in the
-// commands), and a step that takes the fetch lock counts the lock's exit 75 as done.
+// commands). A contacts step that finds the fetch lock held counts the lock's exit 75 as
+// done; the probe waits for the lock, so a wait that runs out fails its unit visibly.
 func TestLeadsUnits(t *testing.T) {
 	leads := units(t, "leadhound-leads-*.service")
 	if len(leads) != len(leadsFinding)+len(leadsSending) {
@@ -1146,11 +1152,14 @@ func TestLeadsUnits(t *testing.T) {
 				t.Errorf("%s: Environment=%s; a leads unit sets only GOMEMLIMIT", path, e)
 			}
 		}
-		locked := false
+		locked, waits := false, false
 		for _, e := range u["Service"]["ExecStart"] {
 			cmd := strings.TrimPrefix(e, "-")
 			if after, ok := strings.CutPrefix(cmd, leadsFetchLock); ok {
 				cmd, locked = after, true
+			}
+			if after, ok := strings.CutPrefix(cmd, leadsProbeLock); ok {
+				cmd, waits = after, true
 			}
 			if !strings.HasPrefix(cmd, "/usr/bin/timeout --kill-after=") || !strings.Contains(cmd, " /opt/leadhound/bin/leadhound leads ") {
 				t.Errorf("%s: %q: a leads step runs as /usr/bin/timeout --kill-after=... <D> leadhound leads ...", path, e)
@@ -1158,10 +1167,17 @@ func TestLeadsUnits(t *testing.T) {
 		}
 		success := u["Service"]["SuccessExitStatus"]
 		switch {
+		case locked && waits:
+			t.Errorf("%s: both skips and waits for the fetch lock", path)
 		case locked:
 			fetches++
 			if !slices.Equal(success, []string{"75"}) {
 				t.Errorf("%s: SuccessExitStatus = %q, want 75: a run that finds the fetch lock held is done", path, success)
+			}
+		case waits:
+			fetches++
+			if len(success) > 0 {
+				t.Errorf("%s: SuccessExitStatus = %q: a probe whose lock wait runs out must fail its unit", path, success)
 			}
 		case len(success) > 0:
 			t.Errorf("%s: SuccessExitStatus = %q without the fetch lock", path, success)
@@ -1169,6 +1185,52 @@ func TestLeadsUnits(t *testing.T) {
 	}
 	if fetches != len(leadsFinding) {
 		t.Errorf("%d leads units take the fetch lock, want %d (probe, contacts)", fetches, len(leadsFinding))
+	}
+}
+
+// TestProbeWaitsOutContacts: the contacts unit holds the fetch lock for its web steps, up to
+// their timeouts and kill graces together (190 minutes), and its timer fires three hours
+// before the probe's, so it can still hold the lock when the probe starts. The probe waits for
+// the lock longer than the contacts unit can hold it, rather than skip with exit 75 and lose
+// the day's probe without a word. TestTimeoutsCoverWaits checks its TimeoutStartSec covers
+// the wait and the run.
+func TestProbeWaitsOutContacts(t *testing.T) {
+	var held time.Duration
+	timeout := regexp.MustCompile(`/usr/bin/timeout --kill-after=(\S+) (\S+) `)
+	for _, e := range readUnit(t, "leadhound-leads-contacts.service")["Service"]["ExecStart"] {
+		if !strings.Contains(e, " "+leadsFetchLockPath+" ") {
+			continue
+		}
+		m := timeout.FindStringSubmatch(e)
+		if m == nil {
+			t.Fatalf("contacts step %q holds the fetch lock without a timeout", e)
+		}
+		for _, d := range m[1:] {
+			v, err := gnuDuration(d)
+			if err != nil {
+				t.Fatalf("contacts step %q: %v", e, err)
+			}
+			held += v
+		}
+	}
+	if held == 0 {
+		t.Fatal("no contacts step holds the fetch lock")
+	}
+	wait := regexp.MustCompile(`^/usr/bin/flock --wait (\d+) --conflict-exit-code \d+ (\S+) `)
+	execs := readUnit(t, "leadhound-leads-probe.service")["Service"]["ExecStart"]
+	if len(execs) != 1 {
+		t.Fatalf("probe ExecStart = %q, want one step", execs)
+	}
+	m := wait.FindStringSubmatch(execs[0])
+	if m == nil {
+		t.Fatalf("probe %q does not wait for the fetch lock: it skips while the contacts unit holds it and loses its day", execs[0])
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := time.Duration(n) * time.Second; got <= held || m[2] != leadsFetchLockPath {
+		t.Errorf("probe waits %v for %s; want longer than the contacts unit's %v on %s", got, m[2], held, leadsFetchLockPath)
 	}
 }
 

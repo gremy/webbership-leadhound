@@ -222,11 +222,17 @@ func (b *backend) LeadSettings(ctx context.Context) (console.LeadSettingsPage, e
 	if err != nil {
 		return console.LeadSettingsPage{}, err
 	}
+	labelled, err := b.lq().LabelCount(ctx)
+	if err != nil {
+		return console.LeadSettingsPage{}, err
+	}
 	cfg := setup.leads
 	p := console.LeadSettingsPage{
 		Values:    settingsValues(st, kinds),
 		ServerCap: setup.jevLeadsEnvCap,
 		TrustGate: trustGateWords(eval, evalOK, b.loc),
+		Labelled:  labelled,
+		LabelGoal: labelGoal,
 		ReadOnly:  readOnlySettings(cfg, kinds),
 		Sources: console.SettingsSources{
 			Who: st.whoSource(), KindsOn: st.knob("kinds_off"), KindsOrder: st.knob("kinds_priority"),
@@ -281,19 +287,28 @@ func settingsValues(st settingsState, kinds []leadKind) console.LeadSettingsValu
 	return v
 }
 
-// trustGateWords say whether the list and the queue sort by relevance yet, and why.
-func trustGateWords(e leadstore.RelevanceEval, ok bool, loc *time.Location) []string {
-	need := fmt.Sprintf("Sorting by relevance needs a check on at least %d labelled leads with %d%% or more within one band of the label and a rank correlation (Spearman) of %.1f or more.",
-		trustMinLeads, trustMinWithinOne, trustMinSpearman)
-	if !ok {
-		return []string{"The list and the queue sort leads that are not starred by points for now: relevance has not been checked against labelled leads yet.", need}
+// trustGateWords say whether the list and the queue sort by relevance yet and what the
+// latest check read, the rule in plain words, and the rule's exact thresholds for the fold.
+// How many leads carry a call is the page's own line, so it is not said here.
+func trustGateWords(e leadstore.RelevanceEval, ok bool, loc *time.Location) console.TrustGate {
+	g := console.TrustGate{
+		Rule: fmt.Sprintf("Sorting by relevance starts once Jev agrees with your calls on at least %d leads: close to your call on %d in 10 of them, and ranking them in roughly the same order.",
+			trustMinLeads, trustMinWithinOne/10),
+		Exact: fmt.Sprintf("In exact terms: a check on at least %d labelled leads, where Jev's band is your call or the one next to it on %d%% or more of them, and the two orders agree with a rank correlation (Spearman) of %.1f or more, where 1 is the same order.",
+			trustMinLeads, trustMinWithinOne, trustMinSpearman),
 	}
-	measured := fmt.Sprintf("The latest check, on %s, read %d labelled leads: %.0f%% within one band, rank correlation %.2f.",
+	if !ok {
+		g.Status = []string{"For now the list and the queue sort leads that are not starred by points: Jev's numbers have not been checked against your calls yet."}
+		return g
+	}
+	measured := fmt.Sprintf("The latest check, on %s, read %d of your calls: Jev was close to your call on %.0f%% of them, and its order matched yours at %.2f.",
 		e.At.In(loc).Format("2 January 2006"), e.N, e.WithinOne*100, e.Spearman)
 	if e.Trusted {
-		return []string{"The list and the queue sort leads that are not starred by relevance.", measured}
+		g.Status = []string{"The list and the queue sort leads that are not starred by relevance.", measured}
+		return g
 	}
-	return []string{"The list and the queue sort leads that are not starred by points for now: relevance has not passed its check yet.", measured, need}
+	g.Status = []string{"For now the list and the queue sort leads that are not starred by points: Jev has not passed its check yet.", measured}
+	return g
 }
 
 // readOnlySettings are the settings the page shows and never changes (D11): each country's
@@ -306,7 +321,7 @@ func readOnlySettings(cfg leadconfig.Config, kinds []leadKind) console.ReadOnlyS
 		SenderName:      cfg.Sender.Name,
 		IdentityLine:    cfg.Sender.IdentityLine,
 		SiteURL:         cfg.Sender.SiteURL,
-		OptOutLanguages: slices.Sorted(maps.Keys(cfg.Sender.OptOutLines)),
+		OptOutLanguages: optOutLanguages(cfg.Sender.OptOutLines),
 		Templates:       templateNames(cfg.Templates, kinds),
 	}
 	for _, code := range slices.Sorted(maps.Keys(cfg.Countries)) {
@@ -322,6 +337,17 @@ func readOnlySettings(cfg leadconfig.Config, kinds []leadKind) console.ReadOnlyS
 		ro.Env = append(ro.Env, console.EnvSetting{Name: name, Value: os.Getenv(name)})
 	}
 	return ro
+}
+
+// optOutLanguages names the languages that have an opt-out line, by name ("English"), in
+// the order of their codes. A code with no name is shown as it is.
+func optOutLanguages(lines map[string]string) []string {
+	codes := slices.Sorted(maps.Keys(lines))
+	out := make([]string, len(codes))
+	for i, c := range codes {
+		out[i] = languageName(c)
+	}
+	return out
 }
 
 // paceLines are the sending pace and the warm-up ramp, one plain line each.

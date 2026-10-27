@@ -757,6 +757,8 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 		return b.star(ctx, a)
 	case console.LeadDefer, console.LeadSkip, console.LeadClear:
 		return b.steer(ctx, a)
+	case console.LeadLabel:
+		return b.label(ctx, setup, a)
 	}
 	return console.LeadOutcome{}, refused("That is not something the leads pages do.")
 }
@@ -828,6 +830,8 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 			return console.LeadOutcome{}, refused("Batch %d still waits for approval; no new batch.", r.BatchID)
 		case RefuseNoStarred:
 			return console.LeadOutcome{}, refused("%s", noStarredWords)
+		case RefuseSettingsIgnored:
+			return console.LeadOutcome{}, refused("%s", settingsIgnoredWords)
 		case RefuseNoRoom:
 			if r.Sizing.Waiting == 0 {
 				return console.LeadOutcome{}, refused("The warm-up ramp sends nothing over the next %d days; no new batch.", r.Sizing.Days)

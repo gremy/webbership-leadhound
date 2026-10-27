@@ -10,7 +10,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
-// TestScaleDataModelSeed: the v5 seed's findings, stars, facts, relevance and settings are
+// TestScaleDataModelSeed: the v6 seed's findings, stars, facts, relevance, settings and calls are
 // there in the shape the seed promises, and their reads keep within budget.
 func TestScaleDataModelSeed(t *testing.T) {
 	q, s, now, _ := scaleLeads(t)
@@ -35,6 +35,7 @@ func TestScaleDataModelSeed(t *testing.T) {
 		{"latest relevance rows", `SELECT count(DISTINCT lead_id) FROM lead_relevance`, 4000},
 		{"relevance rows", `SELECT count(*) FROM lead_relevance`, 5500},
 		{"settings rows", `SELECT count(*) FROM lead_setting`, 3},
+		{"label rows", `SELECT count(*) FROM lead_label`, 55},
 	} {
 		if got := one(c.sql); got != c.want {
 			t.Errorf("%s = %d, want %d", c.what, got, c.want)
@@ -68,6 +69,18 @@ func TestScaleDataModelSeed(t *testing.T) {
 	}
 	within(t, "LatestRelevanceEval", 100*time.Millisecond, func() error {
 		_, _, err := q.LatestRelevanceEval(ctx, "relevance@1")
+		return err
+	})
+	var labelled []leadstore.LeadLabel
+	within(t, "LabelledLeads", 100*time.Millisecond, func() (err error) {
+		labelled, err = q.LabelledLeads(ctx)
+		return err
+	})
+	if len(labelled) != 35 {
+		t.Errorf("labelled leads = %d, want 35 (40 called, 5 cleared since)", len(labelled))
+	}
+	within(t, "LabelCount", 100*time.Millisecond, func() error {
+		_, err := q.LabelCount(ctx)
 		return err
 	})
 

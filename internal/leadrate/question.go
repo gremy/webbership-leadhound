@@ -90,3 +90,12 @@ func InputHash(decider string, in Input) []byte {
 	return scoring.InputHash(decider, []ai.Question{AIQuestion()}, State(in), 0,
 		map[string][]string{"question": {Question}})
 }
+
+// Describe returns band name's plain description, as the decider reads it; "" for a name
+// that is not a band.
+func Describe(name string) string {
+	if i := bandIndex(name); i >= 0 {
+		return bands[i].description
+	}
+	return ""
+}

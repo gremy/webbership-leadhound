@@ -6,6 +6,16 @@
 {{template "leads_tabs" (leadsTab "list" true)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
+{{if and $p.LabelGoal (not $v.NoLeads)}}
+<section class="card label-progress" aria-labelledby="label-title">
+  <h2 id="label-title" class="visually-hidden">Your calls</h2>
+  <p><strong>{{$p.Labelled}} of {{$p.LabelGoal}} labelled.</strong>
+    {{if $v.ToLabel}}<a href="/leads">Show every lead</a>{{else}}<a href="/leads?to_label=1">To label</a>{{end}}</p>
+  {{if $v.ToLabel}}<p class="hint">These are {{$p.LabelGoal}} leads picked across kinds, Drupal versions and countries, plus every lead you have already labelled. Open one, read it, and give it your call. Jev's number only starts ordering your list once it agrees with your calls on at least {{$p.LabelGoal}} leads.</p>
+  {{else}}<p class="hint">Your calls are the answer key Jev is checked against. Label {{$p.LabelGoal}} leads to let relevance order your list.</p>{{end}}
+</section>
+{{end}}
+
 <section class="card">
   <h2 class="visually-hidden">Filter</h2>
   <details class="filter-fold">
@@ -28,6 +38,12 @@
       <div class="checks">
         {{range $o.Channels}}{{if or (ne .Value "phone") (in .Value $f.Channels)}}<label><input type="checkbox" name="channel" value="{{.Value}}"{{if in .Value $f.Channels}} checked{{end}}> {{.Label}}</label>{{end}}{{end}}
         <label><input type="checkbox" name="has_phone" value="1"{{if eq $f.HasPhone "1"}} checked{{end}}> Has a phone number</label>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Your calls</legend>
+      <div class="checks">
+        <label><input type="checkbox" name="to_label" value="1"{{if eq $f.ToLabel "1"}} checked{{end}}> Only the leads to label</label>
       </div>
     </fieldset>
     <div class="filter-fields">
@@ -84,6 +100,7 @@
       <span class="item-meta">{{.Domain}}{{with .Country}} · {{.}}{{end}} · {{.Kind}}{{with .State}} · {{.}}{{end}}</span>
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
       <span class="item-meta">{{template "lead_channels" .}}{{with .Relevance}} · {{.}}{{end}}{{with .Position}} · number {{.}} in the outreach order{{end}}</span>
+      {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="tag call-tag">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
       {{if and $v.Order .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}
     </li>
     {{end}}
@@ -95,6 +112,7 @@
       <th scope="col">Lead</th><th scope="col">Country</th><th scope="col">Kind</th><th scope="col">Finding</th>
       <th scope="col">Reach by</th>
       {{- if $v.ShowRelevance}}<th scope="col">Relevance</th>{{end}}
+      {{- if $v.ShowCall}}<th scope="col">Your call</th>{{end}}
       {{- if $v.ShowOrder}}<th scope="col" class="num">Order</th>{{end}}
       {{- if $v.ShowState}}<th scope="col">State</th>{{end}}
       {{- if $v.Order}}<th scope="col">Move</th>{{end}}
@@ -104,14 +122,15 @@
     {{$back := printf "%s#lead-w-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
     <tr id="lead-w-{{.LeadID}}">
       <td class="star-cell">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
-      <td class="lead-cell"><a href="/leads/{{.LeadID}}">{{.Name}}</a><span class="item-meta">{{.Domain}}</span>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</td>
+      <td class="lead-cell"><a href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a><span class="item-meta" title="{{.Domain}}">{{.Domain}}</span>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</td>
       <td>{{.Country}}</td>
       <td>{{.Kind}}</td>
       <td>{{.Finding}}</td>
       <td>{{template "lead_channels" .}}</td>
       {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}
+      {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="tag call-tag">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
       {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}
-      {{- if $v.ShowState}}<td>{{.State}}</td>{{end}}
+      {{- if $v.ShowState}}<td class="state-cell">{{.State}}</td>{{end}}
       {{- if $v.Order}}<td>{{if .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}</td>{{end}}
     </tr>
     {{end}}

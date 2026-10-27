@@ -148,6 +148,18 @@ func TestConsoleLeadList(t *testing.T) {
 		t.Errorf("kind=bogus lists %v, want every open lead", ids)
 	}
 
+	// A page past the end, however large, is the last page with a note, never an error: a
+	// page near the largest int used to overflow the offset and fail the query.
+	for _, p := range []string{"9223372036854775807", "184467440737095517", "1000001"} {
+		got = list("/leads?page=" + p)
+		if note := "There is no page "; !strings.Contains(got, note) || !strings.Contains(got, "this is the last page.") {
+			t.Errorf("page=%s lacks the last-page note:\n%s", p, got)
+		}
+		if ids := listedLeads(got); len(ids) < 3 {
+			t.Errorf("page=%s lists %v, want the last page's leads", p, ids)
+		}
+	}
+
 	// The lead's page: the phone, the description, the social link and the fetch behind
 	// the finding.
 	detail := list(fmt.Sprintf("/leads/%d", contoso))

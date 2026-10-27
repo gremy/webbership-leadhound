@@ -312,6 +312,7 @@ func (s *server) funcs() template.FuncMap {
 		"took":         took,
 		"sources":      sources,
 		"costLine":     costLine,
+		"callsLine":    callsLine,
 		"row":          func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
 		"ruleFields":   func() []string { return ruleFields },
 		"cssVersion":   func() string { return cssVersion },
@@ -332,7 +333,7 @@ func (s *server) funcs() template.FuncMap {
 		"maxMailbox":   func() int { return maxMailbox },
 		"leadsTab":     func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
 		"webURL":       webURL,
-		"source":       func(src SettingSource) string { return sourceWords(src, s.opt.Location) },
+		"changed":      func(what string, src SettingSource) string { return changedWords(what, src, s.opt.Location) },
 		"leadAct": func(id int64, do, label, back, sr string) leadActView {
 			return leadActView{ID: id, Do: do, Label: label, Back: back, SR: sr}
 		},
@@ -467,16 +468,27 @@ func (s *server) setFlash(w http.ResponseWriter, msg string) {
 
 // takeFlash returns the one-line message set by the last action, and clears it.
 func (s *server) takeFlash(w http.ResponseWriter, r *http.Request) string {
+	msg, _ := s.takeFlashAt(w, r)
+	return msg
+}
+
+// callFlash marks a flash that belongs beside a lead's "Your call" block rather than at the
+// top of the page. A control character, so no message a backend words can start with it.
+const callFlash = "\x1fcall\x1f"
+
+// takeFlashAt is takeFlash, and whether the message belongs beside the "Your call" block.
+func (s *server) takeFlashAt(w http.ResponseWriter, r *http.Request) (string, bool) {
 	c, err := r.Cookie(s.flash)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	s.setFlash(w, "")
 	b, err := base64.RawURLEncoding.DecodeString(c.Value)
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return string(b)
+	msg, atCall := strings.CutPrefix(string(b), callFlash)
+	return msg, atCall
 }
 
 // safeNext returns next when it is the path of a signed-in page, with its query;
@@ -903,14 +915,22 @@ func compact(n int) string {
 	}
 }
 
-// costLine is the dashboard's scoring line, e.g.
-// "$0.12 · 2,387 of 10,000 calls · 2.7M input tokens".
-func costLine(d Dashboard) string {
-	calls := thousands(d.AICalls) + " calls"
-	if d.CallCap > 0 {
-		calls = thousands(d.AICalls) + " of " + thousands(d.CallCap) + " calls"
+// callsLine is the dashboard's Jev calls today, jobs and leads each against its own cap, e.g.
+// "Jev today: 120 of 300 calls for jobs · 1,400 of 10,000 for leads".
+func callsLine(d Dashboard) string {
+	part := func(n, limit int, calls, what string) string {
+		if limit > 0 {
+			return thousands(n) + " of " + thousands(limit) + calls + " for " + what
+		}
+		return thousands(n) + calls + " for " + what
 	}
-	return fmt.Sprintf("$%.2f · %s · %s input tokens", d.AICostUSD, calls, compact(d.AIInputTokens))
+	return "Jev today: " + part(d.JobsCalls, d.JobsCallCap, " calls", "jobs") + " · " + part(d.LeadsCalls, d.LeadsCallCap, "", "leads")
+}
+
+// costLine is the dashboard's Jev cost line, both purposes together, e.g.
+// "$0.12 · 2.7M input tokens".
+func costLine(d Dashboard) string {
+	return fmt.Sprintf("$%.2f · %s input tokens", d.AICostUSD, compact(d.AIInputTokens))
 }
 
 // took is how long a run took, or "running" when it has not finished.

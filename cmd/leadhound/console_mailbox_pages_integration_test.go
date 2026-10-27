@@ -147,13 +147,15 @@ func (c *consoleClient) get(path string, hx bool) *httptest.ResponseRecorder {
 }
 
 // post submits form to path; after a redirect it reads the page redirected to (kept in
-// pages) and returns the POST's own answer.
+// pages), without its fragment as a browser does, and returns the POST's own answer.
 func (c *consoleClient) post(path string, form url.Values) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := c.do(r)
 	if w.Code == http.StatusSeeOther {
-		c.get(w.Header().Get("Location"), false)
+		// A browser never sends the fragment (#your-call): it scrolls to it.
+		next, _, _ := strings.Cut(w.Header().Get("Location"), "#")
+		c.get(next, false)
 	}
 	return w
 }

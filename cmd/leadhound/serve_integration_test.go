@@ -302,7 +302,7 @@ func TestDashboardHealthParity(t *testing.T) {
 	if d.LastBrief != nil {
 		t.Errorf("last brief = %+v, want none (nothing sent)", d.LastBrief)
 	}
-	if len(d.LastRuns) == 0 || d.Funnel.NewBySource["linkedin-fixture"] == 0 || d.Funnel.Scored == 0 || d.CallCap != config.DefaultJevDailyCallCap {
+	if len(d.LastRuns) == 0 || d.Funnel.NewBySource["linkedin-fixture"] == 0 || d.Funnel.Scored == 0 || d.JobsCallCap != config.DefaultJevDailyCallCap {
 		t.Errorf("dashboard = %+v", d)
 	}
 }
@@ -446,7 +446,7 @@ func TestConsoleColdStart(t *testing.T) {
 			t.Errorf("the empty day's brief lacks %q", l)
 		}
 	}
-	if d.LastBrief != nil || d.ApplyNow != 0 || d.AICalls != 0 || len(d.Boards) != 0 || d.Funnel.Scored != 0 {
+	if d.LastBrief != nil || d.ApplyNow != 0 || d.JobsCalls != 0 || d.LeadsCalls != 0 || len(d.Boards) != 0 || d.Funnel.Scored != 0 {
 		t.Errorf("cold dashboard = %+v", d)
 	}
 	jobs, err := b.BriefJobs(ctx, "")

@@ -5,9 +5,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -250,4 +254,55 @@ func TestGoldenDraftAndEval(t *testing.T) {
 	if n := dbCount(t, `SELECT count(*) FROM lead_relevance_eval`); n != 0 {
 		t.Errorf("%d evals recorded from a fake eval", n)
 	}
+}
+
+// TestDashboardCountsJevPerPurpose: the dashboard counts today's Jev calls for jobs and for
+// leads apart, the jobs calls against LEADHOUND_JEV_DAILY_CALL_CAP and the leads calls
+// against the leads cap leads rate runs under (a saved setting may lower the server's cap),
+// never every call against the jobs cap.
+func TestDashboardCountsJevPerPurpose(t *testing.T) {
+	ctx := context.Background()
+	leadsDB(t)
+	b := leadsBackend(t)
+	today := b.now().In(b.loc)
+	for _, r := range []ai.UsageRow{
+		{Provider: "typesafe", Model: "jev", Day: today, Calls: 7, InputTokens: 70, Purpose: ai.PurposeJobs},
+		{Provider: "typesafe", Model: "jev", Day: today, Calls: 40, InputTokens: 400, Purpose: ai.PurposeLeads},
+	} {
+		if err := b.s.Q().RecordAIUsage(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, cookie := jobsHandler(t, b)
+	check := func(what string, leadsCap int) {
+		t.Helper()
+		d, err := b.Dashboard(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.JobsCalls != 7 || d.LeadsCalls != 40 || d.JobsCallCap != b.cfg.JevDailyCallCap || d.LeadsCallCap != leadsCap || d.AIInputTokens != 470 {
+			t.Errorf("%s: jobs %d of %d, leads %d of %d, tokens %d; want jobs 7 of %d, leads 40 of %d, tokens 470", what,
+				d.JobsCalls, d.JobsCallCap, d.LeadsCalls, d.LeadsCallCap, d.AIInputTokens, b.cfg.JevDailyCallCap, leadsCap)
+		}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Cookie", cookie)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		want := fmt.Sprintf("Jev today: 7 of %s calls for jobs · 40 of %s for leads", thousandsOf(b.cfg.JevDailyCallCap), thousandsOf(leadsCap))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("%s: dashboard %d lacks %q", what, w.Code, want)
+		}
+	}
+	check("the server's cap", b.cfg.JevLeadsDailyCallCap)
+	saveRateSettings(t, `{"relevance":{"leads_daily_calls":25}}`)
+	check("a saved lower cap", 25)
+}
+
+// thousandsOf writes n with comma thousands, as the console does.
+func thousandsOf(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }

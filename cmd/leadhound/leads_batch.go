@@ -112,6 +112,9 @@ func runBatchNew(ctx context.Context, args []string) error {
 			// A normal morning when nothing is starred: the batch timer must not fail on it.
 			_, _ = fmt.Fprintln(stdout, noStarredWords)
 			return nil
+		case RefuseSettingsIgnored:
+			// Not a normal morning: the batch timer fails (exit 2), so it shows in systemctl.
+			return usageError("%s", settingsIgnoredWords)
 		case RefuseNoRoom:
 			if r.Sizing.Waiting == 0 {
 				_, _ = fmt.Fprintf(stdout, "The warm-up ramp sends nothing over the next %d days; no new batch.\n", r.Sizing.Days)

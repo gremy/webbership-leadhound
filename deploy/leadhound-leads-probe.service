@@ -13,13 +13,15 @@ User=leadhound
 Group=leadhound
 # root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
 EnvironmentFile=/etc/leadhound/env
-# The probe and the contact search share one fetch lock in the data directory, so two never
-# read the public web at once. A run that finds it held exits 75 at once and counts as done
-# (SuccessExitStatus); timeout ends one that hangs.
-ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000
-SuccessExitStatus=75
-# Longer than the probe's timeout and its kill grace together (3h05).
-TimeoutStartSec=3h30min
+# The probe, the contact search and the enrichment share one fetch lock in the data
+# directory, so two never read the public web at once. The contacts unit (10:00) can hold it
+# for its search and its enrichment, up to 190 minutes with their kill graces, so until about
+# 13:20: the probe waits for it, up to 11700 seconds (195 minutes), rather than lose its day.
+# A wait that runs out exits 75, which fails the unit, so a lost probe shows in systemctl.
+# timeout ends a probe that hangs.
+ExecStart=/usr/bin/flock --wait 11700 --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000
+# Longer than the lock wait, the probe's timeout and its kill grace together (380 minutes).
+TimeoutStartSec=390min
 Nice=10
 IOSchedulingClass=idle
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a

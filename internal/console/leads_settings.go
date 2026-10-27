@@ -35,6 +35,20 @@ var batchSources = []FilterOption{
 	{BatchesStarredThenRest, "Starred leads first, then the rest of the queue"},
 }
 
+// envHelp is one plain line for each name on EnvAllowlist, shown under its value on the
+// Settings page's read-only part.
+var envHelp = map[string]string{
+	"LEADHOUND_OUTREACH":                 "Set to live, approved emails really go out. Anything else writes each email to a folder on the server and sends nothing.",
+	"LEADHOUND_LEADS_TIMERS":             "Set to on, the daily jobs that find sites and their contacts run.",
+	"LEADHOUND_LEADS_SEND":               "Set to on, with LEADHOUND_OUTREACH at live and LEADHOUND_LEADS_TIMERS at on, the daily jobs that make batches, send the batches you approved and read replies run.",
+	"LEADHOUND_PROBE_RATE":               "How many requests a second checking sites may make, across a run.",
+	"LEADHOUND_PROBE_CONCURRENCY":        "How many sites are checked at once.",
+	"LEADHOUND_TZ":                       "The time zone dates are shown in.",
+	"LEADHOUND_JEV_MODEL":                "The model Jev uses.",
+	"LEADHOUND_JEV_DAILY_CALL_CAP":       "The most Jev calls a day for scoring jobs, counted apart from leads.",
+	"LEADHOUND_JEV_LEADS_DAILY_CALL_CAP": "The most leads Jev rates a day. Most ratings a day, under Jev relevance, can lower it, never raise it.",
+}
+
 // dateNames are the end-of-life dates the Dates section posts, as their form fields.
 var dateNames = []string{"d6_eol", "d7_eol", "d8_eol", "d9_eol", "d10_eol"}
 
@@ -45,6 +59,7 @@ type settingsView struct {
 	P            LeadSettingsPage
 	Sections     []settingsSection
 	BatchSources []FilterOption
+	EnvHelp      map[string]string // envHelp: a line for each allowlisted environment name
 	Message      string
 	Error        bool
 	Section      string // the refused section, or ""
@@ -103,7 +118,7 @@ func (s *server) renderSettings(w http.ResponseWriter, r *http.Request, code int
 	p.ReadOnly.Env = slices.DeleteFunc(slices.Clone(p.ReadOnly.Env), func(e EnvSetting) bool {
 		return !slices.Contains(EnvAllowlist, e.Name)
 	})
-	v := settingsView{P: p, Sections: settingsSections, BatchSources: batchSources, Message: msg, Error: isErr}
+	v := settingsView{P: p, Sections: settingsSections, BatchSources: batchSources, EnvHelp: envHelp, Message: msg, Error: isErr}
 	if edit != nil {
 		v.Section, v.Problems = edit.Section, edit.Problems
 		v.SectionTitle = cmp.Or(settingsTitle(edit.Section), "Reset everything")
@@ -184,7 +199,7 @@ func (s *server) saveLeadSettings(w http.ResponseWriter, r *http.Request) {
 		msg = settingsTitle(section) + " is back to the file."
 	}
 	if section == SettingsWho || section == SettingsAll {
-		msg += " A change applies to new leads at the next build."
+		msg += " A change applies to the queue straight away and to the next new batch; batches already made keep their leads."
 	}
 	s.setFlash(w, msg)
 	http.Redirect(w, r, next, http.StatusSeeOther)
@@ -306,14 +321,19 @@ func overlaySettings(dst *LeadSettingsValues, section string, src LeadSettingsVa
 	}
 }
 
-// sourceWords says where a value comes from: "file", or "changed in the console on" and
-// the day, in loc.
-func sourceWords(src SettingSource, loc *time.Location) string {
+// changedWords says when a value was changed on this page, after what it names ("" for
+// the whole value): "Changed here on 24 October 2026", "Order changed here on …". A value
+// from the file says nothing, so it is "".
+func changedWords(what string, src SettingSource, loc *time.Location) string {
 	if !src.Console {
-		return "file"
+		return ""
+	}
+	words := "Changed here"
+	if what != "" {
+		words = what + " changed here"
 	}
 	if src.At.IsZero() {
-		return "changed in the console"
+		return words + "."
 	}
-	return "changed in the console on " + src.At.In(loc).Format("2 January 2006")
+	return words + " on " + src.At.In(loc).Format("2 January 2006") + "."
 }

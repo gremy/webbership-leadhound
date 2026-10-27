@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
 // Golden is one golden line: a lead's facts and the band a person gave it. A nil Label is
@@ -84,4 +87,35 @@ func parseGolden(line string) (Golden, error) {
 		}
 	}
 	return g, nil
+}
+
+// GoldenFromLabels turns the operator's stored calls (leadstore.LabelledLeads) into golden
+// lines for Evaluate: the id is the lead's domain ("lead-N" when it has none), the input the
+// one the call was made on, read as strictly as a golden file's, the label the call's band,
+// and the note "lead N". A cleared call is skipped; an input that does not read, or a band
+// that is not one, is an error naming the lead.
+func GoldenFromLabels(labels []leadstore.LeadLabel) ([]Golden, error) {
+	out := make([]Golden, 0, len(labels))
+	for _, l := range labels {
+		if l.Band == nil {
+			continue
+		}
+		id := "lead-" + strconv.FormatInt(l.LeadID, 10)
+		if l.Domain != "" && !strings.ContainsFunc(l.Domain, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+			id = l.Domain
+		}
+		if _, ok := Weight(*l.Band); !ok {
+			return nil, fmt.Errorf("leadrate: call on lead %d: band %q is not one", l.LeadID, *l.Band)
+		}
+		var in Input
+		if err := json.Unmarshal(l.Input, &in); err != nil {
+			return nil, fmt.Errorf("leadrate: call on lead %d: %w", l.LeadID, err)
+		}
+		if in.Kind == "" {
+			return nil, fmt.Errorf("leadrate: call on lead %d: input has no kind", l.LeadID)
+		}
+		band := *l.Band
+		out = append(out, Golden{ID: id, Input: in, Label: &band, Note: "lead " + strconv.FormatInt(l.LeadID, 10)})
+	}
+	return out, nil
 }

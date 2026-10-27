@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 // settingsSave is one SaveLeadSettings call as the fake backend saw it.
@@ -63,7 +66,10 @@ func richSettings(text string) LeadSettingsPage {
 		},
 		Sources:   SettingsSources{KindsOrder: console, BatchesFrom: console, Rating: console, Order: console},
 		ServerCap: 10000,
-		TrustGate: []string{"Relevance is an early number: " + text},
+		TrustGate: TrustGate{Status: []string{"Relevance is an early number: " + text},
+			Rule: "Sorting by relevance starts once Jev agrees with your calls on at least 30 leads.", Exact: "In exact terms: " + text},
+		Labelled:  12,
+		LabelGoal: 30,
 		Notes:     []string{"A saved change is ignored: " + text},
 		ReadOnly: ReadOnlySettings{
 			Countries:       []CountryPolicy{{Code: "GB", Label: text, Channel: "email", Language: "en", Timezone: "Europe/London", Footer: "uk"}},
@@ -126,17 +132,17 @@ func TestSettingsPage(t *testing.T) {
 	wants := []string{
 		`<a href="/leads" aria-current="page">Leads</a>`,
 		`<a href="/leads/settings" aria-current="page">Settings</a>`,
-		"A change applies to new leads at the next build.",
-		"Source: file", "Source: changed in the console on 24 October 2026",
+		"A change applies to the queue straight away and to the next new batch; batches already made keep their leads.",
+		"<p class=\"setting-source\">Changed here on 24 October 2026.</p>", "Order changed here on 24 October 2026.",
 		`name="wanted" value="GB" checked`, `name="wanted" value="DE">`, `name="never_contact" value="northwind.example"`,
 		`name="on" value="agency_partner">`, `value="down:unsupported"`, `value="up:agency_partner"`,
 		`name="skip_rank_over" value="100000"`,
 		`name="batches_from" value="starred_then_rest" checked`, "Starred leads first, then the rest of the queue",
 		`name="d10_eol" value="2026-12-09" type="date"`,
 		`name="rating" value="on" checked`, `name="leads_cap" value="500"`, `max="10000"`, "of 10,000 a day",
-		"Relevance is an early number: northwind.example", "A saved change is ignored: northwind.example",
+		"Relevance is an early number: northwind.example", `<p class="note">A saved change is ignored: northwind.example</p>`,
 		`name="kind.unsupported" value="20"`, `name="exact_version" value="5"`,
-		"Europe/London", "Batches of 20; northwind.example", "one for each of de, en",
+		"Europe/London", "Batches of 20; northwind.example", "<dt>Opt-out lines</dt><dd>de, en</dd>",
 		"Edit in leads.yaml.", "Set in .env on the server.", "LEADHOUND_OUTREACH",
 		"<h3>Templates</h3>", "Drupal 7 site in English: emails 1 to 3, contact form", "Footer northwind.example",
 		`action="/leads/settings/all"`, "Reset everything to the file",
@@ -152,7 +158,17 @@ func TestSettingsPage(t *testing.T) {
 	if n := strings.Count(body, `value="reset" class="quiet">Reset this section`); n != len(settingsSections) {
 		t.Errorf("%d section resets, want %d", n, len(settingsSections))
 	}
+	// A value from the file says nothing about where it comes from; only a change made here
+	// says when. The first kind has no Up and the last no Down: each keeps an empty slot so
+	// the buttons line up.
+	for _, want := range []string{`<span class="move-up move-none" aria-hidden="true"></span>`,
+		`<span class="move-down move-none" aria-hidden="true"></span>`} {
+		if n := strings.Count(body, want); n != 1 {
+			t.Errorf("settings page holds %q %d times, want once", want, n)
+		}
+	}
 	for _, bad := range []string{`value="up:unsupported"`, `value="down:agency_partner"`, `name="exclude_countries"`,
+		"Source:", "Ticks changed here", `<p class="notice">A saved change`,
 		"<style", " style=", "onclick", "<script>"} {
 		if strings.Contains(body, bad) {
 			t.Errorf("settings page holds %q", bad)
@@ -222,7 +238,7 @@ func TestSettingsSaveAndReset(t *testing.T) {
 		}
 		msg := "is back to the file."
 		if s.Name == SettingsAll {
-			msg = "Every setting is back to the file. A change applies to new leads at the next build."
+			msg = "Every setting is back to the file. A change applies to the queue straight away and to the next new batch; batches already made keep their leads."
 		}
 		if page := h.do(get("/leads/settings", c, cookieNamed(w, "__Host-lh_flash"))).Body.String(); !strings.Contains(page, msg) {
 			t.Errorf("reset %s: the page does not say %q", s.Name, msg)
@@ -426,5 +442,213 @@ func TestSettingsNeverShowsSecrets(t *testing.T) {
 	}
 	if len(EnvAllowlist) != 9 {
 		t.Errorf("EnvAllowlist holds %d names, want the 9 of plan D11", len(EnvAllowlist))
+	}
+}
+
+// helpSections are the Settings page's sections that each open with a plain intro: every
+// editable section, the read-only part and the reset of everything.
+func helpSections() []string {
+	out := make([]string, 0, len(settingsSections)+2)
+	for _, s := range settingsSections {
+		out = append(out, s.Name)
+	}
+	return append(out, "file", "reset-all")
+}
+
+// parseSettings parses a Settings page and indexes its elements by id.
+func parseSettings(t *testing.T, body string) (*html.Node, map[string]*html.Node) {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ids := map[string]*html.Node{}
+	for n := range doc.Descendants() {
+		if id := attr(n, "id"); n.Type == html.ElementNode && id != "" {
+			if _, dup := ids[id]; dup {
+				t.Errorf("id %q appears twice", id)
+			}
+			ids[id] = n
+		}
+	}
+	return doc, ids
+}
+
+// attr is n's attribute named key, or "".
+func attr(n *html.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+// hasClass reports whether n's class attribute holds class.
+func hasClass(n *html.Node, class string) bool {
+	return slices.Contains(strings.Fields(attr(n, "class")), class)
+}
+
+// nodeText is n's text, its spaces folded.
+func nodeText(n *html.Node) string {
+	var b strings.Builder
+	for d := range n.Descendants() {
+		if d.Type == html.TextNode {
+			b.WriteString(d.Data)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// TestSettingsHelp: every section opens with its intro, tied to the section by
+// aria-describedby; every field a person can change has a hint tied to it by
+// aria-describedby; every editable section and the read-only part carry a "More about
+// this"; every allowlisted environment name has its line; and the page holds no inline
+// style or script, so it keeps to the CSP. The same holds on a refused save.
+func TestSettingsHelp(t *testing.T) {
+	b := richBackend("northwind.example")
+	b.settings.ReadOnly.Env = nil
+	for _, name := range EnvAllowlist {
+		b.settings.ReadOnly.Env = append(b.settings.ReadOnly.Env, EnvSetting{Name: name})
+	}
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	b.saveErr = &SettingsRefused{Problems: []string{"refused"}}
+	pages := map[string]string{
+		"GET":     h.do(get("/leads/settings", c)).Body.String(),
+		"refused": h.do(post("/leads/settings/order", url.Values{"do": {"save"}, "rank_bands": {"x"}}, c)).Body.String(),
+	}
+	for name, body := range pages {
+		doc, ids := parseSettings(t, body)
+
+		for _, sec := range helpSections() {
+			s := ids[sec]
+			if s == nil {
+				t.Errorf("%s: no section %q", name, sec)
+				continue
+			}
+			intro := ids[sec+"-intro"]
+			if intro == nil || !hasClass(intro, "section-intro") || len(nodeText(intro)) < 40 {
+				t.Errorf("%s: section %q has no intro", name, sec)
+			}
+			if got := attr(s, "aria-describedby"); got != sec+"-intro" {
+				t.Errorf("%s: section %q is described by %q, want its intro", name, sec, got)
+			}
+			if intro != nil && !slices.ContainsFunc(slices.Collect(s.Descendants()), func(n *html.Node) bool { return n == intro }) {
+				t.Errorf("%s: the intro of %q sits outside it", name, sec)
+			}
+		}
+
+		fields := 0
+		for n := range doc.Descendants() {
+			if n.Type != html.ElementNode || !slices.Contains([]string{"input", "select", "textarea"}, n.Data) || attr(n, "type") == "hidden" {
+				continue
+			}
+			fields++
+			who := cmp.Or(attr(n, "id"), attr(n, "name")+"="+attr(n, "value"))
+			refs := strings.Fields(attr(n, "aria-describedby"))
+			if len(refs) == 0 {
+				t.Errorf("%s: field %s has no hint", name, who)
+			}
+			for _, ref := range refs {
+				hint := ids[ref]
+				if hint == nil || !hasClass(hint, "hint") || nodeText(hint) == "" {
+					t.Errorf("%s: field %s points at %q, which is not a hint on the page", name, who, ref)
+				}
+			}
+		}
+		// 2 countries, never-contact, 3 kinds, small sites, 2 batch choices, 3 dates,
+		// the rating switch and its cap, 2 points, exact version, rank bands, countries.
+		if fields != 19 {
+			t.Errorf("%s: %d fields checked, want 19", name, fields)
+		}
+
+		more := 0
+		for n := range doc.Descendants() {
+			if n.Type == html.ElementNode && n.Data == "details" && hasClass(n, "more") {
+				more++
+				if !strings.HasPrefix(nodeText(n), "More about this ") {
+					t.Errorf("%s: a details.more does not open with More about this", name)
+				}
+			}
+		}
+		// One for each editable section, and one for the trust gate's exact terms.
+		if more != len(settingsSections)+1 {
+			t.Errorf("%s: %d More about this, want one for each of the %d editable sections and the trust gate's", name, more, len(settingsSections))
+		}
+
+		for n := range doc.Descendants() {
+			if n.Type != html.ElementNode {
+				continue
+			}
+			if n.Data == "style" || (n.Data == "script" && attr(n, "src") == "") {
+				t.Errorf("%s: an inline <%s>", name, n.Data)
+			}
+			for _, a := range n.Attr {
+				if a.Key == "style" || strings.HasPrefix(a.Key, "on") || strings.HasPrefix(strings.TrimSpace(strings.ToLower(a.Val)), "javascript:") {
+					t.Errorf("%s: <%s %s=%q> is inline style or script", name, n.Data, a.Key, a.Val)
+				}
+			}
+		}
+
+		for _, want := range []string{
+			"0 uses the server's limit of 10,000 a day; you can set a lower number here, not a higher one.", "making them editable here is planned",
+			"Starred leads first, then the rest drafts the 5", "for example 100000",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: the help lacks %q", name, want)
+			}
+		}
+	}
+
+	// The leads still to label are one link away, with the count, said once; the trust gate's
+	// lines are hints under its heading, its exact terms in a fold; "answer key" is said at
+	// most once, and the .env and the old jargon are not in the help at all.
+	body := pages["GET"]
+	gate := body[strings.Index(body, "<h3>Sorting by relevance</h3>"):]
+	gate = gate[:strings.Index(gate, "</div>")]
+	for _, want := range []string{
+		`<p class="hint">Relevance is an early number: northwind.example</p>`,
+		`<p class="hint">Sorting by relevance starts once Jev agrees with your calls on at least 30 leads.</p>`,
+		"<summary>More about this</summary>\n        <p>In exact terms: northwind.example</p>",
+		`<p class="hint">12 of 30 labelled · <a href="/leads?to_label=1">Leads to label</a></p>`,
+	} {
+		if !strings.Contains(gate, want) {
+			t.Errorf("the trust gate lacks %q:\n%s", want, gate)
+		}
+	}
+	if n := strings.Count(body, "12 of 30 labelled"); n != 1 {
+		t.Errorf("the labelled count is said %d times, want once", n)
+	}
+	if n := strings.Count(body, "answer key"); n > 1 {
+		t.Errorf("the page says answer key %d times, want at most once", n)
+	}
+	for _, bad := range []string{"in .env on the server.</p>\n    </div>", "Spearman) of 0.5", "under To label"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the help still holds %q", bad)
+		}
+	}
+	b.settings.TrustGate = TrustGate{}
+	noGate := h.do(get("/leads/settings", c)).Body.String()
+	if want := `12 of 30 labelled · <a href="/leads?to_label=1">Leads to label</a>`; !strings.Contains(noGate, want) {
+		t.Errorf("without the trust gate's lines the page lacks %q", want)
+	}
+	b.settings.LabelGoal = 0
+	if strings.Contains(h.do(get("/leads/settings", c)).Body.String(), "to_label") {
+		t.Error("with no label goal the page still links the leads to label")
+	}
+
+	for _, env := range EnvAllowlist {
+		if envHelp[env] == "" {
+			t.Errorf("%s has no help line", env)
+		}
+	}
+	if len(envHelp) != len(EnvAllowlist) {
+		t.Errorf("envHelp holds %d lines for %d allowlisted names", len(envHelp), len(EnvAllowlist))
+	}
+	for env, line := range envHelp {
+		if !strings.Contains(body, html.EscapeString(line)) {
+			t.Errorf("the page does not show the line for %s", env)
+		}
 	}
 }

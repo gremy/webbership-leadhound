@@ -219,17 +219,34 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 
 | Timer | When | Runs | Switched on by |
 | --- | --- | --- | --- |
-| `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h` | `LEADHOUND_LEADS_TIMERS=on` |
-| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads build`, under `timeout 20m` | `LEADHOUND_LEADS_TIMERS=on` |
+| `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` |
+| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000`, under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=7h` | `LEADHOUND_LEADS_TIMERS=on` |
 | `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m` | sending on |
 | `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | sending on |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | sending on |
 
 - The probe and the contact search are the finding timers.
   They start unattended reads of public sites: up to 10,000 homepages a day, and up to 300 organisations searched for a published contact a day, each site's robots file read and honoured first.
-  They share a fetch lock in the data directory, `/opt/leadhound/data/.leads-fetch.lock`, without waiting: a run that finds it held exits 75, which the unit counts as done.
-- After the contact search, the contacts unit runs `leads build`, which turns every organisation with a finding into a lead and reads no web page, so the console's Leads pages fill while only finding is on; the batch rebuilds the list again before drafting.
+  They share a fetch lock in the data directory, `/opt/leadhound/data/.leads-fetch.lock`.
+  The contact search and the enrichment do not wait for it: a step that finds it held exits 75, which the contacts unit counts as done.
+  The probe waits for it, up to 11700 seconds (195 minutes), because the contacts unit can hold it for 190 minutes, until about 13:20, after the probe's timer has fired; a wait that runs out exits 75 and fails the probe unit, so a lost probe shows in `systemctl`.
+- After the contact search, the contacts unit enriches organisations, rates leads for relevance, then runs `leads build`, which turns every organisation with a finding into a lead and reads no web page, so the console's Leads pages fill while only finding is on; the batch rebuilds the list again before drafting.
+  Its steps, from `leadhound-leads-contacts.service`:
+
+  ```ini
+  ExecStart=-/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300
+  ExecStart=-/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 60m /opt/leadhound/bin/leadhound leads enrich --max 300
+  ExecStart=-/usr/bin/timeout --kill-after=5m 180m /opt/leadhound/bin/leadhound leads rate --max 10000
+  ExecStart=/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build
+  SuccessExitStatus=75
+  TimeoutStartSec=7h
+  ```
+
+  Every step but the build is `ExecStart=-`, so a failed search, enrichment or rating never stops the build.
+  The rating and the build read no web page, so they run outside the fetch lock.
+  `TimeoutStartSec=7h` is longer than the four timeouts and their kill graces together (6h40).
 - The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
+  While your saved settings no longer fit `leads.yaml` (so they are not applied), `leads batch new` makes none and exits 2, so the batch unit shows as failed in `systemctl`; fix or reset them in Leads → Settings.
   The send sends only approved messages, each in its recipient's business hours (the send hours cover the working day in the UK, Ireland and central Europe), and the sync reads every mailbox that is not retired for replies, opt-outs and bounces.
   When one mailbox cannot be read, the others still sync and `leads sync` exits 1, so the sync unit shows as failed in `systemctl` and the journal names the mailbox.
   `leads send --max 25` is the most sent in one run over all mailboxes together; with several mailboxes, raise it in `leadhound-leads-send.service`.
@@ -255,7 +272,7 @@ A run already in progress finishes; `sudo systemctl stop leadhound-leads-<name>.
 
 ### Enrichment
 
-After the contact search, the contacts unit runs `leads enrich --max 300`, under `timeout 60m` and the same fetch lock, before `leads build`.
+After the contact search, the contacts unit runs `leads enrich --max 300`, under `timeout 60m` and the same fetch lock, before `leads rate` and `leads build`.
 It takes up to 300 organisations with a lead that were not enriched in the last 30 days, newest lead first.
 It reads phone numbers, a description and links to social profiles from the pages already kept for each one: its homepage and the pages a contact route was read from.
 When none of those is a contact page, it fetches at most two contact links from the homepage, under the contact search's rules: robots.txt on the link and on the final URL, a 2xx answer on the organisation's own domain, public addresses only, and the same rate and budgets.
@@ -265,6 +282,62 @@ A LinkedIn link is kept only for a company page, and no fact ever holds an email
 The run prints one line, `orgs N · phones N · descriptions N · social N · requests N · stop <reason>`, where the counts are new facts and the stop is `none` or `disk_budget`.
 An enrichment cut short (no answer, a breaker stop, a cancel) records nothing, so that organisation is tried again on the next run.
 It needs `LEADHOUND_LIVE=1`, like the contact search; `leads enrich --dry-run --fixtures DIR` reads fixtures and only organisations on reserved names.
+`make remote … ARGS='leads enrich …'` does not take the fetch lock, so run it by hand only while the contacts unit is not running.
+
+### Lead kinds and findings
+
+A lead points at one finding: a row that says what a detector saw that makes an organisation worth contacting, with the source row it was read from and its evidence.
+The kinds and the channels are rows in `lead_kind` and `lead_channel`, not checks on `lead`, and they change only by migration: the app role can read them, never write them.
+Today's kinds are `unsupported` (Drupal 6 to 9), `d10` (Drupal 10) and `agency_partner`, which batches may draft, and `selftest` and `hand`, which they never draft.
+`finding` is append-only, and a source row gives one finding however often a build runs.
+Later kinds are designed, not built, and each needs one `INSERT INTO lead_kind` and its own finding source, never a change to `lead`:
+
+- A job posting for a role that could be automated: kind `automation`, detector `jobad@1`, source table `job`, subject `{job_id, roles, systems}`.
+- A shop with broken tracking: detector `tracking@1` on a site fetch, subject `{platform, pixels, gap}`.
+- A new company: detector `registry@1`, subject `{register, number, incorporated}`.
+- A business with no website: the `domain` column of `org` becomes nullable with an `org_ref (source, ref)` unique key, in that plan's own migration; `lead` is not altered.
+
+`org.site_id` has no unique key yet: today's writers never give two organisations the same site, and if one did, the migration or the build would fail loudly rather than mix them up.
+
+### Relevance
+
+The contacts unit runs `leads rate --max 10000`, under `timeout 180m`, after the enrichment and outside the fetch lock.
+It asks Jev one question about every open lead whose facts changed since its last rating and stores the answer as a number from 0 to 100, so a day's run after the first is small.
+
+- It needs `LEADHOUND_LIVE=1` and the Jev key, `TYPESAFE_API_KEY`, in `/etc/leadhound/env`.
+  Without the live line it requests nothing and exits 0; without the key it refuses.
+  Either way it rates nothing, and the build after it still runs, because the step is `ExecStart=-`.
+- While rating is off in Leads → Settings it refuses at once, and the build runs next.
+- Its calls count against `LEADHOUND_JEV_LEADS_DAILY_CALL_CAP` (10,000 when left out), kept apart from the jobs' `LEADHOUND_JEV_DAILY_CALL_CAP`, so scoring jobs keeps its full cap whatever leads do.
+  The cap is a guard against a runaway loop, not a budget; the Settings value may lower it, never raise it, and a higher one is refused with "raise it in .env first".
+- One rating runs at a time, through a database lock; a second says so and exits 0.
+- A rating stopped by `--max`, the cap, an unavailable provider or five failed calls in a row is recorded as a `leads-rate` run and exits 0.
+
+The number orders the list only once it passes its trust gate: an eval with `--decider jev` on at least 30 of your own calls ("Your call" on a lead's page, listed under To label) that is within one band of you on at least 80% of them, with Spearman's rho at least 0.5.
+Until then the list and the batches order by the fallback order's points, and starred leads always come first.
+Run the eval by hand once you have labelled the leads: `make remote HOST=… CONFIRM=1 ARGS='leads relevance eval --decider jev'`.
+It says how many calls it will make before the first, is not capped, and is recorded only with 30 or more labelled leads; the latest recorded eval decides.
+
+### Settings in the console
+
+The console's Settings page (`/leads/settings`) changes some leads settings over `leads.yaml`, in the database: who to contact, the kinds and their order, small sites, where batches draw from, the Drupal end-of-life dates, relevance rating and its daily calls, and the fallback order.
+The commands that use these settings read them from the database on every run, with the file underneath, so a change reaches the next run of each unit without a deploy or a restart.
+The sending pace and ramp, the sender, the country channels and languages, and the templates show read-only: the send path reads them from the file, so change them in `leads.yaml` and run `make deploy-data`.
+No secret is shown or stored.
+`leads settings show` prints each setting in force and where it comes from, and `leads settings reset [--section …]` puts a section, or all of them, back to the file; on the server both run through `make remote … CONFIRM=1`.
+
+### Turning the leads on in production
+
+Production has never built a lead, so take these steps in order:
+
+1. Deploy: `make deploy` migrates the core set up to 00008 and the leads set up to 00015.
+2. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
+3. Add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` to turn finding on.
+4. Check the first contacts run: it searches for contacts, enriches, rates and builds, and the console's List fills.
+   To start it before 10:00, run `sudo systemctl start leadhound-leads-contacts.service`.
+5. Rating is on by default and runs inside that unit once `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` are in the env file; turn it off in Settings if you do not want it.
+   Then label 30 leads under To label and run the eval, as [Relevance](#relevance) says.
+6. Add a mailbox, send its test and turn sending on, as [Mailboxes](#mailboxes) and the steps above say.
 
 ## Mailboxes
 
