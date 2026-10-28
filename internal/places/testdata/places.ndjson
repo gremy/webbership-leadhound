@@ -1,0 +1,15 @@
+{"id":"demo-0001","names":{"primary":"Cafeneaua  Demo"},"categories":{"primary":"coffee_shop","alternate":["cafe","bakery"]},"confidence":0.95,"websites":["https://www.cafeneaua-demo.example/"],"socials":["https://www.facebook.com/cafeneauademo.example"],"phones":["+40 700 000 001"],"emails":["salut@cafeneaua-demo.example"],"addresses":[{"freeform":"Strada Exemplu 1","locality":"Orasul Exemplu","postcode":"400000","region":"CJ","country":"ro"}],"sources":[{"dataset":"meta","record_id":"m-1"}],"geometry":{"type":"Point","coordinates":[21.2,45.75]}}
+{"id":"demo-0002","names":{"primary":"Bean Example House"},"categories":{"primary":"cafe"},"confidence":0.81,"websites":["http://bean-house.example"],"phones":["(555) 010-0002"],"addresses":[{"locality":"Springfield","region":"US-IL","country":"US"}],"sources":[{"dataset":"msft","record_id":"x-2"}]}
+{"id":"demo-0003","names":{"primary":"Pizza Example"},"categories":{"primary":"pizza_restaurant","alternate":["cafe"]},"confidence":0.9,"addresses":[{"country":"RO"}]}
+{"id":"demo-0004","names":{"primary":"Faint Cafe Example"},"categories":{"primary":"cafe"},"confidence":0.4,"addresses":[{"country":"RO"}]}
+
+{"type":"Feature","id":"demo-0005","geometry":{"type":"Point","coordinates":[-79.4,43.7]},"properties":{"names":{"primary":"Maple Example Coffee"},"categories":{"primary":"coffee_shop"},"confidence":0.88,"websites":["https://www.facebook.com/maple.example"],"addresses":[{"locality":"Toronto","region":"ON","country":"CA"}]}}
+{"id":"demo-0006","names":{"primary":"Chain Example Coffee"},"categories":{"primary":"coffee_shop"},"confidence":0.99,"brand":{"wikidata":"Q0","names":{"primary":"Chain Example"}},"websites":["https://london.chain-example.example/store/6"],"addresses":[{"locality":"London","region":"ENG","country":"GB"}]}
+{"id":"demo-0007","names":{"primary":"Taxonomy Example Cafe"},"basic_category":"coffee_shop","taxonomy":{"primary":"coffee_shop"},"confidence":0.75,"addresses":[{"country":"IT","region":"MI"}]}
+{"id": "demo-0008", "names": {"primary": "Broken Example"
+[1,2,3]
+{"names":{"primary":"No Id Example"},"categories":{"primary":"cafe"},"confidence":0.9}
+{"id":"demo-0011","names":{"primary":"   "},"categories":{"primary":"cafe"},"confidence":0.9,"addresses":[{"country":"RO"}]}
+{"type":"Feature","id":"demo-0012","properties":"oops"}
+{"id":"demo-0013","names":{"primary":"Odd Confidence"},"categories":{"primary":"cafe"},"confidence":7}
+{"id":"demo-0014","names":{"primary":"Elsewhere Example Cafe"},"categories":{"primary":"cafe"},"confidence":0.9,"addresses":[{"country":"DE"}]}

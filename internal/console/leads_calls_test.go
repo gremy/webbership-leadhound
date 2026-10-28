@@ -68,7 +68,6 @@ func richToday(text string) TodayView {
 	at := testSent
 	return TodayView{
 		Campaigns:    []FilterOption{{"drupal-eol", "Drupal end-of-life"}, {"wp-eol", "WordPress end-of-life"}},
-		CallsOff:     "Calls are off until the call rules are set up",
 		CallsNow:     []TodayItem{{LeadID: 5, MessageID: 9, OrgName: text, Line: "step 3 call, a direct line", At: &at}},
 		CallsOverdue: []TodayItem{{LeadID: 6, MessageID: 11, OrgName: "Contoso Ltd", Line: "step 3 call", At: &at}},
 		Replies:      []TodayItem{{LeadID: 7, OrgName: "Fabrikam", Line: "replied to the first email", At: &at}},
@@ -84,8 +83,8 @@ func richCall(text string) CallCard {
 		MessageID: 9, LeadID: 5, OrgName: text, Number: "+44 (0)20 7946 0000", Dial: "+442079460000",
 		SourceURL: "https://northwind.example/contact", SourceReadAt: &at, LineKind: "direct",
 		TalkingPoints: []string{"Your site runs Drupal 10, which ends on 9 December.", "The update keeps your modules working.", text},
-		BlockedReason: "Calls are off until the call rules are set up",
-		Screening:     "call rules not set up yet: calls are off",
+		BlockedReason: "Outside calling hours now (09:30 to 17:00 their time, weekdays)",
+		Screening:     "not checked yet: screen it before you call",
 		Latest:        &CallLog{Outcome: campaign.OutcomeNoAnswer, Note: "rang out", At: testSent},
 		Shadow:        true, Due: &at,
 	}
@@ -102,7 +101,8 @@ func richSequence() []SequenceStep {
 	}
 }
 
-// TestTodayPage: the Today tab shows its five sections in order, the calls-off banner, each
+// TestTodayPage: the Today tab shows its five sections in order (no calls-off banner: the
+// call rules decide per call, each line saying why it cannot be made), each
 // call linked to its card, the email count with the first few, and the campaign filter.
 func TestTodayPage(t *testing.T) {
 	b := richBackend("Northwind Trading")
@@ -123,7 +123,6 @@ func TestTodayPage(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<a href="/leads/today" aria-current="page">Today</a>`,
-		"<strong>Calls are off until the call rules are set up.</strong> The calls below still show",
 		`<a href="/leads/calls/9">Northwind Trading</a>`, `<a href="/leads/calls/11">Contoso Ltd</a>`,
 		`step 3 call, a direct line · <span class="nowrap">due Sat 24 Oct 04:50</span>`,
 		`<a href="/leads/7">Fabrikam</a>`, "7 emails go out today, sent by the send job.",
@@ -179,8 +178,9 @@ func TestCallCard(t *testing.T) {
 		"<dt>Line</dt><dd>a direct line</dd>",
 		"Say who you are and why you're calling. Your number must be shown.",
 		"<li>Your site runs Drupal 10, which ends on 9 December.</li>", "<li>Northwind Trading</li>",
-		`class="notice notice-warn call-blocked"`, "<strong>Calls are off until the call rules are set up.</strong>",
-		"call rules not set up yet: calls are off", "No answer · Sat 24 Oct 04:50", "rang out", "shadow batch",
+		`class="notice notice-warn call-blocked"`,
+		"<strong>Not callable: outside calling hours now (09:30 to 17:00 their time, weekdays).</strong> You can still record what happened below.",
+		"not checked yet: screen it before you call", "No answer · Sat 24 Oct 04:50", "rang out", "shadow batch",
 		`action="/leads/calls/9/outcome"`, `name="consent" value="yes"`, `name="consent_address"`, `maxlength="500"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -520,6 +520,7 @@ func TestCallCardNotDue(t *testing.T) {
 	for _, want := range []string{
 		`<p class="notice notice-warn call-not-due" role="note">Not due yet: this call waits on the email before it.</p>`,
 		"Calls to Ireland are off in this campaign&#39;s rules. Your call whether to ring; if you don&#39;t, choose Skipped.",
+		"<strong>Not callable: outside calling hours now (09:30 to 17:00 their time, weekdays).</strong> Once it is due, you can record what happened below.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %q", want)
@@ -557,27 +558,27 @@ func TestCallOutcomeRefusedRedirects(t *testing.T) {
 }
 
 // TestTodayCallsWaiting: calls not due yet are listed with what they wait on, each linked to
-// its card, under their own heading; the calls-off banner is two sentences and says "below"
-// only when a call is listed.
+// its card, under their own heading; no calls-off banner shows (the call rules decide per
+// call).
 func TestTodayCallsWaiting(t *testing.T) {
 	b := richBackend("x")
-	b.today = TodayView{CallsOff: "Calls are off until the call rules are set up",
+	b.today = TodayView{
 		CallsWaiting:      []TodayItem{{LeadID: 5, MessageID: 9, OrgName: "Northwind", Line: "Step 3 · call · waits on the email before it"}},
 		CallsWaitingTotal: 3}
 	h := newHarness(t, b, false)
 	body := h.do(get("/leads/today", h.session(t))).Body.String()
 	for _, want := range []string{
 		"Calls waiting", `<a href="/leads/calls/9">Northwind</a>`, "Step 3 · call · waits on the email before it",
-		"and 2 more.", "<strong>Calls are off until the call rules are set up.</strong> The calls below still show",
+		"and 2 more.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Today lacks %q", want)
 		}
 	}
-	b.today = TodayView{CallsOff: "Calls are off until the call rules are set up"}
-	body = h.do(get("/leads/today", h.session(t))).Body.String()
-	if strings.Contains(body, "below") || !strings.Contains(body, "<strong>Calls are off until the call rules are set up.</strong>") {
-		t.Errorf("an empty Today's banner: %s", body[strings.Index(body, "calls-off")-40:][:300])
+	for _, not := range []string{"calls-off", "walk the flow", "The calls below still show"} {
+		if strings.Contains(body, not) {
+			t.Errorf("Today shows the retired calls-off banner (%q)", not)
+		}
 	}
 }
 
@@ -586,7 +587,7 @@ func TestTodayCallsWaiting(t *testing.T) {
 // empty line points at them; the section sits straight after "Calls to make now".
 func TestTodayCallsDue(t *testing.T) {
 	b := richBackend("x")
-	b.today = TodayView{CallsOff: "Calls are off until the call rules are set up",
+	b.today = TodayView{
 		CallsDue: []TodayItem{
 			{LeadID: 5, MessageID: 9, OrgName: "Northwind", Line: "Step 3 · call · outside calling hours now (09:30 to 17:00 their time, weekdays)"},
 			{LeadID: 6, MessageID: 11, OrgName: "Contoso", Line: "Step 3 · call · calls are off"},
@@ -606,7 +607,6 @@ func TestTodayCallsDue(t *testing.T) {
 		"None of the calls due can be made right now; they are under Calls due, each with the reason.",
 		`<a href="/leads/calls/9">Northwind</a>`, "outside calling hours now (09:30 to 17:00 their time, weekdays)",
 		`<a href="/leads/calls/11">Contoso</a>`, "Step 3 · call · calls are off",
-		"The calls below still show",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Today lacks %q", want)
@@ -757,5 +757,16 @@ func TestOutcomeWordsAreTheButtons(t *testing.T) {
 	r.AddCookie(cookieNamed(w, "__Host-lh_flash"))
 	if body := h.do(r).Body.String(); !strings.Contains(body, "Saved: Left a voicemail.") {
 		t.Error("the fallback saved line does not use the button words")
+	}
+}
+
+// TestAfterColon: a reason after "Not callable:" reads lower-case, an acronym stays.
+func TestAfterColon(t *testing.T) {
+	for in, want := range map[string]string{
+		"Not screened": "not screened", "TPS: not screened": "TPS: not screened", "": "", "already": "already", "É bine": "é bine",
+	} {
+		if got := AfterColon(in); got != want {
+			t.Errorf("AfterColon(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -183,3 +183,27 @@ func TestUsageLockRollsBackOnError(t *testing.T) {
 		t.Fatalf("calls after rollback = %d, %v; want 0", n, err)
 	}
 }
+
+// TestUsageLockCommitsAfterCancel: a context cancelled after fn recorded its row (a Claude
+// call billed, then the caller timed out) still commits that row, so the spend is never lost.
+func TestUsageLockCommitsAfterCancel(t *testing.T) {
+	q := appStore(t).Q()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := q.WithUsageLock(ctx, "typesafe", func(st ai.UsageStore) error {
+		if err := st.RecordAIUsage(ctx, ai.UsageRow{Provider: "typesafe", Model: "m", Day: time.Now(), Calls: 1}); err != nil {
+			return err
+		}
+		cancel()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithUsageLock after cancel = %v, want nil", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("ctx was not cancelled")
+	}
+	if n, err := q.AICallsOn(context.Background(), "typesafe", "", time.Now()); err != nil || n != 1 {
+		t.Fatalf("calls after a cancelled commit = %d, %v; want 1", n, err)
+	}
+}

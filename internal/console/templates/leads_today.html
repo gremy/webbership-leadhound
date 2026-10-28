@@ -18,8 +18,6 @@
 </form>
 {{end}}
 
-{{with $t.CallsOff}}<p class="notice notice-warn calls-off" role="note"><strong>{{.}}.</strong> {{if or $t.CallsNow $t.CallsDue $t.CallsOverdue $t.CallsWaiting}}The calls below still show, so you can open a card and walk the flow; nothing is dialled for you.{{else}}Nothing is dialled for you.{{end}}</p>{{end}}
-
 <section class="card today-section" id="today-calls-now" aria-labelledby="today-calls-now-title">
   <h2 id="today-calls-now-title"><span class="today-step" aria-hidden="true">{{index $v.Num "calls-now"}}</span> Calls to make now{{with $t.CallsNow}} <span class="today-count">{{len .}}</span>{{end}}</h2>
   {{if $t.CallsNow}}

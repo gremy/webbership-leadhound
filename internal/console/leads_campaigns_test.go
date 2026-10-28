@@ -83,7 +83,8 @@ func TestCampaignsPage(t *testing.T) {
 }
 
 // TestCampaignsPageNeedsSession: without a session the page sends to sign-in and never
-// reaches the backend; with one, it reads Campaigns once and writes nothing.
+// reaches the backend; with one, it reads Campaigns and DraftGates once each and writes
+// nothing.
 func TestCampaignsPageNeedsSession(t *testing.T) {
 	b := richBackend("x")
 	h := newHarness(t, b, false)
@@ -92,7 +93,7 @@ func TestCampaignsPageNeedsSession(t *testing.T) {
 		t.Errorf("no session: status %d, %d backend calls", w.Code, b.total())
 	}
 	h.do(get("/leads/campaigns?do=save", h.session(t)))
-	if b.n("Campaigns") != 1 || b.total() != 1 {
+	if b.n("Campaigns") != 1 || b.n("DraftGates") != 1 || b.total() != 2 {
 		t.Errorf("Campaigns called %d times, %d calls in all", b.n("Campaigns"), b.total())
 	}
 	if w := h.do(post("/leads/campaigns", nil, h.session(t))); w.Code != http.StatusMethodNotAllowed {

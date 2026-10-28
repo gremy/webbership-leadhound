@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
@@ -192,5 +194,28 @@ func TestCampaignViewWording(t *testing.T) {
 
 	if _, err := campaignView(leadstore.Campaign{Slug: "x", Spec: []byte("[1]")}, "file", kinds, cfg); err == nil {
 		t.Error("a spec that is not an object decoded")
+	}
+}
+
+// TestCampaignWarningsPrivacy: `campaigns check` warns (never refuses) about a campaign with
+// a call step, in its default sequence or a named one, while sender.privacy_url is unset;
+// a campaign without calls, or any campaign once the URL is set, gets no warning.
+func TestCampaignWarningsPrivacy(t *testing.T) {
+	calls := campaign.Spec{Slug: "calls", Sequence: []campaign.Step{{Step: 0, Type: campaign.StepEmail}, {Step: 1, Type: campaign.StepCall}}}
+	named := campaign.Spec{Slug: "named", Sequence: []campaign.Step{{Step: 0, Type: campaign.StepEmail}},
+		Sequences: map[string][]campaign.Step{campaign.SequenceCallFirst: {{Step: 0, Type: campaign.StepCall}}}}
+	quiet := campaign.Spec{Slug: "quiet", Sequence: []campaign.Step{{Step: 0, Type: campaign.StepEmail}}}
+	var lc leadconfig.Config
+	got := campaignWarnings([]campaign.Spec{calls, named, quiet}, lc)
+	want := []string{"calls: warning: " + privacyMissing, "named: warning: " + privacyMissing}
+	if !slices.Equal(got, want) {
+		t.Fatalf("warnings %q, want %q", got, want)
+	}
+	if !strings.Contains(privacyMissing, "The privacy notice link is missing: write the notice and set sender.privacy_url before calls start (by 7 Nov).") {
+		t.Fatalf("warning words %q", privacyMissing)
+	}
+	lc.Sender.PrivacyURL = "https://sender.example.test/privacy"
+	if got := campaignWarnings([]campaign.Spec{calls, named}, lc); len(got) != 0 {
+		t.Fatalf("warnings with the URL set: %q", got)
 	}
 }

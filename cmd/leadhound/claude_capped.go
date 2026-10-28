@@ -7,6 +7,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/claude"
 	"github.com/gremy/webbership-leadhound/internal/config"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -20,15 +21,16 @@ type claudeCampaignCaps struct {
 	DailyMicros, LeadMicros int64
 }
 
-// claudeCapped builds the spend-capped Claude caller a command uses for purpose on
-// accountID: the key from claude.LoadKey (the systemd credential, else the 0600 file named
+// claudeCapped builds the spend-capped Claude caller a command uses for purpose on the
+// default account (leadstore.DefaultAccountID: no other account exists yet, so the spend is
+// counted there; an account parameter comes back with the second account): the key from claude.LoadKey (the systemd credential, else the 0600 file named
 // by LEADHOUND_ANTHROPIC_KEY_FILE), the client on claudeBaseURL, and claude.Capped counting
 // in q's ai_usage on LEADHOUND_TZ's calendar day at the caps config.ClaudeCapsFor gives.
 //
 // Like leads rate, it calls nothing unless LEADHOUND_LIVE=1: otherwise it prints one line
 // naming cmd and returns nil, nil, and the command stops with exit 0. A missing or unsafe
 // key is an error that never carries the key.
-func claudeCapped(cmd string, q store.Queries, purpose string, accountID int64, own claudeCampaignCaps) (*claude.Capped, error) {
+func claudeCapped(cmd string, q store.Queries, purpose string, own claudeCampaignCaps) (*claude.Capped, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
@@ -56,7 +58,7 @@ func claudeCapped(cmd string, q store.Queries, purpose string, accountID int64, 
 	return &claude.Capped{
 		Client:         client,
 		Store:          q,
-		AccountID:      accountID,
+		AccountID:      leadstore.DefaultAccountID,
 		Purpose:        purpose,
 		DailyCapMicros: caps.DailyMicros,
 		TotalCapMicros: caps.TotalMicros,

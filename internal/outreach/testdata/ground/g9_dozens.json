@@ -1,0 +1,162 @@
+{
+ "lead": "d7",
+ "want": "G9",
+ "note": "\"we've rescued dozens of sites\"",
+ "draft": {
+  "steps": [
+   {
+    "step": 0,
+    "subject": "The Drupal 7 end of life",
+    "paragraphs": [
+     {
+      "text": "I'm Sam Carter, a Drupal developer, and we've rescued dozens of sites.",
+      "cites": [
+       "S1",
+       "S2"
+      ]
+     },
+     {
+      "text": "Drupal 7 stopped getting security updates on 5 January 2025, so new security holes stay open.",
+      "cites": [
+       "F5",
+       "F10"
+      ],
+      "pain_id": "eol_no_security"
+     },
+     {
+      "text": "Modules no longer get fixes, so small faults pile up.",
+      "cites": [
+       "F5"
+      ],
+      "pain_id": "modules_no_fixes"
+     },
+     {
+      "text": "Newer PHP versions will not run the old code, so hosting gets harder.",
+      "cites": [
+       "F5"
+      ],
+      "pain_id": "php_hosting"
+     },
+     {
+      "text": "Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.",
+      "cites": [
+       "S4"
+      ]
+     },
+     {
+      "text": "I can write a free one-page upgrade-risk report for Northfield Museum Trust: what is at risk and what an upgrade involves. It is yours to keep. Reply and I will send it.",
+      "cites": [
+       "O1",
+       "O2",
+       "O3",
+       "F1"
+      ]
+     },
+     {
+      "text": "Worth 10 minutes to find out?",
+      "cites": [
+       "O4"
+      ]
+     }
+    ]
+   },
+   {
+    "step": 1,
+    "subject": "Following up on Drupal 7",
+    "paragraphs": [
+     {
+      "text": "Sam Carter again, following up on my note last week.",
+      "cites": [
+       "S1"
+      ]
+     },
+     {
+      "text": "Since 5 January 2025, Drupal 7 has had no security updates, so each new hole stays open.",
+      "cites": [
+       "F5",
+       "F10"
+      ],
+      "pain_id": "eol_no_security"
+     },
+     {
+      "text": "The free one-page upgrade-risk report for Northfield Museum Trust is still yours if you want it.",
+      "cites": [
+       "O1",
+       "F1"
+      ]
+     },
+     {
+      "text": "Worth 10 minutes to find out?",
+      "cites": [
+       "O4"
+      ]
+     }
+    ]
+   },
+   {
+    "step": 3,
+    "subject": "I tried to call",
+    "paragraphs": [
+     {
+      "text": "I tried to call you today about your Drupal site.",
+      "cites": [
+       "S1"
+      ]
+     },
+     {
+      "text": "The free one-page upgrade-risk report is still on offer. Reply and I will send it.",
+      "cites": [
+       "O1"
+      ]
+     },
+     {
+      "text": "Worth 10 minutes to find out?",
+      "cites": [
+       "O4"
+      ]
+     }
+    ]
+   },
+   {
+    "step": 4,
+    "subject": "Closing the loop",
+    "paragraphs": [
+     {
+      "text": "This is my last note about the Drupal upgrade. If the timing is wrong, no reply is needed.",
+      "cites": [
+       "S1"
+      ]
+     },
+     {
+      "text": "If it helps later, the free one-page upgrade-risk report stays on offer.",
+      "cites": [
+       "O1"
+      ]
+     }
+    ]
+   }
+  ],
+  "talking_points": [
+   {
+    "text": "Drupal 7 stopped getting security updates on 5 January 2025.",
+    "cites": [
+     "F5",
+     "F10"
+    ]
+   },
+   {
+    "text": "The site runs Drupal 7.98, seen at https://northfield-museum.example/CHANGELOG.txt.",
+    "cites": [
+     "F6",
+     "F9"
+    ]
+   },
+   {
+    "text": "Offer the free one-page upgrade-risk report, theirs to keep.",
+    "cites": [
+     "O1"
+    ]
+   }
+  ]
+ }
+}

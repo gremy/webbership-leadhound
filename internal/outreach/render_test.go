@@ -352,3 +352,48 @@ func TestMessageIDDomain(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderPrivacyLine: with the sender's privacy line set, every email's footer ends with it
+// (under the identity and opt-out lines, never counted in the copy above the footer) and
+// Check allows its URL there; unset, the footer is the template's alone. The URL above the
+// footer is refused.
+func TestRenderPrivacyLine(t *testing.T) {
+	cfg := renderDemoConfig(t)
+	_, tmpls, _ := renderDemoTemplates(t, cfg, leadconfig.KindD10)
+	slots := renderDemoSlots(t, cfg, leadconfig.KindD10)
+	plain, err := Render(tmpls[0], slots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain.Body, leadconfig.PrivacyLinePrefix) {
+		t.Fatalf("no privacy url, yet a privacy line:\n%s", plain.Body)
+	}
+
+	cfg.Sender.PrivacyURL = "https://sender.example.test/privacy"
+	slots.PrivacyLine = ConfigSlot(cfg.Sender.PrivacyLine())
+	d, err := Render(tmpls[0], slots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slots.OptOutLine.Value + "\nHow I handle your details: https://sender.example.test/privacy\n"
+	if !strings.HasSuffix(d.Body, want) {
+		t.Fatalf("the footer does not end with the privacy line:\n%s", d.Body)
+	}
+	if d.BodyAboveFooter != plain.BodyAboveFooter || d.Body != plain.Body[:len(plain.Body)-1]+"\nHow I handle your details: https://sender.example.test/privacy\n" {
+		t.Fatalf("the privacy line changed more than the footer's end:\n%s", d.Body)
+	}
+	if p := Check(d, 0, cfg); len(p) > 0 {
+		t.Fatalf("Check refuses the privacy line: %v", p)
+	}
+	without := cfg
+	without.Sender.PrivacyURL = ""
+	if p := Check(d, 0, without); len(p) == 0 {
+		t.Fatal("Check allowed the privacy URL with no privacy_url set")
+	}
+	above := d
+	above.BodyAboveFooter = strings.Replace(d.BodyAboveFooter, "Hello,", "Hello, see https://sender.example.test/privacy", 1)
+	above.Body = above.BodyAboveFooter + strings.TrimPrefix(d.Body, d.BodyAboveFooter)
+	if p := Check(above, 1, cfg); !slices.ContainsFunc(p, func(x Problem) bool { return x.Rule == RuleURL }) {
+		t.Fatalf("the privacy URL above the footer passed: %v", p)
+	}
+}

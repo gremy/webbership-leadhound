@@ -128,18 +128,20 @@ func (q Queries) RecordContactAttempt(ctx context.Context, orgID, runID int64, r
 
 // OrgsNeedingRoutes returns up to limit orgs (limit <= 0: all of them) with no route search
 // and no route found in the RouteRetryAfter before now, oldest org first. Selftest orgs are
-// never returned.
+// never returned, nor an org whose domain is suppressed (orgDomainSuppressedSQL).
 func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time) ([]Org, error) {
 	var lim *int
 	if limit > 0 {
 		lim = &limit
 	}
 	orgs, err := collect(ctx, q.db, pgx.RowToStructByName[Org],
-		`SELECT o.id, o.kind, o.domain, o.name, o.country, o.site_id, o.source, o.source_fetch_id, o.created_at
+		`SELECT o.id, o.kind, o.domain, o.name, o.country, o.region, o.site_id, o.source, o.source_fetch_id, o.created_at
 		 FROM org o
 		 WHERE o.kind <> 'selftest'
+		   AND NOT (o.source = 'place' AND o.site_id IS NULL)
 		   AND NOT EXISTS (SELECT 1 FROM contact_attempt a WHERE a.org_id = o.id AND a.attempted_at > $1)
 		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1)
+		   AND NOT `+orgDomainSuppressedSQL("o")+`
 		 ORDER BY o.id
 		 LIMIT $2`, now.Add(-RouteRetryAfter), lim)
 	if err != nil {

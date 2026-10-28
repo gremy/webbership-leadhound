@@ -9,7 +9,7 @@ TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound
 TEST_SCALE_DSN                 ?= postgres://leadhound_app@localhost/leadhound_scale?sslmode=disable
 TEST_SCALE_MIGRATE_DSN         ?= postgres://leadhound_owner@localhost/leadhound_scale?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote console-password console-local mailbox-key mailbox-check-local
+.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote forget console-password console-local mailbox-key mailbox-check-local
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -24,12 +24,12 @@ SCP                   ?= scp
 LINUX_BINARY          := bin/$(BINARY)-linux-$(ARCH)
 
 # Refuse before anything runs, a dry run (make -n) included.
-ifneq ($(filter deploy deploy-data remote,$(MAKECMDGOALS)),)
+ifneq ($(filter deploy deploy-data remote forget,$(MAKECMDGOALS)),)
 ifeq ($(strip $(HOST)),)
-$(error HOST is required: make $(firstword $(filter deploy deploy-data remote,$(MAKECMDGOALS))) HOST=<ssh host> ...)
+$(error HOST is required: make $(firstword $(filter deploy deploy-data remote forget,$(MAKECMDGOALS))) HOST=<ssh host> ...)
 endif
 endif
-ifneq ($(filter deploy deploy-data,$(MAKECMDGOALS)),)
+ifneq ($(filter deploy deploy-data forget,$(MAKECMDGOALS)),)
 ifneq ($(CONFIRM),1)
 $(error this changes the server: add CONFIRM=1 to run it)
 endif
@@ -69,6 +69,46 @@ endif
 REMOTE_KEY :=
 ifneq ($(filter leads_selftest leads_send leads_sync leads_mailboxes_check leads_suppress_review,$(REMOTE_VERB) $(REMOTE_VERB3)),)
 REMOTE_KEY := -p LoadCredential=mailbox-key:/etc/leadhound/mailbox.key
+endif
+# REMOTE_CLAUDE=1 hands the Anthropic key, as the same credential the batch and research units
+# get, to a command that calls Claude (leads drafts sample, leads drafts eval --decider claude,
+# leads phones research, leads research run). Never by default, never with the mailbox key (no
+# unit holds both), never to the console (serve), and always with CONFIRM=1: it spends money.
+REMOTE_CLAUDE ?=
+REMOTE_CLAUDE_KEY :=
+ifneq ($(filter remote,$(MAKECMDGOALS)),)
+ifneq ($(REMOTE_CLAUDE),)
+ifneq ($(REMOTE_CLAUDE),1)
+$(error REMOTE_CLAUDE must be 1 or unset, not $(REMOTE_CLAUDE))
+endif
+ifneq ($(filter serve console,$(firstword $(ARGS))),)
+$(error REMOTE_CLAUDE=1: the console never holds the Anthropic key)
+endif
+ifneq ($(REMOTE_KEY),)
+$(error REMOTE_CLAUDE=1: ARGS='$(ARGS)' gets the mailbox key, and no command holds both keys)
+endif
+ifneq ($(CONFIRM),1)
+$(error REMOTE_CLAUDE=1 calls Claude and spends money: add CONFIRM=1 to run it)
+endif
+REMOTE_CLAUDE_KEY := -p LoadCredential=anthropic-key:/etc/leadhound/anthropic.key
+endif
+endif
+# forget erases one organisation's personal data as the owner role: ORG is its org id (digits
+# only) and REASON one line; both are required, checked before anything runs.
+ORG    ?=
+REASON ?=
+ifneq ($(filter forget,$(MAKECMDGOALS)),)
+ORG_REST := $(ORG)
+$(foreach d,0 1 2 3 4 5 6 7 8 9,$(eval ORG_REST := $$(subst $(d),,$$(ORG_REST))))
+ifneq ($(words $(ORG)),1)
+$(error ORG is required, one org id: make forget HOST=<ssh host> ORG=<id> REASON='asked to be removed' CONFIRM=1)
+endif
+ifneq ($(ORG_REST),)
+$(error ORG must be an org id (digits only), not $(ORG))
+endif
+ifeq ($(strip $(value REASON)),)
+$(error REASON is required: make forget HOST=<ssh host> ORG=<id> REASON='asked to be removed' CONFIRM=1)
+endif
 endif
 # The gate's stamp: the commit the full gate last passed on, written only from a clean tree
 # (bin/ is ignored). deploy skips the gate when the stamp is HEAD and the tree is still clean.
@@ -222,26 +262,42 @@ deploy: $(if $(GATE_OK),gate-skip,gate) build-linux
 	$(SCP) deploy/install.sh deploy/leadhound-backup.sh deploy/sql/limits.sql deploy/leadhound-*.service deploy/leadhound-*.timer deploy/leadhound-*.path $(HOST):$$stage/ && \
 	$(SSH) -t $(HOST) sudo sh $$stage/install.sh $$stage
 
-## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile and the leads config, then copy
-## leadhound.yaml, ats-boards.yaml, leads.yaml, agencies.yaml and the leads-templates/ tree from
-## LEADHOUND_PRIVATE_DIR to the server (nothing else); a template file no longer in the private tree is removed
+## deploy-data: make deploy-data HOST=<ssh host> CONFIRM=1: check the profile, the leads config and the
+## campaigns, then copy leadhound.yaml, ats-boards.yaml, leads.yaml, agencies.yaml, the leads-templates/ tree
+## and, when the private directory has one, the campaigns/ tree from LEADHOUND_PRIVATE_DIR to the server
+## (nothing else); a file no longer in the private leads-templates/ or campaigns/ tree is removed. Without a
+## private campaigns/, the server's campaigns are left as they are. The campaigns check reads no database (the draft
+## gate lives on the server), so a writer: claude campaign is refused here. Register the campaigns after it.
 deploy-data:
 	@for f in leadhound.yaml ats-boards.yaml leads.yaml agencies.yaml leads-templates; do \
 		test -e "$(LEADHOUND_PRIVATE_DIR)/$$f" || { echo "deploy-data: $$f not found in LEADHOUND_PRIVATE_DIR"; exit 1; }; \
 	done
 	LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' go run $(CMD) score --check-config
 	LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' go run $(CMD) leads check-config
+	@if test -d '$(LEADHOUND_PRIVATE_DIR)/campaigns'; then \
+		echo "LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' LEADHOUND_DATABASE_URL= go run $(CMD) leads campaigns check"; \
+		LEADHOUND_DATA_DIR='$(LEADHOUND_PRIVATE_DIR)' LEADHOUND_DATABASE_URL= go run $(CMD) leads campaigns check; \
+	else \
+		echo "deploy-data: no campaigns/ in LEADHOUND_PRIVATE_DIR; the server's campaigns are left as they are"; \
+	fi
 	@stage=$$($(SSH) $(HOST) mktemp -d) && \
 	$(SCP) '$(LEADHOUND_PRIVATE_DIR)/leadhound.yaml' '$(LEADHOUND_PRIVATE_DIR)/ats-boards.yaml' \
 		'$(LEADHOUND_PRIVATE_DIR)/leads.yaml' '$(LEADHOUND_PRIVATE_DIR)/agencies.yaml' $(HOST):$$stage/ && \
 	$(SCP) -r '$(LEADHOUND_PRIVATE_DIR)/leads-templates' $(HOST):$$stage/ && \
+	if test -d '$(LEADHOUND_PRIVATE_DIR)/campaigns'; then $(SCP) -r '$(LEADHOUND_PRIVATE_DIR)/campaigns' $(HOST):$$stage/; fi && \
 	$(SSH) -t $(HOST) "sudo sh -c 'set -e; cd $$stage; \
 		install -o root -g leadhound -m 0640 leadhound.yaml ats-boards.yaml leads.yaml agencies.yaml /opt/leadhound/data/; \
-		find leads-templates -type d -exec install -d -o root -g leadhound -m 0750 /opt/leadhound/data/{} \\; ; \
-		find leads-templates -type f -exec install -o root -g leadhound -m 0640 {} /opt/leadhound/data/{} \\; ; \
-		cd /opt/leadhound/data; \
-		find leads-templates -type f | while read -r f; do test -e $$stage/\$$f || rm -f \$$f; done; \
+		for t in leads-templates campaigns; do \
+			test -d \$$t || continue; \
+			find \$$t -type d -exec install -d -o root -g leadhound -m 0750 /opt/leadhound/data/{} \\; ; \
+			find \$$t -type f -exec install -o root -g leadhound -m 0640 {} /opt/leadhound/data/{} \\; ; \
+			(cd /opt/leadhound/data; find \$$t -type f | while read -r f; do test -e $$stage/\$$f || rm -f \$$f; done); \
+		done; \
 		rm -rf $$stage'"
+	@if test -d '$(LEADHOUND_PRIVATE_DIR)/campaigns'; then \
+		echo "deploy-data: campaigns copied; the morning batch refuses them until you register them:"; \
+		echo "  make remote HOST=$(HOST) CONFIRM=1 ARGS='leads campaigns register'"; \
+	fi
 
 ## remote: make remote HOST=<ssh host> ARGS='track list' [CONFIRM=1]: run one leadhound
 ## command on the server as the leadhound user, with the units' environment. ARGS is split
@@ -252,5 +308,15 @@ remote:
 	@set -f; set -- $(value ARGS); cmd=; \
 	for a in "$$@"; do cmd="$$cmd '$$(printf '%s' "$$a" | sed "s/'/'\\\\''/g")'"; done; \
 	$(SSH) -t $(HOST) "sudo systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound \
-		-p EnvironmentFile=/etc/leadhound/env -p WorkingDirectory=/opt/leadhound $(REMOTE_KEY) \
+		-p EnvironmentFile=/etc/leadhound/env -p WorkingDirectory=/opt/leadhound $(REMOTE_KEY) $(REMOTE_CLAUDE_KEY) \
 		$(REMOTE_LOCK) /opt/leadhound/bin/leadhound$$cmd"
+
+## forget: make forget HOST=<ssh host> ORG=<id> REASON='asked to be removed' CONFIRM=1: run leads forget org
+## on the server as the owner role (/etc/leadhound/migrate.env, as install.sh runs migrate); it erases that
+## organisation's personal data and cannot be undone. REASON reaches leadhound whole, single-quoted.
+forget: export FORGET_REASON = $(value REASON)
+forget:
+	@r=$$(printf '%s' "$$FORGET_REASON" | sed "s/'/'\\\\''/g"); \
+	$(SSH) -t $(HOST) "sudo systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound \
+		-p EnvironmentFile=/etc/leadhound/env -p EnvironmentFile=/etc/leadhound/migrate.env \
+		-p WorkingDirectory=/opt/leadhound /opt/leadhound/bin/leadhound leads forget org $(ORG) --reason '$$r'"

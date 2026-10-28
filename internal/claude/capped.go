@@ -29,6 +29,15 @@ const (
 // real cost. Calls through one Capped run one at a time; when Store is a UsageLocker the
 // read, the call and the record run under its lock, so processes cannot overshoot together.
 //
+// A request sent with no answer back (ErrNoAnswer: a timeout or a dropped connection) may
+// still have been billed, so it is recorded provisionally at that request's worst case: a
+// row with no tokens and that cost (UsageRow.Provisional). The cap then counts it like any
+// other spend. A 4xx, 429 or 5xx answer is not billed and records nothing.
+//
+// A research continuation refused by the caps after an earlier leg was billed is
+// ErrCappedMidTurn, not ai.ErrSpendCap: money was spent, so the caller must not treat it as
+// a pre-flight refusal and ask again.
+//
 // A zero DailyCapMicros or LeadCapMicros refuses every call it applies to. A failed usage
 // read or write is ai.ErrUsageStore and the caller must stop.
 type Capped struct {
@@ -46,6 +55,11 @@ type Capped struct {
 }
 
 var _ Caller = (*Capped)(nil)
+
+// ErrCappedMidTurn is a research turn stopped by the caps before a pause_turn continuation,
+// after earlier legs were billed (and recorded). It deliberately does not wrap
+// ai.ErrSpendCap, which means nothing was called.
+var ErrCappedMidTurn = errors.New("claude: spend cap reached mid-turn, after billed legs")
 
 // WorstWrite is the most r can cost.
 func WorstWrite(r WriteRequest) (int64, error) {
@@ -74,24 +88,30 @@ func schemaBytes(s map[string]any) int {
 // Write checks the caps, calls the wrapped Caller and records the cost.
 func (c *Capped) Write(ctx context.Context, r WriteRequest) (WriteResult, Usage, error) {
 	var res WriteResult
-	u, err := c.run(ctx, r.LeadID, func() (int64, error) { return WorstWrite(r) },
-		func(_ *budget) (Usage, error) {
+	w, werr := WorstWrite(r)
+	u, err := c.run(ctx, r.LeadID, r.Model, func() (int64, error) { return w, werr },
+		func(_ *budget) (Usage, int64, error) {
 			var (
 				u   Usage
 				err error
 			)
 			res, u, err = c.Client.Write(ctx, r)
-			return u, err
+			return u, w, err
 		})
 	return res, u, err
 }
 
 // Research checks the caps before the first request and before each continuation, calls
 // the wrapped Caller and records the cost of every leg billed.
+//
+// Each leg is its own request that re-sends the whole turn so far as input, so it is billed
+// for all of it again: WorstResearchLeg(r, leg) is that one leg's worst case, and a
+// continuation reserves it in full on top of what the earlier legs actually cost.
 func (c *Capped) Research(ctx context.Context, r ResearchRequest) (ResearchResult, Usage, error) {
 	var res ResearchResult
-	u, err := c.run(ctx, r.LeadID, func() (int64, error) { return WorstResearchLeg(r, 0) },
-		func(b *budget) (Usage, error) {
+	u, err := c.run(ctx, r.LeadID, r.Model, func() (int64, error) { return WorstResearchLeg(r, 0) },
+		func(b *budget) (Usage, int64, error) {
+			sent := 0 // the leg in flight
 			r.beforeLeg = func(leg int, sofar Usage) error {
 				spent, err := costOf(sofar)
 				if err != nil {
@@ -101,14 +121,21 @@ func (c *Capped) Research(ctx context.Context, r ResearchRequest) (ResearchResul
 				if err != nil {
 					return err
 				}
-				return b.check(spent + worst)
+				if err := b.check(spent + worst); err != nil {
+					// %v, not %w: earlier legs were billed, so this is not ai.ErrSpendCap.
+					return fmt.Errorf("claude: research: continuation %d not sent: %v: %w", leg, err, ErrCappedMidTurn)
+				}
+				sent = leg
+				return nil
 			}
 			var (
 				u   Usage
 				err error
 			)
 			res, u, err = c.Client.Research(ctx, r)
-			return u, err
+			// Leg 0 passed the same pricing in run, and later legs in beforeLeg.
+			inFlight, _ := WorstResearchLeg(r, sent)
+			return u, inFlight, err
 		})
 	return res, u, err
 }
@@ -150,7 +177,11 @@ func (b *budget) check(extra int64) error {
 
 func usd(micros int64) string { return fmt.Sprintf("$%.4f", float64(micros)/1e6) }
 
-func (c *Capped) run(ctx context.Context, leadID int64, worst func() (int64, error), call func(*budget) (Usage, error)) (Usage, error) {
+// run checks the caps against worst(), then runs call, which returns the usage billed, the
+// worst case of the request in flight when it failed (recorded provisionally when the error
+// is ErrNoAnswer) and the call's error.
+func (c *Capped) run(ctx context.Context, leadID int64, model string, worst func() (int64, error),
+	call func(*budget) (Usage, int64, error)) (Usage, error) {
 	if c.Loc == nil {
 		return Usage{}, errors.New("claude: capped: nil location")
 	}
@@ -198,24 +229,33 @@ func (c *Capped) run(ctx context.Context, leadID int64, worst func() (int64, err
 		if callErr = b.check(w); callErr != nil {
 			return nil
 		}
-		usage, callErr = call(b)
-		if !usage.billed() || usage.Model == FakeModel {
-			return nil // never billed, or a fake: nothing to record
+		var inFlight int64
+		usage, inFlight, callErr = call(b)
+		// Records outlive a cancelled context: the money was spent either way.
+		rctx := context.WithoutCancel(ctx)
+		if usage.billed() && usage.Model != FakeModel {
+			cost, err := Cost(usage)
+			if err != nil {
+				// A billed call on a model with no price: stop rather than count it as free.
+				return fmt.Errorf("claude: capped: price usage: %w: %w", ai.ErrUsageStore, err)
+			}
+			row := UsageRow{
+				AccountID: c.AccountID, LeadID: leadID, Purpose: c.Purpose, Model: usage.Model, Day: day,
+				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+				CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens,
+				WebSearches: usage.WebSearches, CostMicros: cost, Batch: usage.Batch,
+			}
+			if err := st.RecordClaudeUsage(rctx, row); err != nil {
+				// The call was billed but not counted; stopping keeps the cap from under-counting.
+				return fmt.Errorf("claude: capped: record usage: %w: %w", ai.ErrUsageStore, err)
+			}
 		}
-		cost, err := Cost(usage)
-		if err != nil {
-			// A billed call on a model with no price: stop rather than count it as free.
-			return fmt.Errorf("claude: capped: price usage: %w: %w", ai.ErrUsageStore, err)
-		}
-		row := UsageRow{
-			AccountID: c.AccountID, LeadID: leadID, Purpose: c.Purpose, Model: usage.Model, Day: day,
-			InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
-			CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens,
-			WebSearches: usage.WebSearches, CostMicros: cost, Batch: usage.Batch,
-		}
-		if err := st.RecordClaudeUsage(ctx, row); err != nil {
-			// The call was billed but not counted; stopping keeps the cap from under-counting.
-			return fmt.Errorf("claude: capped: record usage: %w: %w", ai.ErrUsageStore, err)
+		if errors.Is(callErr, ErrNoAnswer) && inFlight > 0 && model != FakeModel {
+			row := UsageRow{AccountID: c.AccountID, LeadID: leadID, Purpose: c.Purpose, Model: model, Day: day,
+				CostMicros: inFlight}
+			if err := st.RecordClaudeUsage(rctx, row); err != nil {
+				return fmt.Errorf("claude: capped: record provisional usage: %w: %w", ai.ErrUsageStore, err)
+			}
 		}
 		return nil
 	}

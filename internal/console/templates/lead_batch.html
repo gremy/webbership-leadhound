@@ -18,11 +18,18 @@
   {{if .Finding}}<ul class="evidence">{{range .Finding}}<li>{{.}}</li>{{end}}</ul>{{end}}
   {{range .Messages}}
   <section class="message">
-    <h3>{{.Label}}{{if .State}} · {{.State}}{{with .CancelReason}} ({{.}}){{end}}{{end}}</h3>
+    <h3>{{.Label}}{{if .State}} · {{.State}}{{with .CancelReason}} ({{.}}){{end}}{{end}}{{if .Claude}} <span class="tag call-tag">Written by Claude</span>{{end}}</h3>
     {{with .From}}{{if .Address}}<p class="message-head">From: {{if .Name}}{{.Name}} &lt;{{.Address}}&gt;{{else}}{{.Address}}{{end}}</p>{{end}}{{end}}
     {{with .To}}<p class="message-head">To: {{.}}</p>{{end}}
     {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
     <div class="message-body">{{.Body}}</div>
+    {{if .Claude}}
+    <details class="claim-check">
+      <summary>What each {{if eq .Channel "phone"}}talking point{{else}}paragraph{{end}} rests on</summary>
+      <p class="hint">Every claim cites a stored fact, and the check refused any that did not.</p>
+      <ol class="claims">{{range .Claude.Paragraphs}}{{template "draft_paragraph" .}}{{end}}</ol>
+    </details>
+    {{end}}
   </section>
   {{end}}
   {{if and $b.HashPrefix (not $b.Changed)}}

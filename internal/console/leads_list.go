@@ -2,6 +2,8 @@ package console
 
 import (
 	"cmp"
+	"errors"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -19,7 +21,7 @@ const maxFilterValues = 50
 const maxBack = 2048
 
 // leadActions are the writes POST /leads/{id}/{action} takes.
-var leadActions = []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear, LeadLabel}
+var leadActions = []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear, LeadLabel, LeadLookAgain}
 
 // badBand is the refusal of a call whose band the form did not offer.
 const badBand = "Choose strong, likely, maybe, unlikely or no, or Clear; your call was not changed."
@@ -157,6 +159,52 @@ func (s *server) leadAct(w http.ResponseWriter, r *http.Request) {
 		back = atCallBlock(back)
 	}
 	s.leadsAct(w, r, a, back, again)
+}
+
+// leadReport is GET /leads/reports/{id}: the lead's upgrade-risk report as a file to save,
+// for the signed-in operator only. It writes nothing. A lead with no report shows its page
+// again with the reason.
+func (s *server) leadReport(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	rep, err := s.b.LeadReport(r.Context(), id)
+	if errors.Is(err, ErrUserFixable) {
+		s.leadsLog("report", "refused")
+		s.renderDetail(w, r, http.StatusUnprocessableEntity, id, refusalWords(err), true, false)
+		return
+	}
+	if s.leadsRead(w, r, http.StatusOK, err) {
+		return
+	}
+	s.leadsLog("report", "ok")
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": reportFilename(rep.Filename, id)}))
+	h.Set("Content-Length", strconv.Itoa(len(rep.HTML)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(rep.HTML)
+}
+
+// reportFilename is name kept to letters, digits, dots, dashes and underscores, ending in
+// .html; an empty or unusable name is upgrade-risk-lead-<id>.html.
+func reportFilename(name string, id int64) string {
+	var b strings.Builder
+	for _, c := range strings.ToLower(name) {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
+			b.WriteRune(c)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(strings.TrimSuffix(b.String(), ".html"), ".-_")
+	if out == "" || len(out) > 120 {
+		out = "upgrade-risk-lead-" + strconv.FormatInt(id, 10)
+	}
+	return out + ".html"
 }
 
 // atCallBlock is back pointed at the "Your call" block when back is a lead's own page, in

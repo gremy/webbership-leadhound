@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -27,6 +28,9 @@ import (
 // "ends" while the date is today or later, "out of support since" once today is past it.
 // A subject with nothing in it (a lead with no finding) is "".
 func FindingLine(s leadstore.FindingSubject, facts leadconfig.Facts, today time.Time) string {
+	if s.Detector == cafe.DerivedBy {
+		return cafeLine(s)
+	}
 	if s.Kind == leadstore.LeadAgencyPartner || s.URL != "" || s.Phrase != "" {
 		if s.Phrase == "" {
 			return "Agency page sells Drupal upgrades"
@@ -95,4 +99,22 @@ func versionMajor(v string) int {
 func dayOf(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// cafeLine is a café finding in words: the Decision's reason, capitalised, and where the
+// café's language was read ("Café: no digital loyalty on the homepage · language ro, from the
+// page's text").
+func cafeLine(s leadstore.FindingSubject) string {
+	line := "Café"
+	if r := strings.TrimSpace(s.Reason); r != "" {
+		line += ": " + r
+	}
+	if s.Language != "" {
+		via := map[string]string{cafe.LangViaHTML: "the page's lang attribute", cafe.LangViaMeta: "the page's meta tags", cafe.LangViaText: "the page's text"}[s.LanguageVia]
+		line += " · language " + s.Language
+		if via != "" {
+			line += ", from " + via
+		}
+	}
+	return line
 }

@@ -4,6 +4,7 @@ site_lists:
   tlds: [uk, ie, nl, be, ro, de, at, ch] # registrable-domain suffixes kept on import
 probe:
   reprobe_after_days: 30
+  # cafe_own_vendor_hosts: [loyalty.sender.example] # café campaign only: your own loyalty product's hosts (host or host/path); a café whose homepage links one is already a customer and gets no lead. Keep the real ones in your data dir's leads.yaml only
 public_body_suffixes: [ac.uk, gov.uk, nhs.uk, police.uk, sch.uk, gov.ro, gov.ie, overheid.nl] # demo values
 role_local_parts: [office, contact, info, hello, enquiries, enquiry, web, webmaster, digital, admin, secretariat, kontakt, contacto, contactt] # demo values
 countries: # country -> policy; a country missing here means channel none
@@ -16,6 +17,7 @@ sender:
   dkim_selector: sel1 # the DKIM selector (the name before ._domainkey) for a mailbox added without a preset or its own
   operator_addresses: [operator@sender.example]
   site_url: https://sender.example/
+  # privacy_url: https://sender.example.test/privacy # optional, https: your privacy notice; once set, every email's footer ends "How I handle your details: <url>" (campaigns check warns while a campaign with calls has none)
   opt_out_lines: # language -> the opt-out line; every language an email country uses needs one
     en: "Not the right time? Reply \"unsubscribe\" and I will not write to you again."
 facts: {d6_eol: 2016-02-24, d7_eol: 2025-01-05, d8_eol: 2021-11-17, d9_eol: 2023-11-01, d10_eol: 2026-12-09} # dates the templates may state

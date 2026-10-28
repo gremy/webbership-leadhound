@@ -52,9 +52,9 @@ func TestClaudeCapsFor(t *testing.T) {
 		want          ClaudeCaps
 		wantErrSubstr string
 	}{
-		{"drafting defaults", cfg, "drafting", 0, 0, ClaudeCaps{3_000_000, 5_000_000, 80_000}, ""},
+		{"drafting defaults", cfg, "drafting", 0, 0, ClaudeCaps{3_000_000, 5_000_000, 200_000}, ""},
 		{"research defaults", cfg, "research", 0, 0, ClaudeCaps{1_500_000, 5_000_000, 100_000}, ""},
-		{"drafts_eval defaults", cfg, "drafts_eval", 0, 0, ClaudeCaps{2_000_000, 5_000_000, 80_000}, ""},
+		{"drafts_eval defaults", cfg, "drafts_eval", 0, 0, ClaudeCaps{2_000_000, 5_000_000, 200_000}, ""},
 		{"campaign lowers", cfg, "drafting", 1_000_000, 40_000, ClaudeCaps{1_000_000, 5_000_000, 40_000}, ""},
 		{"campaign over ceiling", cfg, "drafting", 9_000_000, 9_000_000, ClaudeCaps{5_000_000, 5_000_000, 5_000_000}, ""},
 		{"low ceiling clamps default", Config{ClaudeDailyCapMicros: 1_000_000}, "research", 0, 0, ClaudeCaps{1_000_000, 1_000_000, 100_000}, ""},

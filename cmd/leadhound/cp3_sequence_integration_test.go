@@ -309,7 +309,7 @@ func TestLeadsCallsCommand(t *testing.T) {
 	}
 
 	out := w.mustRun(t, "leads", "calls", "list")
-	wantLines(t, "list before", out, callsOffWords, "No call is scheduled.")
+	wantLines(t, "list before", out, "No call is scheduled.")
 	refused("waiting on the email before it", "This call isn't due yet: it waits on step 2 (email). Record what happened once it's due. Nothing was saved.", fmt.Sprint(call), "no_answer")
 
 	// A call given a due time while its earlier emails are still unsent (as the dev shadow
@@ -360,7 +360,7 @@ func TestLeadsCallsCommand(t *testing.T) {
 	w.mustRun(t, "leads", "send")
 	callDue := latest(call, dncIDs[2])
 	out = w.mustRun(t, "leads", "calls", "list")
-	wantLines(t, "list scheduled", out, callsOffWords, fmt.Sprintf("message %d · callcmd.example · step 3", call), "shadow batch")
+	wantLines(t, "list scheduled", out, "not callable: ", fmt.Sprintf("message %d · callcmd.example · step 3", call), "shadow batch")
 	if strings.Contains(out, cp3Number) {
 		t.Error("the call list prints the number")
 	}
@@ -371,7 +371,7 @@ func TestLeadsCallsCommand(t *testing.T) {
 
 	w.clock.set(callDue.Add(time.Minute))
 	out = w.mustRun(t, "leads", "calls", "list", "--due")
-	wantLines(t, "list due", out, callsOffWords, fmt.Sprintf("message %d", call))
+	wantLines(t, "list due", out, "not callable: ", fmt.Sprintf("message %d", call))
 	out = w.mustRun(t, "leads", "calls", "outcome", fmt.Sprint(call), "no_answer", "--note", "rang twice")
 	wantLines(t, "outcome", out, "Saved: No answer. (shadow batch)", `The "tried to reach you" email is due`)
 	if r := w.row(t, call); r.state != leadstore.MsgDone {

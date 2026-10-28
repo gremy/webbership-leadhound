@@ -1,0 +1,35 @@
+slug: drupal-eol
+name: Drupal end-of-life
+product: {name: Drupal upgrades, site_url: https://webbership.example}
+source: {kind: site_list}
+detectors: [drupal@1, agency@1]
+kinds: [unsupported, d10, agency_partner]
+countries: {GB: {email: on, call: on, lang: en}, DE: {email: off, call: on, lang: de, acknowledge: "Calls only to firms that list a phone for enquiries."}}
+writer: template
+offer:
+  proof_line: "Two Drupal 7 migrations shipped."
+  magnet: upgrade_risk_report
+  pains:
+    - {id: eol_no_security, needs: [kind == unsupported, finding.major in 6..9], text: "Security support has ended."}
+    - {id: d7_migration, needs: [finding.major == 7], text: "Leaving it is a migration."}
+    - {id: d10_eol, needs: [kind == d10], text: "Security support ends soon."}
+  report: free one-page upgrade-risk report
+  report_contains: [what is at risk, what an upgrade involves]
+  call_to_action: "Worth 10 minutes to find out?"
+copy:
+  banned_words: [synergy]
+  forbid_by_kind: {d10: ["(?i)migrat"]}
+  max_words: {0: 120, 1: 80, 3: 60, 4: 60}
+  links_in_step0: false
+  exclamation: false
+  allowed_names: [Drupal, Webbership]
+  research_openers: ['(?i)\bI noticed\b']
+  inflation_words: [dozens, best]
+  echo_words: 7
+sequence:
+  - {step: 0, type: email}
+  - {step: 1, type: email, after_business_days: 3}
+  - {step: 2, type: call,  after_business_days: 2, when: has_callable_phone}
+  - {step: 3, type: email, after_business_days: 1, when: call_not_connected}
+  - {step: 4, type: email, after_business_days: 5}
+templates_dir: templates

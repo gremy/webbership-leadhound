@@ -227,6 +227,10 @@ func runSitesProbe(ctx context.Context, args []string) error {
 		return err
 	}
 	due, notDue := pickSites(due, want, ff.dryRun, *maxSites)
+	cafeCfg, err := cafeConfig(setup.leads)
+	if err != nil {
+		return err
+	}
 
 	source := sourceSites
 	if ff.dryRun {
@@ -239,7 +243,7 @@ func runSitesProbe(ctx context.Context, args []string) error {
 	}
 	rec := store.NewFetchRecorder(q, runID, source).SizeOnly(fetch.KindSite, fetch.KindRobots)
 	sum, runErr := probe.Run(ctx, probe.Deps{NewClient: newClient, Recorder: rec, Save: probe.SaveTx(s.Pool(), runID),
-		Stop: storageCheck(cfg, q)}, due, probe.Options{Concurrency: setup.env.ProbeConcurrency})
+		Stop: storageCheck(cfg, q), Cafe: cafeCfg}, due, probe.Options{Concurrency: setup.env.ProbeConcurrency})
 	result := store.RunResult{
 		Requests: sum.Requests, Failures: sum.Failures, StopReason: sum.StopReason,
 		Note: fmt.Sprintf("%d sites probed, %d Drupal", sum.Sites, sum.Drupal),

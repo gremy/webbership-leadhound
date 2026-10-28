@@ -1,0 +1,3 @@
+Say who you are: {{.SenderName}}, who built a Wallet stamp card and runs it at a café.
+Ask how {{.OrgName}} keeps its regulars coming back today, and whether paper cards get lost.
+Offer the demo on their own phone, then 30 days free; if they say yes to an email, take the address.

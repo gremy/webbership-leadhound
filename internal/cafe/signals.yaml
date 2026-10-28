@@ -1,0 +1,87 @@
+# cafe@1 signal list: what on a café's own homepage counts as digital loyalty, online
+# ordering or Instagram. Data, not code: add a vendor or a phrase here and the detector
+# picks it up (DefaultConfig embeds this file).
+#
+# vendors[].match: "host" or "host/path-prefix". A link, script, iframe, stylesheet or form
+#   on that host (or a subdomain), with that path prefix when given, is a match; so is the
+#   text "host/path" inside an inline script (a widget loader).
+# vendors[].own: true marks Webbership itself: a café already on it is a customer, never a lead.
+#   The own vendor is not listed here: its hosts come from the operator's private config at
+#   run time (Config.WithOwnVendor), since this repository never names the live domain.
+# words[].phrases: matched case-insensitively in the page's visible text, as whole words,
+#   runs of spaces folded. Phrases are evidence of the weaker kind ("via word").
+vendors:
+  # Digital loyalty: wallet passes and loyalty apps.
+  - {id: stampme, name: Stamp Me, kind: loyalty, match: [stampme.com]}
+  - {id: loopy, name: Loopy Loyalty, kind: loyalty, match: [loopyloyalty.com]}
+  - {id: boomerangme, name: Boomerangme, kind: loyalty, match: [boomerangme.cards, boomerangme.com]}
+  - {id: passkit, name: PassKit, kind: loyalty, match: [passkit.com, passkit.io, pskt.io]}
+  - {id: passcreator, name: Passcreator, kind: loyalty, match: [passcreator.com]}
+  - {id: pass2u, name: Pass2U, kind: loyalty, match: [pass2u.net]}
+  - {id: kangaroo, name: Kangaroo Rewards, kind: loyalty, match: [kangaroorewards.com]}
+  - {id: fivestars, name: FiveStars, kind: loyalty, match: [fivestars.com]}
+  - {id: belly, name: Belly, kind: loyalty, match: [bellycard.com]}
+  - {id: joyn, name: Joyn, kind: loyalty, match: [joyn.be, joyn.eu]}
+  - {id: piggy, name: Piggy, kind: loyalty, match: [piggy.eu, piggy.nl]}
+  - {id: embargo, name: Embargo, kind: loyalty, match: [embargoapp.com]}
+  - {id: thanx, name: Thanx, kind: loyalty, match: [thanx.com]}
+  - {id: punchh, name: Punchh, kind: loyalty, match: [punchh.com]}
+  - {id: smile, name: Smile.io, kind: loyalty, match: [smile.io]}
+  - {id: square-loyalty, name: Square Loyalty, kind: loyalty, match: [squareup.com/loyalty, squareup.com/customer-programs]}
+  - {id: toast-loyalty, name: Toast Loyalty, kind: loyalty, match: [toasttab.com/rewards]}
+
+  # Online ordering: delivery apps and ordering platforms.
+  - {id: ubereats, name: Uber Eats, kind: ordering, match: [ubereats.com]}
+  - {id: glovo, name: Glovo, kind: ordering, match: [glovoapp.com]}
+  - {id: wolt, name: Wolt, kind: ordering, match: [wolt.com]}
+  - {id: bolt-food, name: Bolt Food, kind: ordering, match: [food.bolt.eu]}
+  - {id: tazz, name: Tazz, kind: ordering, match: [tazz.ro]}
+  - {id: foodpanda, name: foodpanda, kind: ordering, match: [foodpanda.ro, foodpanda.com]}
+  - {id: deliveroo, name: Deliveroo, kind: ordering, match: [deliveroo.co.uk, deliveroo.ie, deliveroo.fr, deliveroo.be, deliveroo.it, deliveroo.com]}
+  - {id: justeat, name: Just Eat, kind: ordering, match: [just-eat.co.uk, just-eat.ie, just-eat.es, just-eat.fr, justeat.it, just-eat.dk, takeaway.com, thuisbezorgd.nl, lieferando.de, menulog.com.au, skipthedishes.com]}
+  - {id: doordash, name: DoorDash, kind: ordering, match: [doordash.com]}
+  - {id: grubhub, name: Grubhub, kind: ordering, match: [grubhub.com]}
+  - {id: toast, name: Toast, kind: ordering, match: [toasttab.com/order, order.toasttab.com]}
+  - {id: square-online, name: Square Online, kind: ordering, match: [square.site, squareup.com/store]}
+  - {id: flipdish, name: Flipdish, kind: ordering, match: [flipdish.com, flipdish.co]}
+  - {id: slerp, name: Slerp, kind: ordering, match: [slerp.com]}
+  - {id: vitamojo, name: Vita Mojo, kind: ordering, match: [vitamojo.com]}
+  - {id: ritual, name: Ritual, kind: ordering, match: [ritual.co]}
+  - {id: chownow, name: ChowNow, kind: ordering, match: [chownow.com]}
+  - {id: yoyo, name: Yoyo, kind: ordering, match: [orderyoyo.com]}
+
+  # Instagram.
+  - {id: instagram, name: Instagram, kind: instagram, match: [instagram.com, instagr.am]}
+
+words:
+  - kind: loyalty
+    id: wallet-words
+    phrases:
+      - apple wallet
+      - google wallet
+      - add to wallet
+      - digital stamp card
+      - digital loyalty card
+      - loyalty app
+      - rewards app
+      - card de fidelitate digital
+      - card digital de fidelitate
+      - aplicația de fidelitate
+      - carta fedeltà digitale
+      - tarjeta de fidelidad digital
+      - carte de fidélité digitale
+      - carte de fidélité numérique
+  - kind: ordering
+    id: order-words
+    phrases:
+      - order online
+      - online ordering
+      - click and collect
+      - click & collect
+      - comandă online
+      - comanda online
+      - ordina online
+      - pedir online
+      - pide online
+      - commander en ligne
+      - online bestellen

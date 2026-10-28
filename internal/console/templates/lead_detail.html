@@ -8,7 +8,7 @@
 {{if and $v.Message (not $v.AtCall)}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 <article class="record lead-record" id="lead-{{$d.LeadID}}">
-  <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
+  <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}{{if and $d.StarNote (not $d.Starred)}}<p class="hint star-note">{{$d.StarNote}}.</p>{{end}}</div>
   <dl class="fields">
     <div><dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd></div>
     <div><dt>Domain</dt><dd>{{$d.Domain}}</dd></div>
@@ -31,6 +31,7 @@
   <section>
     <h2>Finding</h2>
     {{with $d.Finding}}<p>{{.}}</p>{{else}}<p class="muted">No finding on file.</p>{{end}}
+    {{if eq $d.Origin "place"}}<p class="hint">Found through a map listing: place data from Overture Maps Foundation (overturemaps.org), CDLA Permissive 2.0.</p>{{end}}
     {{range $v.Fetches}}
     <div class="signal-fetch">
       {{if or .FetchURL .Status .FetchedAt}}
@@ -40,6 +41,14 @@
     </div>
     {{end}}
   </section>
+
+  {{with $d.Report}}{{if or .Ready .Why}}
+  <section class="lead-report">
+    <h2>Upgrade-risk report</h2>
+    {{if .Ready}}<p><a href="/leads/reports/{{$d.LeadID}}" download>Report</a> <span class="hint">· one self-contained page built from the stored findings; attach it, or open it and print to PDF</span></p>
+    {{else}}<p class="muted">{{.Why}}</p>{{end}}
+  </section>
+  {{end}}{{end}}
 
   <section>
     <h2>Ways to reach them</h2>
@@ -54,6 +63,22 @@
       {{end}}
     </ul>
     {{else}}<p class="muted">No email address or contact form found yet.</p>{{end}}
+    {{$r := $d.Research}}
+    {{if or $r.Status $r.CanAsk}}
+    <div class="research" id="contact-research">
+      <h3>Contact research</h3>
+      <p class="research-line">{{with researchLine $r}}{{.}}{{else}}Not looked for yet.{{end}}</p>
+      {{if and $r.CanAsk (not $r.Open)}}
+      {{if $r.NextAt}}<p class="hint">It can look again from {{researchNext $r.NextAt}}: one search per organisation every 90 days.</p>
+      {{else}}<form method="post" action="/leads/{{$d.LeadID}}/look-again" class="research-form">
+        <input type="hidden" name="back" value="{{$v.Back}}#contact-research">
+        <button type="submit">Look again</button>
+      </form>
+      <p class="hint">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
+      {{end}}
+      {{end}}
+    </div>
+    {{end}}
   </section>
 
   <section>

@@ -73,7 +73,8 @@ func (p Problem) String() string { return p.Rule + ": " + p.Detail }
 //
 // The URL rule: a URL is "http://" or "https://" up to white space, or a bare "www." name,
 // with trailing punctuation dropped. It must be the FindingURL slot, the sender's site_url
-// (a trailing "/" ignored either way), or, when bare, the Host or Domain slot.
+// (a trailing "/" ignored either way), or, when bare, the Host or Domain slot; in an email's
+// footer it may also be the sender's privacy_url (the privacy line).
 func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
 	return CheckIn(d, step, cfg, StepRules{})
 }
@@ -95,8 +96,17 @@ type StepRules struct {
 	// copy.forbid_by_kind for the lead's kind), as Forbid's text says.
 	Forbid []*regexp.Regexp
 	// NoLinksInStep0 refuses any URL above the footer of the first email (copy.links_in_step0
-	// off); NoExclamation refuses "!" anywhere in an email (copy.exclamation off).
+	// off): the lowest of EmailSteps (step 2 on a call_first sequence), step 0 when EmailSteps
+	// is nil. NoExclamation refuses "!" anywhere in an email (copy.exclamation off).
 	NoLinksInStep0, NoExclamation bool
+}
+
+// FirstEmail is the step of the lead's first email: the lowest of EmailSteps, 0 when nil.
+func (r StepRules) FirstEmail() int {
+	if len(r.EmailSteps) == 0 {
+		return 0
+	}
+	return slices.Min(r.EmailSteps)
 }
 
 // CheckIn is Check under a campaign sequence's rules (see StepRules).
@@ -197,9 +207,24 @@ func CheckIn(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Proble
 			okURL[checkURLKey(h)] = true
 		}
 	}
-	for _, u := range checkURLs(text) {
-		if !okURL[checkURLKey(u)] {
-			add(RuleURL, "%s is neither the finding's URL nor the sender's site", u)
+	// The privacy notice's URL belongs in the footer only (Slots.PrivacyLine).
+	above, footer := text, ""
+	if d.Kind == DraftEmail && strings.HasPrefix(d.Body, d.BodyAboveFooter) {
+		above, footer = d.Subject+"\n"+d.BodyAboveFooter, strings.TrimPrefix(d.Body, d.BodyAboveFooter)
+	}
+	privacy := ""
+	if cfg.Sender.PrivacyURL != "" {
+		privacy = checkURLKey(cfg.Sender.PrivacyURL)
+	}
+	for _, part := range []struct {
+		text   string
+		footer bool
+	}{{above, false}, {footer, true}} {
+		for _, u := range checkURLs(part.text) {
+			k := checkURLKey(u)
+			if !okURL[k] && (!part.footer || k != privacy) {
+				add(RuleURL, "%s is neither the finding's URL nor the sender's site (the privacy notice's URL goes in the footer only)", u)
+			}
 		}
 	}
 	return p
@@ -215,7 +240,7 @@ func checkEmail(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Pro
 	if step == 0 {
 		bounds, which = cfg.Copy.FirstWords, "first email"
 	}
-	if rules.NoLinksInStep0 && step == 0 && len(checkURLs(d.BodyAboveFooter)) > 0 {
+	if rules.NoLinksInStep0 && step == rules.FirstEmail() && len(checkURLs(d.BodyAboveFooter)) > 0 {
 		add(RuleURL, "the first email holds a link above the footer; this campaign allows none there")
 	}
 	if rules.NoExclamation && strings.Contains(d.Body, "!") {
@@ -224,7 +249,7 @@ func checkEmail(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Pro
 	words := len(strings.Fields(d.BodyAboveFooter))
 	switch {
 	case rules.EmailSteps != nil && !slices.Contains(rules.EmailSteps, step):
-		add(RuleStep, "step %d is not an email step of the sequence (%s)", step, stepList(rules.EmailSteps))
+		add(RuleStep, "this email is not one the sequence asks for")
 	case rules.EmailSteps != nil:
 		most, ok := rules.MaxWords[step]
 		if !ok && len(bounds) == 2 {
@@ -232,9 +257,9 @@ func checkEmail(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Pro
 		}
 		switch {
 		case !ok:
-			add(RuleWords, "copy has no word bound for step %d", step)
+			add(RuleWords, "there is no word limit for this email")
 		case words > most:
-			add(RuleWords, "%d words above the footer, step %d allows at most %d", words, step, most)
+			add(RuleWords, "%d words above the footer; this email allows at most %d", words, most)
 		}
 	case step < 0 || step >= leadconfig.Steps:
 		add(RuleStep, "step %d is outside 0 to %d", step, leadconfig.Steps-1)

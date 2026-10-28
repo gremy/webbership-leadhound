@@ -1,0 +1,15 @@
+Subject: A stamp card that lives in the phone
+
+Hello,
+
+I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café.
+
+It is a stamp card in Apple Wallet or Google Wallet, with the name and colours of {{.OrgName}} on it. Your regulars need no app. Paper cards get lost or left at home; this one is always in their pocket, and you can see who comes back.
+
+Setup takes about 20 minutes. It is free for 30 days with no card needed, then €19 a month with every feature.
+
+Reply and I will send you the demo: 10 seconds and a real card is in your Wallet, as your regulars would see it.
+
+Worth 10 minutes to see it on your phone?
+
+{{.Footer}}

@@ -141,7 +141,8 @@ func (q Queries) AdvanceCursorFor(ctx context.Context, mailboxID int64, name str
 }
 
 // SentRef is one email we sent (or may have sent) from a live batch: what sync matches an
-// incoming message against.
+// incoming message against. ToAddress is where it went: an email_consent step's is the
+// consented address (send refuses it under any other).
 type SentRef struct {
 	ID        int64  `db:"id"`         // outreach_message.id
 	MessageID string `db:"message_id"` // the Message-ID header, without angle brackets
@@ -159,7 +160,8 @@ func (r SentRef) Selftest() bool { return r.LeadKind == LeadSelftest }
 // first.
 func (q Queries) SentRefs(ctx context.Context) ([]SentRef, error) {
 	refs, err := collect(ctx, q.db, pgx.RowToStructByName[SentRef],
-		`SELECT m.id, m.message_id, m.lead_id, lower(m.to_address) AS to_address, o.domain AS org_domain, l.kind AS lead_kind,
+		`SELECT m.id, m.message_id, m.lead_id, lower(coalesce(nullif(m.to_address, ''), `+consentAddressSQL+`)) AS to_address,
+		   o.domain AS org_domain, l.kind AS lead_kind,
 		   m.mailbox_id
 		 FROM outreach_message m
 		 JOIN outreach_batch b ON b.id = m.batch_id
@@ -334,10 +336,48 @@ type SendRow struct {
 	LeadKind   string `db:"lead_kind"`
 	OrgDomain  string `db:"org_domain"`
 	OrgCountry string `db:"org_country"`
+	// ConsentAddress is, for an email_consent step, the address the person gave when they
+	// agreed on the call (the latest call outcome on the lead's calls of the batch, when it
+	// came with consent); "" when there is none, and for every other step.
+	ConsentAddress string `db:"consent_address"`
 }
 
+// Recipient is the address the message goes to: the consented address for an
+// email_consent step, else the stored to_address. RecipientRefusal says when it may not go.
+func (r SendRow) Recipient() string {
+	if r.Condition == ConditionEmailConsent {
+		return r.ConsentAddress
+	}
+	return r.ToAddress
+}
+
+// RecipientRefusal is why send must refuse r for its recipient: an email_consent step with
+// no consent on record, or one whose stored recipient (a batch drafted before the
+// recipient was left to the consent) is not the address they agreed to. "" when it may go.
+func (r SendRow) RecipientRefusal() string {
+	if r.Condition != ConditionEmailConsent {
+		return ""
+	}
+	switch {
+	case r.ConsentAddress == "":
+		return "no email consent on record"
+	case r.ToAddress != "" && !strings.EqualFold(strings.TrimSpace(r.ToAddress), r.ConsentAddress):
+		return "the recipient is not the address they agreed to"
+	}
+	return ""
+}
+
+// consentAddressSQL is, for message m, the consent address its email_consent step goes to:
+// the latest call outcome recorded on a call of m's lead in m's batch, when it came with
+// email consent; ” when there is none, or when m is not an email_consent step.
+const consentAddressSQL = `CASE WHEN m.condition = 'email_consent' THEN coalesce((
+	  SELECT CASE WHEN co.email_consent THEN co.consent_address END
+	  FROM call_outcome co JOIN outreach_message cm ON cm.id = co.message_id
+	  WHERE cm.lead_id = m.lead_id AND cm.batch_id = m.batch_id
+	  ORDER BY co.id DESC LIMIT 1), '') ELSE '' END`
+
 const sendRowSQL = `SELECT ` + messageCols + `, b.shadow, l.state AS lead_state, l.kind AS lead_kind,
-	  o.domain AS org_domain, o.country AS org_country
+	  o.domain AS org_domain, o.country AS org_country, ` + consentAddressSQL + ` AS consent_address
 	 FROM outreach_message m
 	 JOIN outreach_batch b ON b.id = m.batch_id
 	 JOIN lead l ON l.id = m.lead_id

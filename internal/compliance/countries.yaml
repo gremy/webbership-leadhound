@@ -1,0 +1,507 @@
+# NOT LEGAL ADVICE. Country rules for cold email and calls to businesses, from the plan's own four research passes of 27 Oct 2026 (US/CA/UK; western and northern EU; southern and eastern EU; AU/NZ).
+# Entries marked secondary or unverified are leads for a lawyer, not settled law; operator_decision entries were opened by the operator (27 Oct 2026; CH on 28 Oct 2026) and carry the reason in `acknowledge`.
+#
+# Closed vocabularies (enforced when the file loads):
+#   email.verdict / call.verdict: open | published_address | role_address_only | consent | off | hold
+#   individuals.email / individuals.call: same (as companies) | consent | off
+#   confidence: verified (read on the primary page) | secondary | unverified | operator_decision
+#   group: both_open | call_first | off | operator_opened | call_first_operator
+# A register's max_age_days of 0 means the research named no age: screen before each campaign.
+# A country with region_required (US, CA, AU) is callable only when the lead's region is known; the window is then computed in the region's time zone.
+
+research_date: 2026-10-27
+
+# The calling hours where the law names none: the business window CP3 already used (09:30-17:00, Mon-Fri, the callee's time).
+default_call_windows:
+  - {days: [Mon, Tue, Wed, Thu, Fri], start: "09:30", end: "17:00"}
+
+registers:
+  tps: {country: GB, name: Telephone Preference Service, max_age_days: 28}
+  ctps: {country: GB, name: Corporate Telephone Preference Service, max_age_days: 28}
+  dncm: {country: BE, name: Do Not Call Me, max_age_days: 3}
+  ndd: {country: IE, name: National Directory Database, max_age_days: 0}
+  dncr: {country: AU, name: Do Not Call Register, max_age_days: 0}
+  rpo: {country: IT, name: Registro pubblico delle opposizioni, max_age_days: 0}
+  robinson: {country: ES, name: Lista Robinson, max_age_days: 0}
+  gr_art11: {country: GR, name: Article 11 registers, max_age_days: 0}
+
+# Words that mark a business as a natural person (a sole trader) on its own pages.
+sole_trader_words: [sole trader, sole proprietor, self-employed, Einzelunternehmen, Einzelunternehmer, eingetragener Kaufmann, entrepreneur individuel, auto-entrepreneur, micro-entrepreneur, eenmanszaak, enskild firma, toiminimi, ditta individuale, Einzelfirma, raison individuelle, autónomo, empresario individual, PFA, persoană fizică autorizată, întreprindere individuală, enkeltmandsvirksomhed, jednoosobowa działalność, empresário em nome individual]
+
+countries:
+  # Both channels open (with rules)
+  US:
+    name: United States
+    group: both_open
+    region_required: true
+    email:
+      verdict: open
+      rules: ["CAN-SPAM: a postal address in every email", "identify the email as an ad", "honour an opt-out within 10 business days"]
+    call:
+      verdict: open
+      rules: ["human-dialled only, never an autodialler or recording", "08:00-21:00 the callee's local time", "blocked in FL, OK, TX, IN, PA and WA until each state's licence/bond law is checked"]
+      windows: [{days: [Mon, Tue, Wed, Thu, Fri, Sat, Sun], start: "08:00", end: "21:00"}]
+    individuals: {email: same, call: same}
+    legal_forms: [Inc, Inc., Incorporated, LLC, L.L.C., Corp, Corp., Corporation, LLP, PLLC, Ltd]
+    confidence: unverified
+    regions:
+      AL: {tz: America/Chicago}
+      AK: {tz: America/Anchorage}
+      AZ: {tz: America/Phoenix, tz_also: [America/Denver]}
+      AR: {tz: America/Chicago}
+      CA: {tz: America/Los_Angeles}
+      CO: {tz: America/Denver}
+      CT: {tz: America/New_York}
+      DE: {tz: America/New_York}
+      DC: {tz: America/New_York}
+      FL: {tz: America/New_York, tz_also: [America/Chicago], call: off, reason: "Florida's telemarketing licence/bond law is not yet checked"}
+      GA: {tz: America/New_York}
+      HI: {tz: Pacific/Honolulu}
+      ID: {tz: America/Boise, tz_also: [America/Los_Angeles]}
+      IL: {tz: America/Chicago}
+      IN: {tz: America/Indiana/Indianapolis, tz_also: [America/Chicago], call: off, reason: "Indiana's telemarketing licence/bond law is not yet checked"}
+      IA: {tz: America/Chicago}
+      KS: {tz: America/Chicago, tz_also: [America/Denver]}
+      KY: {tz: America/New_York, tz_also: [America/Chicago]}
+      LA: {tz: America/Chicago}
+      ME: {tz: America/New_York}
+      MD: {tz: America/New_York}
+      MA: {tz: America/New_York}
+      MI: {tz: America/Detroit, tz_also: [America/Chicago]}
+      MN: {tz: America/Chicago}
+      MS: {tz: America/Chicago}
+      MO: {tz: America/Chicago}
+      MT: {tz: America/Denver}
+      NE: {tz: America/Chicago, tz_also: [America/Denver]}
+      NV: {tz: America/Los_Angeles}
+      NH: {tz: America/New_York}
+      NJ: {tz: America/New_York}
+      NM: {tz: America/Denver}
+      NY: {tz: America/New_York}
+      NC: {tz: America/New_York}
+      ND: {tz: America/Chicago, tz_also: [America/Denver]}
+      OH: {tz: America/New_York}
+      OK: {tz: America/Chicago, call: off, reason: "Oklahoma's telemarketing licence/bond law is not yet checked"}
+      OR: {tz: America/Los_Angeles, tz_also: [America/Boise]}
+      PA: {tz: America/New_York, call: off, reason: "Pennsylvania's telemarketing licence/bond law is not yet checked"}
+      RI: {tz: America/New_York}
+      SC: {tz: America/New_York}
+      SD: {tz: America/Chicago, tz_also: [America/Denver]}
+      TN: {tz: America/Chicago, tz_also: [America/New_York]}
+      TX: {tz: America/Chicago, tz_also: [America/Denver], call: off, reason: "Texas's telemarketing licence/bond law is not yet checked"}
+      UT: {tz: America/Denver}
+      VT: {tz: America/New_York}
+      VA: {tz: America/New_York}
+      WA: {tz: America/Los_Angeles, call: off, reason: "Washington's telemarketing licence/bond law is not yet checked"}
+      WV: {tz: America/New_York}
+      WI: {tz: America/Chicago}
+      WY: {tz: America/Denver}
+  CA:
+    name: Canada
+    group: both_open
+    region_required: true
+    email:
+      verdict: published_address
+      rules: ["CASL s.10(9)(b): only to an address the business itself published, on a page with no 'no unsolicited messages' line, and only when the offer is relevant to that business"]
+    call:
+      verdict: open
+      rules: ["09:00-21:30 weekdays, 10:00-18:00 weekends, the callee's local time"]
+      windows:
+        - {days: [Mon, Tue, Wed, Thu, Fri], start: "09:00", end: "21:30"}
+        - {days: [Sat, Sun], start: "10:00", end: "18:00"}
+    individuals: {email: same, call: same}
+    legal_forms: [Inc, Inc., Incorporated, Ltd, Ltd., Limited, Corp, Corp., Corporation, Ltée, Limitée]
+    confidence: unverified
+    regions:
+      AB: {tz: America/Edmonton}
+      BC: {tz: America/Vancouver}
+      MB: {tz: America/Winnipeg}
+      NB: {tz: America/Moncton}
+      NL: {tz: America/St_Johns}
+      NS: {tz: America/Halifax}
+      NT: {tz: America/Yellowknife}
+      NU: {tz: America/Iqaluit}
+      ON: {tz: America/Toronto}
+      PE: {tz: America/Halifax}
+      QC: {tz: America/Toronto}
+      SK: {tz: America/Regina}
+      YT: {tz: America/Whitehorse}
+  GB:
+    name: United Kingdom
+    group: both_open
+    tz: Europe/London
+    email:
+      verdict: open
+      rules: ["corporate bodies may be emailed without consent", "say who is writing and give an opt-out"]
+    call:
+      verdict: open
+      rules: ["screen against TPS and CTPS and our own list", "say who is calling and show a number", "give an address or freephone number if asked"]
+    individuals: {email: consent, call: same}
+    registers: [tps, ctps]
+    legal_forms: [Ltd, Ltd., Limited, LLP, PLC, plc, CIC]
+    company_number: true
+    confidence: verified
+    sources:
+      - {title: "ICO, telephone marketing", url: "https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/guide-to-pecr/electronic-and-telephone-marketing/telephone-marketing/"}
+      - {title: "ICO, electronic mail marketing", url: "https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/guide-to-pecr/electronic-and-telephone-marketing/electronic-mail-marketing/"}
+      - {title: "ICO, business-to-business marketing", url: "https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/business-to-business-marketing/"}
+      - {title: "Data (Use and Access) Act 2025, s.115", url: "https://www.legislation.gov.uk/ukpga/2025/18/section/115"}
+      - {title: "TPS Services, API and upload", url: "https://www.tpsservices.co.uk/tps-api-for-developers/"}
+  IE:
+    name: Ireland
+    group: both_open
+    tz: Europe/Dublin
+    email:
+      verdict: open
+      rules: ["companies only; a sole trader counts as an individual"]
+    call:
+      verdict: open
+      rules: ["landlines only, never mobiles", "screen against the National Directory Database"]
+      landline_only: true
+    individuals: {email: consent, call: same}
+    registers: [ndd]
+    legal_forms: [Ltd, Ltd., Limited, DAC, PLC, plc, CLG, Teoranta, Teo.]
+    confidence: unverified
+  FR:
+    name: France
+    group: both_open
+    tz: Europe/Paris
+    email:
+      verdict: role_address_only
+      rules: ["an impersonal role address on a legal person's domain", "or a named address whose job matches the offer"]
+    call:
+      verdict: open
+      rules: ["Mon-Fri 10:00-13:00 and 14:00-20:00"]
+      windows:
+        - {days: [Mon, Tue, Wed, Thu, Fri], start: "10:00", end: "13:00"}
+        - {days: [Mon, Tue, Wed, Thu, Fri], start: "14:00", end: "20:00"}
+    individuals: {email: consent, call: same}
+    legal_forms: [SA, S.A., SAS, S.A.S., SASU, SARL, S.A.R.L., EURL, SNC, SCOP]
+    confidence: unverified
+  BE:
+    name: Belgium
+    group: both_open
+    tz: Europe/Brussels
+    email:
+      verdict: role_address_only
+      rules: ["an impersonal role address on a legal person's domain"]
+    call:
+      verdict: open
+      rules: ["screen against Do Not Call Me (results at most 3 days old; EUR 60/month licence)"]
+    individuals: {email: consent, call: same}
+    registers: [dncm]
+    legal_forms: [SA, S.A., NV, N.V., SRL, S.R.L., BV, B.V., BVBA, SPRL]
+    confidence: unverified
+  SE:
+    name: Sweden
+    group: both_open
+    tz: Europe/Stockholm
+    email: {verdict: open, rules: ["companies only; a sole trader counts as an individual"]}
+    call: {verdict: open, rules: ["stop on objection"]}
+    individuals: {email: consent, call: same}
+    legal_forms: [AB, (publ), HB, KB]
+    confidence: unverified
+  FI:
+    name: Finland
+    group: both_open
+    tz: Europe/Helsinki
+    email: {verdict: open, rules: ["companies only; a sole trader counts as an individual"]}
+    call: {verdict: open, rules: ["stop on objection"]}
+    individuals: {email: consent, call: same}
+    legal_forms: [Oy, Oyj, Ab, Ky, Ay]
+    confidence: unverified
+  EE:
+    name: Estonia
+    group: both_open
+    tz: Europe/Tallinn
+    email: {verdict: open, rules: ["companies only; a sole trader counts as an individual"]}
+    call: {verdict: open, rules: ["stop on objection"]}
+    individuals: {email: consent, call: same}
+    legal_forms: [OÜ, AS, TÜ, UÜ]
+    confidence: unverified
+  AU:
+    name: Australia
+    group: both_open
+    region_required: true
+    email:
+      verdict: published_address
+      rules: ["Spam Act Sch 2 cl 4: only to an address the business itself published, on a page with no 'no unsolicited messages' line, and only when the offer is relevant to that business"]
+    call:
+      verdict: open
+      rules: ["weekdays 09:00-20:00, Saturday 09:00-17:00, never Sundays or public holidays (public holidays are the operator's to check)", "a caller ID that answers for 30 days", "screen against the Do Not Call Register (free up to 500 numbers a year)"]
+      windows:
+        - {days: [Mon, Tue, Wed, Thu, Fri], start: "09:00", end: "20:00"}
+        - {days: [Sat], start: "09:00", end: "17:00"}
+    individuals: {email: same, call: same}
+    registers: [dncr]
+    legal_forms: [Pty Ltd, Pty. Ltd., Pty Limited, Proprietary Limited, Ltd, Limited]
+    confidence: unverified
+    regions:
+      ACT: {tz: Australia/Sydney}
+      NSW: {tz: Australia/Sydney}
+      NT: {tz: Australia/Darwin}
+      QLD: {tz: Australia/Brisbane}
+      SA: {tz: Australia/Adelaide}
+      TAS: {tz: Australia/Hobart}
+      VIC: {tz: Australia/Melbourne}
+      WA: {tz: Australia/Perth}
+  NZ:
+    name: New Zealand
+    group: both_open
+    tz: Pacific/Auckland
+    email:
+      verdict: published_address
+      rules: ["UEMA deemed consent: only to an address the business itself published, on a page with no 'no unsolicited messages' line, and only when the offer is relevant to that business"]
+    call: {verdict: open, rules: ["stop on objection"]}
+    individuals: {email: same, call: same}
+    legal_forms: [Ltd, Limited]
+    confidence: unverified
+  SK:
+    name: Slovakia
+    group: both_open
+    tz: Europe/Bratislava
+    low_confidence: true
+    email: {verdict: open, rules: ["companies only; a sole trader counts as an individual"]}
+    call: {verdict: open, rules: ["stop on objection"]}
+    individuals: {email: consent, call: same}
+    legal_forms: [s.r.o., spol. s r.o., a.s.]
+    confidence: unverified
+  CY:
+    name: Cyprus
+    group: both_open
+    tz: Asia/Nicosia
+    low_confidence: true
+    email:
+      verdict: role_address_only
+      rules: ["an impersonal role address on a legal person's domain"]
+    call: {verdict: open, rules: ["stop on objection"]}
+    individuals: {email: consent, call: same}
+    legal_forms: [Ltd, Limited, PLC]
+    confidence: unverified
+
+  # Call first: email needs consent (a "yes, email me" on the call), calls allowed
+  RO:
+    name: Romania
+    group: call_first
+    tz: Europe/Bucharest
+    email:
+      verdict: consent
+      rules: ["Law 506/2004 art. 12(1): prior consent for commercial email; art. 12(4) applies it to legal persons too"]
+    call:
+      verdict: open
+      rules: ["live human calls are outside art. 12; GDPR applies; no do-not-call register found"]
+    individuals: {email: consent, call: same}
+    legal_forms: [SRL, S.R.L., SA, S.A., SNC, SCS]
+    confidence: verified
+    sources:
+      - {title: "Law 506/2004 on legislatie.just.ro, consolidation of 31.05.2019 (the 08.10.2024 consolidation was not read)"}
+  IT:
+    name: Italy
+    group: call_first
+    tz: Europe/Rome
+    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
+    call:
+      verdict: open
+      rules: ["screen the Registro pubblico delle opposizioni before each campaign"]
+    individuals: {email: consent, call: same}
+    registers: [rpo]
+    legal_forms: [S.r.l., Srl, SRL, S.p.A., SpA, S.a.s., S.n.c.]
+    confidence: unverified
+  ES:
+    name: Spain
+    group: call_first
+    tz: Europe/Madrid
+    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
+    call:
+      verdict: open
+      rules: ["screen against Lista Robinson", "legitimate interest"]
+    individuals: {email: consent, call: same}
+    registers: [robinson]
+    legal_forms: [S.L., SL, S.L.U., S.A., SA, SLU]
+    confidence: unverified
+  DE:
+    name: Germany
+    group: call_first
+    tz: Europe/Berlin
+    email: {verdict: consent, rules: ["§7 UWG: email needs consent"]}
+    call:
+      verdict: open
+      rules: ["§7 UWG: presumed consent only, so the campaign must record (acknowledge) why the offer is relevant to that business"]
+      acknowledge_required: true
+    individuals: {email: consent, call: same}
+    legal_forms: [GmbH, AG, UG, KG, OHG, GbR, e.K., mbH, SE]
+    confidence: verified
+    sources:
+      - {title: "§7 UWG", url: "https://www.gesetze-im-internet.de/uwg_2004/__7.html"}
+  DK:
+    name: Denmark
+    group: call_first
+    tz: Europe/Copenhagen
+    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
+    call: {verdict: open, rules: ["companies only, never a natural person"]}
+    individuals: {email: consent, call: off}
+    legal_forms: [ApS, A/S, IVS, P/S, K/S, I/S]
+    confidence: unverified
+
+  # Off: consent needed for both channels
+  AT:
+    name: Austria
+    group: off
+    tz: Europe/Vienna
+    email: {verdict: off}
+    call: {verdict: off}
+    individuals: {email: off, call: off}
+    legal_forms: [GmbH, AG, KG, OG, e.U.]
+    confidence: unverified
+  PL:
+    name: Poland
+    group: off
+    tz: Europe/Warsaw
+    email: {verdict: off}
+    call: {verdict: off}
+    individuals: {email: off, call: off}
+    legal_forms: [sp. z o.o., S.A., sp.k., sp.j.]
+    confidence: unverified
+  CZ:
+    name: Czechia
+    group: off
+    tz: Europe/Prague
+    email: {verdict: off}
+    call: {verdict: off}
+    individuals: {email: off, call: off}
+    legal_forms: [s.r.o., spol. s r.o., a.s.]
+    confidence: unverified
+  BG:
+    name: Bulgaria
+    group: off
+    tz: Europe/Sofia
+    email: {verdict: off}
+    call: {verdict: off}
+    individuals: {email: off, call: off}
+    legal_forms: [EOOD, OOD, AD, EAD, ЕООД, ООД, АД, ЕАД]
+    confidence: unverified
+
+  # Opened by the operator, 27 Oct 2026: companies only, both channels
+  PT:
+    name: Portugal
+    group: operator_opened
+    tz: Europe/Lisbon
+    email: &opened_email
+      verdict: role_address_only
+      rules: ["companies only, never a sole trader or an unknown entity type", "never a named person's address", "an opt-out in every email", "suppress on the first objection"]
+    call: &opened_call
+      verdict: open
+      rules: ["companies only", "stop on objection"]
+    individuals: {email: off, call: off}
+    legal_forms: [Lda, Lda., S.A., SA, Unipessoal]
+    confidence: operator_decision
+    acknowledge: &opened_ack "Operator, 27 Oct 2026: anything that might remotely be OK for companies is marked OK, both calls and emails."
+  SI:
+    name: Slovenia
+    group: operator_opened
+    tz: Europe/Ljubljana
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [d.o.o., d.d.]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+  LT:
+    name: Lithuania
+    group: operator_opened
+    tz: Europe/Vilnius
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [UAB, AB]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+  HU:
+    name: Hungary
+    group: operator_opened
+    tz: Europe/Budapest
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [Kft., Kft, Zrt., Nyrt., Bt., Kkt.]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+  LU:
+    name: Luxembourg
+    group: operator_opened
+    tz: Europe/Luxembourg
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [S.à r.l., SARL, S.A., SA, SAS]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+  MT:
+    name: Malta
+    group: operator_opened
+    tz: Europe/Malta
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [Ltd, Limited, plc, p.l.c.]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+  HR:
+    name: Croatia
+    group: operator_opened
+    tz: Europe/Zagreb
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [d.o.o., j.d.o.o., d.d.]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+  GR:
+    name: Greece
+    group: operator_opened
+    tz: Europe/Athens
+    email: *opened_email
+    call:
+      verdict: open
+      rules: ["companies only", "stop on objection", "screen against the article 11 registers"]
+    individuals: {email: off, call: off}
+    registers: [gr_art11]
+    legal_forms: [A.E., E.P.E., EPE, I.K.E., IKE, O.E., E.E.]
+    confidence: operator_decision
+    acknowledge: *opened_ack
+
+  # Opened by the operator, 28 Oct 2026: companies only, both channels
+  CH:
+    name: Switzerland
+    group: operator_opened
+    tz: Europe/Zurich
+    email: *opened_email
+    call:
+      verdict: open
+      rules: ["companies only", "stop on objection", "check the number for the phone directory's asterisk (Sterne) marker under UWG art. 3 lit. u before calling: not screened by LeadHound"]
+    individuals: {email: off, call: off}
+    legal_forms: [AG, GmbH, SA, S.A., Sàrl, SARL, S.à r.l., Sagl, Genossenschaft]
+    confidence: operator_decision
+    acknowledge: "Opened by the operator on 28 Oct 2026: companies only, both calls and emails, on the same terms as the 27 Oct group (role addresses only, an opt-out in every email, suppress on the first objection, stop a call on objection)."
+
+  # Call first, calls opened by the operator (email consent covers companies)
+  NL:
+    name: Netherlands
+    group: call_first_operator
+    tz: Europe/Amsterdam
+    email: {verdict: consent, rules: ["opt-in including legal persons since 2009; unlocked by a 'yes, email me' on the call"]}
+    call: {verdict: open, rules: ["companies only (consumers and small entrepreneurs need consent since 2021)"]}
+    individuals: {email: consent, call: off}
+    legal_forms: [BV, B.V., NV, N.V., VOF, V.O.F., C.V.]
+    confidence: operator_decision
+    acknowledge: "Operator, 27 Oct 2026: calls to companies opened; email stays call-first (consent)."
+  LV:
+    name: Latvia
+    group: call_first_operator
+    tz: Europe/Riga
+    email: {verdict: consent, rules: ["the regulator says consent, with no B2B exception; unlocked by a 'yes, email me' on the call"]}
+    call: {verdict: open, rules: ["companies only"]}
+    individuals: {email: consent, call: off}
+    legal_forms: [SIA, AS]
+    confidence: operator_decision
+    acknowledge: "Operator, 27 Oct 2026: calls to companies opened; email stays call-first (consent)."

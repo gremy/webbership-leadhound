@@ -1,0 +1,13 @@
+Subject: Drupal upgrade help for {{.OrgName}}: the details
+
+Hello {{.OrgName}} team,
+
+Thanks for the call. As promised, the details.
+
+I'm {{.SenderName}}, a Drupal developer. I work with agencies as a quiet partner on upgrades, at a price agreed before we start.
+
+Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.
+
+Pick one client site and I will write a free one-page upgrade-risk report on it, yours to keep and share under your name.
+
+{{.Footer}}

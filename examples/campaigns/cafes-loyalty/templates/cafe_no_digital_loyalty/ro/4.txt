@@ -1,0 +1,9 @@
+Subject: Re: Un card de fidelitate direct în telefon
+
+Bună,
+
+Ăsta e ultimul meu mesaj. Dacă la {{.OrgName}} cardurile de hârtie devin o bătaie de cap, răspunde-mi oricând și îți trimit demo-ul.
+
+Mulțumesc că ai citit. Spor la cafenea.
+
+{{.Footer}}

@@ -1,0 +1,13 @@
+Subject: Cardul de ștampile despre care am vorbit
+
+Bună,
+
+Mulțumesc pentru discuție. Cum am promis, îți trimit detaliile.
+
+Sunt {{.SenderName}}. Am construit Demo Loyalty și îl folosesc la cafeneaua mea. E un card de ștampile în Apple Wallet sau Google Wallet, cu numele cafenelei {{.OrgName}}. Clienții tăi nu au nevoie de nicio aplicație.
+
+Configurarea durează cam 20 de minute. Primele 30 de zile sunt gratuite, fără card bancar. Apoi costă 19 € pe lună, cu toate funcțiile.
+
+Răspunde-mi și îți trimit demo-ul. Sau îl configurăm împreună în 15 minute.
+
+{{.Footer}}

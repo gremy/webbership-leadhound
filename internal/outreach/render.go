@@ -1,6 +1,8 @@
-// Package outreach turns one lead's stored facts into drafts and checks them. Drafts are
-// the operator's own templates with slots filled from stored rows; no model writes or
-// decides anything here.
+// Package outreach turns one lead's stored facts into drafts and checks them. A draft is
+// either the operator's own template with slots filled from stored rows, or written by
+// Claude (writer.go) from a fact sheet of stored rows: Claude writes, it never decides a
+// fact. Every claim must cite a stored fact, the deterministic grounding check (ground.go)
+// refuses anything else, and both kinds render through the same footer and Check.
 package outreach
 
 import (
@@ -56,6 +58,11 @@ type Slots struct {
 	IdentityLine Slot
 	OptOutLine   Slot
 	Footer       Slot
+
+	// PrivacyLine is the footer's last line naming the sender's privacy notice
+	// (leadconfig.Sender.PrivacyLine); not a template slot: Render adds it under the
+	// rendered footer of every email when it is set, and nothing when it is empty.
+	PrivacyLine Slot
 
 	// EvidenceSignal is the stored signal EvidenceLine was built from; it is not a template
 	// slot. Check allows a number inside EvidenceLine only when it equals this signal's
@@ -301,7 +308,11 @@ func Render(t Template, s Slots) (Draft, error) {
 		if err != nil {
 			return Draft{}, err
 		}
-		s.Footer = ConfigSlot(strings.TrimSpace(footer))
+		footer = strings.TrimSpace(footer)
+		if line := strings.TrimSpace(s.PrivacyLine.Value); line != "" {
+			footer += "\n" + line
+		}
+		s.Footer = ConfigSlot(footer)
 		subject, err := renderExec(t.Subject, values)
 		if err != nil {
 			return Draft{}, err

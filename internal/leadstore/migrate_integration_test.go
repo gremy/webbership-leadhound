@@ -111,7 +111,9 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 // appendOnlyLeadTables are the append-only lead tables from 00010 on: INSERT and SELECT, no
 // UPDATE, no DELETE.
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
-	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent"}
+	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent",
+	"draft_generation", "draft_review", "draft_eval", "phone_screening", "phone_status", "phone_research",
+	"place_import", "place"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -177,7 +179,7 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 		}
 	}
 	for _, table := range append([]string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
-		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check", "campaign"}, appendOnlyLeadTables...) {
+		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check", "campaign", "contact_research"}, appendOnlyLeadTables...) {
 		if appHas(t, owner, table, "DELETE") || appHas(t, owner, table, "TRUNCATE") {
 			t.Errorf("%s: leadhound_app may DELETE or TRUNCATE %s", when, table)
 		}
@@ -193,6 +195,9 @@ var pointerColumns = map[string][2][]string{
 		{"shadow", "created_at", "content_sha256", "templates_sha256", "account_id", "campaign_id", "sequence"}},
 	// 00016: a campaign's one pointer is retired_at; its owner, slug and name are fixed.
 	"campaign": {{"retired_at"}, {"account_id", "slug", "name", "created_at"}},
+	// 00018: a research row moves its run columns only; who, what and why it was asked are fixed.
+	"contact_research": {{"status", "model", "cost_micros", "candidates", "verified", "started_at", "finished_at"},
+		{"org_id", "lead_id", "campaign_id", "trigger", "want", "requested_at", "actor"}},
 	"outreach_message": {{"state", "due_at", "sent_at", "smtp_reply", "cancel_reason", "approved_sha256"},
 		{"batch_id", "lead_id", "step", "channel", "to_address", "subject", "body_text", "message_id",
 			"in_reply_to", "slots", "created_at", "condition", "phone_fact_id", "sequence_name"}},
@@ -294,6 +299,34 @@ func TestLeadsMigrateFromEmpty(t *testing.T) {
 		{"call_outcome_consent_check", "consent_address"},
 		{"call_outcome_note_check", "500"},
 		{"email_consent_wording_check", "500"},
+		{"contact_research_trigger_check", "'button'"},
+		{"contact_research_status_check", "'capped'"},
+		{"contact_research_want_check", "'phone'"},
+		{"contact_research_found_check", "verified > 0"},
+		{"contact_research_times_check", "started_at IS NULL"},
+		{"draft_generation_attempt_check", "2"},
+		{"draft_generation_purpose_check", "'eval'"},
+		{"draft_generation_ok_check", "jsonb_array_length"},
+		{"draft_generation_fact_sha_check", "{64}"},
+		{"draft_review_verdict_check", "'reject'"},
+		{"draft_review_reasons_check", "'wrong_tone'"},
+		{"draft_review_note_check", "500"},
+		{"draft_eval_share_check", "after_retry_pass >= first_try_pass"},
+		{"draft_eval_decider_check", "'claude'"},
+		{"phone_screening_register_check", "'gr_art11'"},
+		{"phone_screening_result_check", "'listed'"},
+		{"phone_screening_number_check", "{8,15}"},
+		{"phone_screening_checked_check", "1 day"},
+		{"phone_status_reason_check", "'corrected'"},
+		{"phone_status_outcome_check", "call_outcome_id IS NOT NULL"},
+		{"phone_research_line_kind_check", "'decision_maker'"},
+		{"phone_research_role_check", "60"},
+		{"org_source_check", "'place'"},
+		{"org_region_check", "[A-Z]{2}"},
+		{"site_origin_check", "'place'"},
+		{"place_chain_check", "'domain'"},
+		{"place_import_counts_check", "no_name"},
+		{"place_confidence_check", "1"},
 	} {
 		var def string
 		if err := owner.QueryRow(ctx, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", c[0]).Scan(&def); err != nil {
@@ -306,6 +339,13 @@ func TestLeadsMigrateFromEmpty(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'outreach_message'::regclass
 		AND contype = 'f' AND confrelid = 'org_fact'::regclass`).Scan(&onDelete); err != nil || onDelete != "n" {
 		t.Errorf("outreach_message.phone_fact_id on delete = %q (%v), want n (SET NULL)", onDelete, err)
+	}
+	// 00020: a phone status goes with its fact (CASCADE); a research row outlives it (SET NULL).
+	for table, want := range map[string]string{"phone_status": "c", "phone_research": "n"} {
+		if err := owner.QueryRow(ctx, `SELECT confdeltype FROM pg_constraint WHERE conrelid = $1::regclass
+			AND contype = 'f' AND confrelid = 'org_fact'::regclass`, table).Scan(&onDelete); err != nil || onDelete != want {
+			t.Errorf("%s.fact_id on delete = %q (%v), want %s", table, onDelete, err, want)
+		}
 	}
 
 	// The app role can write the new tables through the owner's default privileges.
@@ -424,6 +464,21 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM call_outcome",
 		"DELETE FROM email_consent",
 		"TRUNCATE call_outcome",
+		"DELETE FROM contact_research",
+		"TRUNCATE contact_research",
+		"DELETE FROM draft_generation",
+		"DELETE FROM draft_review",
+		"DELETE FROM draft_eval",
+		"TRUNCATE draft_generation",
+		"DELETE FROM phone_screening",
+		"DELETE FROM phone_status",
+		"DELETE FROM phone_research",
+		"TRUNCATE phone_screening",
+		"TRUNCATE phone_status",
+		"TRUNCATE phone_research",
+		"DELETE FROM place",
+		"DELETE FROM place_import",
+		"TRUNCATE place",
 		"DELETE FROM lead_kind",
 		"DELETE FROM lead_channel",
 		"TRUNCATE lead_kind",
@@ -496,6 +551,32 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE outreach_message SET condition = 'always'",
 		"UPDATE outreach_message SET phone_fact_id = NULL",
 		"UPDATE outreach_message SET sequence_name = NULL",
+		// 00018: a research row never moves to another org, lead, campaign, trigger, want,
+		// request time or actor.
+		"UPDATE contact_research SET org_id = 1",
+		"UPDATE contact_research SET lead_id = 1",
+		"UPDATE contact_research SET campaign_id = 1",
+		"UPDATE contact_research SET trigger = 'cli'",
+		"UPDATE contact_research SET want = ARRAY['email']",
+		"UPDATE contact_research SET requested_at = now()",
+		"UPDATE contact_research SET actor = 'system'",
+		// 00019: Claude drafts, reviews and evals are append-only.
+		"UPDATE draft_generation SET check_ok = true",
+		"UPDATE draft_generation SET output = NULL",
+		"UPDATE draft_review SET verdict = 'approve'",
+		"UPDATE draft_review SET note = ''",
+		"UPDATE draft_eval SET first_try_pass = 1",
+		"UPDATE phone_screening SET result = 'clean'",
+		"UPDATE phone_screening SET checked_at = now()",
+		"UPDATE phone_status SET status = 'good'",
+		"UPDATE phone_status SET fact_id = 1",
+		"UPDATE phone_research SET fact_id = NULL",
+		"UPDATE phone_research SET role = ''",
+		// 00021: places and imports are append-only; an org's region is fixed at insert.
+		"UPDATE place SET org_id = NULL",
+		"UPDATE place SET phones = '[]'",
+		"UPDATE place_import SET kept = 0",
+		"UPDATE org SET region = 'US-IL'",
 		// The reference rows change only by migration.
 		"UPDATE lead_kind SET outreach = true",
 		"UPDATE lead_channel SET label = ''",

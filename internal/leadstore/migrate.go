@@ -93,7 +93,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // UPDATE on retired_at only, and campaign_version is append-only (00016), which also
 // recreates suppression_active, so its revokes above run again; call_outcome and
 // email_consent are append-only (00017), whose new outreach_message and outreach_batch
-// columns are fixed at insert and join no pointer grant. It runs after every migrate, a no-op one
+// columns are fixed at insert and join no pointer grant; contact_research takes UPDATE on the
+// columns a research run moves only (00018); draft_generation, draft_review and draft_eval
+// are append-only (00019), and so are phone_screening, phone_status and phone_research
+// (00020; the owner alone deletes from them, to erase an org); place_import and place are
+// append-only (00021), whose new org.region column is fixed at insert. It runs after every migrate, a no-op one
 // too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
@@ -222,6 +226,35 @@ BEGIN
   END IF;
   IF to_regclass('public.email_consent') IS NOT NULL THEN
     REVOKE UPDATE ON public.email_consent FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.contact_research') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_research FROM leadhound_app;
+    GRANT UPDATE (status, model, cost_micros, candidates, verified, started_at, finished_at)
+      ON public.contact_research TO leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_generation') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_generation FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_review') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_review FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_eval') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_eval FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.phone_screening') IS NOT NULL THEN
+    REVOKE UPDATE ON public.phone_screening FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.phone_status') IS NOT NULL THEN
+    REVOKE UPDATE ON public.phone_status FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.phone_research') IS NOT NULL THEN
+    REVOKE UPDATE ON public.phone_research FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.place_import') IS NOT NULL THEN
+    REVOKE UPDATE ON public.place_import FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.place') IS NOT NULL THEN
+    REVOKE UPDATE ON public.place FROM leadhound_app;
   END IF;
 END
 $$`

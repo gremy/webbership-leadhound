@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -450,4 +451,17 @@ func TestSequenceCheckRules(t *testing.T) {
 			t.Errorf("Check: %v", err)
 		}
 	})
+}
+
+// TestDefaultCallFirstPassesCheck: the default call_first sequence is one a spec could hold,
+// and the engine runs it as the call-first grid expects.
+func TestDefaultCallFirstPassesCheck(t *testing.T) {
+	var errs []string
+	checkSteps(func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }, "sequences.call_first", DefaultCallFirst(), StepCall)
+	if len(errs) > 0 {
+		t.Fatalf("DefaultCallFirst fails its check: %v", errs)
+	}
+	if got := DefaultCallFirst(); len(got) != 4 || got[2].When != WhenEmailConsent || got[1].When != WhenCallNotConnected {
+		t.Errorf("DefaultCallFirst = %+v", got)
+	}
 }

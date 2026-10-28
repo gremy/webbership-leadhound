@@ -22,6 +22,7 @@ const (
 	OriginHTTPArchive = "httparchive"
 	OriginAgency      = "agency"
 	OriginManual      = "manual"
+	OriginPlace       = "place" // added by a place import (00021); probed with cafe@1
 )
 
 // The states a site row can be in (site_state_check).

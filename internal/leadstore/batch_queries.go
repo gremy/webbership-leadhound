@@ -56,7 +56,7 @@ func (q Queries) OrgsForBuild(ctx context.Context, campaignID int64) ([]BuildOrg
 		 LEFT JOIN lead l ON l.org_id = o.id AND l.campaign_id = $1
 		 LEFT JOIN site s ON s.id = o.site_id
 		 LEFT JOIN site_probe p ON p.id = s.last_probe_id
-		 WHERE o.kind <> 'selftest'
+		 WHERE o.kind <> 'selftest' AND o.source <> 'place'
 		 ORDER BY o.id`, orCampaign(campaignID))
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: orgs for build: %w", err)

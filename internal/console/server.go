@@ -93,8 +93,10 @@ var routes = []route{
 	{"GET /leads/settings", "/leads/settings", false, (*server).leadSettings},
 	{"GET /leads/campaigns", "/leads/campaigns", false, (*server).leadsCampaigns},
 	{"GET /leads/today", "/leads/today", false, (*server).leadsToday},
+	{"GET /leads/drafts", "/leads/drafts", false, (*server).leadsDrafts},
 	{"GET /leads/calls/{message}", "/leads/calls/9", false, (*server).leadCall},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
+	{"GET /leads/reports/{id}", "/leads/reports/5", false, (*server).leadReport},
 	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
 	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
 	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
@@ -108,6 +110,7 @@ var routes = []route{
 	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
 	{"POST /leads/settings/{section}", "/leads/settings/who", false, (*server).saveLeadSettings},
 	{"POST /leads/calls/{message}/outcome", "/leads/calls/9/outcome", false, (*server).leadCallOutcome},
+	{"POST /leads/drafts/{id}/review", "/leads/drafts/4/review", false, (*server).reviewDraft},
 	// Every literal /leads/... POST above is more specific than this pattern, so it wins.
 	{"POST /leads/{id}/{action}", "/leads/5/star", false, (*server).leadAct},
 	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
@@ -277,7 +280,7 @@ func (s *server) parseTemplates() map[string]*template.Template {
 		"templates/leads_tabs.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
-		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_today", "lead_call", "results",
+		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
 		"mailboxes", "mailbox", "mailbox_form"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
@@ -331,6 +334,7 @@ func (s *server) funcs() template.FuncMap {
 		"approveWords": approveWords,
 		"maxText":      func() int { return maxLeadsText },
 		"add":          func(a, b int) int { return a + b },
+		"afterColon":   AfterColon,
 		"join":         strings.Join,
 		"plural": func(n int, one, many string) string {
 			if n == 1 {
@@ -349,7 +353,24 @@ func (s *server) funcs() template.FuncMap {
 		"writerWords":  writerWords,
 		"shortSHA":     shortSHA,
 		"telHref":      telHref,
-		"lineKind":     lineKindWords,
+		"researchLine": func(r LeadResearch) string { return researchLine(r, s.opt.Location) },
+		"noticeLines":  noticeLines,
+		"researchNext": func(t *time.Time) string {
+			if t == nil {
+				return ""
+			}
+			return t.In(s.opt.Location).Format("2 Jan 2006")
+		},
+		"lineKind":    lineKindWords,
+		"reasonWords": ReasonWords,
+		"sourceWords": sourceWords,
+		"groupWords":  groupWords,
+		"reviewIn": func(form reviewForm, id int64) reviewForm {
+			if form.ID != id {
+				return reviewForm{}
+			}
+			return form
+		},
 		"outcomeWords": OutcomeWords,
 		"outcomeHelp":  func(o string) string { return callOutcomeHelp[o] },
 		"changed":      func(what string, src SettingSource) string { return changedWords(what, src, s.opt.Location) },

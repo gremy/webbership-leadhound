@@ -110,6 +110,7 @@
       {{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
       <span class="item-meta">{{template "lead_channels" .}}{{with .Relevance}} · {{.}}{{end}}{{with .Position}} · number {{.}} in the outreach order{{end}}</span>
+      {{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}
       {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="tag call-tag">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
       {{if and $v.Order .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}
     </li>
@@ -136,7 +137,7 @@
       <td>{{.Country}}</td>
       <td>{{.Kind}}{{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}</td>
       <td>{{.Finding}}</td>
-      <td>{{template "lead_channels" .}}</td>
+      <td>{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}</td>
       {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}
       {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="tag call-tag">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
       {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}

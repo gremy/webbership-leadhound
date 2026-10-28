@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -98,7 +99,8 @@ type Suppressed struct {
 // suppression (kind phone, value PhoneSuppressionValue of the number, reason do_not_call, tps,
 // ctps or manual) reaches the leads whose org lists that number or whose pending call dials
 // it, and cancels only their pending call rows: not being called is not an opt-out of email,
-// so their lead state and email rows are left alone. Run it in a
+// so their lead state and email rows are left alone, and the engine runs for each lead whose
+// call it cancelled, so its later steps go on without the call. Run it in a
 // transaction. The suppression is account accountID's (0: DefaultAccountID): it blocks every
 // campaign of that account and reaches only that account's leads.
 func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, reason, source string) (Suppressed, error) {
@@ -149,6 +151,7 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 		actor = ActorGremy
 	}
 	cancel := "suppressed: " + reason
+	var resequence []int64 // leads whose pending calls this phone suppression cancelled
 	for _, id := range ids {
 		res.Leads++
 		if kind == SuppressPhone {
@@ -159,6 +162,9 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 				return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
 			}
 			res.Cancelled += tag.RowsAffected()
+			if tag.RowsAffected() > 0 {
+				resequence = append(resequence, id)
+			}
 			continue
 		}
 		n, err := q.CancelPending(ctx, CancelTarget{LeadID: id}, cancel)
@@ -175,13 +181,21 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 			res.Moved++
 		}
 	}
+	// A cancelled call must not hold up the rest of its lead's sequence: the engine passes
+	// over it (campaign.Next) and its cancels apply now; the due times wait for
+	// HealSequences, which has the lead's calendar.
+	if _, err := q.resequence(ctx, resequence, time.Now(), nil); err != nil {
+		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
+	}
 	return res, nil
 }
 
 // reachSQL is the SQL condition on lead l (org o, route r) that is true when a suppression of
-// kind on $1 reaches it: an address suppression reaches its route address or a pending
-// message's recipient; a domain suppression reaches the org's domain, the route address's
-// domain or a pending message's recipient domain, or a subdomain of any of them. Suppress
+// kind on $1 reaches it: an address suppression reaches its route address, a pending
+// message's recipient or the address given with an email consent its pending email_consent
+// steps go to; a domain suppression reaches the org's domain, the route address's domain, a
+// pending message's recipient domain or a consent address's domain, or a subdomain of any
+// of them. Suppress
 // (which leads to stop) and LiftSuppression (which leads it had stopped) share it, so the two
 // cannot drift.
 func reachSQL(kind string) string {
@@ -194,7 +208,8 @@ func reachSQL(kind string) string {
 	if kind == SuppressAddress {
 		return `((r.kind = 'email' AND r.value = $1)
 		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
-		    AND m.state IN ('draft', 'approved') AND lower(m.to_address) = $1))`
+		    AND m.state IN ('draft', 'approved') AND lower(m.to_address) = $1)
+		  OR EXISTS (` + consentReachSQL + ` AND lower(co.consent_address) = $1))`
 	}
 	return `(o.domain = $1 OR right(o.domain, length($1) + 1) = '.' || $1
 		  OR (r.kind = 'email' AND (split_part(r.value, '@', 2) = $1
@@ -202,7 +217,29 @@ func reachSQL(kind string) string {
 		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
 		    AND m.state IN ('draft', 'approved')
 		    AND (lower(split_part(m.to_address, '@', 2)) = $1
-		      OR right(lower(split_part(m.to_address, '@', 2)), length($1) + 1) = '.' || $1)))`
+		      OR right(lower(split_part(m.to_address, '@', 2)), length($1) + 1) = '.' || $1))
+		  OR EXISTS (` + consentReachSQL + `
+		    AND (lower(split_part(co.consent_address, '@', 2)) = $1
+		      OR right(lower(split_part(co.consent_address, '@', 2)), length($1) + 1) = '.' || $1)))`
+}
+
+// consentReachSQL opens the condition that lead l has a pending email_consent step and a
+// consent address on one of its calls (co): the address its consent emails go to
+// (consentAddressSQL), which its stored recipient does not name.
+const consentReachSQL = `SELECT 1 FROM outreach_message cm JOIN call_outcome co ON co.message_id = cm.id
+		    WHERE cm.lead_id = l.id AND co.email_consent
+		      AND EXISTS (SELECT 1 FROM outreach_message pm WHERE pm.lead_id = l.id AND pm.batch_id = cm.batch_id
+		        AND pm.condition = 'email_consent' AND pm.state IN ('draft', 'approved'))`
+
+// orgDomainSuppressedSQL is a SQL condition that is true when an active domain suppression
+// of any account covers org alias o's domain (the domain itself or a parent of it). A
+// collector that fetches an org's pages or reads its facts (enrich, the contact search,
+// contact research) skips such an org: `leads forget` and an opt-out suppress the domain,
+// and nothing may gather about it again. Any account's, because the collectors serve every
+// account and erasure must hold whichever account asked.
+func orgDomainSuppressedSQL(o string) string {
+	return `EXISTS (SELECT 1 FROM suppression_active sx WHERE sx.kind = 'domain'
+	  AND (` + o + `.domain = sx.value OR right(` + o + `.domain, length(sx.value) + 1) = '.' || sx.value))`
 }
 
 // inAccountSQL is the SQL condition on lead l that is true when its campaign is account $2's.

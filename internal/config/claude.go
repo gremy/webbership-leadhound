@@ -10,13 +10,15 @@ type ClaudeCaps struct {
 }
 
 // Default Claude caps per purpose, in micro-dollars. The purpose names are claude.Purpose*
-// (this package cannot import claude, which imports it). The drafting lead cap is about two
-// worst-case attempts, so the one retry always fits; drafts_eval drafts one lead at a time
-// like drafting and takes the same lead cap.
+// (this package cannot import claude, which imports it). The drafting lead cap holds two
+// worst-case reservations of the largest realistic drafting call (the retry, about $0.09 at
+// 3000 output tokens; claude.WorstWrite counts input bytes as tokens), so the one retry is
+// never refused after a first attempt (TestWriterRetryFitsLeadCap); drafts_eval drafts one
+// lead at a time like drafting and takes the same lead cap.
 var defaultClaudeCaps = map[string]struct{ daily, lead int64 }{
-	"drafting":    {3_000_000, 80_000},
+	"drafting":    {3_000_000, 200_000},
 	"research":    {1_500_000, 100_000},
-	"drafts_eval": {2_000_000, 80_000},
+	"drafts_eval": {2_000_000, 200_000},
 }
 
 // DefaultClaudeCaps returns purpose's default daily and per-lead caps in micro-dollars.

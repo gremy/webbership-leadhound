@@ -49,6 +49,7 @@ const (
 	noteSync        = "sync"
 	noteSyncRunning = "sync running"
 	noteTampered    = "tampered"
+	noteConsent     = "consent"
 	noteReserved    = "reserved"
 	noteAppend      = "append"
 	noteInterrupted = "interrupted"
@@ -641,6 +642,12 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 	}
 
+	// A sequence a suppression or a wrong number took a call out of moves on here, with the
+	// lead's own calendar: the steps after the call fall due as if it had never been drafted.
+	if _, err := r.lq.HealSequences(ctx, now, r.leadCalendar); err != nil {
+		return err
+	}
+
 	// 4. Plan with each mailbox's room today (its own cap, then its domain's): sent,
 	// maybe_sent and sending count, shadow_sent never does.
 	rows, err := r.lq.SendRows(ctx, now, !r.live)
@@ -678,7 +685,7 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 		items = append(items, outreach.PlanItem{
 			MessageID: row.ID, BatchID: row.BatchID, LeadID: row.LeadID, Step: row.Step,
-			Domain: recipientDomain(row.ToAddress), Loc: r.rowLoc(row.LeadKind, row.OrgCountry),
+			Domain: recipientDomain(row.Recipient()), Loc: r.rowLoc(row.LeadKind, row.OrgCountry),
 			DueAt: *row.DueAt, Selftest: self, MailboxID: row.MailboxID,
 		})
 	}
@@ -911,7 +918,14 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	if err != nil {
 		return false, err
 	}
-	if outreach.Suppressed(row.ToAddress, row.OrgDomain, outreach.NewSuppressionSet(set.Addresses, set.Domains)) {
+	// An email_consent step goes to the address they agreed to on the call, and only there.
+	if why := row.RecipientRefusal(); why != "" {
+		r.rep.note(noteConsent)
+		r.rep.refused = append(r.rep.refused, label+" ("+why+")")
+		return false, r.lq.MarkRefused(ctx, row.ID, "refused: "+why)
+	}
+	to := row.Recipient()
+	if outreach.Suppressed(to, row.OrgDomain, outreach.NewSuppressionSet(set.Addresses, set.Domains)) {
 		return false, r.cancel(ctx, row, leadstore.SkipSuppressed)
 	}
 	// The lead's state: a live batch's lead is batched or contacted, a shadow batch's new.
@@ -924,7 +938,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	}
 	// Fixture names never get a live message (RA25).
 	if r.live && !leadsMail.allowReserved &&
-		(outreach.ReservedDomain(recipientDomain(row.ToAddress)) || outreach.ReservedDomain(row.OrgDomain)) {
+		(outreach.ReservedDomain(recipientDomain(to)) || outreach.ReservedDomain(row.OrgDomain)) {
 		r.rep.note(noteReserved)
 		r.rep.refused = append(r.rep.refused, label+" ("+noteReserved+")")
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: reserved recipient")
@@ -953,7 +967,9 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		from = mb.Address
 	}
 	now := leadsNow()
-	raw, err := mailbox.Build(outboxMessage(row.Message, row.FromName, from, now))
+	msg := row.Message
+	msg.ToAddress = to // an email_consent step: the address they agreed to (checked above)
+	raw, err := mailbox.Build(outboxMessage(msg, row.FromName, from, now))
 	if err != nil {
 		r.rep.refused = append(r.rep.refused, label+" (not a valid message)")
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: "+err.Error())
@@ -995,7 +1011,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		}
 		return false, err
 	}
-	domain := recipientDomain(row.ToAddress)
+	domain := recipientDomain(to)
 	if row.LeadKind == leadstore.LeadSelftest {
 		domain = "your selftest address"
 	}
@@ -1015,7 +1031,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		return true, nil
 	}
 
-	reply, sendErr := mb.sender.Send(ctx, from, row.ToAddress, raw)
+	reply, sendErr := mb.sender.Send(ctx, from, to, raw)
 	// The outcome is recorded even when ctx ended during the send.
 	wctx := context.WithoutCancel(ctx)
 	var se *mailbox.SendError
@@ -1060,7 +1076,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 				if err := tq.MarkHardBounce(wctx, row.ID); err != nil {
 					return err
 				}
-				_, err := tq.Suppress(wctx, leadstore.DefaultAccountID, leadstore.SuppressAddress, row.ToAddress, leadstore.ReasonBounce, "smtp")
+				_, err := tq.Suppress(wctx, leadstore.DefaultAccountID, leadstore.SuppressAddress, to, leadstore.ReasonBounce, "smtp")
 				return err
 			}
 			return nil
@@ -1142,10 +1158,15 @@ func (r *sendRun) followUp(ctx context.Context, row leadstore.SendRow, sentAt ti
 // transaction: the decision is applied over the rows it was read from). A batch that stores
 // its sequence runs campaign.Next (leadstore.SequenceDecision) and applies its due times and
 // cancels; a batch from before sequences (none stored) keeps the old rule, legacyNext.
+// leadCalendar is the business-day calendar of a lead of kind in country, as scheduleNext
+// builds it.
+func (r *sendRun) leadCalendar(kind, country string) campaign.Calendar {
+	loc, bh := r.rowLoc(kind, country), r.setup.leads.Schedule.BusinessHours
+	return campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
+}
+
 func (r *sendRun) scheduleNext(ctx context.Context, tq leadstore.Queries, row leadstore.SendRow, sentAt time.Time) error {
-	loc, bh := r.rowLoc(row.LeadKind, row.OrgCountry), r.setup.leads.Schedule.BusinessHours
-	cal := campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
-	d, legacy, err := tq.SequenceDecision(ctx, row.ID, sentAt, cal)
+	d, legacy, err := tq.SequenceDecision(ctx, row.ID, sentAt, r.leadCalendar(row.LeadKind, row.OrgCountry))
 	if err != nil {
 		return err
 	}

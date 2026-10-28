@@ -50,8 +50,26 @@ func (s *server) leadsCampaigns(w http.ResponseWriter, r *http.Request) {
 	if s.leadsRead(w, r, http.StatusOK, err) {
 		return
 	}
+	gates, err := s.b.DraftGates(r.Context())
+	if s.leadsRead(w, r, http.StatusOK, err) {
+		return
+	}
+	v := make([]campaignRow, len(cs))
+	for i, c := range cs {
+		v[i] = campaignRow{CampaignView: c}
+		if g, ok := gates[c.Slug]; ok {
+			v[i].Gate = &g
+		}
+	}
 	s.render(w, r, http.StatusOK, "leads_campaigns", page{Title: "Campaigns", Active: leadsPath, SignedIn: true,
-		Data: cs})
+		Data: v})
+}
+
+// campaignRow is one campaign as the tab renders it: the backend's view and its Claude-draft
+// gate (nil when the backend has none for it).
+type campaignRow struct {
+	CampaignView
+	Gate *DraftGate
 }
 
 // stepWhen is a sequence step's condition in words; "" when it always runs.

@@ -10,7 +10,7 @@
 {{else}}
 {{with $c.NotDue}}<p class="notice notice-warn call-not-due" role="note">{{.}}</p>{{end}}
 {{with $c.CallsOff}}<p class="notice notice-warn call-off-rules" role="note">{{.}}</p>{{end}}
-{{if not $c.Callable}}<p class="notice notice-warn call-blocked" role="note"><strong>{{$c.BlockedReason}}.</strong> {{if $c.NotDue}}Once it is due, you{{else}}You{{end}} can still record an outcome below to walk the flow.</p>{{end}}
+{{if not $c.Callable}}<p class="notice notice-warn call-blocked" role="note"><strong>Not callable: {{afterColon $c.BlockedReason}}.</strong> {{if $c.NotDue}}Once it is due, you can record what happened below.{{else}}You can still record what happened below.{{end}}</p>{{end}}
 {{end}}
 
 <article class="card record call-card" id="call-{{$c.MessageID}}">

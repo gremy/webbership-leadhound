@@ -24,34 +24,9 @@ func init() { leadsCommands["calls"] = runLeadsCalls }
 const leadsCallsUsage = "usage: leadhound leads calls list [--campaign SLUG] [--due] | outcome MESSAGE " +
 	"connected|no_answer|voicemail|wrong_number|do_not_call|skipped [--note TEXT] [--consent] [--consent-address A]"
 
-// callsOffWords is why no call may be made yet (CP3): the call rules (the per-country allow
-// list and the screening) arrive later, so every call is blocked, while the cards, the lists
-// and the outcomes still work so the flow can be walked in shadow.
-const callsOffWords = "Calls are off until the call rules are set up"
-
-// callScreeningWords is the call card's screening status while the call rules are not set up.
-const callScreeningWords = "call rules not set up yet: calls are off"
-
 // callConsentWording is the sentence stored with an agreement won on a call: the call card's
 // own consent line (internal/console/templates/lead_call.html), word for word.
 const callConsentWording = "They agreed to get an email"
-
-// The call window: a call is "callable now" between these local times on a weekday, in the
-// lead's country's zone.
-const (
-	callWindowStart = 9*60 + 30 // 09:30
-	callWindowEnd   = 17 * 60   // 17:00
-)
-
-// inCallWindow reports whether now falls in the call window in loc.
-func inCallWindow(now time.Time, loc *time.Location) bool {
-	t := now.In(loc)
-	if t.Weekday() == time.Saturday || t.Weekday() == time.Sunday {
-		return false
-	}
-	m := t.Hour()*60 + t.Minute()
-	return m >= callWindowStart && m < callWindowEnd
-}
 
 // runLeadsCalls is `leads calls list | outcome`.
 func runLeadsCalls(ctx context.Context, args []string) error {
@@ -104,7 +79,7 @@ func runCallsList(ctx context.Context, args []string) error {
 
 // listCalls prints the call steps of campaign campaignID (0: every campaign) scheduled at
 // any time, or with due only those due at now.
-func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, loc *time.Location, now time.Time,
+func listCalls(ctx context.Context, lq leadstore.Queries, _ leadconfig.Config, loc *time.Location, now time.Time,
 	campaignID int64, due bool, w io.Writer) error {
 	until := now
 	if !due {
@@ -115,7 +90,6 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 		return err
 	}
 	slog.Default().Info("leads calls list", "calls", len(calls), "campaign", campaignID, "due_only", due)
-	_, _ = fmt.Fprintf(w, "%s: you can still record an outcome to walk the flow.\n", callsOffWords)
 	if len(calls) == 0 {
 		if due {
 			_, _ = fmt.Fprintln(w, "No call is due now.")
@@ -124,17 +98,24 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 		}
 		return nil
 	}
-	pol, err := loadCallPolicies(ctx, lq)
+	rules, err := loadCallRules(ctx, lq)
 	if err != nil {
 		return err
 	}
 	for _, c := range calls {
+		v, err := rules.check(ctx, c, now)
+		if err != nil {
+			return err
+		}
 		line := fmt.Sprintf("message %d · %s · step %d · due %s", c.MessageID, callOrgWords(c), c.Step+1,
 			c.DueAt.In(loc).Format("Mon 2 Jan 15:04"))
-		if c.WaitsOnStep != nil {
+		switch {
+		case c.WaitsOnStep != nil:
 			line += " · not due yet: waits on " + waitsOnStepWords(*c.WaitsOnStep, c.WaitsOnChannel)
-		} else if !c.DueAt.After(now) && !inCallWindow(now, cfg.Policy(c.Country).Location()) {
-			line += " · outside calling hours now (09:30 to 17:00 their time, weekdays)"
+		case v.Callable:
+			line += " · callable now"
+		default:
+			line += " · not callable: " + console.AfterColon(v.Reason)
 		}
 		if c.Shadow {
 			line += " · shadow batch"
@@ -142,7 +123,7 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 		if c.Outcome != "" {
 			line += " · last: " + console.OutcomeWords(c.Outcome)
 		}
-		if pol.off(c.CampaignID, c.Country) {
+		if v.CampaignOff != "" {
 			line += " · " + callsOffShort(c.Country) + ": your call"
 		}
 		_, _ = fmt.Fprintln(w, line)
@@ -258,11 +239,27 @@ func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 	}
 	slog.Default().Info("leads calls outcome", "message", id, "lead", rec.LeadID, "outcome", outcome,
 		"due", len(rec.Due), "cancelled", len(rec.Cancelled), "suppressed", rec.Suppressed, "consent", rec.ConsentID > 0)
+	if rec.Suppressed || outcome == campaign.OutcomeWrongNumber {
+		// The do-not-call suppression or the bad number may have taken a call out of another
+		// lead's sequence: move those on now, each with its own calendar.
+		if _, err := lq.HealSequences(ctx, now, leadCalendarOf(cfg)); err != nil {
+			return "", err
+		}
+	}
 	steps, err := lq.SequenceOf(ctx, rec.LeadID)
 	if err != nil {
 		return "", err
 	}
 	return outcomeLine(rec, steps, c.Step, opLoc), nil
+}
+
+// leadCalendarOf is the business-day calendar of a lead in country under cfg (its
+// country's zone and the business hours), as send and recordCall build it.
+func leadCalendarOf(cfg leadconfig.Config) leadstore.LeadCalendar {
+	return func(_, country string) campaign.Calendar {
+		loc, bh := cfg.Policy(country).Location(), cfg.Schedule.BusinessHours
+		return campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
+	}
 }
 
 // leadEmail is lead id's email route, "" when it has none.

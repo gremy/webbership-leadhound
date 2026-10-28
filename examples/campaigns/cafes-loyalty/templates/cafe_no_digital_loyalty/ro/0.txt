@@ -1,0 +1,15 @@
+Subject: Un card de fidelitate direct în telefon
+
+Bună,
+
+Sunt {{.SenderName}}. Am construit Demo Loyalty și îl folosesc la cafeneaua mea.
+
+E un card de ștampile în Apple Wallet sau Google Wallet, cu numele și culorile cafenelei {{.OrgName}}. Clienții tăi nu au nevoie de nicio aplicație. Cardurile de hârtie se pierd sau rămân acasă. Acesta e mereu în buzunarul lor, iar tu vezi cine revine.
+
+Configurarea durează cam 20 de minute. Primele 30 de zile sunt gratuite, fără card bancar. Apoi costă 19 € pe lună, cu toate funcțiile.
+
+Răspunde-mi și îți trimit demo-ul. În 10 secunde ai un card real în Wallet, exact cum l-ar vedea clienții tăi.
+
+Merită 10 minute să-l vezi pe telefonul tău?
+
+{{.Footer}}

@@ -92,7 +92,7 @@ mailbox_key() {
 # the units that call Claude cannot start, and install says so without failing the deploy.
 anthropic_key() {
 	if [ ! -e "$1" ]; then
-		echo "install: no Anthropic key at $1: the units that call Claude (leadhound-leads-batch) cannot start until you place it (deploy/README.md, The Anthropic key)"
+		echo "install: no Anthropic key at $1: the units that call Claude (leadhound-leads-batch, leadhound-leads-research) cannot start until you place it (deploy/README.md, The Anthropic key)"
 		return
 	fi
 	chown root:root "$1"
@@ -145,10 +145,10 @@ done
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer
-# The Run now watchers and the mailbox check's: the console asks through these, and each
-# starts only its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
+# The Run now watchers, the mailbox check's and contact research's: the console asks through
+# these, and each starts only its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
 # a request file left from before cannot fire on a deploy.
-systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path
+systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path
 leads_timers /etc/leadhound/env
 systemctl list-timers 'leadhound-*' --no-pager
 rm -rf -- "$stage"

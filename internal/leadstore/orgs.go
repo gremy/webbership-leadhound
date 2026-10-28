@@ -25,6 +25,7 @@ const (
 	OrgSourceProbe    = "probe"
 	OrgSourceAgencies = "agencies-file"
 	OrgSourceSelftest = "selftest"
+	OrgSourcePlace    = "place" // made by a place import (00021)
 )
 
 var (
@@ -47,6 +48,7 @@ type Org struct {
 	Domain        string    `db:"domain"`
 	Name          string    `db:"name"`
 	Country       string    `db:"country"`
+	Region        string    `db:"region"` // ISO 3166-2 ("US-IL"); "" when unknown (00021, places only)
 	SiteID        *int64    `db:"site_id"`
 	Source        string    `db:"source"`
 	SourceFetchID *int64    `db:"source_fetch_id"`
@@ -200,7 +202,7 @@ func (q Queries) OrgSetSite(ctx context.Context, orgID, siteID int64) error {
 // OrgByDomain returns the org on domain (matched lower case), or ErrOrgNotFound.
 func (q Queries) OrgByDomain(ctx context.Context, domain string) (Org, error) {
 	orgs, err := collect(ctx, q.db, pgx.RowToStructByName[Org],
-		`SELECT id, kind, domain, name, country, site_id, source, source_fetch_id, created_at
+		`SELECT id, kind, domain, name, country, region, site_id, source, source_fetch_id, created_at
 		 FROM org WHERE domain = $1`, strings.ToLower(strings.TrimSpace(domain)))
 	if err != nil {
 		return Org{}, fmt.Errorf("leadstore: org by domain: %w", err)

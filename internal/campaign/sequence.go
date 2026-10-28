@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,11 @@ import (
 //   - the first pending row (approved) is decided: its condition fails → cancelled with the
 //     reason and the walk goes on; it holds → it falls due after_business_days after the anchor (unless it already
 //     has a due time) and the walk stops, since a later step waits for this one to be sent;
+//   - a call row whose number may not be dialled (skipped at approval because the number
+//     was suppressed, or cancelled by a phone suppression: reason "suppressed" or
+//     "suppressed: <reason>") is passed over like an absent row, so the steps after it count
+//     from the last step sent ("when the call steps are absent or cancelled, step 4 counts
+//     from step 1's send");
 //   - any other row (draft, sending, maybe_sent, refused, skipped, a call marked done with no
 //     outcome, a row cancelled for any other reason) stops the walk: nothing after it is
 //     scheduled, as the legacy rule never chains past a step that was not sent.
@@ -32,6 +38,7 @@ const (
 	StateShadowSent = "shadow_sent"
 	StateDone       = "done"
 	StateCancelled  = "cancelled"
+	StateSkipped    = "skipped"
 )
 
 // Call outcomes (call_outcome.outcome).
@@ -172,6 +179,8 @@ func Next(seq []Step, rows []Row, outcomes []Outcome, now time.Time, cal Calenda
 			continue
 		case row.State == StateCancelled && slices.Contains(EngineReasons, row.CancelReason):
 			continue
+		case st.Type == StepCall && callPassedOver(row):
+			continue // the number may not be dialled: as if no callable phone at draft time
 		case row.State != StateApproved:
 			return d // in flight, refused, skipped or cancelled by the store: stop here
 		}
@@ -190,6 +199,19 @@ func Next(seq []Step, rows []Row, outcomes []Outcome, now time.Time, cal Calenda
 		return d
 	}
 	return d
+}
+
+// SuppressedPrefix is how a row skipped or cancelled because of a suppression starts its
+// cancel_reason: "suppressed" (skipped at approval) or "suppressed: <reason>" (Suppress).
+const SuppressedPrefix = "suppressed"
+
+// callPassedOver reports whether call row r was taken out because its number may not be
+// dialled (a suppression), not by the operator or a reply: the walk goes on past it.
+func callPassedOver(r Row) bool {
+	if r.State != StateCancelled && r.State != StateSkipped {
+		return false
+	}
+	return r.CancelReason == SuppressedPrefix || strings.HasPrefix(r.CancelReason, SuppressedPrefix+": ")
 }
 
 // decide reads a pending step against the calls made so far. A call that ended the sequence
@@ -237,4 +259,19 @@ func decide(st Step, calls callState) (cancel bool, reason string) {
 	}
 	// always, has_callable_phone (decided at draft time: the row exists), or empty.
 	return false, ""
+}
+
+// DefaultCallFirst is the call_first sequence a campaign with a call step follows for a lead
+// whose country needs email consent, when its spec defines none (CP5): step 0 a call; step 1
+// a call again after 2 business days when the first did not connect; step 2 the email "as
+// promised, the details" once they agreed to get one; step 3 a follow-up email 4 business
+// days later, on the same agreement. No "tried to reach you" email: there is no consent to
+// write.
+func DefaultCallFirst() []Step {
+	return []Step{
+		{Step: 0, Type: StepCall, When: WhenAlways},
+		{Step: 1, Type: StepCall, AfterBusinessDays: 2, When: WhenCallNotConnected},
+		{Step: 2, Type: StepEmail, When: WhenEmailConsent},
+		{Step: 3, Type: StepEmail, AfterBusinessDays: 4, When: WhenEmailConsent},
+	}
 }

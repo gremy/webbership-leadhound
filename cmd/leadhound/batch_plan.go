@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
+	"github.com/gremy/webbership-leadhound/internal/compliance"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
@@ -38,15 +39,82 @@ type batchPlan struct {
 	templates leadconfig.Templates     // the email steps (and the call card) by kind and language
 	rules     outreach.StepRules       // the zero value for the legacy plan
 	forbid    map[string][]*regexp.Regexp
-	// callsOn are the countries (ISO 3166-1 alpha-2) whose call policy is on in the spec. A
-	// lead elsewhere still gets its call drafted (the operator's call), counted as calls off.
-	callsOn map[string]bool
+	// overrides are the spec's country rules as internal/compliance reads them (no campaign
+	// rules for the legacy plan). A country whose call policy is off in them still gets its
+	// call drafted (the operator's call), counted as calls off.
+	overrides compliance.CampaignOverrides
+	// callFirst is the sequence a lead whose country needs email consent follows (the spec's
+	// sequences.call_first, else campaign.DefaultCallFirst); nil when the plan has no call
+	// step, so no lead is moved off the default sequence.
+	callFirst []campaign.Step
+	// seqName is the name of the sequence seq is ("" for the default); its email templates
+	// are read from that sequence's own folder (leadconfig.Set.SequenceEmail).
+	seqName string
+	// spec is the campaign the plan drafts for (campaign.Legacy for the legacy plan): its
+	// writer, offer and grounding rules, which a Claude draft reads.
+	spec campaign.Spec
 }
 
-// callsAllowed reports whether country's call policy is on in the plan's campaign. The
-// legacy plan has no call step, so it never asks.
-func (p batchPlan) callsAllowed(country string) bool {
-	return p.callsOn[countryCode(country)]
+// forLead is the plan one lead drafts with: for a lead whose country's email needs consent
+// (compliance.CallFirst) and a plan with a call step, the plan on its call_first sequence
+// and that sequence's name; else the plan itself and "" (the default sequence).
+func (p batchPlan) forLead(country string) (batchPlan, string) {
+	if p.callFirst == nil || !compliance.Default().CallFirst(country) {
+		return p, ""
+	}
+	q := p
+	q.seq, q.seqName = p.callFirst, campaign.SequenceCallFirst
+	if !p.legacy {
+		q.rules.MaxWords = p.spec.MaxWordsFor(campaign.SequenceCallFirst)
+	}
+	q.rules.EmailSteps = nil
+	for _, st := range p.callFirst {
+		if st.Type == campaign.StepEmail {
+			q.rules.EmailSteps = append(q.rules.EmailSteps, st.Step)
+		}
+	}
+	return q, campaign.SequenceCallFirst
+}
+
+// candidateCountries are the countries whose leads the plan's campaign may batch (D3): a
+// campaign spec that lists countries batches only the leads of those with email or calls on
+// (leads.yaml still gives each its footer and opt-out); nil for the legacy plan or a spec
+// listing none, which keeps leads.yaml's channels as the only country rule.
+func (p batchPlan) candidateCountries() []string {
+	if p.legacy || len(p.spec.Countries) == 0 {
+		return nil
+	}
+	out := []string{}
+	for code, c := range p.spec.Countries {
+		if c.Email || c.Call {
+			out = append(out, countryCode(code))
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// phoneOnlyCountries are the countries whose leads with no route but a phone number the
+// plan may batch: those whose email needs consent won on a call (compliance.CallFirst),
+// when the plan moves them onto a call_first sequence; nil when it has none. Narrowed to
+// candidateCountries when the spec lists countries.
+func (p batchPlan) phoneOnlyCountries() []string {
+	if p.callFirst == nil {
+		return nil
+	}
+	t := compliance.Default()
+	codes := p.candidateCountries()
+	if codes == nil {
+		codes = t.Codes()
+	}
+	out := []string{}
+	for _, code := range codes {
+		if t.CallFirst(code) && !slices.Contains(out, countryCode(code)) {
+			out = append(out, countryCode(code))
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // countryCode is country as the specs key it: trimmed, upper case.
@@ -84,6 +152,7 @@ func legacyPlan(cfg leadconfig.Config) batchPlan {
 		sequences: leadstore.BatchSequences{campaign.SequenceDefault: seq},
 		seq:       seq,
 		templates: cfg.Templates,
+		spec:      campaign.Legacy(&cfg),
 	}
 }
 
@@ -105,7 +174,10 @@ func campaignFile(dataDir, slug string) (string, bool, error) {
 
 // campaignTemplates loads spec's templates from its folder in dataDir: for every kind of the
 // spec and every language a country of the spec has email or calls on in, each email step of
-// its sequences and, when one has a call step, call.txt.
+// its default sequence (<kind>/<lang>/<step>.txt), each email step of every named sequence
+// (<kind>/<lang>/<name>/<step>.txt) and, when one has a call step, call.txt. A spec with no
+// call_first of its own whose plan moves leads onto campaign.DefaultCallFirst (callFirstSeq)
+// needs that sequence's email steps too, so a missing one is named, never a silent drop.
 func campaignTemplates(dataDir string, spec campaign.Spec) (leadconfig.Templates, error) {
 	req := leadconfig.CampaignTemplates{Kinds: spec.Kinds}
 	for _, c := range spec.Countries {
@@ -113,25 +185,57 @@ func campaignTemplates(dataDir string, spec campaign.Spec) (leadconfig.Templates
 			req.Langs = append(req.Langs, c.Lang)
 		}
 	}
-	seqs := [][]campaign.Step{spec.Sequence}
-	for _, name := range slices.Sorted(maps.Keys(spec.Sequences)) {
-		seqs = append(seqs, spec.Sequences[name])
+	named := map[string][]campaign.Step{}
+	for name, seq := range spec.Sequences {
+		named[name] = seq
 	}
-	for _, seq := range seqs {
+	if _, ok := named[campaign.SequenceCallFirst]; !ok && specHasCallFirstLeads(spec) {
+		named[campaign.SequenceCallFirst] = campaign.DefaultCallFirst()
+	}
+	steps := func(seq []campaign.Step) []int {
+		var out []int
 		for _, st := range seq {
 			switch st.Type {
 			case campaign.StepEmail:
-				if !slices.Contains(req.EmailSteps, st.Step) {
-					req.EmailSteps = append(req.EmailSteps, st.Step)
+				if !slices.Contains(out, st.Step) {
+					out = append(out, st.Step)
 				}
 			case campaign.StepCall:
 				req.Call = true
 			}
 		}
+		slices.Sort(out)
+		return out
 	}
-	slices.Sort(req.EmailSteps)
+	req.EmailSteps = steps(spec.Sequence)
+	for _, name := range slices.Sorted(maps.Keys(named)) {
+		if s := steps(named[name]); len(s) > 0 {
+			if req.Named == nil {
+				req.Named = map[string][]int{}
+			}
+			req.Named[name] = s
+		}
+	}
 	dir := filepath.Join(dataDir, campaign.Dir, spec.Slug, cmp.Or(spec.TemplatesDir, defaultTemplatesDir))
 	return leadconfig.LoadCampaignTemplates(dir, req)
+}
+
+// specHasCallFirstLeads reports whether spec's plan sends some of its leads down
+// campaign.DefaultCallFirst: its default sequence has a call step, it defines no call_first of
+// its own, and one of its countries with email or calls on needs email consent
+// (compliance.CallFirst). filePlan moves those leads; campaignTemplates loads their emails.
+func specHasCallFirstLeads(spec campaign.Spec) bool {
+	if len(spec.Sequences[campaign.SequenceCallFirst]) > 0 ||
+		!slices.ContainsFunc(spec.Sequence, func(st campaign.Step) bool { return st.Type == campaign.StepCall }) {
+		return false
+	}
+	t := compliance.Default()
+	for code, c := range spec.Countries {
+		if (c.Email || c.Call) && t.CallFirst(code) {
+			return true
+		}
+	}
+	return false
 }
 
 // filePlan is the plan of spec, read from its folder in dataDir.
@@ -144,11 +248,12 @@ func filePlan(dataDir string, spec campaign.Spec) (batchPlan, error) {
 	for name, seq := range spec.Sequences {
 		seqs[name] = seq
 	}
-	p := batchPlan{sequences: seqs, seq: spec.Sequence, templates: t, forbid: map[string][]*regexp.Regexp{}, callsOn: map[string]bool{}}
-	for code, c := range spec.Countries {
-		if c.Call {
-			p.callsOn[strings.ToUpper(code)] = true
-		}
+	p := batchPlan{sequences: seqs, seq: spec.Sequence, templates: t, forbid: map[string][]*regexp.Regexp{},
+		overrides: specOverrides(spec.Countries), spec: spec}
+	if cf := spec.Sequences[campaign.SequenceCallFirst]; len(cf) > 0 {
+		p.callFirst = cf
+	} else if p.hasCall() {
+		p.callFirst = campaign.DefaultCallFirst()
 	}
 	for _, st := range spec.Sequence {
 		if st.Type == campaign.StepEmail {
@@ -197,7 +302,9 @@ func resolveBatchPlan(ctx context.Context, lq leadstore.Queries, bs batchSetup, 
 	if err != nil {
 		return batchPlan{}, refused("Campaign %s: %s", c.Slug, err.Error())
 	}
-	if err := spec.Check(campaign.CheckOptions{KnownKinds: leadconfig.Kinds}); err != nil {
+	// writer: claude passes here: the trust gate is judged per batch (newBatchDrafter), and a
+	// campaign it does not trust drafts from templates rather than being refused.
+	if err := spec.Check(campaign.CheckOptions{KnownKinds: campaign.KnownKinds(), DraftsTrusted: true}); err != nil {
 		return batchPlan{}, refused("Campaign %s does not pass its checks: %s", c.Slug, strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 	_, sha, err := campaign.Canonical(spec)

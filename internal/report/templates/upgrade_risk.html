@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}: {{.Org.Text}}</title>
+<style>
+@page { size: A4; margin: 14mm 16mm; }
+:root { --ink: #1c2126; --muted: #5b6570; --line: #d9dee3; --accent: #0b5cad; --warn: #a3361f; --tint: #f4f6f8; }
+* { box-sizing: border-box; }
+html { background: #ffffff; }
+body { margin: 0 auto; max-width: 178mm; padding: 10mm 0; color: var(--ink); background: #ffffff;
+  font: 10pt/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+@media print { body { padding: 0; max-width: none; } }
+header { border-bottom: 2px solid var(--ink); padding-bottom: 3mm; margin-bottom: 4mm; }
+.kicker { margin: 0; font-size: 8.5pt; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 1mm 0 0; font-size: 19pt; line-height: 1.2; }
+.domain { margin: 0; color: var(--muted); }
+h2 { margin: 5mm 0 1.5mm; font-size: 11.5pt; }
+p { margin: 0 0 1.5mm; }
+ul { margin: 0; padding-left: 5mm; }
+li { margin-bottom: 1mm; }
+.src { display: block; margin-top: .3mm; font-size: 7.5pt; color: var(--muted); }
+.figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; margin: 0; }
+@media screen and (max-width: 560px) { body { padding: 6mm 16px; } .figures { grid-template-columns: 1fr; } }
+.figure { margin: 0; padding: 3mm; background: var(--tint); border: 1px solid var(--line); border-radius: 2mm; break-inside: avoid; }
+.figure dt { font-size: 8pt; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.figure dd { margin: 1mm 0 0; }
+.figure .big { display: block; font-size: 15pt; font-weight: 700; line-height: 1.2; }
+.figure.alert .big { color: var(--warn); }
+.url { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 8.5pt; word-break: break-all; }
+.sender { border-top: 1px solid var(--line); margin-top: 5mm; padding-top: 2mm; }
+a { color: var(--accent); }
+footer { margin-top: 4mm; font-size: 7.5pt; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <p class="kicker">{{.Title}}</p>
+  <h1>{{.Org.Text}}</h1>
+  {{if .Domain}}<p class="domain">{{.Domain}}</p>{{end}}
+  <span class="src">Source: {{.Org.Source}}</span>
+</header>
+
+<dl class="figures">
+  <div class="figure">
+    <dt>Version found</dt>
+    <dd><span class="big">{{.Version.Text}}</span><span class="src">Source: {{.Version.Source}}</span></dd>
+  </div>
+  <div class="figure">
+    <dt>End of life</dt>
+    <dd><span class="big">{{.EOL.Text}}</span><span class="src">Source: {{.EOL.Source}}</span></dd>
+  </div>
+  <div class="figure{{if or .EOLPassed .EOLToday}} alert{{end}}">
+    <dt>{{if .EOLPassed}}Unsupported for{{else}}Time left{{end}}</dt>
+    <dd><span class="big">{{.DaysNum}}</span> {{.DaysCaption}}<span class="src">Source: {{.Days.Source}}</span></dd>
+  </div>
+</dl>
+
+<h2>What we found</h2>
+<p>We read the site on {{.Probe.Text}}{{if .ProbeURL}}, at <span class="url">{{.ProbeURL}}</span>{{end}}.<span class="src">Source: {{.Probe.Source}}</span></p>
+<ul>
+{{range .Signals}}  <li>{{.Text}}.<span class="src">Source: {{.Source}}</span></li>
+{{end}}</ul>
+
+<h2>What end of life means</h2>
+<p>{{if .EOLPassed}}Drupal {{.Major}} reached its end of life on {{.EOLText}}. Since then, security problems found in Drupal {{.Major}} core get no fix from the Drupal Security Team, and contributed modules no longer have to support it.{{else if .EOLToday}}Drupal {{.Major}} reaches its end of life today. From now on, security problems found in Drupal {{.Major}} core get no fix from the Drupal Security Team.{{else}}Drupal {{.Major}} reaches its end of life on {{.EOLText}}. After that date, security problems found in Drupal {{.Major}} core get no fix from the Drupal Security Team, and contributed modules no longer have to support it.{{end}}<span class="src">Source: Drupal's end-of-life policy, with the date above</span></p>
+
+<h2>{{.MajorText.Heading}}</h2>
+{{range .MajorText.Paras}}<p>{{.}}</p>
+{{end}}<span class="src">Source: {{.MajorText.Source}}</span>
+
+<section class="sender">
+  <h2>Who wrote this</h2>
+{{range .Sender}}  <p>{{.}}</p>
+{{end}}{{if .SiteURL}}  <p><a href="{{.SiteURL}}">{{.SiteURL}}</a></p>
+{{end}}{{if .Email}}  <p class="contact">To talk it over, write to {{.Email}}.</p>
+{{else if .ContactURL}}  <p class="contact">To talk it over, get in touch through <a href="{{.ContactURL}}">{{.ContactURL}}</a>.</p>
+{{end}}  <span class="src">Source: {{.SenderSrc}}</span>
+</section>
+
+<footer>Prepared on {{.Prepared.Text}}. Every line names where it comes from; nothing here is an estimate. This report is yours to keep.</footer>
+</body>
+</html>

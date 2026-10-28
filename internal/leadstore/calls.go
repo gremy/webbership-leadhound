@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
+	"github.com/gremy/webbership-leadhound/internal/dial"
 )
 
 // Call steps (channel phone): the operator calls, then records what happened. The outcome
@@ -111,7 +112,11 @@ type beginner interface {
 //     lead_event, moves a live lead from batched to contacted on connected, voicemail or
 //     do_not_call, runs campaign.Next over the lead's rows of the batch with cal and applies
 //     the decision (ApplyDecision), and for do_not_call writes a phone suppression of the
-//     number (also in a shadow batch: a person's wish is real).
+//     number in every form that dials it (the stored value, its E.164 form and every other
+//     stored fact value that dials as it, as RecordScreening does; also in a shadow batch: a
+//     person's wish is real); wrong_number records the
+//     dialled phone fact as bad (phone_status, 00020), so no later batch drafts it, and a
+//     later outcome replacing a wrong_number on the same call records it good again.
 //
 // actor is ActorGremy (stored as operator on the outcome) or ActorSystem.
 func (q Queries) RecordCallOutcome(ctx context.Context, accountID, messageID int64, outcome, note string,
@@ -231,11 +236,23 @@ func (q Queries) recordCallOutcome(ctx context.Context, accountID, messageID int
 		a := strings.ToLower(strings.TrimSpace(consent.Address))
 		consentAddr = &a
 	}
+	prev, err := q.latestOutcome(ctx, messageID)
+	if err != nil {
+		return CallRecorded{}, err
+	}
 	if err := q.db.QueryRow(ctx,
 		`INSERT INTO call_outcome (message_id, outcome, note, email_consent, consent_address, actor, at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		messageID, outcome, note, consent != nil, consentAddr, storedActor, now).Scan(&res.OutcomeID); err != nil {
 		return CallRecorded{}, err
+	}
+	// A wrong number marks the dialled fact bad (also in a shadow batch: the operator really
+	// rang it), so no later batch drafts it again; an outcome replacing a wrong_number on the
+	// same call marks it good again.
+	if r.phoneFactID != nil {
+		if err := q.markWrongNumber(ctx, messageID, *r.phoneFactID, res.OutcomeID, outcome, prev, storedActor); err != nil {
+			return CallRecorded{}, err
+		}
 	}
 	if consent != nil {
 		if err := q.db.QueryRow(ctx,
@@ -286,17 +303,45 @@ func (q Queries) recordCallOutcome(ctx context.Context, accountID, messageID int
 	// After the decision, so the engine's own reasons cancel this lead's later steps; the
 	// suppression then reaches any other lead that dials the same number.
 	if outcome == campaign.OutcomeDoNotCall && r.phoneFactID != nil {
-		var normalized string
-		if err := q.db.QueryRow(ctx, `SELECT normalized FROM org_fact WHERE id = $1`, *r.phoneFactID).Scan(&normalized); err != nil {
+		var normalized, country string
+		if err := q.db.QueryRow(ctx, `SELECT f.normalized, coalesce(o.country, '') FROM org_fact f JOIN org o ON o.id = f.org_id
+			WHERE f.id = $1`, *r.phoneFactID).Scan(&normalized, &country); err != nil {
 			return CallRecorded{}, err
 		}
-		if _, err := q.Suppress(ctx, accountID, SuppressPhone, PhoneSuppressionValue(normalized), ReasonDoNotCall,
-			fmt.Sprintf("call:%d", messageID)); err != nil {
-			return CallRecorded{}, err
+		// Every form that dials this number, as RecordScreening and ForgetOrg write them: the
+		// stored value, its E.164 form, and every other stored fact value that dials as it, so
+		// another org listing the number in another form is not called either.
+		forms := []string{normalized}
+		if e := dial.Number(normalized, country); e164RE.MatchString(e) {
+			more, err := q.numberForms(ctx, e)
+			if err != nil {
+				return CallRecorded{}, err
+			}
+			for _, n := range more {
+				if !slices.Contains(forms, n) {
+					forms = append(forms, n)
+				}
+			}
+		}
+		for _, n := range forms {
+			if _, err := q.Suppress(ctx, accountID, SuppressPhone, PhoneSuppressionValue(n), ReasonDoNotCall,
+				fmt.Sprintf("call:%d", messageID)); err != nil {
+				return CallRecorded{}, err
+			}
 		}
 		res.Suppressed = true
 	}
 	return res, nil
+}
+
+// latestOutcome returns the latest outcome recorded on message id; "" when none.
+func (q Queries) latestOutcome(ctx context.Context, id int64) (string, error) {
+	var o string
+	err := q.db.QueryRow(ctx, `SELECT outcome FROM call_outcome WHERE message_id = $1 ORDER BY id DESC LIMIT 1`, id).Scan(&o)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return o, err
 }
 
 // firstOutcome returns the first outcome recorded on message id; "" when none.
@@ -445,7 +490,8 @@ type CallRow struct {
 	OrgID           int64      `db:"org_id" json:"org_id"`
 	OrgName         string     `db:"org_name" json:"org_name"`
 	OrgDomain       string     `db:"org_domain" json:"org_domain"`
-	Country         string     `db:"country" json:"country"` // ISO 3166-1 alpha-2, "" when unknown
+	Country         string     `db:"country" json:"country"`         // ISO 3166-1 alpha-2, "" when unknown
+	Region          string     `db:"region" json:"region,omitempty"` // ISO 3166-2 ("US-IL"), "" when unknown (00021)
 	Step            int        `db:"step" json:"step"`
 	State           string     `db:"state" json:"state"`
 	CancelReason    string     `db:"cancel_reason" json:"cancel_reason,omitempty"`
@@ -475,7 +521,7 @@ type CallRow struct {
 }
 
 const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign_id, o.id AS org_id, o.name AS org_name,
-	  o.domain AS org_domain, o.country, m.step, m.state, m.cancel_reason, m.due_at, b.shadow, m.subject,
+	  o.domain AS org_domain, o.country, o.region, m.step, m.state, m.cancel_reason, m.due_at, b.shadow, m.subject,
 	  m.body_text AS card, m.phone_fact_id, coalesce(f.value, '') AS phone, coalesce(f.normalized, '') AS phone_normalized,
 	  coalesce(h.url, '') AS source_url, h.fetched_at, coalesce(f.derived_by, '') AS derived_by,
 	  coalesce(co.outcome, '') AS outcome, co.at AS outcome_at, coalesce(co.note, '') AS note,

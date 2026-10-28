@@ -1,0 +1,71 @@
+# Contact research: for each queued attempt (starred leads first, oldest first), Claude
+# searches the organisation's published pages for an impersonal role email (or, in a
+# form-only country, a business phone), and LeadHound fetches each page it cites and keeps
+# only what it finds there itself; the next leads build gives the lead its channel. Inside the
+# research spend cap and the per-lead cap. Started by leadhound-leads-research.path when the
+# console asks; it has no timer. Nothing here sends.
+[Unit]
+Description=leadhound contact research
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=leadhound
+Group=leadhound
+# root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
+EnvironmentFile=/etc/leadhound/env
+# The Anthropic key (root:root 0600, placed by the operator by hand), handed to this job as a
+# systemd credential, as leadhound-leads-batch gets it: it reads
+# $CREDENTIALS_DIRECTORY/anthropic-key. Only the units that call Claude get it, never the
+# console (deploy/README.md, The Anthropic key). A missing file fails the unit at start.
+LoadCredential=anthropic-key:/etc/leadhound/anthropic.key
+# timeout ends a run that hangs: each attempt's Claude call and page fetches have their own
+# shorter limits, so 45 minutes covers 20 attempts.
+ExecStart=/usr/bin/timeout --kill-after=5m 45m /opt/leadhound/bin/leadhound leads research run --max 20
+# Longer than the run's timeout and its kill grace together (50 minutes). No Restart=: an
+# attempt that fails shows on the lead's page, and the operator asks again.
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=idle
+# The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
+# neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit
+# throttled there hangs instead of failing. GOMEMLIMIT makes Go collect garbage harder
+# well before the ceiling.
+MemoryMax=600M
+Environment=GOMEMLIMIT=450MiB
+# Half the default CPU share, so a long run yields to the server's other services.
+CPUWeight=50
+# Hardening. The whole file system is read-only to leadhound except the data directory
+# (LEADHOUND_DATA_DIR), where the console's request file lives. It needs the network (the
+# Anthropic API, the public pages it checks, Postgres) and nothing else.
+WorkingDirectory=/opt/leadhound
+ReadWritePaths=/opt/leadhound/data
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# No InaccessiblePaths=-/run/credentials here: it would hide the unit's own Anthropic key.
+# The mailbox key is never given to this unit, so it still cannot read a mailbox password.
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

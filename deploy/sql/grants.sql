@@ -189,5 +189,39 @@ BEGIN
   IF to_regclass('public.email_consent') IS NOT NULL THEN
     REVOKE UPDATE ON public.email_consent FROM leadhound_app;
   END IF;
+  -- Contact research (00018): UPDATE on the columns a run moves only; the org, lead,
+  -- campaign, trigger, want, request time and actor are fixed at insert.
+  IF to_regclass('public.contact_research') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_research FROM leadhound_app;
+    GRANT UPDATE (status, model, cost_micros, candidates, verified, started_at, finished_at)
+      ON public.contact_research TO leadhound_app;
+  END IF;
+  -- Claude drafts, their reviews and the drafting evals (00019) are append-only.
+  IF to_regclass('public.draft_generation') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_generation FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_review') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_review FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_eval') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_eval FROM leadhound_app;
+  END IF;
+  -- Phone screenings, phone statuses and phone research rows (00020) are append-only.
+  IF to_regclass('public.phone_screening') IS NOT NULL THEN
+    REVOKE UPDATE ON public.phone_screening FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.phone_status') IS NOT NULL THEN
+    REVOKE UPDATE ON public.phone_status FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.phone_research') IS NOT NULL THEN
+    REVOKE UPDATE ON public.phone_research FROM leadhound_app;
+  END IF;
+  -- Places and their imports (00021) are append-only; the org's region is fixed at insert.
+  IF to_regclass('public.place_import') IS NOT NULL THEN
+    REVOKE UPDATE ON public.place_import FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.place') IS NOT NULL THEN
+    REVOKE UPDATE ON public.place FROM leadhound_app;
+  END IF;
 END
 $$;

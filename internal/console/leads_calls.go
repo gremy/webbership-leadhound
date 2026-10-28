@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
@@ -351,4 +352,18 @@ func plainAddress(a string) bool {
 	}
 	p, err := mail.ParseAddress(a)
 	return err == nil && p.Name == "" && p.Address == a && strings.Contains(a, "@")
+}
+
+// AfterColon is a sentence as it reads after a colon ("Not callable: not screened"): its
+// first letter lower-cased, unless the first word is an acronym or a name in capitals
+// ("TPS", "UK") or the text is empty.
+func AfterColon(s string) string {
+	r, n := utf8.DecodeRuneInString(s)
+	if n == 0 || !unicode.IsUpper(r) {
+		return s
+	}
+	if r2, _ := utf8.DecodeRuneInString(s[n:]); unicode.IsUpper(r2) {
+		return s
+	}
+	return string(unicode.ToLower(r)) + s[n:]
 }

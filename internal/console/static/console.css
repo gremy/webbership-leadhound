@@ -1834,3 +1834,178 @@ details.inline summary {
   }
 }
 
+/* Contact research (CP3b): the star control's note, the lead page's research line and
+   "Look again", and a refusal that lists why each starred lead is out. */
+.lead-star .star-note {
+  margin-top: 0.35rem;
+}
+.star-note {
+  display: block;
+}
+.research {
+  margin-top: 1rem;
+}
+.research h3 {
+  margin-top: 0;
+}
+.research-line {
+  margin: 0 0 0.5rem;
+}
+.research-form {
+  margin: 0 0 0.35rem;
+}
+.notice > p {
+  margin: 0;
+}
+.notice-list {
+  margin: 0.4rem 0 0;
+  padding-left: 1.5rem;
+}
+.notice-list > li + li {
+  margin-top: 0.15rem;
+}
+
+/* Claude drafts (CP4): the Drafts tab, the claims of a Claude-written message on the batch
+   page, and the gate line on the Campaigns tab. */
+.drafts-gate {
+  max-width: 44rem;
+  margin: 0 0 1rem;
+}
+.drafts-gate.is-trusted {
+  border-left-color: var(--good);
+}
+.draft h2 {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+.draft-check {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+.draft-check.is-passed {
+  background: var(--good-soft);
+  color: var(--good);
+}
+.draft-check.is-refused {
+  background: var(--bad-soft);
+  border-color: var(--bad);
+}
+.draft-check p {
+  margin: 0;
+}
+.draft-failures {
+  margin: 0.35rem 0 0;
+  padding-left: 1.25rem;
+  overflow-wrap: anywhere;
+}
+.claims {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+}
+.claim {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.9rem;
+  min-width: 0;
+}
+.claim-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.claim-sources summary,
+.draft-facts > summary,
+.claim-check > summary {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+.claim-sources summary:hover,
+.draft-facts > summary:hover,
+.claim-check > summary:hover {
+  text-decoration: underline;
+}
+.claim-cites {
+  margin: 0 0 0.25rem;
+  padding-left: 1.1rem;
+  font-size: 0.9rem;
+}
+.claim-cites li + li {
+  margin-top: 0.25rem;
+}
+.cite-fact {
+  overflow-wrap: anywhere;
+}
+.cite-source {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.claim > .hint {
+  margin-top: 0.25rem;
+}
+.draft-facts {
+  margin-top: 0.75rem;
+}
+.draft-facts .fields {
+  margin-bottom: 0.5rem;
+}
+.claim-check {
+  margin-top: 0.5rem;
+}
+.claim-check > .hint {
+  margin-bottom: 0.5rem;
+}
+.draft-review {
+  margin: 0.75rem 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.draft-review.is-approved {
+  color: var(--good);
+}
+.draft-review.is-rejected {
+  color: var(--bad);
+}
+.review-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 44rem;
+  margin-top: 0.75rem;
+}
+.review-form fieldset {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem 0.75rem;
+  margin: 0;
+  min-width: 0;
+}
+.review-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.review-buttons button {
+  min-width: 8rem;
+}
+@media (max-width: 639px) {
+  .review-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .review-buttons button {
+    min-width: 0;
+  }
+}

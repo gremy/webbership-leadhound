@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/drupal"
@@ -101,6 +102,7 @@ func runBatchNew(ctx context.Context, args []string) error {
 		return err
 	}
 	bs := newBatchSetup(setup, loc)
+	bs.claude = batchClaude(c, s)
 	now := leadsNow()
 	if !bs.shadow {
 		if err := checkMailboxDomains(ctx, leadstore.NewQueries(s.Pool()), loc, now); err != nil {
@@ -121,7 +123,7 @@ func runBatchNew(ctx context.Context, args []string) error {
 			return nil
 		case RefuseNoStarred:
 			// A normal morning when nothing is starred: the batch timer must not fail on it.
-			_, _ = fmt.Fprintln(stdout, noStarredWords)
+			_, _ = fmt.Fprintln(stdout, noStarredText(r))
 			return nil
 		case RefuseSettingsIgnored:
 			// Not a normal morning: the batch timer fails (exit 2), so it shows in systemctl.
@@ -148,6 +150,12 @@ func runBatchNew(ctx context.Context, args []string) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "Batch %d (%s): %s. Read: leadhound leads batch show %d\n",
 		out.BatchID, batchKind(out.Shadow), out.Counts, out.BatchID)
+	if out.ClaudeDrafted > 0 {
+		_, _ = fmt.Fprintf(stdout, "Claude wrote %s.\n", plural(out.ClaudeDrafted, "lead's sequence", "leads' sequences"))
+	}
+	if line := fallbackLine(out.Fallbacks); line != "" {
+		_, _ = fmt.Fprintln(stdout, line+".")
+	}
 	if line := callsLine(out); line != "" {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
@@ -228,6 +236,7 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 		Domain:       outreach.Slot{Value: c.Domain, Source: org},
 		SenderName:   outreach.ConfigSlot(cfg.Sender.Name),
 		IdentityLine: outreach.ConfigSlot(cfg.Sender.IdentityLine),
+		PrivacyLine:  outreach.ConfigSlot(cfg.Sender.PrivacyLine()),
 	}
 	// A language without an opt-out line leaves the slot empty, so Check stops its emails.
 	lang := cfg.Policy(c.Country).Lang
@@ -236,6 +245,13 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 	}
 	s.OrgName = outreach.OrgNameSlot(outreach.Slot{Value: orgNameValue(c.OrgName), Source: org}, s.Domain)
 	switch {
+	case isCafeKind(c.Kind):
+		// A café lead (cafe@1): no Drupal evidence, no finding URL; its templates name the
+		// café and its site only.
+		s.Host = outreach.Slot{Value: c.Domain, Source: org}
+		if ev.ProbeID != nil && ev.FinalHost != "" {
+			s.Host = outreach.Slot{Value: ev.FinalHost, Source: outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}}
+		}
 	case ev.ProbeID != nil:
 		probe := outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}
 		var (
@@ -283,6 +299,11 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 	return s, nil
 }
 
+// isCafeKind reports whether kind is one of the café kinds (cafe@1).
+func isCafeKind(kind string) bool {
+	return slices.ContainsFunc(cafe.Kinds, func(k cafe.KindInfo) bool { return k.Kind == kind })
+}
+
 // maxOrgNameRunes is the longest organisation name a draft uses.
 const maxOrgNameRunes = 80
 
@@ -314,7 +335,9 @@ func cmpOr(a, b string) string {
 // number its call steps dial) a phone row whose subject is "Call <org name>" and whose body
 // is the call card (call.txt rendered, three talking points). Without phone, the call steps
 // and the steps that need a call or a callable number (has_callable_phone,
-// call_not_connected, email_consent) get no row. A form lead gets the contact-form text
+// call_not_connected, email_consent) get no row. An email_consent step's recipient is ""
+// (emailRecipient): the address given on the call. A lead with no route (channel none) is
+// drafted only on a call-first plan with phone, every one of its email steps email_consent. A form lead gets the contact-form text
 // (step 0) and the LinkedIn note (step 1) from leads.yaml's templates, whatever the plan.
 // The footer is leads.yaml's. Any render or Check problem drops the lead.
 func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config,
@@ -332,7 +355,13 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 	}
 	var texts []text
 	switch c.Channel {
-	case leadconfig.ChannelEmail:
+	case leadconfig.ChannelEmail, leadconfig.ChannelNone:
+		// A lead with no route (channel none) comes only on a call-first plan with a number
+		// to call (CandidateOptions.PhoneOnlyCountries): every email it gets waits on their
+		// yes on the call, and goes to the address they give then.
+		if c.Channel == leadconfig.ChannelNone && (plan.seqName != campaign.SequenceCallFirst || phone == nil) {
+			return nil, errors.New("the lead has no route: only a call-first lead with a number to call is drafted without one")
+		}
 		set, ok := plan.templates.Set(c.Kind, policy.Lang)
 		if !ok {
 			return nil, fmt.Errorf("no %s templates in language %q", c.Kind, policy.Lang)
@@ -341,9 +370,7 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		if footer == nil || (plan.legacy && len(set.Steps) != leadconfig.Steps) {
 			return nil, fmt.Errorf("no email templates or footer for country %q", c.Country)
 		}
-		if c.RouteKind != leadstore.RouteEmail || c.Route == "" {
-			return nil, errors.New("the lead has no email route")
-		}
+		hasRoute := c.RouteKind == leadstore.RouteEmail && c.Route != ""
 		for _, st := range plan.seq {
 			when := st.When
 			if when == campaign.WhenAlways {
@@ -354,13 +381,19 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 			if needsPhone && phone == nil {
 				continue
 			}
+			if st.Type == campaign.StepEmail && !hasRoute && st.When != campaign.WhenEmailConsent {
+				return nil, errors.New("the lead has no email route")
+			}
 			switch st.Type {
 			case campaign.StepEmail:
-				e, ok := set.Email[st.Step]
+				e, ok := set.SequenceEmail(plan.seqName, st.Step)
 				if set.Email == nil && st.Step < len(set.Steps) {
 					e, ok = set.Steps[st.Step], true
 				}
 				if !ok {
+					if plan.seqName != "" {
+						return nil, fmt.Errorf("no %s template for %s email step %d in language %q", c.Kind, plan.seqName, st.Step, policy.Lang)
+					}
 					return nil, fmt.Errorf("no %s template for email step %d in language %q", c.Kind, st.Step, policy.Lang)
 				}
 				texts = append(texts, text{outreach.EmailTemplate(e, footer), "email", st.Step, when})
@@ -413,7 +446,7 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		row := leadstore.DraftRow{LeadID: c.LeadID, Step: t.step, Channel: t.channel, Subject: d.Subject, Body: d.Body, Slots: raw, Condition: t.when}
 		switch t.channel {
 		case "email":
-			row.To = c.Route
+			row.To = emailRecipient(t.when, c)
 			if row.MessageID, err = outreach.NewMessageID(idDomain, rnd); err != nil {
 				return nil, err
 			}
@@ -432,6 +465,20 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// emailRecipient is the address an email step drafted with condition when (a
+// campaign.When*, "" for always) is stored with: the lead's email route, or "" for an
+// email_consent step. Such a step goes to the address the person gave when they agreed on the
+// call (email_consent, written with the call's outcome), which is not known at draft time:
+// the batch hash and the approval bind its recipient as "" ("the address they agree to"),
+// and send reads the consent (leadstore.SendRow.ConsentAddress) and refuses the row when
+// there is none or when a stored recipient differs from it.
+func emailRecipient(when string, c leadstore.Candidate) string {
+	if when == campaign.WhenEmailConsent {
+		return ""
+	}
+	return c.Route
 }
 
 // slotJSON is one slot as stored in outreach_message.slots.

@@ -11,33 +11,21 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/enrich"
 
 	"github.com/gremy/webbership-leadhound/internal/console"
-	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
-// TestCallsOffInCP3: until the call rules exist no call is callable anywhere: the card is
-// blocked with the plain words, whatever its state, and the today view carries them over
-// every call it lists.
-func TestCallsOffInCP3(t *testing.T) {
+// TestCallableCardFromVerdict: the card shows the call rule's verdict as it is: callable or
+// blocked with the reason, the screening status and the campaign-rules warning.
+func TestCallableCardFromVerdict(t *testing.T) {
 	due := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
-	for _, c := range []leadstore.CallRow{
-		{MessageID: 1, OrgDomain: "a.example", Phone: "+441632960001", DueAt: &due},
-		{MessageID: 2, OrgDomain: "b.example", Shadow: true, DueAt: &due, Outcome: "no_answer"},
-		{MessageID: 3, OrgDomain: "c.example"},
-	} {
-		card := callCard(c)
-		if card.Callable || card.BlockedReason != callsOffWords || !strings.Contains(card.Screening, "calls are off") {
-			t.Errorf("call %d card = callable %v, blocked %q, screening %q", c.MessageID, card.Callable, card.BlockedReason, card.Screening)
-		}
+	c := leadstore.CallRow{MessageID: 1, OrgDomain: "a.example", Phone: "+441632960001", DueAt: &due}
+	card := callCard(c, callVerdict{Rule: ruleScreening, Reason: "Not screened against TPS", Screening: "TPS: not screened yet"})
+	if card.Callable || card.BlockedReason != "Not screened against TPS" || card.Screening != "TPS: not screened yet" {
+		t.Errorf("blocked card = %+v", card)
 	}
-	if callsOffWords != "Calls are off until the call rules are set up" {
-		t.Errorf("callsOffWords = %q", callsOffWords)
-	}
-	v := todayFromStore(leadstore.Today{CallsDueNow: []leadstore.CallRow{{MessageID: 1, OrgDomain: "a.example", DueAt: &due}}},
-		leadconfig.Config{}, due, time.UTC, console.TodayView{CallsOff: callsOffWords}, nil)
-	// Calls are off, so a call due today is never "to make now": it is listed as due, with why.
-	if v.CallsOff != callsOffWords || len(v.CallsNow) != 0 || len(v.CallsDue) != 1 || !strings.Contains(v.CallsDue[0].Line, "calls are off") {
-		t.Errorf("today = %+v", v)
+	card = callCard(c, callVerdict{Callable: true, Screening: "not required", CampaignOff: callsOffCard("IE")})
+	if !card.Callable || card.BlockedReason != "" || !strings.Contains(card.CallsOff, "Ireland") {
+		t.Errorf("callable card = %+v", card)
 	}
 }
 
@@ -50,7 +38,7 @@ func TestTodayTimeOnce(t *testing.T) {
 		CallsOverdue:   []leadstore.CallRow{{MessageID: 2, OrgDomain: "b.example", Step: 2, DueAt: &due}},
 		EmailsDueCount: 1,
 		EmailsDue:      []leadstore.TodayItem{{MessageID: 3, OrgDomain: "c.example", Channel: "email", Step: 0, DueAt: due, Shadow: true}},
-	}, leadconfig.Config{}, due, time.UTC, console.TodayView{}, nil)
+	}, time.UTC, console.TodayView{}, nil)
 	for _, it := range append(append(append(v.CallsNow, v.CallsDue...), v.CallsOverdue...), v.Emails...) {
 		inLine := strings.Contains(it.Line, "11:30") || strings.Contains(it.Line, "due")
 		if inLine && it.At != nil {
@@ -78,7 +66,7 @@ func TestCallCardDial(t *testing.T) {
 		if !ok {
 			t.Fatalf("%q does not normalise", c.printed)
 		}
-		card := callCard(leadstore.CallRow{MessageID: 1, Phone: value, PhoneNormalized: norm})
+		card := callCard(leadstore.CallRow{MessageID: 1, Phone: value, PhoneNormalized: norm}, callVerdict{})
 		if card.Dial != c.want || card.Number != c.printed {
 			t.Errorf("%q: dial %q, number %q; want dial %q and the printed number", c.printed, card.Dial, card.Number, c.want)
 		}
@@ -89,13 +77,13 @@ func TestCallCardDial(t *testing.T) {
 	if !ok {
 		t.Fatal("01437 720202 does not normalise")
 	}
-	if card := callCard(leadstore.CallRow{MessageID: 3, Phone: value, PhoneNormalized: norm, Country: "GB"}); card.Dial != "+441437720202" {
+	if card := callCard(leadstore.CallRow{MessageID: 3, Phone: value, PhoneNormalized: norm, Country: "GB"}, callVerdict{}); card.Dial != "+441437720202" {
 		t.Errorf("GB national: dial %q, want +441437720202", card.Dial)
 	}
-	if card := callCard(leadstore.CallRow{MessageID: 4, Phone: value, PhoneNormalized: norm}); card.Dial != "" || card.Number != "01437 720202" {
+	if card := callCard(leadstore.CallRow{MessageID: 4, Phone: value, PhoneNormalized: norm}, callVerdict{}); card.Dial != "" || card.Number != "01437 720202" {
 		t.Errorf("no country: dial %q number %q, want no dial and the printed number", card.Dial, card.Number)
 	}
-	if card := callCard(leadstore.CallRow{MessageID: 2}); card.Dial != "" || card.Number != "" {
+	if card := callCard(leadstore.CallRow{MessageID: 2}, callVerdict{}); card.Dial != "" || card.Number != "" {
 		t.Errorf("erased fact: dial %q number %q, want none", card.Dial, card.Number)
 	}
 }
@@ -168,33 +156,51 @@ func TestOutcomeLine(t *testing.T) {
 	}
 }
 
-// TestTodayCallableSplit: "Calls to make now" holds only calls that can be made now; a call
-// due but outside its calling hours, or with calls off, is under Calls due with its reason,
-// in the store's order; a call whose earlier step is unsent goes with the waiting calls.
+// TestTodayCallableSplit: "Calls to make now" holds only the calls the call rule says are
+// callable; a call it refuses is under Calls due with its reason, in the store's order; a
+// call whose earlier step is unsent goes with the waiting calls whatever its verdict; a
+// campaign-rules warning keeps the call callable and says so.
 func TestTodayCallableSplit(t *testing.T) {
-	inHours := time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC) // a Wednesday
-	night := time.Date(2026, 10, 28, 22, 0, 0, 0, time.UTC)
+	inHours := time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)
 	rows := []leadstore.CallRow{
-		{MessageID: 1, OrgDomain: "a.example", Step: 2, DueAt: &inHours},
+		{MessageID: 1, OrgDomain: "a.example", Step: 2, DueAt: &inHours, Country: "IE"},
 		{MessageID: 2, OrgDomain: "b.example", Step: 2, DueAt: &inHours, WaitsOnStep: intp(1), WaitsOnChannel: "email"},
 		{MessageID: 3, OrgDomain: "c.example", Step: 2, DueAt: &inHours},
 	}
-	allowed := todayFromStore(leadstore.Today{CallsDueNow: rows}, leadconfig.Config{}, inHours, time.UTC, console.TodayView{}, nil)
+	ok := map[int64]callVerdict{1: {Callable: true}, 2: {Callable: true}, 3: {Callable: true}}
+	allowed := todayFromStore(leadstore.Today{CallsDueNow: rows}, time.UTC, console.TodayView{}, ok)
 	if len(allowed.CallsNow) != 2 || allowed.CallsNow[0].MessageID != 1 || allowed.CallsNow[1].MessageID != 3 || len(allowed.CallsDue) != 0 {
-		t.Errorf("in hours, calls on: now %+v due %+v", allowed.CallsNow, allowed.CallsDue)
+		t.Errorf("all callable: now %+v due %+v", allowed.CallsNow, allowed.CallsDue)
 	}
 	if len(allowed.CallsWaiting) != 1 || allowed.CallsWaiting[0].MessageID != 2 || allowed.CallsWaitingTotal != 1 ||
 		!strings.Contains(allowed.CallsWaiting[0].Line, "waits on step 2 (email)") {
 		t.Errorf("waiting = %+v (total %d)", allowed.CallsWaiting, allowed.CallsWaitingTotal)
 	}
-	late := todayFromStore(leadstore.Today{CallsDueNow: rows}, leadconfig.Config{}, night, time.UTC, console.TodayView{}, nil)
-	if len(late.CallsNow) != 0 || len(late.CallsDue) != 2 || late.CallsDue[0].MessageID != 1 ||
-		!strings.Contains(late.CallsDue[0].Line, "outside calling hours now") {
-		t.Errorf("outside hours: now %+v due %+v", late.CallsNow, late.CallsDue)
+	mixed := map[int64]callVerdict{
+		1: {Callable: true, CampaignOff: callsOffCard("IE")},
+		3: {Rule: "window", Reason: "Outside the calling hours for Ireland now"},
 	}
-	off := todayFromStore(leadstore.Today{CallsDueNow: rows}, leadconfig.Config{}, inHours, time.UTC, console.TodayView{CallsOff: callsOffWords}, nil)
-	if len(off.CallsNow) != 0 || len(off.CallsDue) != 2 || !strings.Contains(off.CallsDue[1].Line, "calls are off") {
-		t.Errorf("calls off: now %+v due %+v", off.CallsNow, off.CallsDue)
+	v := todayFromStore(leadstore.Today{CallsDueNow: rows}, time.UTC, console.TodayView{}, mixed)
+	if len(v.CallsNow) != 1 || v.CallsNow[0].MessageID != 1 || !strings.Contains(v.CallsNow[0].Line, "calls off for IE in the campaign rules: your call") {
+		t.Errorf("warned call: now %+v", v.CallsNow)
+	}
+	if len(v.CallsDue) != 1 || v.CallsDue[0].MessageID != 3 || !strings.Contains(v.CallsDue[0].Line, "not callable: outside the calling hours") {
+		t.Errorf("refused call: due %+v", v.CallsDue)
+	}
+	// a waiting call the rules already refuse says why, as its card does (not the hours)
+	waitRows := []leadstore.CallRow{{MessageID: 4, Step: 2, PrevStep: 1, PrevChannel: leadstore.ChannelEmail, WaitsOnStep: new(1)},
+		{MessageID: 5, Step: 2, PrevStep: 1, PrevChannel: leadstore.ChannelEmail, WaitsOnStep: new(1)}}
+	wv := todayFromStore(leadstore.Today{CallsWaiting: waitRows}, time.UTC, console.TodayView{}, map[int64]callVerdict{
+		4: {Rule: ruleScreening, Reason: "Not screened against the TPS yet"},
+		5: {Rule: "window", Reason: "Outside the calling hours for Ireland now"},
+	})
+	if len(wv.CallsWaiting) != 2 || !strings.Contains(wv.CallsWaiting[0].Line, " · not callable: not screened against the TPS yet") ||
+		strings.Contains(wv.CallsWaiting[1].Line, "not callable") {
+		t.Errorf("waiting calls: %+v", wv.CallsWaiting)
+	}
+	none := todayFromStore(leadstore.Today{CallsDueNow: rows[:1]}, time.UTC, console.TodayView{}, nil)
+	if len(none.CallsNow) != 0 || len(none.CallsDue) != 1 {
+		t.Errorf("a call with no verdict is not callable: %+v", none)
 	}
 }
 
@@ -230,7 +236,7 @@ func TestOutcomeLineButtonWordsAndOperatorZone(t *testing.T) {
 func TestTodayLastOutcomeWords(t *testing.T) {
 	due := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
 	v := todayFromStore(leadstore.Today{CallsOverdue: []leadstore.CallRow{{MessageID: 1, OrgDomain: "a.example", DueAt: &due, Outcome: campaign.OutcomeWrongNumber}}},
-		leadconfig.Config{}, due, time.UTC, console.TodayView{}, nil)
+		time.UTC, console.TodayView{}, nil)
 	if len(v.CallsOverdue) != 1 || !strings.Contains(v.CallsOverdue[0].Line, "last time: Wrong number") {
 		t.Errorf("line: %+v", v.CallsOverdue)
 	}

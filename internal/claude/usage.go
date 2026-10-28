@@ -16,7 +16,9 @@ const (
 	Provider          = "anthropic"
 )
 
-// UsageRow is one billed Claude call as the store records it.
+// UsageRow is one billed Claude call as the store records it. A provisional row (see
+// Provisional) is a request sent with no answer back, counted at its worst case because it
+// may have been billed.
 type UsageRow struct {
 	AccountID int64
 	LeadID    int64 // 0 = no lead
@@ -48,4 +50,12 @@ type UsageStore interface {
 // cap edge cannot both pass.
 type UsageLocker interface {
 	WithClaudeUsageLock(ctx context.Context, fn func(UsageStore) error) error
+}
+
+// Provisional reports a row recorded for a request that got no answer: no tokens or web
+// searches, only a worst-case cost. A billed answer always reports tokens, so the two never
+// mix up, and ai_usage needs no marker column.
+func (r UsageRow) Provisional() bool {
+	return r.CostMicros > 0 &&
+		r.InputTokens+r.OutputTokens+r.CacheReadTokens+r.CacheWriteTokens+r.WebSearches == 0
 }

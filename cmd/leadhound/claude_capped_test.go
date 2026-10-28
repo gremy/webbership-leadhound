@@ -16,7 +16,7 @@ func TestClaudeCappedLiveOff(t *testing.T) {
 		t.Setenv("LEADHOUND_LIVE", v)
 		t.Setenv(claude.KeyFileEnv, filepath.Join(t.TempDir(), "missing.key"))
 		out := captureStdout(t)
-		c, err := claudeCapped("leads drafts", store.Queries{}, claude.PurposeDrafting, 1, claudeCampaignCaps{})
+		c, err := claudeCapped("leads drafts", store.Queries{}, claude.PurposeDrafting, claudeCampaignCaps{})
 		if c != nil || err != nil || !strings.Contains(out.String(), "leads drafts: live fetching is off here") {
 			t.Errorf("LEADHOUND_LIVE=%q: %v, %v, stdout %q", v, c, err, out.String())
 		}

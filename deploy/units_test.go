@@ -173,6 +173,9 @@ var schedule = map[string]struct {
 var (
 	leadsFinding = []string{"leadhound-leads-contacts.timer", "leadhound-leads-probe.timer"}
 	leadsSending = []string{"leadhound-leads-batch.timer", "leadhound-leads-send.timer", "leadhound-leads-sync.timer"}
+	// leadsTriggered are the leads services the console starts through a watcher, with no
+	// timer: install.sh arms their watchers on every deploy, whatever the env switches say.
+	leadsTriggered = []string{"leadhound-leads-research.service"}
 )
 
 // daemons are the services that run all the time rather than from a timer, with their
@@ -203,12 +206,20 @@ var triggered = map[string]struct {
 		exec:  "/usr/bin/timeout --kill-after=1m 5m /opt/leadhound/bin/leadhound leads mailboxes check --requested",
 		after: []string{"network-online.target", "postgresql.service"},
 	},
+	// Starring a lead with no usable route, or "Look again", asks for contact research here:
+	// the console never holds the Anthropic key, so the Claude call runs in this job, which
+	// gets it.
+	"leadhound-leads-research": {
+		exec:  "/usr/bin/timeout --kill-after=5m 45m /opt/leadhound/bin/leadhound leads research run --max 20",
+		after: []string{"network-online.target", "postgresql.service"},
+	},
 }
 
-// runActions are the console's requests (the Run now actions and the mailbox check): each has
+// runActions are the console's requests (the Run now actions, the mailbox check and contact
+// research): each has
 // a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
 // starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check"}
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -955,6 +966,7 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-leads-send":     {"600M", "450MiB"},
 	"leadhound-leads-sync":     {"600M", "450MiB"},
 	"leadhound-mailbox-check":  {"600M", "450MiB"},
+	"leadhound-leads-research": {"600M", "450MiB"},
 }
 
 // TestMemoryCeiling: the server is shared, so every leadhound unit but the backup has a
@@ -1137,8 +1149,8 @@ func TestTrimUnit(t *testing.T) {
 // done; the probe waits for the lock, so a wait that runs out fails its unit visibly.
 func TestLeadsUnits(t *testing.T) {
 	leads := units(t, "leadhound-leads-*.service")
-	if len(leads) != len(leadsFinding)+len(leadsSending) {
-		t.Errorf("%d leads services, want %d", len(leads), len(leadsFinding)+len(leadsSending))
+	if want := len(leadsFinding) + len(leadsSending) + len(leadsTriggered); len(leads) != want {
+		t.Errorf("%d leads services, want %d", len(leads), want)
 	}
 	leads["leadhound-mailbox-check.service"] = readUnit(t, "leadhound-mailbox-check.service")
 	fetches := 0
@@ -1624,8 +1636,8 @@ func TestInstallArmsEveryPath(t *testing.T) {
 var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-sync", "leadhound-mailbox-check"}
 
 // claudeWorkers are the only services that call Claude, so the only ones handed the Anthropic
-// key, as a systemd credential. The research and drafts units join them when they are added.
-var claudeWorkers = []string{"leadhound-leads-batch"}
+// key, as a systemd credential. The drafts unit joins them when it is added.
+var claudeWorkers = []string{"leadhound-leads-batch", "leadhound-leads-research"}
 
 const (
 	mailboxCredential   = "mailbox-key:/etc/leadhound/mailbox.key"     //nolint:gosec // G101: a systemd credential name and path, not a credential
@@ -1777,6 +1789,125 @@ func TestRemoteKeyOnlyForWorkers(t *testing.T) {
 				t.Errorf("make remote ARGS=%q hands the key = %t, want %t:\n%s", tc.args, got, tc.key, out)
 			}
 		})
+	}
+}
+
+// makeDry runs make -n in the repository root with args and returns its output and error;
+// MAKEFLAGS and CONFIRM from the caller's environment never leak in.
+func makeDry(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	mk, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("no make")
+	}
+	cmd := exec.Command(mk, append([]string{"-n", "-C", ".."}, args...)...) // #nosec G204 -- the test's own Makefile
+	cmd.Env = append(os.Environ(), "MAKEFLAGS=", "CONFIRM=", "REMOTE_CLAUDE=", "ORG=", "REASON=")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// TestRemoteClaudeKey: make remote hands the Anthropic key only with REMOTE_CLAUDE=1, as the
+// same credential the Claude units get; it refuses the console, a verb that gets the mailbox
+// key, a run without CONFIRM=1 and any value but 1, before anything runs.
+func TestRemoteClaudeKey(t *testing.T) {
+	const flag = "-p LoadCredential=" + anthropicCredential
+	for _, tc := range []struct {
+		args   []string
+		key    bool
+		refuse string
+	}{
+		{[]string{"ARGS=leads phones research --campaign drupal-eol --max 3", "CONFIRM=1"}, false, ""},
+		{[]string{"ARGS=leads research run --max 3", "CONFIRM=1", "REMOTE_CLAUDE=1"}, true, ""},
+		{[]string{"ARGS=leads drafts sample", "CONFIRM=1", "REMOTE_CLAUDE=1"}, true, ""},
+		{[]string{"ARGS=serve", "CONFIRM=1", "REMOTE_CLAUDE=1"}, false, "console never holds"},
+		{[]string{"ARGS=console hash-password", "CONFIRM=1", "REMOTE_CLAUDE=1"}, false, "console never holds"},
+		{[]string{"ARGS=leads send --max 1", "CONFIRM=1", "REMOTE_CLAUDE=1"}, false, "no command holds both keys"},
+		{[]string{"ARGS=leads batch show", "REMOTE_CLAUDE=1"}, false, "add CONFIRM=1"},
+		{[]string{"ARGS=leads research run", "CONFIRM=1", "REMOTE_CLAUDE=yes"}, false, "must be 1 or unset"},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			out, err := makeDry(t, append([]string{"remote", "HOST=h.invalid"}, tc.args...)...)
+			if tc.refuse != "" {
+				if err == nil || !strings.Contains(out, tc.refuse) || strings.Contains(out, "systemd-run") {
+					t.Fatalf("make remote %q = %v, want a refusal naming %q before anything runs:\n%s", tc.args, err, tc.refuse, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("make remote %q: %v\n%s", tc.args, err, out)
+			}
+			if got := strings.Contains(out, flag); got != tc.key {
+				t.Errorf("make remote %q hands the Anthropic key = %t, want %t:\n%s", tc.args, got, tc.key, out)
+			}
+			if strings.Contains(out, "-p LoadCredential="+mailboxCredential) && strings.Contains(out, flag) {
+				t.Errorf("make remote %q hands both keys:\n%s", tc.args, out)
+			}
+		})
+	}
+}
+
+// TestForgetTarget: make forget runs leads forget org as the owner role (migrate.env) on the
+// server, the reason taken from the environment rather than spliced into the recipe; it
+// refuses without HOST, ORG, REASON or CONFIRM=1, and an ORG that is not digits.
+func TestForgetTarget(t *testing.T) {
+	ok := []string{"forget", "HOST=h.invalid", "ORG=42", "REASON=asked to be removed", "CONFIRM=1"}
+	out, err := makeDry(t, ok...)
+	if err != nil {
+		t.Fatalf("make %q: %v\n%s", ok, err, out)
+	}
+	for _, want := range []string{"-p EnvironmentFile=/etc/leadhound/migrate.env", "--uid=leadhound", "leads forget org 42 --reason '$r'", `"$FORGET_REASON"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("make forget does not contain %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "asked to be removed") {
+		t.Errorf("make forget splices REASON into the recipe; it must reach the shell through the environment:\n%s", out)
+	}
+	for _, tc := range []struct {
+		drop, add, refuse string
+	}{
+		{"HOST=h.invalid", "", "HOST is required"},
+		{"ORG=42", "", "ORG is required"},
+		{"ORG=42", "ORG=4a2", "digits only"},
+		{"ORG=42", "ORG=1 2", "ORG is required"},
+		{"REASON=asked to be removed", "", "REASON is required"},
+		{"REASON=asked to be removed", "REASON= ", "REASON is required"},
+		{"CONFIRM=1", "", "add CONFIRM=1"},
+	} {
+		t.Run(tc.refuse+" "+tc.add, func(t *testing.T) {
+			args := slices.DeleteFunc(slices.Clone(ok), func(a string) bool { return a == tc.drop })
+			if tc.add != "" {
+				args = append(args, tc.add)
+			}
+			out, err := makeDry(t, args...)
+			if err == nil || !strings.Contains(out, tc.refuse) || strings.Contains(out, "systemd-run") {
+				t.Fatalf("make %q = %v, want a refusal naming %q before anything runs:\n%s", args, err, tc.refuse, out)
+			}
+		})
+	}
+}
+
+// TestDeployDataCopiesCampaigns: make deploy-data checks the private campaigns/ with leads
+// campaigns check, copies it with the same owner and modes as leads-templates/ (pruning a file
+// no longer in the private tree), and reminds you to register; the folder is optional.
+func TestDeployDataCopiesCampaigns(t *testing.T) {
+	out, err := makeDry(t, "deploy-data", "HOST=h.invalid", "CONFIRM=1")
+	if err != nil {
+		t.Fatalf("make deploy-data: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"LEADHOUND_DATABASE_URL= go run ./cmd/leadhound leads campaigns check",
+		"if test -d '../job-hunt/leadhound/campaigns'; then scp -r '../job-hunt/leadhound/campaigns'",
+		"for t in leads-templates campaigns; do",
+		`test -d \$t || continue;`,
+		`find \$t -type d -exec install -d -o root -g leadhound -m 0750 /opt/leadhound/data/{}`,
+		`find \$t -type f -exec install -o root -g leadhound -m 0640 {} /opt/leadhound/data/{}`,
+		`find \$t -type f | while read -r f; do test -e $stage/\$f || rm -f \$f; done`,
+		"ARGS='leads campaigns register'",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("make deploy-data does not contain %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -2022,5 +2153,31 @@ func TestInstallAnthropicKey(t *testing.T) {
 				t.Errorf("the key was not made root:root; calls:\n%s", calls)
 			}
 		})
+	}
+}
+
+// TestResearchUnit: contact research runs only when the console asks (its watcher, never a
+// timer), holds the Anthropic key alone among the console-triggered units, and never the
+// mailbox key; the console, which writes the request, holds no key at all.
+func TestResearchUnit(t *testing.T) {
+	const name = "leadhound-leads-research"
+	u := readUnit(t, name+".service")
+	if got := u["Service"]["LoadCredential"]; !slices.Equal(got, []string{anthropicCredential}) {
+		t.Errorf("%s: LoadCredential = %q, want only %s", name, got, anthropicCredential)
+	}
+	if _, err := os.Stat(name + ".timer"); err == nil {
+		t.Errorf("%s has a timer; it runs only when the console asks", name)
+	}
+	if got := readUnit(t, name+".path").one(t, name+".path", "Path", "PathChanged"); got != runDir+"/leads-research" {
+		t.Errorf("%s.path watches %s", name, got)
+	}
+	console := readUnit(t, "leadhound-console.service")
+	if got := console["Service"]["LoadCredential"]; len(got) != 0 {
+		t.Errorf("the console gets %q; it must hold no key", got)
+	}
+	for _, other := range []string{"leadhound-mailbox-check", "leadhound-preview", "leadhound-fetch"} {
+		if got := readUnit(t, other+".service")["Service"]["LoadCredential"]; slices.Contains(got, anthropicCredential) {
+			t.Errorf("%s gets the Anthropic key", other)
+		}
 	}
 }

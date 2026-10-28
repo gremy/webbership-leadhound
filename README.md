@@ -32,7 +32,7 @@
   - The dashboard: the day's health, funnel, cost, boards and runs, built in the background and served from the last snapshot, so a page never waits for the ranking.
   - Jobs: the latest brief's jobs to mark applied, skip or maybe (the same writes as `track`), and a page per job (`/jobs/{id}`) with everything needed to apply and its own mark form; the tracked jobs, capped at 500 rows with the total shown; the runs.
   - Rules: the list, with forms to add a rule and to disable one.
-  - Leads, in three tabs: the List (`/leads`) with a page per lead, Outreach (`/leads/outreach`) and Settings (`/leads/settings`); see "The Leads console" under Drupal leads.
+  - Leads, in six tabs: Today (`/leads/today`), the List (`/leads`) with a page per lead, Outreach (`/leads/outreach`), Drafts (`/leads/drafts`), Campaigns (`/leads/campaigns`) and Settings (`/leads/settings`); see "The Leads console" and "Calls" under Campaigns and leads.
     Outreach is the summary and the sending state with the pause switch; each batch waiting for approval read in full, with its approve form shown only while the messages still match their hash, and discard; replies with suppress, suppressions, manual items to mark done, mark contacted, and a message to check by hand as sent or not sent.
     The old queue and priorities pages are retired: `/leads/next` goes to the list in your order (`/leads?sort=order`), and `/leads/priorities` goes to the fallback order in Settings.
     The console never approves a batch on its own and never drafts a shadow batch.
@@ -42,13 +42,24 @@
 - **Contributing**: see `CONTRIBUTING.md`; ported work is credited in `NOTICE`.
 - **State**: see `STATE.md` (the head-pointer for where this left off).
 
-## Drupal leads
+## Campaigns and leads
 
-`leadhound leads` finds websites still running an old Drupal major version, finds a public role address or contact form for each organisation, and drafts a short message per lead from fixed templates for the operator to read and approve.
-Nothing is written by a model: every draft is a template filled with facts the probe recorded.
+`leadhound leads` finds organisations worth contacting, finds a way to reach each one, and drafts a short sequence of emails and calls per lead for the operator to read and approve.
+Each kind of outreach is a campaign: websites still running an old or ending Drupal major version (`drupal-eol`) is the first, independent cafés (`cafes-loyalty`, see "Café places" below) the second.
+Nothing leaves the machine that the operator did not approve.
+A draft is either a template filled with stored facts or, once a campaign has earned it, written by Claude; Claude never decides a fact, and a deterministic check refuses any claim that is not a stored row.
 
-- **Data directory**: the leads commands read `leads.yaml` from `LEADHOUND_DATA_DIR`, with the templates under `leads-templates/` (the `templates_dir` key) and the agency list in `agencies.yaml`.
-  `examples/leads.yaml`, `examples/leads-templates/` and `examples/agencies.demo.yaml` are a fictional demo with reserved names only.
+- **Data directory**: the leads commands read `leads.yaml` from `LEADHOUND_DATA_DIR`, with the templates under `leads-templates/` (the `templates_dir` key), the agency list in `agencies.yaml` and the campaigns under `campaigns/`.
+  `examples/leads.yaml`, `examples/leads-templates/`, `examples/agencies.demo.yaml` and `examples/campaigns/` are a fictional demo with reserved names only.
+- **Campaigns**: a campaign is a spec file, `<data dir>/campaigns/<slug>/campaign.yaml`, beside its templates: its source, detectors, lead kinds, countries (email and call on or off, and the language), the offer, the copy rules, the writer (`template` or `claude`) and its sequence, with an optional `call_first` sequence.
+  Without a `campaigns/` folder, `drupal-eol` is read from `leads.yaml` as before: three emails from the templates, no calls.
+  `leads campaigns check` reads every spec and its templates without the database and names every problem; `leads campaigns register` records each spec as a new version only when it changed; `leads campaigns list` and `leads campaigns show SLUG` read what is registered.
+  `leads batch new` refuses a campaign whose file has no registered version or changed since it was registered, so run `register` after every change to a spec.
+  A batch stores the sequence it was drafted with, so a later change to the spec never changes a batch already approved.
+  The campaign's own country list decides which leads it drafts for; a country it does not list gets no email and no call.
+  Suppressions, mailboxes and Claude spend belong to the account, not the campaign, so an opt-out or a do-not-call in one campaign blocks every campaign.
+  `leads build`, `leads rate` and `leads batch new` take `--campaign SLUG` (default `drupal-eol`, which the timers use).
+  The Campaigns tab shows each campaign with its countries and steps, whether its Claude drafts are trusted yet, and the account's Claude spend today.
 - **Finding sites**: `leads sites import majestic|tranco|httparchive FILE` or `leads sites import manual DOMAIN...` adds domains, keeping only the suffixes in `site_lists.tlds`.
   `leads sites probe [--max N] [--domain D]...` reads each due site's homepage and records its Drupal major and, when shown, its exact version; `leads sites eval --labels FILE` compares a run with a hand-checked CSV.
   `leads agencies import [FILE]` reads the agency list, and `leads contacts [--max N] [--org ID]...` looks for contact routes on each organisation's own site; `leads export routes [--limit N]` writes them to a file.
@@ -63,6 +74,64 @@ Nothing is written by a model: every draft is a template filled with facts the p
   A new batch is refused while one of its kind waits, and a live batch is sized to what the warm-up ramp can send over the next three business days; `leads batch discard N` returns its leads to new.
   The ramp starts on a fixed date or, with `caps.start_date: first-send`, on the first real send.
   Contact-form and LinkedIn items are done by hand and closed with `leads done MESSAGE`; `leads mark-contacted DOMAIN [--note TEXT]` records a lead reached some other way, and `leads resolve MESSAGE sent|not-sent` settles a message whose send is uncertain, after checking the mailbox's Sent folder.
+  Calls are made by hand from the console's Today tab and recorded there or with `leads calls outcome`; `leads send` never touches a call.
+- **The sequence**: every step of a lead's sequence is drafted when the batch is made and approved with it, calls included.
+  The example `drupal-eol` sequence has five steps: an email, a follow-up email 3 business days later, a call 2 business days after that when the lead has a callable phone, an email saying you tried to call 1 business day later when the call did not connect, and a last email 5 business days later.
+  A lead with no callable phone at batch time gets no call and no "tried to call" email.
+  Each step falls due a number of business days after the last step sent or completed, and the call's outcome decides what follows:
+
+  | Outcome | "Tried to call" email | Last email | Also |
+  | --- | --- | --- | --- |
+  | Got through (`connected`) | cancelled | cancelled | the sequence ends |
+  | No answer (`no_answer`), voicemail (`voicemail`) | due 1 business day later | after it | |
+  | Wrong number (`wrong_number`) | cancelled | due after its days | the number is marked wrong and never drafted or called again |
+  | Do not call (`do_not_call`) | cancelled | cancelled | the number is suppressed for every campaign; the sequence ends |
+  | Skipped (`skipped`) | cancelled | due after its days | |
+
+  A reply, opt-out, bounce or suppression at any step cancels every pending step of that lead, calls included.
+  Batches made before the sequences existed finish on the old three-email rule.
+- **Call first**: in a country whose law needs consent before a business email (Romania, Italy, Spain, Germany, Denmark, the Netherlands and Latvia in the country table), a lead of a campaign with a call step follows the `call_first` sequence instead: a call, a second call 2 business days later if the first did not connect, then two emails only after they said yes on the call.
+  A campaign that defines no `call_first` sequence gets that one, and its templates are read from `<kind>/<lang>/call_first/`; a lead with no number in such a country is dropped from the batch with the reason, never sent a cold email.
+  "Got through" on the call card has a tick box for "They agreed to get an email" and the address they gave; ticked, the emails fall due, and unticked they are cancelled.
+- **Calls**: the Today tab (`/leads/today`) lists calls to make now, overdue calls, replies waiting, emails due today and manual items, per campaign.
+  A call card (`/leads/calls/{message}`) shows the organisation, the number as a link that dials it with the country code, where the number came from, its line kind when known, three talking points, the screening status and the six outcome buttons.
+  `leads calls list [--campaign SLUG] [--due]` lists the call steps, and `leads calls outcome MESSAGE connected|no_answer|voicemail|wrong_number|do_not_call|skipped [--note TEXT] [--consent] [--consent-address A]` records one.
+  An outcome is refused on a call that is not due yet, on one whose lead has replied, and a second time once the sequence has moved on.
+- **When a call is callable**: one rule decides it everywhere (Today, the card, `calls list`, the lead page and the batch), in this order: there is a number to dial, it is not suppressed, it was not marked wrong, the country table allows the call for this organisation, the number's screening is clean and recent enough, and it is inside the calling hours in the callee's time.
+  The country table (`internal/compliance/countries.yaml`, researched on 27 Oct 2026, not legal advice) gives each country's email and call rules, its calling hours (09:30 to 17:00 on weekdays where the law names none), its registers and its confidence; a country it marks off (Austria, Poland, the Czech Republic, Bulgaria) or does not list is never callable, and no campaign can open it.
+  A campaign whose own countries have `call: off` still gets the call drafted, with a warning on the card, Today, the lead page, `batch show` and `calls list` that it is your call whether to ring.
+  A US, Canadian or Australian lead is callable only when its state or region is known, which today only a café place gives.
+  Once any campaign has a call step, set `sender.privacy_url` in `leads.yaml` to your privacy notice: every email's footer then ends "How I handle your details: <url>", and `leads campaigns check` warns while it is missing.
+- **Screening**: a number in a country with a do-not-call register is callable only with a clean result from that register within the register's age (TPS and CTPS for Great Britain: 28 days; a register with no age, such as Italy's or Spain's, after the latest batch approval).
+  `leads phones screen export --register R --out FILE` writes the numbers that need screening, a header line and then one E.164 number per line (mode 0600, outside the repository, never over an existing file); you screen the file with the register's own service, and `leads phones screen import --register R FILE` records the results.
+  The registers are `tps`, `ctps`, `dncm`, `ndd`, `dncr`, `rpo`, `robinson` and `gr_art11`; a listed number is suppressed, and only the operator lifts a suppression.
+  `leads suppress add phone +NUMBER --reason do_not_call|tps|ctps` suppresses one by hand; a phone suppression stores a hash of the number, never the number.
+- **Contact research**: starring a new lead that has no usable way to reach it queues a search for one, and the star control says so first ("No email yet: starring it looks for one", or "Calls-first country: starring it looks for a business phone").
+  `leads research run [--max N]` asks Claude (Haiku) to find a published, impersonal role address, or a business phone where the country is written to by form only, then fetches each page Claude cites itself and keeps only what it finds printed there on the organisation's own domain; the next `leads build` gives the lead its channel.
+  Nothing is looked for where the campaign does not list the country, the country is off in `leads.yaml`, or, for a phone, the country table does not let the campaign call.
+  One attempt per organisation every 90 days; "Look again" on the lead page and `leads research request LEAD` ask for another, and `leads research list [--status S] [--limit N]` lists them.
+  Batch refusals list each starred lead and why it is out (no email yet, looking for a contact, found nothing, country rule, suppressed, deferred, ranked out).
+- **Phone research**: `leads phones research --campaign SLUG [--max N]` (10 by default) looks for a business phone for the campaign's leads with a call step ahead and no phone, or only a switchboard, starred first, under the same verification: a number counts only when it is printed on the cited page.
+  It keeps the line kind and a job title, never a person's name, and never stores Claude's quote of the page.
+- **Claude drafts**: a campaign with `writer: claude` has Claude (Sonnet) write each lead's emails and the call card's talking points from a fact sheet of stored rows: the organisation, its finding and evidence, the end-of-life dates, the sender's own facts and the offer.
+  Every paragraph cites the facts it rests on, and the grounding check refuses a draft with any number, date, version, name or link that is not in a cited fact, an opener that starts with research about them, a pain the lead's signals do not allow, a boast, an echo of their own site's text, or "migration" on a Drupal 10 lead.
+  A refused draft is retried once with the failures; a lead refused again, or reached after a Claude cap or while Claude is unavailable, is drafted from the campaign's templates, and the batch says how many and why.
+  The identity line, the opt-out line and the footer always come from code, as for templates, and every attempt is stored with its cost.
+- **The trust gate for drafts**: `writer: claude` is refused by `campaigns check` and batches draft from templates until the campaign has earned it.
+  `leads drafts sample --campaign S --n N [--decider claude|fake]` writes drafts for review only, never sendable; on the Drafts tab you approve or reject each one with reasons.
+  `leads drafts eval [--campaign S] [--runs N] [--decider fake|claude]` drafts every reviewed lead again and records, with `--decider claude` and at least 20 reviewed leads, how many pass the check on the first try and after the retry.
+  The gate passes when the latest recorded eval covers at least 20 reviewed leads, at least 90% pass first time and 98% after the retry, and you approved at least 80% of the last 20 reviewed drafts; the Campaigns tab shows where it stands.
+  `leads drafts golden-export --out FILE [--campaign S]` writes the reviewed drafts to a file outside the repository.
+- **Claude spend**: every Claude call is priced at its worst case before it is made and refused when that would pass a cap, then its real cost is recorded per lead and per purpose (drafting, research, drafts eval).
+  `LEADHOUND_CLAUDE_DAILY_USD_CAP` is the ceiling for a day across every purpose; each purpose has its own daily cap and a cap per lead under it (see `deploy/env.example`).
+  Claude is called only with `LEADHOUND_LIVE=1` and the key file; the key is never read from the environment (see "The Anthropic key" in `deploy/README.md`).
+- **The upgrade-risk report**: `leads report LEAD --out FILE [--contact ADDRESS]` writes a Drupal lead's free one-page report, one self-contained HTML page, from stored signals only: its Drupal version and where it was seen, the end-of-life date and the days left, and what an update or migration involves for that version (Drupal 10 to 11 is an update, never a migration).
+  Every line names its source, and the same grounding check refuses any number that is not a stored fact.
+  The file is written at mode 0600, outside the repository, never over an existing file; the lead page's Report link (`/leads/reports/{id}`) serves the same page to the signed-in operator.
+  The emails offer the report and you send it when the lead replies: no email carries a link to it or attaches it, and there is no public address for it.
+- **Erasure**: `leads forget org ID --reason TEXT` erases an organisation's personal data in one transaction, as the owner role: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts and its map listing's phones and emails.
+  It suppresses the organisation's domain and its numbers (hashed), so it is never collected, researched, enriched or called again, and cancels its pending messages.
+  It prints counts only, and run again it finds nothing left; see "Erasure" in `deploy/README.md` for backups.
 - **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, phone), its relevance and a star.
   It filters by kind, country, channel, starred, has a phone, minimum relevance and status (not contacted yet, contacted, all), and sorts by relevance, newest or your outreach order; the filters survive paging.
   A lead's page (`/leads/{id}`) shows the finding with its evidence, the ways to reach them and the pages they came from, phone numbers, description and social links, the agency page, the site, its history, its place in the queue, its messages and one line per reason it ranks where it does.
@@ -116,10 +185,40 @@ Nothing is written by a model: every draft is a template filled with facts the p
 - **Settings and data**: `leads check-config [--agencies FILE]` checks `leads.yaml`, the templates and the agency list without printing any value; `make deploy-data` runs it, then copies `leads.yaml`, `agencies.yaml` and `leads-templates/` to the server with the jobs settings (`leadhound.yaml`, `ats-boards.yaml`); `examples/leads.yaml` is the starting point for your own.
   The console's Settings page changes some of these values over the file, in the database; `leads settings show` says which, and `leads settings reset` puts them back.
   `leads transfer export DIR` and `leads transfer import DIR` move lead data from one database to another, re-keyed by natural keys so they never collide with the other side's ids; an import can run again safely, it is refused while a live message may be in flight, and both print counts only.
+  A transfer does not yet carry café places or an organisation's region.
 - **On a server**: five leads timers run the loop (probe daily; contacts daily, which then runs enrich, rate and build; the batch each morning; send hourly in business hours on weekdays; sync every 15 minutes); every deploy installs them, and each stays off until `/etc/leadhound/env` turns it on.
   The rate step also needs `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` in that file; without them it rates nothing, and the build after it still runs.
   `LEADHOUND_LEADS_TIMERS=on` turns on finding (probe and contacts).
   Sending (batch, send and sync) needs all three lines, `LEADHOUND_LEADS_TIMERS=on`, `LEADHOUND_LEADS_SEND=on` and `LEADHOUND_OUTREACH=live` (without the first, the next deploy turns them off again), and sends only from a ready mailbox; even then every batch is read and approved by the operator before anything is sent.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00008), then the leads set (up to 00015).
-  The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables: every change is a new row, and the app role cannot update or delete them.
+  The batch and contact research units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00021).
+  The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings and places: every change is a new row, and the app role cannot update or delete them.
+  Only `leads forget`, run as the owner role, removes an organisation's personal data.
+
+### Café places
+
+The café campaign (`examples/campaigns/cafes-loyalty/`) finds independent cafés from Overture Maps Places instead of a site list.
+LeadHound reads no parquet: you export one country, or a few, to NDJSON with [DuckDB](https://duckdb.org/) and import the file.
+
+```sql
+INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs; SET s3_region = 'us-west-2';
+COPY (
+  SELECT id, names, categories, confidence, websites, socials, emails, phones, brand, addresses, sources,
+         ST_AsGeoJSON(geometry)::JSON AS geometry
+  FROM read_parquet('s3://overturemaps-us-west-2/release/2026-10-21.0/theme=places/type=place/*', hive_partitioning = 1)
+  WHERE categories.primary IN ('coffee_shop', 'cafe') AND addresses[1].country = 'GB'
+) TO 'places-gb.ndjson' (FORMAT json);
+```
+
+- **Import**: `leads places import overture --campaign cafes-loyalty --release 2026-10-21.0 places-gb.ndjson` keeps the places the spec's `source` allows (categories, countries, `min_confidence`), skips chains (`chains`: a name or website on more than `max_locations` places, a listed name, or an Overture brand unless `keep_branded`), and makes a site and an organisation for each independent café with its state or region.
+  It prints counts only; a malformed line is named by its number, never its text, and a release is imported once (run it again and nothing is stored twice).
+  `examples/places.demo.ndjson` is a fictional export with reserved names only.
+- **The loop**: `leads sites probe` reads each café's homepage with the `cafe@1` detector (digital loyalty, online ordering, Instagram, language), then `leads contacts`, then `leads build --campaign cafes-loyalty` and `leads batch new --campaign cafes-loyalty`.
+  The timers build and batch `drupal-eol` only, so the café campaign's build and batch run by hand.
+  A café whose homepage links your own loyalty product is a customer and gets no lead: list your product's hosts in `leads.yaml` as `probe.cafe_own_vendor_hosts` (private; never in the repository).
+  A kind the spec's `kinds` does not list (`cafe_has_loyalty`, `cafe_no_website` in the example) makes no lead.
+- **Countries**: of the example's countries, Romania, Italy and Spain need a yes on a call before any email, so their cafés follow the call-first sequence; every email country also needs its `leads.yaml` policy, footer and opt-out line, and the `leads.yaml` templates in that language.
+  A US, Canadian or Australian café is callable only with its state known, which the import stores from the place.
+- **Attribution**: the place data comes from Overture Maps Foundation (overturemaps.org); Overture publishes the Places theme under CDLA Permissive 2.0, and a lead from a place says so on its page.
+  Check Overture's attribution page for the release you export: themes that include OpenStreetMap data are under ODbL and need "© OpenStreetMap contributors" as well.

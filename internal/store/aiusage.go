@@ -25,7 +25,9 @@ const usageLockClass = "leadhound.ai_usage"
 // provider, so every process counting against the same database reads, calls and records
 // one at a time. fn's rows commit only when it returns nil; fn's error is returned as it is.
 // The lock (and one pooled connection) is held for as long as fn runs, the provider call
-// included.
+// included. The commit and the rollback run on ctx without its cancellation: a call billed
+// while ctx was cancelled (a timeout, a stopped unit) still has its row written, so the spend
+// it cost is never lost from the caps.
 func (q Queries) WithUsageLock(ctx context.Context, provider string, fn func(ai.UsageStore) error) error {
 	b, ok := q.db.(interface {
 		Begin(context.Context) (pgx.Tx, error)
@@ -44,7 +46,7 @@ func (q Queries) WithUsageLock(ctx context.Context, provider string, fn func(ai.
 	if err := fn(Queries{db: tx}); err != nil {
 		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(context.WithoutCancel(ctx)); err != nil {
 		return fmt.Errorf("store: usage lock %s: commit: %w", provider, err)
 	}
 	return nil

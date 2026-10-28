@@ -36,6 +36,18 @@ func Load(path string) (Spec, error) {
 // unless a file campaign has its slug; with no campaigns folder it is the only campaign.
 // The checks run with the leadconfig kinds and with the draft gate closed.
 func LoadAll(dataDir string, cfg *leadconfig.Config) ([]Spec, error) {
+	return LoadAllWith(dataDir, cfg, LoadOptions{})
+}
+
+// LoadOptions are what LoadAllWith asks outside the files.
+type LoadOptions struct {
+	// DraftsTrusted reports whether the draft gate trusts Claude drafts for campaign slug; it
+	// is asked only for a spec whose writer is claude. nil keeps the gate closed.
+	DraftsTrusted func(slug string) bool
+}
+
+// LoadAllWith is LoadAll with the draft gate as o gives it.
+func LoadAllWith(dataDir string, cfg *leadconfig.Config, o LoadOptions) ([]Spec, error) {
 	root := filepath.Join(dataDir, Dir)
 	info, err := os.Stat(root)
 	switch {
@@ -51,7 +63,7 @@ func LoadAll(dataDir string, cfg *leadconfig.Config) ([]Spec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("campaign: %w", err)
 	}
-	opts := CheckOptions{KnownKinds: leadconfig.Kinds}
+	opts := CheckOptions{KnownKinds: KnownKinds()}
 	var specs []Spec
 	var errs []error
 	for _, p := range paths {
@@ -64,7 +76,11 @@ func LoadAll(dataDir string, cfg *leadconfig.Config) ([]Spec, error) {
 			errs = append(errs, fmt.Errorf("campaign: %s: %w: slug %q does not match its folder %q", p, ErrInvalid, s.Slug, folder))
 			continue
 		}
-		if err := s.Check(opts); err != nil {
+		so := opts
+		if s.Writer == WriterClaude && o.DraftsTrusted != nil {
+			so.DraftsTrusted = o.DraftsTrusted(s.Slug)
+		}
+		if err := s.Check(so); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p, err))
 			continue
 		}
@@ -89,7 +105,7 @@ func legacyOnly(cfg *leadconfig.Config) ([]Spec, error) {
 		return nil, fmt.Errorf("campaign: %w: no leads config to build the %q campaign from", ErrInvalid, LegacySlug)
 	}
 	s := Legacy(cfg)
-	if err := s.Check(CheckOptions{KnownKinds: leadconfig.Kinds}); err != nil {
+	if err := s.Check(CheckOptions{KnownKinds: KnownKinds()}); err != nil {
 		return nil, fmt.Errorf("campaign: legacy from %s: %w", leadconfig.FileName, err)
 	}
 	return []Spec{s}, nil

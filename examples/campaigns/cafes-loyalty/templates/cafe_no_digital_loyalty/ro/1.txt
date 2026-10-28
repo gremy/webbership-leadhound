@@ -1,0 +1,13 @@
+Subject: Re: Un card de fidelitate direct în telefon
+
+Bună din nou,
+
+Revin pe scurt, poate s-a pierdut mesajul meu. Uite demo-ul, ca să-l încerci fără să-mi scrii: https://sender.example/
+
+Deschide-l pe telefon și primești un card de ștampile real în Wallet. Asta ar purta clienții fideli de la {{.OrgName}}.
+
+Dacă nu vrei să-l configurezi singur, îl facem împreună în 15 minute.
+
+Merită 10 minute să-l vezi pe telefonul tău?
+
+{{.Footer}}

@@ -71,6 +71,10 @@ type FindingSubject struct {
 	Ambiguous    string
 	URL          string // agency findings
 	Phrase       string
+	// A café finding (cafe@1): the Decision's plain reason and the language source.
+	Reason      string
+	Language    string // ISO 639-1; "" when unknown
+	LanguageVia string // html-lang | meta | text
 }
 
 // ListFilter is one page of the list the operator asked for.
@@ -105,6 +109,7 @@ type ListRow struct {
 	CampaignSlug, CampaignName  string
 	Domain, Name                string // Name: site_name, else org.name, else domain
 	Country, Kind, State        string
+	Channel                     string // the lead's channel (email, form, linkedin or none)
 	HasEmail, HasForm, HasPhone bool
 	Relevance                   *int
 	Band                        string
@@ -255,6 +260,9 @@ type listRow struct {
 	Ambiguous       string     `db:"f_ambiguous"`
 	URL             string     `db:"f_url"`
 	Phrase          string     `db:"f_phrase"`
+	Reason          string     `db:"f_reason"`
+	Language        string     `db:"f_language"`
+	LanguageVia     string     `db:"f_language_via"`
 	ListRank        *int       `db:"list_rank"`
 	Origin          string     `db:"origin"`
 	ProbeMajor      int        `db:"probe_major"`
@@ -267,13 +275,14 @@ func (r listRow) row() ListRow {
 	return ListRow{
 		LeadID: r.LeadID, OrgID: r.OrgID, Domain: r.Domain, Name: r.Name,
 		CampaignID: r.CampaignID, CampaignSlug: r.CampaignSlug, CampaignName: r.CampaignName,
-		Country: r.Country, Kind: r.Kind, State: r.State,
+		Country: r.Country, Kind: r.Kind, State: r.State, Channel: r.Channel,
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
 		Relevance: r.Relevance, Band: r.Band, RatedAt: r.RatedAt, Points: r.Points,
 		Starred: r.Starred, Position: r.Position, SmallSite: r.SmallSite,
 		Finding: FindingSubject{
 			Kind: r.FindingKind, Detector: r.Detector, Major: r.Major, ExactVersion: r.ExactVersion,
 			Ambiguous: r.Ambiguous, URL: r.URL, Phrase: r.Phrase,
+			Reason: r.Reason, Language: r.Language, LanguageVia: r.LanguageVia,
 		},
 		CreatedAt: r.CreatedAt,
 	}
@@ -303,6 +312,8 @@ const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS
 	   coalesce(f.subject->>'ambiguous', '') AS f_ambiguous,
 	   coalesce(f.subject->>'url', '') AS f_url,
 	   coalesce(f.subject->>'phrase', '') AS f_phrase,
+	   coalesce(f.subject->>'reason', '') AS f_reason, coalesce(f.subject->>'language', '') AS f_language,
+	   coalesce(f.subject->>'language_via', '') AS f_language_via,
 	   s.list_rank, coalesce(s.origin, o.source) AS origin,
 	   coalesce(p.major, 0) AS probe_major, coalesce(p.exact_version, '') AS probe_exact
 	 FROM lead l

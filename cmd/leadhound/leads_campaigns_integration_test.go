@@ -166,7 +166,7 @@ func TestCampaignOptOutBlocksSend(t *testing.T) {
 }
 
 // TestCampaignColdStart: a fresh database builds campaign 1's leads; build for another
-// campaign waits for CP7.
+// campaign needs its own registered spec file (a places source builds from its imports).
 func TestCampaignColdStart(t *testing.T) {
 	dir := leadsDB(t)
 	drawFromAll(t, dir)
@@ -183,7 +183,7 @@ func TestCampaignColdStart(t *testing.T) {
 	}
 	secondCampaign(t)
 	code, _, errOut := leadsRun(t, "leads", "build", "--campaign", "cafes")
-	if code != 2 || !strings.Contains(errOut, "per-campaign build comes in CP7") {
+	if code != 2 || !strings.Contains(errOut, "has no spec file") {
 		t.Errorf("build --campaign cafes exited %d: %s", code, errOut)
 	}
 	if n := batchCount(t, `SELECT count(*) FROM lead WHERE campaign_id <> 1`); n != 0 {
@@ -209,11 +209,11 @@ func TestCampaignsRegister(t *testing.T) {
 	wantLines(t, "register", out, "agencies: new version (", "drupal-eol: new version (")
 	out = mustRun(t, "leads", "campaigns", "register")
 	wantLines(t, "register again", out, "agencies: unchanged (", "drupal-eol: unchanged (")
-	if n := batchCount(t, `SELECT count(*) FROM campaign_version WHERE source = 'file' AND actor = 'operator'`); n != 2 {
-		t.Errorf("%d versions, want 2", n)
+	if n := batchCount(t, `SELECT count(*) FROM campaign_version WHERE source = 'file' AND actor = 'operator'`); n != 3 {
+		t.Errorf("%d versions, want 3 (agencies, cafes-loyalty, drupal-eol)", n)
 	}
-	if n := batchCount(t, `SELECT count(*) FROM campaign WHERE account_id = 1`); n != 2 {
-		t.Errorf("%d campaigns, want 2", n)
+	if n := batchCount(t, `SELECT count(*) FROM campaign WHERE account_id = 1`); n != 3 {
+		t.Errorf("%d campaigns, want 3", n)
 	}
 
 	out = mustRun(t, "leads", "campaigns", "list")
@@ -236,7 +236,7 @@ func TestCampaignsRegister(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(views) != 2 || views[0].Slug != "drupal-eol" || views[0].SpecSource != "file" || len(views[0].Steps) != 5 ||
+	if len(views) != 3 || views[2].Slug != "cafes-loyalty" || views[0].Slug != "drupal-eol" || views[0].SpecSource != "file" || len(views[0].Steps) != 5 ||
 		views[1].Slug != "agencies" || len(views[1].Steps) != 5 || views[1].Steps[4].AfterBusinessDays != 6 {
 		t.Errorf("console views = %+v", views)
 	}

@@ -22,7 +22,6 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/claude"
-	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -99,7 +98,7 @@ func sentinelKey(t *testing.T) string {
 // campaign caps given, on the fixed clock, over a store on the test database.
 func cappedFor(t *testing.T, q store.Queries, own claudeCampaignCaps) *claude.Capped {
 	t.Helper()
-	c, err := claudeCapped("test", q, claude.PurposeDrafting, leadstore.DefaultAccountID, own)
+	c, err := claudeCapped("test", q, claude.PurposeDrafting, own)
 	if err != nil || c == nil {
 		t.Fatalf("claudeCapped: %v, %v", c, err)
 	}

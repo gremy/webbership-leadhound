@@ -74,7 +74,11 @@ type LeadRefusal struct {
 	Value  string      // what was given, for the value refusals
 	Detail string      // RefuseRuleInvalid: the store's reason
 	Sizing BatchSizing // RefuseNoRoom
-	err    error       // the store's error, when one caused it
+	// Starred is RefuseNoStarred's every starred lead in the operator's order, each with why
+	// it is out (leadstore.StarredStatus; a lead whose org is open in another campaign reads
+	// starredOpenElsewhere). noStarredText words it.
+	Starred []leadstore.StarredState
+	err     error // the store's error, when one caused it
 }
 
 func (r *LeadRefusal) Error() string {
@@ -286,6 +290,9 @@ type batchSetup struct {
 	// settingsIgnored: the saved settings no longer pass leads.yaml's checks, so leads is the
 	// file alone, without the operator's kinds_off, skip_rank_over and the rest.
 	settingsIgnored bool
+	// claude is what a writer: claude campaign may draft with (leads batch new sets it); nil
+	// drafts every lead from templates (the console), counted as Claude drafting off.
+	claude *claudeDrafting
 }
 
 func newBatchSetup(setup leadsSetup, loc *time.Location) batchSetup {
@@ -335,8 +342,13 @@ type NewBatchOutcome struct {
 	Calls        int
 	CallsLeftOut map[string]int
 	CallsOff     map[string]int
-	Sizing       *BatchSizing  // a live batch's sizing; nil for shadow
-	Rooms        map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
+	// ClaudeDrafted counts the leads whose sequence Claude wrote (a writer: claude campaign the
+	// gate trusts); Fallbacks counts that campaign's email leads drafted from templates
+	// instead, by why (fbCap, fbRefused, fbUntrusted …). fallbackLine words them.
+	ClaudeDrafted int
+	Fallbacks     map[string]int
+	Sizing        *BatchSizing  // a live batch's sizing; nil for shadow
+	Rooms         map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
 }
 
 // newBatch drafts the next batch with lq, which the caller runs in one transaction: it
@@ -390,11 +402,16 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 		return out, err
 	}
 	steps := plan.emailSteps()
+	drafter, err := newBatchDrafter(ctx, lq, bs, plan, campaignID)
+	if err != nil {
+		return out, err
+	}
 	opts, err := batchCandidateOptions(ctx, lq, bs, now)
 	if err != nil {
 		return out, err
 	}
-	opts.CampaignID, opts.AccountID = campaignID, leadstore.DefaultAccountID
+	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
+	opts.PhoneOnlyCountries = plan.phoneOnlyCountries()
 	cands, err := lq.CandidateLeads(ctx, opts)
 	if err != nil {
 		return out, err
@@ -406,7 +423,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	cands = slices.DeleteFunc(cands, func(c leadstore.Candidate) bool { return elsewhere[c.OrgID] })
 	if len(cands) == 0 {
 		if opts.StarredOnly {
-			return out, &LeadRefusal{Kind: RefuseNoStarred}
+			st, err := lq.StarredStatus(ctx, leadstore.StarredStatusOptions{CandidateOptions: opts, Countries: countryChannels(bs.leads)})
+			if err != nil {
+				return out, err
+			}
+			return out, &LeadRefusal{Kind: RefuseNoStarred, Starred: markOpenElsewhere(st, elsewhere, out.Skipped)}
 		}
 		return out, nil
 	}
@@ -432,12 +453,8 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	var drafts []leadstore.DraftRow
 	suppressedPhones := map[string]bool{}
 	if plan.hasCall() {
-		set, err := lq.SuppressionSet(ctx, leadstore.DefaultAccountID)
-		if err != nil {
+		if suppressedPhones, err = suppressedPhoneSet(ctx, lq); err != nil {
 			return out, err
-		}
-		for _, v := range set.Phones {
-			suppressedPhones[v] = true
 		}
 	}
 	for start := 0; start < len(cands) && out.Leads < n; start += evidenceSpan {
@@ -456,7 +473,8 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			for i, c := range span {
 				orgs[i] = c.OrgID
 			}
-			fs, err := lq.OrgFacts(ctx, orgs)
+			// A phone fact marked wrong is never drafted again (UsableOrgFacts leaves it out).
+			fs, err := lq.UsableOrgFacts(ctx, orgs)
 			if err != nil {
 				return out, err
 			}
@@ -475,16 +493,34 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			mb := byID[id]
 			var phone *leadstore.Fact
 			leftOut := ""
-			if plan.hasCall() && c.Channel == leadconfig.ChannelEmail {
-				// has_callable_phone: a phone fact that is not suppressed. A country whose call
-				// policy is off still gets its call drafted; the operator decides whether to ring.
-				if f, ok, why := pickPhone(facts[c.OrgID], suppressedPhones); ok {
-					phone = &f
-				} else {
-					leftOut = why
+			if plan.hasCall() && (c.Channel == leadconfig.ChannelEmail || c.Channel == leadconfig.ChannelNone) {
+				// has_callable_phone (callPhone; the Claude sample and eval use the same rule).
+				if phone, leftOut, err = callPhone(ctx, lq, plan, c, facts[c.OrgID], suppressedPhones, now); err != nil {
+					return out, err
 				}
 			}
-			ds, err := draftSequence(plan, c, ev[c.LeadID], bs.leads, phone, outreach.MessageIDDomain(mb.Address), rand.Reader)
+			// A form lead keeps its contact-form text whatever the country: only an email lead
+			// moves to call first.
+			leadPlan, seqName := plan, ""
+			if c.Channel == leadconfig.ChannelEmail || c.Channel == leadconfig.ChannelNone {
+				leadPlan, seqName = plan.forLead(c.Country)
+			}
+			if c.Channel == leadconfig.ChannelNone && seqName == "" {
+				// A lead with no route is offered only for a call-first country; this one is not.
+				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel,
+					Why: "no route, and email to this country needs no call first"})
+				continue
+			}
+			if seqName != "" && phone == nil {
+				// Email to this country needs a yes won on a call: no call, no contact at all.
+				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel,
+					Why: "call first (email needs their yes on a call): " + cmp.Or(leftOut, callNoNumber)})
+				continue
+			}
+			ds, err := drafter.draft(ctx, lq, leadPlan, c, ev[c.LeadID], bs.leads, phone, outreach.MessageIDDomain(mb.Address), rand.Reader)
+			if sb := (*stopBatchError)(nil); errors.As(err, &sb) {
+				return out, err
+			}
 			if err != nil {
 				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: err.Error()})
 				continue
@@ -495,10 +531,18 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 				}
 				out.CallsLeftOut[leftOut]++
 			}
+			if seqName != "" {
+				if plan.sequences[seqName] == nil {
+					plan.sequences[seqName] = plan.callFirst
+				}
+				for i := range ds {
+					ds[i].SequenceName = seqName
+				}
+			}
 			for _, d := range ds {
 				if d.Channel == leadstore.ChannelPhone {
 					out.Calls++
-					if !plan.callsAllowed(c.Country) {
+					if campaignCallsOff(plan.overrides, c.Country) {
 						if out.CallsOff == nil {
 							out.CallsOff = map[string]int{}
 						}
@@ -515,6 +559,10 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			out.Leads++
 		}
 	}
+	if len(drafter.fallbacks) > 0 {
+		out.Fallbacks = drafter.fallbacks
+	}
+	out.ClaudeDrafted = drafter.drafted
 	if len(drafts) == 0 {
 		return out, nil
 	}
@@ -578,8 +626,126 @@ func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSe
 	}, nil
 }
 
-// noStarredWords is RefuseNoStarred in plain words, for the CLI and the console alike.
+// starredOut is every starred lead of campaignID a batch would not take now, each with its
+// reason, by the batch's own rules (its plan's countries, the candidate options, the
+// cross-campaign skips): the Outreach page's standing list, which a shadow-only server
+// cannot reach through "Make the next batch now".
+func starredOut(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, campaignID int64) ([]leadstore.StarredState, error) {
+	plan, err := resolveBatchPlan(ctx, lq, bs, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := batchCandidateOptions(ctx, lq, bs, now)
+	if err != nil {
+		return nil, err
+	}
+	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
+	skipped, elsewhere, err := crossCampaignSkips(ctx, lq, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	st, err := lq.StarredStatus(ctx, leadstore.StarredStatusOptions{CandidateOptions: opts, Countries: countryChannels(bs.leads)})
+	if err != nil {
+		return nil, err
+	}
+	st = markOpenElsewhere(st, elsewhere, skipped)
+	return slices.DeleteFunc(st, func(s leadstore.StarredState) bool { return s.Reason == leadstore.StarredReady }), nil
+}
+
+// noStarredWords is RefuseNoStarred in plain words when nothing is starred, for the CLI and
+// the console alike.
 const noStarredWords = "No starred leads are ready: star some on Leads."
+
+// noStarredHead heads RefuseNoStarred's list when some leads are starred.
+const noStarredHead = "No starred leads are ready. Why each starred lead is out:"
+
+// starredOpenElsewhere is the reason markOpenElsewhere gives a starred lead the batch would
+// take but for its org's conversation in another campaign (crossCampaignSkips).
+const starredOpenElsewhere = "open_elsewhere"
+
+// countryChannels is leads.yaml's country rule as StarredStatus reads it: each country's
+// channel policy (a country missing from it is off, as cfg.Policy has it).
+func countryChannels(cfg leadconfig.Config) map[string]string {
+	out := make(map[string]string, len(cfg.Countries))
+	for code, c := range cfg.Countries {
+		out[code] = c.Channel
+	}
+	return out
+}
+
+// markOpenElsewhere gives the starred leads the candidate query offered but
+// crossCampaignSkips removed (their org in elsewhere) the reason starredOpenElsewhere, with
+// the skip's own words as the detail.
+func markOpenElsewhere(st []leadstore.StarredState, elsewhere map[int64]bool, skipped []DroppedLead) []leadstore.StarredState {
+	why := map[string]string{}
+	for _, d := range skipped {
+		why[d.Domain] = d.Why
+	}
+	for i, s := range st {
+		if elsewhere[s.OrgID] && (s.Reason == leadstore.StarredReady || s.Reason == leadstore.StarredRankedOut) {
+			st[i].Reason, st[i].Detail, st[i].Date = starredOpenElsewhere, why[s.Domain], nil
+		}
+	}
+	return st
+}
+
+// noStarredText is RefuseNoStarred in plain words, for the CLI and the console alike:
+// noStarredWords when nothing is starred, else noStarredHead and one line per starred lead,
+// "<place>. <domain> — <reason>[: detail][, date]", in the operator's order.
+func noStarredText(r *LeadRefusal) string {
+	if r == nil || len(r.Starred) == 0 {
+		return noStarredWords
+	}
+	var b strings.Builder
+	b.WriteString(noStarredHead)
+	for i, s := range r.Starred {
+		fmt.Fprintf(&b, "\n%d. %s — %s", i+1, s.Domain, starredLine(s))
+	}
+	return b.String()
+}
+
+// starredLine is one starred lead's reason, detail and date in plain words.
+func starredLine(s leadstore.StarredState) string {
+	var reason, date string
+	switch s.Reason {
+	case leadstore.StarredReady:
+		reason = "ready"
+	case leadstore.StarredNoEmailYet:
+		reason = "no email yet"
+	case leadstore.StarredLooking:
+		reason = "looking for a contact"
+	case leadstore.StarredFoundNothing:
+		reason = "research found nothing"
+	case leadstore.StarredCountryRule:
+		reason = "country rule"
+	case leadstore.StarredSuppressed:
+		reason = "suppressed"
+	case leadstore.StarredDeferred:
+		reason = "deferred"
+	case leadstore.StarredRankedOut:
+		reason = "ranked out"
+	case leadstore.StarredNotNew:
+		reason = "no longer new"
+	case starredOpenElsewhere:
+		reason = "open in another campaign"
+	default:
+		reason = "left out"
+	}
+	if s.Date != nil {
+		date = plainDate(*s.Date)
+		if s.Reason == leadstore.StarredDeferred {
+			date = "until " + date
+		}
+	}
+	out := reason
+	if s.Detail != "" {
+		out += ": " + s.Detail
+	}
+	if date != "" {
+		out += ", " + date
+	}
+	return out
+}
 
 // settingsIgnoredWords is RefuseSettingsIgnored in plain words, for the CLI and the console
 // alike.
@@ -685,13 +851,16 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 		return err
 	})
 	note := fmt.Sprintf("batch %d, %d messages, %d dropped", out.BatchID, out.Counts.Emails+out.Counts.Forms+out.Counts.LinkedIn, len(out.Dropped))
+	if line := fallbackLine(out.Fallbacks); line != "" {
+		note += "; " + line
+	}
 	switch r := asRefusal(runErr); {
 	case r != nil && r.Kind == RefuseBatchWaiting:
 		note = fmt.Sprintf("batch %d still waits for approval", r.BatchID)
 	case r != nil && r.Kind == RefuseNoRoom:
 		note = "no room in the ramp"
 	case r != nil && r.Kind == RefuseNoStarred:
-		note = "no starred leads ready"
+		note = fmt.Sprintf("no starred leads ready (%d starred)", len(r.Starred))
 	case r != nil && r.Kind == RefuseSettingsIgnored:
 		note = "saved settings ignored"
 	case runErr != nil:
@@ -780,14 +949,14 @@ func batchView(ctx context.Context, lq leadstore.Queries, id int64) (BatchView, 
 	if err != nil {
 		return BatchView{}, err
 	}
-	pol, err := loadCallPolicies(ctx, lq)
+	rules, err := loadCallRules(ctx, lq)
 	if err != nil {
 		return BatchView{}, err
 	}
 	off := map[int64]string{}
 	for _, it := range items {
 		for _, m := range it.Msgs {
-			if m.Channel == leadstore.ChannelPhone && pol.off(b.CampaignID, it.Org.Country) {
+			if m.Channel == leadstore.ChannelPhone && rules.off(b.CampaignID, it.Org.Country) {
 				off[it.Lead.ID] = countryCode(it.Org.Country)
 			}
 		}

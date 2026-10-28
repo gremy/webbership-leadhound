@@ -4,7 +4,7 @@
   <h1>Leads</h1>
 </div>
 {{template "leads_tabs" (leadsTab "outreach" true)}}
-{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+{{if $v.Message}}{{$n := noticeLines $v.Message}}{{if $n.Items}}<div class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}"><p>{{$n.Head}}</p><ol class="notice-list">{{range $n.Items}}<li>{{.}}</li>{{end}}</ol></div>{{else}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}{{end}}
 
 <div class="grid two">
   <section class="card">
@@ -44,7 +44,7 @@
       <input type="hidden" name="do" value="resume">
       <button type="submit" class="primary">Resume sending</button>
     </form>
-    {{else}}
+    {{else if $s.SetUp}}
     <form method="post" action="/leads/sending" class="stack">
       <input type="hidden" name="do" value="pause">
       <label for="pause-reason">Reason (optional)</label>
@@ -66,12 +66,26 @@
       {{end}}
     </ul>
     {{else}}<p class="empty">No batch waits for approval.</p>{{end}}
+    {{if $s.SetUp}}
     <form method="post" action="/leads/batches/new">
       <button type="submit"{{if not $p.Batches}} class="primary"{{end}}>Make the next batch now</button>
     </form>
     <p class="hint">Sized to what the warm-up ramp can send over the next days. You read and approve it before anything is sent.</p>
+    {{else}}
+    <p class="hint">Sending isn't set up here, so batches on this server are shadow batches, made from the command line with <code>leadhound leads batch new</code>. Nothing in them is sent.</p>
+    {{end}}
   </section>
 </div>
+
+{{with $p.Starred}}
+<section class="card">
+  <h2>Starred leads and why each is out</h2>
+  <ol class="notice-list starred-out">
+    {{range .}}<li><a href="/leads/{{.LeadID}}">{{.Domain}}</a> — {{.Why}}</li>{{end}}
+  </ol>
+  <p class="hint">A batch takes starred leads first; these are starred but would not be taken now.</p>
+</section>
+{{end}}
 
 <div class="grid two">
   <section class="card">

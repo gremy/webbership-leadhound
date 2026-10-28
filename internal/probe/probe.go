@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/drupal"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -93,6 +94,10 @@ type Deps struct {
 	// under its free floor) and why, in a plain note. Run asks it before the first site and
 	// every StorageCheckEvery sites; an error stops the run and is returned. nil never stops.
 	Stop func(ctx context.Context) (stop bool, why string, err error)
+	// Cafe is the cafe@1 signal list (with the operator's own vendor added from private
+	// config); nil uses cafe.DefaultConfig. A site a place import added (origin place) is
+	// read with cafe@1, every other site with drupal@1.
+	Cafe *cafe.Config
 }
 
 // Options tune one run.
@@ -332,6 +337,8 @@ type siteProbe struct {
 	c   *fetch.Client
 	rec *siteRecorder
 	cut bool // a fetch got no answer once the run was stopping: the site is not stored
+	// cafe, when set, reads the homepage with cafe@1 instead of drupal@1 (a place's site).
+	cafe *cafe.Config
 
 	homepageID int64       // the homepage fetch row, once fetched
 	robots     *HostRobots // what each host's robots.txt said
@@ -498,6 +505,10 @@ func probeSite(ctx context.Context, d Deps, shared *sharedRecorder, site leadsto
 	}
 	c.HTTP.Transport = counter
 	p := &siteProbe{ctx: ctx, c: c, rec: rec}
+	derivedBy := drupal.DerivedBy
+	if site.Origin == leadstore.OriginPlace {
+		p.cafe, derivedBy = cmpCafe(d.Cafe), cafe.DerivedBy
+	}
 	row, v := p.run(strings.ToLower(site.Domain))
 
 	res := siteResult{
@@ -513,7 +524,7 @@ func probeSite(ctx context.Context, d Deps, shared *sharedRecorder, site leadsto
 	}
 	row.Outcome = v.outcome
 	row.Signals = append(row.Signals, v.signals...)
-	row.DerivedBy = drupal.DerivedBy
+	row.DerivedBy = derivedBy
 	w := Write{SiteID: site.ID}
 	for _, f := range rec.fetches {
 		row.FetchIDs = append(row.FetchIDs, f.id)
@@ -590,6 +601,12 @@ func (p *siteProbe) run(host string) (leadstore.ProbeRow, verdictFor) {
 		return row, verdictFor{outcome: leadstore.OutcomeNotHTML, signals: []leadstore.Signal{
 			{Signal: SigHomepage, Value: "content-type " + ct, FetchID: home.id},
 		}}
+	}
+	if p.cafe != nil {
+		r := cafe.Detect(p.cafe, cafe.Page{URL: cmpURL(home.resp.FinalURL, home.scheme+"://"+host+"/"), Body: home.resp.Body})
+		row.SiteName = f.SiteName
+		row.Signals = append(row.Signals, CafeSignals(r, home.id)...)
+		return row, verdictFor{outcome: leadstore.OutcomeOK}
 	}
 	row.IsDrupal = f.IsDrupal
 	row.Major = f.Major

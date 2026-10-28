@@ -1,0 +1,23 @@
+# Contact research: starring a lead with no usable route, or "Look again" on its page, makes
+# the console queue a research attempt in the database, then write the request time to
+# /opt/leadhound/data/run/leads-research, and this watcher starts
+# leadhound-leads-research.service, which runs the queued attempts. The console itself never
+# holds the Anthropic key and never calls Claude.
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A request while the service is already starting or
+# running is merged into that run by systemd; the run takes every queued attempt up to its
+# --max, and the rest wait for the next request.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset:
+#   systemctl reset-failed leadhound-leads-research.path leadhound-leads-research.service
+#   systemctl start leadhound-leads-research.path
+[Unit]
+Description=leadhound contact research request
+
+[Path]
+PathChanged=/opt/leadhound/data/run/leads-research
+
+[Install]
+WantedBy=paths.target

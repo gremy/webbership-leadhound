@@ -112,7 +112,7 @@ func (q Queries) OrgHomepage(ctx context.Context, orgID int64) (Homepage, error)
 // OrgByID returns org id, or ErrOrgNotFound.
 func (q Queries) OrgByID(ctx context.Context, id int64) (Org, error) {
 	orgs, err := collect(ctx, q.db, pgx.RowToStructByName[Org],
-		`SELECT id, kind, domain, name, country, site_id, source, source_fetch_id, created_at
+		`SELECT id, kind, domain, name, country, region, site_id, source, source_fetch_id, created_at
 		 FROM org WHERE id = $1`, id)
 	if err != nil {
 		return Org{}, fmt.Errorf("leadstore: org by id: %w", err)

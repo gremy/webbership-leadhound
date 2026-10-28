@@ -6,7 +6,7 @@
 {{template "leads_tabs" (leadsTab "campaigns" true)}}
 <p class="lede">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server.</p>
 {{if $cs}}
-{{range $cs}}
+{{range $cs}}{{$c := .}}
 <section class="card settings-section campaign" id="campaign-{{.Slug}}" aria-labelledby="campaign-{{.Slug}}-title">
   <h2 id="campaign-{{.Slug}}-title">{{or .Name .Slug}}{{if .Retired}} <span class="tag">retired</span>{{end}}</h2>
   <dl class="fields">
@@ -14,6 +14,7 @@
     <div><dt>Version</dt><dd>{{with .SpecSHA}}<code>{{shortSHA .}}</code>{{else}}none registered{{end}}{{if not .SpecAt.IsZero}} · {{when .SpecAt}}{{end}}{{if eq .SpecSource "console"}} · changed in the console{{else if eq .SpecSource "file"}} · from its file{{end}}</dd></div>
     <div><dt>Lead kinds</dt><dd>{{if .Kinds}}{{join .Kinds ", "}}{{else}}none{{end}}</dd></div>
     <div><dt>Drafted by</dt><dd>{{writerWords .Writer}}</dd></div>
+    {{with .Gate}}<div><dt>Claude drafts</dt><dd class="campaign-gate">{{.Summary}}{{if not .Trusted}} · <a href="/leads/drafts?campaign={{$c.Slug}}">review drafts</a>{{end}}</dd></div>{{end}}
     <div><dt>Claude spend today (whole account)</dt><dd>{{or .ClaudeSpendToday "not in use yet"}}</dd></div>
   </dl>
 

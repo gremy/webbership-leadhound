@@ -47,7 +47,9 @@ func TestCheckRules(t *testing.T) {
 		{"slug pattern", func(s *Spec) { s.Slug = "Drupal_EOL" }, nil, []string{"slug"}},
 		{"slug too short", func(s *Spec) { s.Slug = "d" }, nil, []string{"slug"}},
 		{"name empty", func(s *Spec) { s.Name = " " }, nil, []string{"name is empty"}},
-		{"source places", func(s *Spec) { s.Source.Kind = SourcePlaces }, nil, []string{"comes in CP7"}},
+		{"source overture with site detectors", func(s *Spec) { s.Source.Kind = SourceOverture }, nil, []string{`"drupal@1" runs on a "site_list" source`}},
+		{"cafe kind with drupal detectors", func(s *Spec) { s.Kinds = append(s.Kinds, "cafe_no_website") }, nil, []string{"not a kind the campaign's detectors make"}},
+		{"places filters on a site list", func(s *Spec) { s.Source.MinConfidence = 0.5 }, nil, []string{"are for an \"overture\" source"}},
 		{"source unknown", func(s *Spec) { s.Source.Kind = "csv" }, nil, []string{"source.kind", "unknown"}},
 		{"detector unknown", func(s *Spec) { s.Detectors = []string{"drupal@2"} }, nil, []string{"not a known detector"}},
 		{"detectors empty", func(s *Spec) { s.Detectors = nil }, nil, []string{"detectors is empty"}},
@@ -343,7 +345,7 @@ func TestCountryList(t *testing.T) {
 }
 
 func TestDetectors(t *testing.T) {
-	if !KnownDetector(DetectorDrupal) || !KnownDetector(DetectorAgency) || KnownDetector("cafe@1") {
+	if !KnownDetector(DetectorDrupal) || !KnownDetector(DetectorAgency) || !KnownDetector("cafe@1") || KnownDetector("cafe@2") {
 		t.Error("detector registry off")
 	}
 }

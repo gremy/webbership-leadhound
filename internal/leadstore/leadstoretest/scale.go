@@ -50,6 +50,8 @@ const (
 // The reference tables lead_kind and lead_channel are never in it: their rows come with the
 // migration (storetest.KeptTables).
 var leadsTables = []string{
+	"place", "place_import", "phone_status", "phone_research", "phone_screening", "draft_review", "draft_eval", "draft_generation",
+	"contact_research", "email_consent", "call_outcome",
 	"lead_label", "lead_setting", "lead_relevance_eval", "lead_relevance", "enrich_attempt", "org_fact", "lead_star", "finding",
 	"mailbox_check", "mailbox_state", "sender_mailbox",
 	"lead_priority", "priority_profile", "send_pause", "sender_check", "mailbox_cursor",

@@ -54,6 +54,10 @@ var (
 	ErrTruncated = errors.New("claude: answer truncated")
 	// ErrBadRequest is a 4xx the API rejected; it is never retried.
 	ErrBadRequest = errors.New("claude: bad request")
+	// ErrNoAnswer is a request that was sent but got no answer: a timeout, a dropped
+	// connection or a context ended mid-call. The API may have billed it. It comes wrapped
+	// with ai.ErrUnavailable, or with the context's error.
+	ErrNoAnswer = errors.New("claude: request sent, no answer (may have been billed)")
 )
 
 // Usage is what one call (with its continuations) was billed for.
@@ -206,6 +210,9 @@ func (c *Client) Write(ctx context.Context, r WriteRequest) (WriteResult, Usage,
 	if r.System != "" {
 		p.System = cachedSystem(r.System)
 	}
+	if err := ctx.Err(); err != nil {
+		return WriteResult{}, Usage{}, fmt.Errorf("claude: write: %w", err) // nothing sent
+	}
 	resp, err := c.api.Messages.New(ctx, p)
 	if err != nil {
 		return WriteResult{}, Usage{}, c.mapErr(ctx, "write", err)
@@ -262,6 +269,9 @@ func (c *Client) Research(ctx context.Context, r ResearchRequest) (ResearchResul
 			if err := r.beforeLeg(leg, u); err != nil {
 				return ResearchResult{}, u, err
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			return ResearchResult{}, u, fmt.Errorf("claude: research: %w", err) // nothing sent
 		}
 		resp, err := c.api.Messages.New(ctx, p)
 		if err != nil {
@@ -369,11 +379,14 @@ func collect(m *anthropic.Message, txt *strings.Builder, sources *[]Source) {
 }
 
 // mapErr turns an SDK error into LeadHound's: 429, 529 and 5xx (after the SDK's retries)
-// and transport failures are ai.ErrUnavailable; other 4xx are ErrBadRequest. The SDK error
-// is never wrapped, only its scrubbed text kept, so the key cannot ride along.
+// are ai.ErrUnavailable; other 4xx are ErrBadRequest; a request with no answer at all (a
+// transport failure, a timeout, the context ending mid-call) is ErrNoAnswer, with
+// ai.ErrUnavailable or the context's error. Callers check ctx before sending, so a context
+// already done here ended while the request was out. The SDK error is never wrapped, only
+// its scrubbed text kept, so the key cannot ride along.
 func (c *Client) mapErr(ctx context.Context, op string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("claude: %s: %w", op, ctxErr)
+		return fmt.Errorf("claude: %s: %w: %w", op, ErrNoAnswer, ctxErr)
 	}
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
@@ -386,7 +399,7 @@ func (c *Client) mapErr(ctx context.Context, op string, err error) error {
 			return fmt.Errorf("claude: %s: status %d: %s: %w", op, code, msg, ErrBadRequest)
 		}
 	}
-	return fmt.Errorf("claude: %s: %s: %w", op, c.snippet(err.Error()), ai.ErrUnavailable)
+	return fmt.Errorf("claude: %s: %s: %w: %w", op, c.snippet(err.Error()), ErrNoAnswer, ai.ErrUnavailable)
 }
 
 // snippet is the start of an error text, with the key removed should it appear.

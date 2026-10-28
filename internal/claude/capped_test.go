@@ -292,7 +292,9 @@ func TestCappedOvershootWithinWorstCase(t *testing.T) {
 }
 
 // A pause_turn continuation is checked again: when the first leg's used cost plus the next
-// leg's worst case passes the cap, the turn stops there and what was billed is recorded.
+// leg's worst case passes the cap, the turn stops there and what was billed is recorded. The
+// refusal is ErrCappedMidTurn, never ai.ErrSpendCap: a leg was billed, so the caller must
+// not treat it as a pre-flight refusal and ask (and pay) again.
 func TestCappedResearchContinuationChecked(t *testing.T) {
 	srv, got := server(t, func(int) (int, string) { return 200, message("pause_turn", "", 1000, 100, 1) })
 	r := researchReq()
@@ -306,8 +308,8 @@ func TestCappedResearchContinuationChecked(t *testing.T) {
 	c := &Capped{Client: newClient(t, srv.URL), Store: st, AccountID: 1, Purpose: PurposeResearch,
 		DailyCapMicros: w0, LeadCapMicros: 1_000_000, Loc: testLoc, Now: testNow}
 	_, u, err := c.Research(context.Background(), r)
-	if !errors.Is(err, ai.ErrSpendCap) {
-		t.Fatalf("err %v, want ErrSpendCap", err)
+	if !errors.Is(err, ErrCappedMidTurn) || errors.Is(err, ai.ErrSpendCap) {
+		t.Fatalf("err %v, want ErrCappedMidTurn and not ai.ErrSpendCap", err)
 	}
 	if got.calls.Load() != 1 {
 		t.Errorf("calls %d, want 1", got.calls.Load())

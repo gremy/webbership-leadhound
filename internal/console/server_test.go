@@ -57,6 +57,8 @@ type fakeBackend struct {
 	listQ     LeadListQuery // the query the last LeadList call asked for
 	detail    LeadDetailPage
 	campaigns []CampaignView
+	report    LeadReport
+	reportErr error // returned by LeadReport, after the leads read error
 
 	today       TodayView
 	todayQ      string // the campaign the last LeadsToday call asked for
@@ -65,6 +67,13 @@ type fakeBackend struct {
 	outcomeMsg  string
 	outcomeErr  error // returned by LeadCallOutcome
 	lastOutcome outcomeCall
+
+	drafts     DraftsPage
+	draftsQ    []string // the campaign each DraftSamples call asked for
+	draftsErr  error    // returned by DraftSamples for a campaign other than ""
+	reviewErr  error    // returned by ReviewDraft
+	lastReview reviewCall
+	gates      map[string]DraftGate
 
 	runOut     RunOutcome
 	runErr     error // returned by RunNow
@@ -241,6 +250,8 @@ func richBackend(text string) *fakeBackend {
 		today:     richToday(text),
 		call:      richCall(text),
 		seq:       richSequence(),
+		drafts:    richDrafts(text),
+		gates:     map[string]DraftGate{"drupal-eol": {Summary: "Claude drafts: not trusted yet: 14 of 20 reviewed, 86% approved"}},
 		runOut:    RunOutcome{Message: text},
 		runCard:   richCard(text),
 		results:   richResults(text),

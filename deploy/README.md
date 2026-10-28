@@ -87,7 +87,7 @@ The brief and ATS buttons start the timed units unchanged, so a run from the con
 A press while the same service is starting or running would be merged into that run by systemd, so the console refuses it and says when the running one started.
 `PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
 
-Check the watchers with `systemctl list-units 'leadhound-*.path'`: each of the five, these four and the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)), should be `active` and `waiting`; check a run with a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
+Check the watchers with `systemctl list-units 'leadhound-*.path'`: each of the six, these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)) and `leadhound-leads-research.path` (see [Contact research](#contact-research)), should be `active` and `waiting`; check a run with a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
 The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
 
 **A watcher stops when its service hits its start limit.**
@@ -107,10 +107,11 @@ sudo systemctl start leadhound-brief.path
 | --- | --- | --- |
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
-| `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` and `leads-templates/` (root:leadhound 0640, from `make deploy-data`), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
-| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests and its mailbox check requests (`run/mailbox-check`), one file per action, read by the `leadhound-*.path` watchers |
+| `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` `leads-templates/` and `campaigns/` (root:leadhound 0640, from `make deploy-data`; see [Campaigns on the server](#campaigns-on-the-server)), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) and its contact research requests (`run/leads-research`), one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
 | `/etc/leadhound/mailbox.key` | root, 0600 | the mailboxes' private key, made by the first deploy; see [Mailboxes](#mailboxes) |
+| `/etc/leadhound/anthropic.key` | root, 0600 | the Anthropic API key, placed by hand; see [The Anthropic key](#the-anthropic-key) |
 | `/etc/leadhound/migrate.env` | root, 0600, enforced | the owner role's URL, for `migrate` only (`deploy/migrate.env.example`) |
 | `/etc/systemd/system/leadhound-*` | root, 0644 | the units and timers, the Run now watchers, the console's included |
 | `/var/backups/leadhound/` | postgres, 0700 | the nightly dumps |
@@ -195,10 +196,12 @@ Run these on the server as root, in order.
     The 15:00 trim can overlap the afternoon collect, the leads probe, send and sync, and the console (24).
   - `leadhound_owner` has no statement timeout, so a migration's index build may take as long as it needs.
   Locally `make db-local` applies the same file, then lifts the connection limit so parallel test runs can share the role.
-- `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` and the `leads-templates/` directory from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`), after `score --check-config` and `leads check-config` pass on them; run it after you edit any of them.
-  All five must exist, or it stops before copying anything; a template you deleted locally is deleted on the server too.
+- `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml`, the `leads-templates/` directory and, when there is one, the `campaigns/` directory from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`), after `score --check-config`, `leads check-config` and (with a `campaigns/`) `leads campaigns check` pass on them; run it after you edit any of them.
+  The first five must exist, or it stops before copying anything; a template or campaign file you deleted locally is deleted on the server too.
+  Without a local `campaigns/`, the server's campaigns are left as they are.
   For a first `leads.yaml`, start from `examples/leads.yaml` (a demo with reserved names) and set your own sender, addresses and templates.
   It copies nothing else: the title screen is part of `leadhound.yaml`, and the eval golden set, the privacy denylist and the board seed lists are never needed on the server.
+  After copying `campaigns/` it prints the `leads campaigns register` line to run next, as [Campaigns on the server](#campaigns-on-the-server) says; it does not register for you.
 - `make remote HOST=… ARGS='track list'` runs one command on the server as the `leadhound` user with the units' environment.
   `track list`, `rules list`, `boards list`, `leads suppress list|check`, `leads batch show` and `leads mailboxes list` run freely; every other command writes or reaches the network (`collect`, `canary`, `brief`, `score`, `migrate`, `recheck`, `probe`, `track <n> …`, `rules add`, `boards import` …) and needs `CONFIRM=1`.
   `ARGS` is split into words by your own shell, as on a command line, and each word reaches `leadhound` whole: the server's shell never reinterprets it.
@@ -209,12 +212,12 @@ Run these on the server as root, in order.
 - On the server, a `systemctl` line that starts, stops, enables, disables or restarts a unit needs root, so this file writes it with `sudo`; `systemctl list-units`, `list-timers` and `journalctl` read only and need no `sudo`.
 - `deploy`, `deploy-data` and `remote` run their `sudo` steps over `ssh -t`, so `sudo` can ask for its password at your terminal.
   Run without a terminal (from a script), ssh warns that it allocates none, and the steps then need `sudo` without a password for the ssh user.
-- `deploy` and `deploy-data` refuse to run, even as `make -n`, without `HOST` and `CONFIRM=1`; `remote` refuses without `HOST`, and without `CONFIRM=1` for anything but the read-only lists.
+- `deploy`, `deploy-data` and `forget` refuse to run, even as `make -n`, without `HOST` and `CONFIRM=1`; `remote` refuses without `HOST`, and without `CONFIRM=1` for anything but the read-only lists.
 - The brief's LinkedIn recheck runs before the day's `brief_log` row is written, so a brief that crashes in between rechecks again on its retry; the three-try limit bounds that.
 
 ## Leads on the server
 
-Five timers run the Drupal leads; all times are Europe/Bucharest, each with up to 10 minutes of random delay.
+Five timers run the leads; all times are Europe/Bucharest, each with up to 10 minutes of random delay.
 Every leads unit has the same sandbox as the other timed units, `MemoryMax=600M` with `GOMEMLIMIT=450MiB`, `Nice=10`, idle I/O and `CPUWeight=50`, and each command runs under a `timeout` that `TimeoutStartSec` covers.
 Business hours, spacing, daily caps, the warm-up ramp and the pause are the commands' own (`leads.yaml` and the console), never the units'.
 
@@ -222,7 +225,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 | --- | --- | --- | --- |
 | `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` |
 | `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000`, under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=7h` | `LEADHOUND_LEADS_TIMERS=on` |
-| `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m` | sending on |
+| `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m`, for the `drupal-eol` campaign; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time | sending on |
 | `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | sending on |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | sending on |
 
@@ -327,18 +330,38 @@ The sending pace and ramp, the sender, the country channels and languages, and t
 No secret is shown or stored.
 `leads settings show` prints each setting in force and where it comes from, and `leads settings reset [--section …]` puts a section, or all of them, back to the file; on the server both run through `make remote … CONFIRM=1`.
 
+### Campaigns on the server
+
+A campaign is a folder in the data directory, `/opt/leadhound/data/campaigns/<slug>/`, holding `campaign.yaml` and its `templates/`; start from `examples/campaigns/` and make it your own in your private directory.
+`make deploy-data` runs `leads campaigns check` on your private `campaigns/` and copies it, with the same owner and modes it gives the templates (directories `root:leadhound 0750`, files `root:leadhound 0640`), removing a campaign file you deleted locally.
+The local check reads no database, so it refuses a `writer: claude` campaign (the draft gate lives in the server's database); keep `writer: template` in the private copy until that is solved.
+Then register it right away, as `deploy-data` reminds you:
+
+```sh
+make remote HOST=<ssh host> CONFIRM=1 ARGS='leads campaigns register'
+```
+
+A data directory that holds a campaign file with no registered version, or one changed since it was registered, refuses `leads batch new`, so the morning batch unit fails until you register.
+Run `register` after every change to a campaign file.
+Without a folder, `drupal-eol` drafts from `leads.yaml` and its templates as before, and the batch never asks for a registration.
+A data directory whose campaign lists a call-first country (Romania, say) needs that campaign's `call_first/` templates for each kind and language, or `register` and the batch refuse and name the missing files.
+`make remote HOST=<ssh host> ARGS='leads campaigns list' CONFIRM=1` shows what is registered.
+
 ### Turning the leads on in production
 
 Production has never built a lead, so take these steps in order:
 
-1. Deploy: `make deploy` migrates the core set up to 00008 and the leads set up to 00015.
-2. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
-3. Add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` to turn finding on.
-4. Check the first contacts run: it searches for contacts, enriches, rates and builds, and the console's List fills.
+1. Place the Anthropic key first, as [The Anthropic key](#the-anthropic-key) says: from the release with campaigns on, the batch and contact research units fail to start without it.
+2. Deploy: `make deploy` migrates the core set up to 00009 and the leads set up to 00021, with the new binary, before it puts that binary in place; a failed migration leaves the old release running.
+3. `make deploy-data` (it copies `campaigns/` too), then `leads campaigns register`, as [Campaigns on the server](#campaigns-on-the-server) says.
+4. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
+5. Add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` to turn finding on.
+6. Check the first contacts run: it searches for contacts, enriches, rates and builds, and the console's List fills.
    To start it before 10:00, run `sudo systemctl start leadhound-leads-contacts.service`.
-5. Rating is on by default and runs inside that unit once `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` are in the env file; turn it off in Settings if you do not want it.
+7. Rating is on by default and runs inside that unit once `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` are in the env file; turn it off in Settings if you do not want it.
    Then label 30 leads under To label and run the eval, as [Relevance](#relevance) says.
-6. Add a mailbox, send its test and turn sending on, as [Mailboxes](#mailboxes) and the steps above say.
+8. Before any campaign with a call step is batched: write your privacy notice, set `sender.privacy_url` in `leads.yaml` and run `make deploy-data` (the deadline is 7 Nov), and screen the Great Britain numbers against TPS and CTPS before the first GB call, as [Calls, screening and phone research](#calls-screening-and-phone-research) says.
+9. Add a mailbox, send its test and turn sending on, as [Mailboxes](#mailboxes) and the steps above say.
 
 ## Mailboxes
 
@@ -434,7 +457,7 @@ The daily domain limit, the number of mailboxes and the domain pauses count by t
 | Sends per sending domain per day, over all its mailboxes | 50 | 100 | `caps.domain_per_day` |
 | Mailboxes on one sending domain | 2 | 5 | `caps.mailboxes_per_domain` |
 
-The domain limit is the real safety line: the large mail providers judge reputation by the sending domain, not the single inbox, and none publishes a per-inbox number for cold email (the sources are in the README's Drupal leads section).
+The domain limit is the real safety line: the large mail providers judge reputation by the sending domain, not the single inbox, and none publishes a per-inbox number for cold email (the sources are in the README's Campaigns and leads section).
 A second mailbox on the same domain spreads the sending, but does not double what the domain may send.
 Adding one mailbox more than `caps.mailboxes_per_domain` is refused with a sentence naming the setting.
 
@@ -564,7 +587,7 @@ It prints no lift line for a suppression that another opt-out still leans on ("a
 
 ## The Anthropic key
 
-LeadHound drafts with Claude, so the jobs that draft need an Anthropic API key.
+LeadHound calls Claude to draft emails, to find a contact for a starred lead and to find a business phone, so the jobs that do that need an Anthropic API key.
 The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600`), holding the key alone on one line.
 
 - **Place it by hand.**
@@ -572,15 +595,17 @@ The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600
   Then ssh to the server, open the file in your own editor as root (for example `sudo -e /etc/leadhound/anthropic.key`), paste the key, save, and run `sudo chmod 0600 /etc/leadhound/anthropic.key`.
   Never type the key into a command line, where it lands in your shell history, and never paste it into a chat.
 - **Who reads it.**
-  Only the units that call Claude get it, as a systemd credential (`LoadCredential=anthropic-key:/etc/leadhound/anthropic.key`): today `leadhound-leads-batch.service`, because drafting runs at batch time.
-  The research and drafts units get the same line when they arrive; no other unit, and never the console.
+  Only the units that call Claude get it, as a systemd credential (`LoadCredential=anthropic-key:/etc/leadhound/anthropic.key`): `leadhound-leads-batch.service`, because drafting runs at batch time, and `leadhound-leads-research.service` (see [Contact research](#contact-research)).
+  No other unit gets it, and never the console; `make remote` hands it on only when you add `REMOTE_CLAUDE=1` (see "Running a Claude command by hand" below).
   This is why it is not a line in `/etc/leadhound/env`: the env file reaches every unit, the console included, and a credential reaches only the units that need it.
 - **No `ANTHROPIC_API_KEY` line is read anywhere.**
   LeadHound reads the key only from `$CREDENTIALS_DIRECTORY/anthropic-key` on the server or from the file `LEADHOUND_ANTHROPIC_KEY_FILE` names locally, and never from the environment.
 - **The console refuses to start** when it can see the key: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `LEADHOUND_ANTHROPIC_KEY_FILE` set to anything, or an `anthropic-key` credential handed to it.
   It exits 2, naming what it found, and systemd does not restart it.
 - **Every deploy** makes the file `root:root 0600` again if it is there, and never creates, reads or prints it.
-  Until you place it, the deploy says `install: no Anthropic key at /etc/leadhound/anthropic.key`, and `leadhound-leads-batch.service` cannot start, because systemd fails a unit whose credential file is missing.
+  Until you place it, the deploy says `install: no Anthropic key at /etc/leadhound/anthropic.key`, and `leadhound-leads-batch.service` and `leadhound-leads-research.service` cannot start, because systemd fails a unit whose `LoadCredential=` file is missing.
+  That holds even for a batch that drafts from templates only and never calls Claude, so place the key before you deploy this release with sending on, or the morning batch stops.
+  `ImportCredential=` would let the units start without the file, but it needs systemd 254 or later; the units do not use it yet, so check the server's version (`systemctl --version`) before that change.
 - **Locally**, put the key in a file outside the repository, made `0600` (`chmod 0600`), and set `LEADHOUND_ANTHROPIC_KEY_FILE=/path/outside/the/repo/anthropic.key` in your local `.env`.
   A file any other user can read is refused.
   Never set it on the server.
@@ -589,15 +614,133 @@ The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600
   No deploy is needed.
 - **A second ceiling.**
   Set a monthly spend limit on the key's workspace in the Claude Console, so a bug past LeadHound's own caps still stops at a sum you chose.
+- **Every Claude command needs `LEADHOUND_LIVE=1`** as well as the key; without it, it prints one line saying no Claude call was made and exits 0.
+
+**Running a Claude command by hand.**
+`leads drafts sample`, `leads drafts eval --decider claude`, `leads phones research` and `leads research run` call Claude, and `make remote` hands the Anthropic key to none of them unless you add `REMOTE_CLAUDE=1`, for example:
+
+```sh
+make remote HOST=<ssh host> CONFIRM=1 REMOTE_CLAUDE=1 ARGS='leads phones research --campaign drupal-eol --max 3'
+```
+
+`REMOTE_CLAUDE=1` adds `-p LoadCredential=anthropic-key:/etc/leadhound/anthropic.key` to the run, the same credential the batch and research units get.
+It refuses, before anything runs, without `CONFIRM=1` (it spends money), for the console (`serve`, `console …`), and for a command that gets the mailbox key (no command holds both keys).
+
+Each prints what it spent; a run stops at the caps below.
 
 ### Claude spend caps
 
-Every Claude call is priced before it is made, at its worst case, and refused when that would pass a cap; after the call its real cost is recorded.
+Every Claude call is priced before it is made, at its worst case, and refused when that would pass a cap; after the call its real cost is recorded, per lead and per purpose.
 
-- `LEADHOUND_CLAUDE_DAILY_USD_CAP` in `/etc/leadhound/env` (default `5.00`, in US dollars) is the ceiling for one day across every purpose.
-- Each purpose has its own daily cap in the campaign settings, never above that ceiling: drafting `3.00`, research `1.50`, and the drafts eval `2.00` (only when the eval's decider is Claude).
-- Each lead has a cap per purpose, checked against what that lead has already cost: drafting `0.08`, about two attempts' worst case so the one retry always fits, and research `0.10`, set in the campaign spec's `caps`.
-- A refused call costs nothing and is logged; the console shows today's spend against the ceiling.
+- `LEADHOUND_CLAUDE_DAILY_USD_CAP` in `/etc/leadhound/env` (in US dollars) is the ceiling for one day across every purpose.
+- Each purpose (drafting, research, and the drafts eval when its decider is Claude) has its own daily cap under that ceiling, and a cap per lead checked against what that lead has already cost under the purpose; the drafting per-lead cap leaves room for the one retry a refused draft gets.
+- The ceiling's default and the current per-purpose and per-lead caps, and the drafting writer's output ceiling they are sized against, are in `deploy/env.example`; only the ceiling is set in the env file, the per-purpose and per-lead caps are built in and the same for every campaign, and a campaign spec cannot set its own caps yet.
+- A refused call costs nothing and is logged; the dashboard and the Campaigns tab show today's spend against the ceiling.
+- A batch that reaches a cap drafts the remaining leads from templates and says how many and why.
+
+## Contact research
+
+Starring a lead that has no usable way to reach it sends a researcher to find one.
+The star control says so up front: "No email yet: starring it looks for one", or in a country written to by form only "Calls-first country: starring it looks for a business phone"; where there is nothing to look for it says "Not in this campaign's countries" or "Calls aren't allowed there under the current rules".
+The console never holds the Anthropic key and never calls Claude: it queues an attempt in the database and writes the request time to `/opt/leadhound/data/run/leads-research`.
+`leadhound-leads-research.path` sees the write (`PathChanged=`, as the [Run now](#run-now) watchers do) and starts `leadhound-leads-research.service`, which runs `leads research run --max 20` with the key as its credential.
+
+- **What it looks for** is one decision, shared by the star note, the request a star queues, "Look again" and `leads research request`: the lead's campaign must list its country (when the campaign lists countries); then the country rule in `leads.yaml` gives a published, impersonal role address where the country is emailed, a business phone where it is written to by form only, and nothing where it is off; and a phone is looked for only where the country table lets the campaign call (Germany needs the campaign's written `acknowledge:` reason, and a country the table does not list, such as Switzerland, is never called).
+  A lead that is suppressed, deferred or no longer new gets no attempt, and a suppressed domain is never researched.
+- **What it keeps.**
+  LeadHound fetches every page Claude cites and keeps only an address it finds there itself, classified as a role address the way the contact finder classifies one, with a working mail server; a phone counts only when it is printed on the page.
+  The next `leads build` gives the lead its channel.
+- **One attempt per organisation every 90 days**, counted from the attempt that ran; an attempt the spend cap stopped before calling counts for nothing.
+  The lead page's "Contact research" line says the latest attempt in plain words, and "Look again" asks for another, refused inside the 90 days with the date it can run.
+- **Caps.** Research has its own daily cap and a per-lead cap (see [Claude spend caps](#claude-spend-caps)); a run past them leaves the attempt paused, and it can be asked again.
+- **A run takes at most 20 attempts**, starred leads first, oldest first; the rest wait for the next request.
+  A request while the service runs is merged into that run by systemd.
+- **The batch refusal lists each starred lead and why it is out** (ready, no email yet, looking for a contact, found nothing, country rule, suppressed, deferred, ranked out), in the console and from `leads batch new`.
+- **Locally** there is no watcher: run `leadhound leads research run --max 3` by hand with the key file set as in [The Anthropic key](#the-anthropic-key) and `LEADHOUND_LIVE=1`.
+
+Check the watcher with `systemctl status leadhound-leads-research.path` and a run with `journalctl -u leadhound-leads-research.service`.
+Like `leadhound-leads-batch.service`, the unit fails at start while `/etc/leadhound/anthropic.key` is missing, so place the key before the first star on the server; the request stays queued and runs on the next request once the key is there.
+If it hits its start limit, reset it as the Run now watchers are reset:
+
+```sh
+sudo systemctl reset-failed leadhound-leads-research.path leadhound-leads-research.service
+sudo systemctl start leadhound-leads-research.path
+```
+
+## Calls, screening and phone research
+
+Calls are made by hand: the server never dials.
+A campaign with a call step drafts the call with the rest of the lead's sequence at batch time, and the call falls due after the step before it is sent.
+The console's Today tab lists the calls to make now and the overdue ones; each opens a call card with the number, where it came from, three talking points, the screening status and the six outcome buttons.
+Record what happened on the card, or from the command line:
+
+```sh
+make remote HOST=<ssh host> CONFIRM=1 ARGS='leads calls list --due'
+make remote HOST=<ssh host> CONFIRM=1 ARGS='leads calls outcome <message> no_answer --note "rang twice"'
+```
+
+`leads send` never touches a call row, and a reply or opt-out at any step cancels every pending call of that lead.
+
+**When a call is callable.**
+One rule decides it in every place that shows a call, in this order: there is a number to dial; it is not suppressed; it was not marked wrong on an earlier call; the country table (`internal/compliance/countries.yaml`) allows calling this organisation; the number's screening is clean and recent enough; and it is inside the calling hours in the callee's time.
+A country the table marks off (Austria, Poland, the Czech Republic, Bulgaria), or does not list, is never callable, and no campaign setting opens it.
+A campaign whose own countries say `call: off` still gets its calls drafted, with a warning beside each that it is your call whether to ring.
+A US, Canadian or Australian call needs the lead's state or region, which today only a café place gives; without it the card says "region unknown: not callable".
+The table was researched on 27 Oct 2026 and is not legal advice: entries marked `secondary`, `unverified` or `operator_decision` are leads for a lawyer, and `leads campaigns check` warns once the research is more than 180 days old.
+
+**The privacy notice, before calls start.**
+Phone numbers and call notes are personal data collected from public pages, so each lead must be able to find your privacy notice.
+Write the notice, set `sender.privacy_url` in `leads.yaml` to it, and run `make deploy-data`, before the first call campaign is batched (by 7 Nov); every email's footer then ends "How I handle your details: <url>".
+`leads campaigns check` warns for every campaign with a call step while it is missing.
+
+**Screening, before any Great Britain call.**
+A GB number is callable only with a clean TPS and a clean CTPS result from the last 28 days; other registers have their own age, and one with no age (Italy's, Spain's, Ireland's, Australia's and Greece's) counts from the latest batch approval.
+LeadHound has no register API: you export the numbers, screen the file with the register's own service, and import the result.
+
+```sh
+make remote HOST=<ssh host> CONFIRM=1 ARGS='leads phones screen export --register tps --out /tmp/tps-export.txt'
+make remote HOST=<ssh host> CONFIRM=1 ARGS='leads phones screen import --register tps /tmp/tps-result.csv'
+```
+
+The export lists only the numbers whose screening is missing or too old, a header line and then one E.164 number per line, at mode 0600, and never writes over an existing file (Ireland's export leaves out every number not known to be a landline, since only landlines are called there).
+The file is the `leadhound` user's, so copy it off the server as root, screen it, put the result back where that user can read it, import, and delete every copy on both sides: they hold phone numbers.
+The import reads the register's result file, counts lines it cannot read by number without guessing, and suppresses every listed number; a later clean result never lifts that suppression.
+Repeat with `--register ctps`.
+The registers are `tps`, `ctps`, `dncm`, `ndd`, `dncr`, `rpo`, `robinson` and `gr_art11`.
+
+**Do not call.**
+"Do not call" on the card, or `leads suppress add phone +NUMBER --reason do_not_call`, suppresses the number for every campaign and ends the lead's sequence; the suppression stores a hash of the number, never the number.
+"Wrong number" marks that number bad, so no later batch drafts it and no pending call to it stays callable.
+
+**Phone research.**
+`leads phones research --campaign SLUG [--max N]` (10 organisations by default) looks for a business phone for the campaign's leads that have a call step ahead and no phone, or only a switchboard, starred first.
+It is the contact research below with phones only: Claude (Haiku) searches, LeadHound fetches each page Claude cites and keeps a number only when it is printed there, on the organisation's own domain; it stores the line kind and a job title, never a person's name, and never Claude's quote of the page.
+Each organisation gets one try every 90 days, found or not, under the research caps in [Claude spend caps](#claude-spend-caps).
+It has no unit and no timer: run it by hand with the key, as "Running a Claude command by hand" in [The Anthropic key](#the-anthropic-key) shows.
+
+## Erasure
+
+`leads forget org ID --reason TEXT` erases one organisation's personal data when someone asks, in one transaction: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts, and the phones and emails of its map listing.
+It also suppresses the organisation's domain and its numbers (as hashes, with the source `forget: <reason>`), so it is never collected, enriched, researched or called again, moves its leads to suppressed and cancels their pending messages.
+The reason is one line of at most 200 characters with no `@` in it; it prints counts only, never a number or a page.
+ID is the organisation's id in the database (the `id` column of the `org` table), not the lead's number; the console does not show it yet.
+
+It runs as the owner role, because the app role can delete none of these rows, so it needs `/etc/leadhound/migrate.env` and cannot run through `make remote`; `make forget` runs it that way:
+
+```sh
+make forget HOST=<ssh host> ORG=<ID> REASON='asked to be removed' CONFIRM=1
+```
+
+It refuses, before anything runs, without `HOST`, `ORG` (digits only), `REASON` or `CONFIRM=1`; the reason reaches `leadhound` whole, single-quoted for the server's shell.
+On the server it is `systemd-run … -p EnvironmentFile=/etc/leadhound/env -p EnvironmentFile=/etc/leadhound/migrate.env … leadhound leads forget org <ID> --reason '…'`, as the `leadhound` user, the way `install.sh` runs `migrate`.
+
+Its log line, printed with the counts, names the org id and nothing personal; keep the ids you erase (the ids alone) in your private notes.
+
+**Backups keep erased data for a while.**
+The nightly dumps in `/var/backups/leadhound/` are not edited: an erased organisation stays in every dump written before the erasure until that dump ages out, at most the newest 14 dumps within 4 GiB (see [Backups and the storage budget](#backups-and-the-storage-budget)), so about two weeks.
+The shared cluster's own backups keep it for as long as their retention says.
+After any restore, run `leads forget org ID --reason TEXT` again for every id erased since that dump was written.
+It is safe to run again: on an organisation already erased it finds nothing left and says "nothing left to forget".
 
 ## Console
 
@@ -709,3 +852,5 @@ Dumps are in `pg_dump`'s custom format:
 ```sh
 sudo -u postgres pg_restore --clean --if-exists -d leadhound /var/backups/leadhound/leadhound-<stamp>.dump
 ```
+
+After a restore, run `leads forget` again for every organisation erased since that dump was written, as [Erasure](#erasure) says.

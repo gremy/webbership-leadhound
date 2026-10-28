@@ -1,0 +1,9 @@
+Subject: Re: {{.Host}} and Drupal {{.Major}}: the details
+
+Hello,
+
+A short follow-up to my note after our call. The free one-page upgrade-risk report for {{.OrgName}} on the update to Drupal 11 still stands, and it is yours to keep.
+
+Shall I send it over?
+
+{{.Footer}}

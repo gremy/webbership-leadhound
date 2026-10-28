@@ -240,6 +240,16 @@ func (b *backend) Leads(ctx context.Context) (console.LeadsPage, error) {
 		return console.LeadsPage{}, err
 	}
 	p.Sending = sn
+	// The standing "why each starred lead is out" list: a page that cannot work it out (a
+	// campaign file changed since it was registered) shows none and logs a count; the batch
+	// itself says why.
+	if out, err := starredOut(ctx, lq, newBatchSetup(setup, b.loc), now, leadstore.DefaultCampaignID); err != nil {
+		slog.Default().Warn("console starred out", "failed", 1)
+	} else {
+		for _, s := range out {
+			p.Starred = append(p.Starred, console.StarredOut{LeadID: s.LeadID, Domain: s.Domain, Why: starredLine(s)})
+		}
+	}
 	if p.Batches, err = waitingBatches(ctx, b.s.Pool()); err != nil {
 		return console.LeadsPage{}, err
 	}
@@ -512,6 +522,7 @@ func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, e
 	if v.Approvable() {
 		out.HashPrefix = v.HashPrefix()
 	}
+	gens := map[int64]*outreach.WrittenDraft{}
 	for _, it := range v.Items {
 		li := console.LeadItem{N: it.N, LeadID: it.Lead.ID, Domain: it.Org.Domain, Kind: it.Lead.Kind, Channel: it.Lead.Channel, Route: it.Route,
 			Finding: findingLines(v.Evidence[it.Lead.ID])}
@@ -526,6 +537,9 @@ func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, e
 			}
 			if m.State != leadstore.MsgDraft {
 				lm.State = m.State
+			}
+			if lm.Claude, err = claudeWriting(ctx, b.lq(), m.Slots, m.Step, m.Channel == leadstore.ChannelPhone, gens); err != nil {
+				return console.LeadBatch{}, err
 			}
 			li.Messages = append(li.Messages, lm)
 		}
@@ -759,7 +773,14 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 	case console.LeadPause, console.LeadResume:
 		return b.setSending(ctx, a.Do == console.LeadPause, a.Reason)
 	case console.LeadStar, console.LeadUnstar, console.LeadUp, console.LeadDown, console.LeadTop:
-		return b.star(ctx, a)
+		out, err := b.star(ctx, a)
+		if err == nil && a.Do == console.LeadStar {
+			// A star with no usable route asks research for one; it never undoes the star.
+			out.Message += b.researchOnStar(ctx, setup, a.ID)
+		}
+		return out, err
+	case console.LeadLookAgain:
+		return b.lookAgain(ctx, setup, a.ID)
 	case console.LeadDefer, console.LeadSkip, console.LeadClear:
 		return b.steer(ctx, a)
 	case console.LeadLabel:
@@ -834,7 +855,7 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 		case RefuseBatchWaiting:
 			return console.LeadOutcome{}, refused("Batch %d still waits for approval; no new batch.", r.BatchID)
 		case RefuseNoStarred:
-			return console.LeadOutcome{}, refused("%s", noStarredWords)
+			return console.LeadOutcome{}, refused("%s", noStarredText(r))
 		case RefuseSettingsIgnored:
 			return console.LeadOutcome{}, refused("%s", settingsIgnoredWords)
 		case RefuseNoRoom:
@@ -861,6 +882,12 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 	msg := fmt.Sprintf("Batch %d: %s. Read it and approve it below.", out.BatchID, out.Counts)
 	if out.Sizing != nil {
 		msg += " " + out.Sizing.Words() + "."
+	}
+	if out.ClaudeDrafted > 0 {
+		msg += fmt.Sprintf(" Claude wrote %s.", plural(out.ClaudeDrafted, "lead's sequence", "leads' sequences"))
+	}
+	if line := fallbackLine(out.Fallbacks); line != "" {
+		msg += " " + line + "."
 	}
 	if len(dropped) > 0 {
 		msg += " Left out: " + strings.Join(dropped, "; ") + "."

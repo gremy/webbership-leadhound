@@ -1,0 +1,13 @@
+Subject: Drupal {{.Major}} on {{.Host}}: the details
+
+Hello,
+
+Thanks for the call. As promised, the details.
+
+I'm {{.SenderName}}, a Drupal developer. Drupal {{.Major}} stopped getting security updates on {{.EOLDate}}, so new security holes in it stay open.
+
+Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.
+
+I can write the free one-page upgrade-risk report for {{.OrgName}}. It is yours to keep. Reply and I will send it.
+
+{{.Footer}}

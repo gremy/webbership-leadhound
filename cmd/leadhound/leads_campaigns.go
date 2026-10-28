@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,28 +59,59 @@ func noArgs(name string, args []string, n int) ([]string, error) {
 	return pos, nil
 }
 
-// loadCampaigns reads leads.yaml and every campaign spec from LEADHOUND_DATA_DIR, checked.
-// Any problem is a usage error naming every problem, one per line.
-func loadCampaigns() ([]campaign.Spec, error) {
+// loadCampaigns reads leads.yaml and every campaign spec from LEADHOUND_DATA_DIR, checked,
+// writer: claude allowed only where trust says the draft gate passes (nil: nowhere). Any
+// problem is a usage error naming every problem, one per line.
+func loadCampaigns(trust func(slug string) bool) ([]campaign.Spec, leadconfig.Config, error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return nil, err
+		return nil, leadconfig.Config{}, err
 	}
 	if cfg.DataDir == "" {
-		return nil, usageError("LEADHOUND_DATA_DIR is not set; the campaigns are read from it")
+		return nil, leadconfig.Config{}, usageError("LEADHOUND_DATA_DIR is not set; the campaigns are read from it")
 	}
 	lc, err := leadconfig.Load(cfg.DataDir)
 	if err != nil {
-		return nil, usageError("%s (values are not shown; run leads check-config)", strings.Join(configProblems(err), "; "))
+		return nil, leadconfig.Config{}, usageError("%s (values are not shown; run leads check-config)", strings.Join(configProblems(err), "; "))
 	}
-	return checkedCampaigns(cfg.DataDir, &lc)
+	specs, err := checkedCampaigns(cfg.DataDir, &lc, trust)
+	return specs, lc, err
+}
+
+// privacyMissing is `campaigns check`'s warning for a campaign with a call step while
+// leads.yaml has no sender.privacy_url: a warning, not a refusal (the notice is the
+// operator's to write).
+const privacyMissing = "The privacy notice link is missing: write the notice and set sender.privacy_url before calls start (by 7 Nov)."
+
+// campaignWarnings are the warnings `campaigns check` prints under the specs, one line
+// each: every campaign with a call step in any of its sequences (or moving leads onto the
+// default call_first) while sender.privacy_url is not set.
+func campaignWarnings(specs []campaign.Spec, lc leadconfig.Config) []string {
+	if strings.TrimSpace(lc.Sender.PrivacyURL) != "" {
+		return nil
+	}
+	var out []string
+	for _, sp := range specs {
+		seqs := [][]campaign.Step{sp.Sequence}
+		for _, seq := range sp.Sequences {
+			seqs = append(seqs, seq)
+		}
+		calls := false
+		for _, seq := range seqs {
+			calls = calls || slices.ContainsFunc(seq, func(st campaign.Step) bool { return st.Type == campaign.StepCall })
+		}
+		if calls {
+			out = append(out, sp.Slug+": warning: "+privacyMissing)
+		}
+	}
+	return out
 }
 
 // checkedCampaigns is campaign.LoadAll, and for each campaign with its own folder its
 // templates (campaignTemplates: every email step of its sequences and the call card), its
 // problems as one usage error, one per line.
-func checkedCampaigns(dataDir string, lc *leadconfig.Config) ([]campaign.Spec, error) {
-	specs, err := campaign.LoadAll(dataDir, lc)
+func checkedCampaigns(dataDir string, lc *leadconfig.Config, trust func(slug string) bool) ([]campaign.Spec, error) {
+	specs, err := campaign.LoadAllWith(dataDir, lc, campaign.LoadOptions{DraftsTrusted: trust})
 	if err != nil {
 		return nil, usageError("the campaigns do not pass their checks:\n%s", campaignProblems(err))
 	}
@@ -121,15 +153,24 @@ func campaignProblems(err error) string {
 	return strings.Join(lines, "\n")
 }
 
-func runCampaignsCheck(_ context.Context, args []string) error {
+func runCampaignsCheck(ctx context.Context, args []string) error {
 	if _, err := noArgs("leads campaigns check", args, 0); err != nil {
 		return err
 	}
-	specs, err := loadCampaigns()
+	// The draft gate lives in the database; without one, writer: claude stays refused.
+	var gates *campaignGates
+	if cfg, err := loadConfig(); err == nil && cfg.DatabaseURL.Reveal() != "" {
+		gates = lazyCampaignGates(ctx, openLeadsStore)
+		defer gates.close()
+	}
+	specs, lc, err := loadCampaigns(gates.trust())
 	if err != nil {
-		return err
+		return gates.explain(err)
 	}
 	printCampaignSpecs(stdout, specs)
+	for _, w := range campaignWarnings(specs, lc) {
+		_, _ = fmt.Fprintln(stdout, w)
+	}
 	return nil
 }
 
@@ -144,15 +185,16 @@ func runCampaignsRegister(ctx context.Context, args []string) error {
 	if _, err := noArgs("leads campaigns register", args, 0); err != nil {
 		return err
 	}
-	specs, err := loadCampaigns()
-	if err != nil {
-		return err
-	}
 	s, err := openLeadsStore(ctx)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	gates := newCampaignGates(ctx, leadstore.NewQueries(s.Pool()))
+	specs, _, err := loadCampaigns(gates.trust())
+	if err != nil {
+		return gates.explain(err)
+	}
 	return registerCampaigns(ctx, leadstore.NewQueries(s.Pool()), specs, stdout)
 }
 

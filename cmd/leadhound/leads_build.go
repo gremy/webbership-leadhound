@@ -77,15 +77,17 @@ type buildSummary struct {
 	NoLead    map[string]int            // reason → orgs
 }
 
-// buildCP7Words refuses a build for any campaign but the legacy Drupal one: its own detectors
-// and sources arrive in CP7.
-const buildCP7Words = "only the %s campaign builds leads for now; per-campaign build comes in CP7"
+// buildSourceWords refuses a build for a campaign other than the legacy Drupal one whose
+// source is not overture: a second site-list campaign has no build of its own yet.
+const buildSourceWords = "campaign %s reads source %q: only the %s campaign builds from the site list; another campaign builds from an %q source"
 
 // runLeadsBuild is `leads build [--campaign SLUG]`: it classifies every org that has a
 // finding (a site's last Drupal probe, or an agency's finding) and its routes into a lead of
 // the campaign, one per org. A lead still new is classified again from the latest facts:
 // refreshed, or skipped when they no longer make a lead. A lead past new is left as it is.
-// Only the legacy Drupal campaign builds; an unknown or retired campaign is a usage error.
+// The legacy Drupal campaign builds from the site list (orgs a place import made are not
+// its); a campaign whose registered spec reads an overture source builds from its places
+// (buildCafeLeads). An unknown or retired campaign is a usage error.
 func runLeadsBuild(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads build", flag.ContinueOnError)
 	slug := fs.String("campaign", campaign.LegacySlug, campaignFlagUsage)
@@ -105,8 +107,16 @@ func runLeadsBuild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var spec *campaign.Spec
 	if c.Slug != campaign.LegacySlug {
-		return usageError(buildCP7Words, campaign.LegacySlug)
+		sp, err := registeredSpec(setup.dataDir, c)
+		if err != nil {
+			return err
+		}
+		if sp.Source.Kind != campaign.SourceOverture {
+			return usageError(buildSourceWords, c.Slug, sp.Source.Kind, campaign.LegacySlug, campaign.SourceOverture)
+		}
+		spec = &sp
 	}
 	q := s.Q()
 	runID, err := q.StartRun(ctx, commandLeadsBuild, sourceLeads)
@@ -116,7 +126,11 @@ func runLeadsBuild(ctx context.Context, args []string) error {
 	var sum buildSummary
 	runErr := leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {
 		var err error
-		sum, err = buildLeads(ctx, lq, setup.leads, c.ID)
+		if spec != nil {
+			sum, err = buildCafeLeads(ctx, lq, setup.leads, *spec, c.ID)
+		} else {
+			sum, err = buildLeads(ctx, lq, setup.leads, c.ID)
+		}
 		return err
 	})
 	result := store.RunResult{Note: fmt.Sprintf("%d orgs, %d leads, %d new", sum.Orgs, sum.Leads, sum.Created)}

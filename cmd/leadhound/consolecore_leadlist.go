@@ -17,12 +17,14 @@ import (
 	"golang.org/x/text/language"
 	"golang.org/x/text/language/display"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadview"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
+	"github.com/gremy/webbership-leadhound/internal/probe"
 )
 
 // The Leads list and a lead's page: the console's query read into leadstore's filter, the
@@ -103,9 +105,10 @@ func kindLabel(kinds []leadKind, name string) string {
 // leadsWeighing is what the list and a lead's page are weighed by: the effective
 // profile, the small-site cut and whether relevance passed its trust gate.
 type leadsWeighing struct {
-	cfg     leadconfig.Config
-	profile leadconfig.Profile
-	trusted bool
+	cfg      leadconfig.Config
+	profile  leadconfig.Profile
+	trusted  bool
+	research researchRules // what a star may look for (the star notes)
 }
 
 func (b *backend) leadsWeighing(ctx context.Context) (leadsWeighing, error) {
@@ -113,7 +116,12 @@ func (b *backend) leadsWeighing(ctx context.Context) (leadsWeighing, error) {
 	if err != nil {
 		return leadsWeighing{}, err
 	}
-	return weighLeads(ctx, b.lq(), setup)
+	w, err := weighLeads(ctx, b.lq(), setup)
+	if err != nil {
+		return leadsWeighing{}, err
+	}
+	w.research, err = loadResearchRules(ctx, b.lq(), setup.leads, b.now())
+	return w, err
 }
 
 // weighLeads is leadsWeighing over lq for the effective config in setup; leads rate orders
@@ -205,6 +213,9 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	}
 	calls, err := lq.LatestLabels(ctx, ids)
 	if err != nil {
+		return console.LeadListPage{}, err
+	}
+	if w.research, err = w.research.withPhones(ctx, lq, newLeadOrgs(rows...)); err != nil {
 		return console.LeadListPage{}, err
 	}
 	today := b.now().In(b.loc)
@@ -503,6 +514,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		State:    leadStateWords(r.State),
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
 		Starred: r.Starred, SmallSite: r.SmallSite,
+		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
 	}
 	if r.Relevance != nil {
 		row.Relevance = leadview.RelevanceWords(r.Relevance, r.Band, w.trusted)
@@ -551,6 +563,9 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 	if err != nil {
 		return console.LeadDetailPage{}, err
 	}
+	if w.research, err = w.research.withPhones(ctx, b.lq(), newLeadOrgs(d.ListRow)); err != nil {
+		return console.LeadDetailPage{}, err
+	}
 	p := console.LeadDetailPage{
 		LeadListRow:   leadListRow(d.ListRow, kinds, w, order, b.now().In(b.loc)),
 		Origin:        d.Origin,
@@ -560,6 +575,12 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 	if p.YourCall, err = leadCall(ctx, b.lq(), &p.LeadListRow); err != nil {
 		return console.LeadDetailPage{}, err
 	}
+	lr, err := b.leadResearch(ctx, id)
+	if err != nil {
+		return console.LeadDetailPage{}, err
+	}
+	p.Research = consoleResearch(lr, w.research, d.State, w.research.listLead(d.ListRow))
+	p.Report = b.reportLink(ctx, w.cfg, id)
 	// Every purpose together; 0 (no Claude call on this lead yet) shows nothing.
 	if spent, err := b.s.Q().ClaudeSpendForLead(ctx, id, ""); err != nil {
 		return console.LeadDetailPage{}, err
@@ -570,7 +591,8 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		p.ListRank = strconv.Itoa(*d.ListRank)
 	}
 	for _, s := range d.Signals {
-		p.Signals = append(p.Signals, console.LeadSignal{Name: s.Name, Value: s.Value, FetchURL: s.URL, FinalURL: s.FinalURL,
+		name, value := cafeSignalWords(s.Name, s.Value)
+		p.Signals = append(p.Signals, console.LeadSignal{Name: name, Value: value, FetchURL: s.URL, FinalURL: s.FinalURL,
 			Status: httpStatusWords(s.Status), FetchedAt: s.FetchedAt})
 	}
 	for _, r := range d.Routes {
@@ -747,4 +769,23 @@ func detailMessageLabel(m leadstore.DetailMessage) string {
 		l += " · shadow batch"
 	}
 	return l
+}
+
+// cafeSignalWords words a cafe@1 probe signal for the lead page: "loyalty" with
+// "stampme, via script: https://…" (the vendor or phrase id, where on the page, what
+// matched), and the language with where it was read. Any other signal stays as stored.
+func cafeSignalWords(name, value string) (string, string) {
+	switch name {
+	case cafe.SigLoyalty, cafe.SigOrdering, cafe.SigInstagram:
+		parts := strings.SplitN(value, ":", 4)
+		if len(parts) == 4 && parts[0] == name {
+			return name, parts[1] + ", via " + parts[2] + ": " + parts[3]
+		}
+	case probe.SigCafeLang:
+		parts := strings.SplitN(value, ":", 3)
+		if len(parts) == 3 {
+			return "language", parts[0] + ", via " + parts[1] + " (" + parts[2] + ")"
+		}
+	}
+	return name, value
 }

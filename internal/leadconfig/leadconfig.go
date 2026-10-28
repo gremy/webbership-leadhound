@@ -177,6 +177,7 @@ func (cfg Config) Clone() Config {
 	c.Sender.OptOutLines = maps.Clone(cfg.Sender.OptOutLines)
 	c.KindsPriority = slices.Clone(cfg.KindsPriority)
 	c.KindsOff = slices.Clone(cfg.KindsOff)
+	c.Probe.CafeOwnVendorHosts = slices.Clone(cfg.Probe.CafeOwnVendorHosts)
 	if cfg.Relevance.Rating != nil {
 		on := *cfg.Relevance.Rating
 		c.Relevance.Rating = &on
@@ -212,6 +213,12 @@ type SiteLists struct {
 // Probe paces the Drupal version probe.
 type Probe struct {
 	ReprobeAfterDays int `yaml:"reprobe_after_days"`
+	// CafeOwnVendorHosts are the hosts ("host" or "host/path-prefix") of the operator's own
+	// loyalty product: a café whose homepage links or loads one is already a customer, and
+	// the cafe@1 detector skips it (cafe.Config.WithOwnVendor). Private: they live in the
+	// data dir's leads.yaml, never in the repository (the privacy check refuses the live
+	// domain in tracked files). Empty: no café is recognised as a customer.
+	CafeOwnVendorHosts []string `yaml:"cafe_own_vendor_hosts"`
 }
 
 // Country is one country's policy.
@@ -239,9 +246,25 @@ type Sender struct {
 	DKIMSelector      string          `yaml:"dkim_selector"`
 	OperatorAddresses []config.Secret `yaml:"operator_addresses"`
 	SiteURL           string          `yaml:"site_url"` // the one URL besides the finding's that a draft may hold
+	// PrivacyURL is the page of the sender's privacy notice (optional, https). When set,
+	// every email's footer ends with PrivacyLine, and Check allows this URL there only.
+	PrivacyURL string `yaml:"privacy_url"`
 	// OptOutLines maps a language to its opt-out line; every language an email country
 	// uses needs one.
 	OptOutLines map[string]string `yaml:"opt_out_lines"`
+}
+
+// PrivacyLinePrefix opens the footer's privacy line, before the notice's URL.
+const PrivacyLinePrefix = "How I handle your details: "
+
+// PrivacyLine is the footer line naming the privacy notice ("How I handle your details:
+// <url>"); "" when no privacy_url is set.
+func (s Sender) PrivacyLine() string {
+	u := strings.TrimSpace(s.PrivacyURL)
+	if u == "" {
+		return ""
+	}
+	return PrivacyLinePrefix + u
 }
 
 // OptOutLine returns the opt-out line for a language.
@@ -489,6 +512,11 @@ func (cfg *Config) checkProbe() []string {
 	if cfg.Probe.ReprobeAfterDays < 1 {
 		p = append(p, "probe.reprobe_after_days must be at least 1")
 	}
+	for _, h := range cfg.Probe.CafeOwnVendorHosts {
+		if !vendorHost.MatchString(h) {
+			p = append(p, fmt.Sprintf("probe.cafe_own_vendor_hosts: %q is not host or host/path (lower case, no scheme)", h))
+		}
+	}
 	p = append(p, names("public_body_suffixes", cfg.PublicBodySuffixes, dnsName)...)
 	if len(cfg.RoleLocalParts) == 0 {
 		p = append(p, "role_local_parts is empty")
@@ -539,6 +567,10 @@ func (cfg *Config) checkProbe() []string {
 	return p
 }
 
+// vendorHost is one probe.cafe_own_vendor_hosts entry: a lower-case host with a dot, and an
+// optional path prefix.
+var vendorHost = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9._~-]+)*$`)
+
 // checkRest checks every field outside checkProbe's set.
 func (cfg *Config) checkRest() []string {
 	var p []string
@@ -563,6 +595,13 @@ func (cfg *Config) checkRest() []string {
 		u, err := url.Parse(s.SiteURL)
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			p = append(p, fmt.Sprintf("sender.site_url: %q is not an absolute http(s) URL", s.SiteURL))
+		}
+	}
+
+	if s.PrivacyURL != "" {
+		u, err := url.Parse(s.PrivacyURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || strings.ContainsAny(s.PrivacyURL, " \t\r\n") {
+			p = append(p, fmt.Sprintf("sender.privacy_url: %q is not an absolute https URL", s.PrivacyURL))
 		}
 	}
 
@@ -753,6 +792,21 @@ type Set struct {
 	Form, LinkedIn *template.Template
 	Email          map[int]Email      // a campaign's email steps by step number; nil for leads.yaml's
 	Call           *template.Template // a campaign's call.txt: three talking points, one per line
+	// Named are a campaign's named sequences' email steps (call_first), by sequence name and
+	// step number, read from <kind>/<lang>/<name>/<step>.txt: their step numbers overlap the
+	// default sequence's, so they never share its files.
+	Named map[string]map[int]Email
+}
+
+// SequenceEmail is the template of email step in sequence name ("" or "default": the
+// default sequence's Email).
+func (s Set) SequenceEmail(name string, step int) (Email, bool) {
+	if name == "" || name == "default" {
+		e, ok := s.Email[step]
+		return e, ok
+	}
+	e, ok := s.Named[name][step]
+	return e, ok
 }
 
 // Templates are the parsed templates. Every template is parsed with missingkey=error and
@@ -961,6 +1015,9 @@ type CampaignTemplates struct {
 	Langs      []string
 	EmailSteps []int // the sequence's email steps, in order
 	Call       bool  // the sequence has a call step
+	// Named are the email steps of each named sequence (call_first), read from
+	// <kind>/<lang>/<name>/<step>.txt.
+	Named map[string][]int
 }
 
 // LoadCampaignTemplates reads, parses and test-renders a campaign's templates from dir, as
@@ -1017,18 +1074,32 @@ func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error)
 			}
 			base := kind + "/" + lang + "/"
 			set := Set{Email: map[int]Email{}}
-			for _, step := range req.EmailSteps {
-				rel := fmt.Sprintf("%s%d.txt", base, step)
-				text, ok := readT(rel)
-				if !ok {
+			readSteps := func(dir string, steps []int, into map[int]Email) {
+				for _, step := range steps {
+					rel := fmt.Sprintf("%s%d.txt", dir, step)
+					text, ok := readT(rel)
+					if !ok {
+						continue
+					}
+					subject, body, err := splitEmail(text)
+					if err != nil {
+						p = append(p, fmt.Sprintf("template %s: %v", rel, err))
+						continue
+					}
+					into[step] = Email{Subject: parse(rel, subject), Body: parse(rel, body)}
+				}
+			}
+			readSteps(base, req.EmailSteps, set.Email)
+			for _, name := range slices.Sorted(maps.Keys(req.Named)) {
+				if !fileName.MatchString(name) {
+					p = append(p, fmt.Sprintf("sequence %q is not a folder name", name))
 					continue
 				}
-				subject, body, err := splitEmail(text)
-				if err != nil {
-					p = append(p, fmt.Sprintf("template %s: %v", rel, err))
-					continue
+				if set.Named == nil {
+					set.Named = map[string]map[int]Email{}
 				}
-				set.Email[step] = Email{Subject: parse(rel, subject), Body: parse(rel, body)}
+				set.Named[name] = map[int]Email{}
+				readSteps(base+name+"/", req.Named[name], set.Named[name])
 			}
 			if req.Call {
 				rel := base + CallFile

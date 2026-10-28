@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drupal upgrade-risk report: Riverside Trust</title>
+<style>
+@page { size: A4; margin: 14mm 16mm; }
+:root { --ink: #1c2126; --muted: #5b6570; --line: #d9dee3; --accent: #0b5cad; --warn: #a3361f; --tint: #f4f6f8; }
+* { box-sizing: border-box; }
+html { background: #ffffff; }
+body { margin: 0 auto; max-width: 178mm; padding: 10mm 0; color: var(--ink); background: #ffffff;
+  font: 10pt/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+@media print { body { padding: 0; max-width: none; } }
+header { border-bottom: 2px solid var(--ink); padding-bottom: 3mm; margin-bottom: 4mm; }
+.kicker { margin: 0; font-size: 8.5pt; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 1mm 0 0; font-size: 19pt; line-height: 1.2; }
+.domain { margin: 0; color: var(--muted); }
+h2 { margin: 5mm 0 1.5mm; font-size: 11.5pt; }
+p { margin: 0 0 1.5mm; }
+ul { margin: 0; padding-left: 5mm; }
+li { margin-bottom: 1mm; }
+.src { display: block; margin-top: .3mm; font-size: 7.5pt; color: var(--muted); }
+.figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; margin: 0; }
+@media screen and (max-width: 560px) { body { padding: 6mm 16px; } .figures { grid-template-columns: 1fr; } }
+.figure { margin: 0; padding: 3mm; background: var(--tint); border: 1px solid var(--line); border-radius: 2mm; break-inside: avoid; }
+.figure dt { font-size: 8pt; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.figure dd { margin: 1mm 0 0; }
+.figure .big { display: block; font-size: 15pt; font-weight: 700; line-height: 1.2; }
+.figure.alert .big { color: var(--warn); }
+.url { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 8.5pt; word-break: break-all; }
+.sender { border-top: 1px solid var(--line); margin-top: 5mm; padding-top: 2mm; }
+a { color: var(--accent); }
+footer { margin-top: 4mm; font-size: 7.5pt; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <p class="kicker">Drupal upgrade-risk report</p>
+  <h1>Riverside Trust</h1>
+  <p class="domain">riverside.example</p>
+  <span class="src">Source: the organisation&#39;s public details</span>
+</header>
+
+<dl class="figures">
+  <div class="figure">
+    <dt>Version found</dt>
+    <dd><span class="big">Drupal 7.98</span><span class="src">Source: a scan of riverside.example on 20 October 2026</span></dd>
+  </div>
+  <div class="figure">
+    <dt>End of life</dt>
+    <dd><span class="big">5 January 2025</span><span class="src">Source: Drupal&#39;s published support schedule</span></dd>
+  </div>
+  <div class="figure alert">
+    <dt>Unsupported for</dt>
+    <dd><span class="big">661</span> days since end of life<span class="src">Source: worked out from the end-of-life date above and this report&#39;s date, 28 October 2026</span></dd>
+  </div>
+</dl>
+
+<h2>What we found</h2>
+<p>We read the site on 20 October 2026, at <span class="url">https://www.riverside.example/</span>.<span class="src">Source: a scan of riverside.example on 20 October 2026</span></p>
+<ul>
+  <li>The page loads Drupal&#39;s core files at version 7.98.<span class="src">Source: a scan of riverside.example on 20 October 2026</span></li>
+  <li>The page carries a Drupal settings block.<span class="src">Source: a scan of riverside.example on 20 October 2026</span></li>
+</ul>
+
+<h2>What end of life means</h2>
+<p>Drupal 7 reached its end of life on 5 January 2025. Since then, security problems found in Drupal 7 core get no fix from the Drupal Security Team, and contributed modules no longer have to support it.<span class="src">Source: Drupal's end-of-life policy, with the date above</span></p>
+
+<h2>What a migration involves</h2>
+<p>Drupal 7 cannot be updated in place to a supported version. Moving to Drupal 10 or 11 is a migration: a new site is built on current Drupal, and the content, users and files are carried across with Drupal&#39;s own migration tools.</p>
+<p>Custom modules and the theme are rebuilt for the new version, and each contributed module is matched to its current release or a replacement. The old site stays live until the new one has been checked, so the switch can be planned for a quiet day.</p>
+<span class="src">Source: the sender&#39;s own summary of the work</span>
+
+<section class="sender">
+  <h2>Who wrote this</h2>
+  <p>Alex Example</p>
+  <p>I build and look after Drupal sites for small organisations.</p>
+  <p>Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.</p>
+  <p><a href="https://sender.example/">https://sender.example/</a></p>
+  <p class="contact">To talk it over, write to alex@sender.example.</p>
+  <span class="src">Source: the sender</span>
+</section>
+
+<footer>Prepared on 28 October 2026. Every line names where it comes from; nothing here is an estimate. This report is yours to keep.</footer>
+</body>
+</html>

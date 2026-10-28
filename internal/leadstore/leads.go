@@ -89,6 +89,9 @@ type LeadRow struct {
 	AgencyFindingID *int64 // the finding of an agency lead
 	Channel         string // a Channel* value
 	RouteID         *int64
+	// FindingID is the lead's finding when neither ProbeID nor AgencyFindingID gives one (a
+	// café with no website: its place's finding, EnsureCafeFinding); nil otherwise.
+	FindingID *int64
 }
 
 // UpsertLead creates the lead for l.OrgID in campaign l.CampaignID unless the org already
@@ -113,6 +116,9 @@ func (q Queries) UpsertLead(ctx context.Context, l LeadRow) (leadID int64, creat
 	findingID, err := findingFor(ctx, q.db, l)
 	if err != nil {
 		return 0, false, fmt.Errorf("leadstore: upsert lead: finding: %w", err)
+	}
+	if findingID == nil {
+		findingID = l.FindingID
 	}
 	err = q.db.QueryRow(ctx,
 		`WITH ins AS (
@@ -282,6 +288,7 @@ type Candidate struct {
 	Domain          string `db:"domain"`
 	OrgName         string `db:"org_name"`
 	Country         string `db:"country"`
+	Region          string `db:"region"` // ISO 3166-2 ("US-IL"), "" when unknown (00021)
 	Kind            string `db:"kind"`
 	Channel         string `db:"channel"`
 	RouteID         *int64 `db:"route_id"`
@@ -337,11 +344,19 @@ type CandidateOptions struct {
 	// leads block them (suppression is per account, across its campaigns); 0 is
 	// DefaultAccountID.
 	AccountID int64
+	// Countries, when not nil, offers only the leads whose org is in one of these countries
+	// (ISO alpha-2, upper case): a campaign spec's country list (D3). nil offers every
+	// country, as leads.yaml's channels decide (the legacy campaign).
+	Countries []string
+	// PhoneOnlyCountries also offers, in these countries (ISO alpha-2, upper case), the
+	// leads with no route (channel none) whose org has a phone fact: a call-first plan calls
+	// them and emails only the address they give on the call. nil offers none of them.
+	PhoneOnlyCountries []string
 }
 
 // CandidateLeads returns the leads a new batch may draft, of campaign o.CampaignID (0: every
 // campaign of the account): state new, a channel other than
-// none, no suppression on the route's address, the org's domain or the address's domain,
+// none (or, in o.PhoneOnlyCountries, none with a phone fact on the org), no suppression on the route's address, the org's domain or the address's domain,
 // no other lead on one of those domains already reached (batched, contacted, replied,
 // bounced or opted out), of a kind batches draft (lead_kind.outreach), a site lead's probe still its site's
 // latest (else it waits for RefreshLead), not deferred through o.Today, not in a country
@@ -391,7 +406,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 	//     is the org's domain or the address's domain.
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[Candidate],
 		`WITH c AS MATERIALIZED (
-		   SELECT l.id AS lead_id, l.org_id, o.domain, o.name AS org_name, o.country, l.kind, l.channel,
+		   SELECT l.id AS lead_id, l.org_id, o.domain, o.name AS org_name, o.country, o.region, l.kind, l.channel,
 		     l.route_id, coalesce(r.kind, '') AS route_kind, coalesce(r.value, '') AS route,
 		     l.probe_id, l.agency_finding_id, s.list_rank,
 		     coalesce(p.major, 0) AS major, coalesce(p.exact_version, '') AS exact_version,
@@ -430,7 +445,9 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     SELECT nullif(lower(split_part(a.addr, '@', 2)), '') AS adom
 		   ) ad
 		   CROSS JOIN LATERAL (SELECT `+scoreSQL+` AS score) sc
-		   WHERE l.state = 'new' AND l.channel <> 'none'
+		   WHERE l.state = 'new'
+		     AND (l.channel <> 'none' OR (upper(o.country) = ANY($13::text[])
+		       AND EXISTS (SELECT 1 FROM org_fact pfx WHERE pfx.org_id = l.org_id AND pfx.kind = 'phone')))
 		     AND (l.probe_id IS NULL OR p.id = s.last_probe_id)
 		     AND o.kind <> 'selftest'
 		     AND ($4 OR (o.domain !~ $3 AND coalesce(ad.adom, '') !~ $3))
@@ -440,6 +457,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     AND NOT (l.probe_id IS NOT NULL AND $7::int > 0 AND (s.list_rank IS NULL OR s.list_rank > $7::int))
 		     AND (NOT $8::bool OR coalesce(st.action <> 'unstar', false))
 		     AND ($11::bigint = 0 OR l.campaign_id = $11::bigint)
+		     AND ($12::text[] IS NULL OR upper(o.country) = ANY($12::text[]))
 		 ), acct AS MATERIALIZED (
 		   SELECT id FROM campaign WHERE account_id = $10
 		 ), reached AS MATERIALIZED (
@@ -470,7 +488,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   UNION
 		   SELECT c.lead_id FROM c JOIN reached x ON x.d = c.adom AND x.lead_id <> c.lead_id
 		 )
-		 SELECT lead_id, org_id, domain, org_name, country, kind, channel, route_id, route_kind, route,
+		 SELECT lead_id, org_id, domain, org_name, country, region, kind, channel, route_id, route_kind, route,
 		   probe_id, agency_finding_id, list_rank, major, exact_version, site_name, phrase, finding_url,
 		   score, starred, position, relevance
 		 FROM c
@@ -480,7 +498,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   score DESC, list_rank NULLS LAST, lead_id
 		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today,
 		kindsOff, o.SkipRankOver, o.StarredOnly, o.SortByRelevance,
-		orAccount(o.AccountID), o.CampaignID)
+		orAccount(o.AccountID), o.CampaignID, o.Countries, o.PhoneOnlyCountries)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
 	}

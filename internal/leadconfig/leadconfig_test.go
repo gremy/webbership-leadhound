@@ -276,6 +276,8 @@ func TestConfigProblems(t *testing.T) {
 		{"bad spacing", "spacing_minutes: [3, 9]", "spacing_minutes: [9, 3]", "spacing_minutes", false},
 		{"no batch", "batch_size: 10", "batch_size: 0", "batch_size", false},
 		{"bad site url", "site_url: https://sender.example/", "site_url: sender.example", "sender.site_url", false},
+		{"http privacy url", "site_url: https://sender.example/", "site_url: https://sender.example/\n  privacy_url: http://sender.example.test/privacy", "sender.privacy_url", false},
+		{"relative privacy url", "site_url: https://sender.example/", "site_url: https://sender.example/\n  privacy_url: /privacy", "sender.privacy_url", false},
 		{"bad operator address", "[operator@sender.example]", "[operator]", "sender.operator_addresses", false},
 		{"email language without opt-out line", "    en: ", "    de: ", "sender.opt_out_lines.en", false},
 		{"blank opt-out line", `    en: "Not the right time? Reply \"unsubscribe\" and I will not write to you again."`, `    en: "  "`, "sender.opt_out_lines.en", false},
@@ -610,4 +612,24 @@ func TestDomainCapsAndHealthBounds(t *testing.T) {
 	replaceIn(t, dir, FileName, "health:", "health:\n  bounce_pase: {}")
 	_, err := Load(dir)
 	wantProblem(t, err, "bounce_pase")
+}
+
+// TestPrivacyURL: a valid https privacy_url loads and gives the footer's privacy line; unset,
+// there is no line.
+func TestPrivacyURL(t *testing.T) {
+	dir := demoDir(t)
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sender.PrivacyURL != "" || cfg.Sender.PrivacyLine() != "" {
+		t.Fatalf("the example sets a privacy url: %q", cfg.Sender.PrivacyURL)
+	}
+	replaceIn(t, dir, FileName, "site_url: https://sender.example/", "site_url: https://sender.example/\n  privacy_url: https://sender.example.test/privacy")
+	if cfg, err = Load(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sender.PrivacyLine(); got != "How I handle your details: https://sender.example.test/privacy" {
+		t.Fatalf("privacy line %q", got)
+	}
 }

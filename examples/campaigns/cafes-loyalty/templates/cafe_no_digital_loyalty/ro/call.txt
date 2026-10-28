@@ -1,0 +1,3 @@
+Spune cine ești: {{.SenderName}}, ai construit un card de ștampile în Wallet și îl folosești la o cafenea.
+Întreabă cum își păstrează {{.OrgName}} clienții fideli azi și dacă se pierd cardurile de hârtie.
+Oferă demo-ul pe telefonul lor, apoi 30 de zile gratuite. Dacă acceptă un email, notează adresa.

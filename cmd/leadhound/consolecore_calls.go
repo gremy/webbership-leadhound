@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
+	"github.com/gremy/webbership-leadhound/internal/compliance"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/dial"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
@@ -20,8 +22,7 @@ import (
 
 // LeadsToday is the day's work for campaign slug ("" or an unknown slug: every campaign).
 func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayView, error) {
-	setup, err := b.leadsSetup(ctx, leadsForProbe)
-	if err != nil {
+	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
 		return console.TodayView{}, err
 	}
 	lq := b.lq()
@@ -29,7 +30,7 @@ func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayVie
 	if err != nil {
 		return console.TodayView{}, err
 	}
-	v := console.TodayView{CallsOff: callsOffWords}
+	v := console.TodayView{}
 	var campaignID int64
 	for _, c := range cs {
 		v.Campaigns = append(v.Campaigns, console.FilterOption{Value: c.Slug, Label: c.Name})
@@ -42,11 +43,11 @@ func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayVie
 	if err != nil {
 		return console.TodayView{}, err
 	}
-	pol, err := loadCallPolicies(ctx, lq)
+	verdicts, err := callVerdicts(ctx, lq, now, t.CallsDueNow, t.CallsOverdue, t.CallsWaiting)
 	if err != nil {
 		return console.TodayView{}, err
 	}
-	v = todayFromStore(t, setup.leads, now, b.loc, v, pol)
+	v = todayFromStore(t, b.loc, v, verdicts)
 	if len(v.Manual) == 0 {
 		if v.ShadowManual, err = shadowManualCount(ctx, b.s.Pool(), campaignID); err != nil {
 			return console.TodayView{}, err
@@ -109,19 +110,39 @@ func waitsOnStepWords(step int, channel string) string {
 	return fmt.Sprintf("step %d (%s)", step+1, channelWords(channel))
 }
 
+// callVerdicts is the call rule's verdict at now for every call of rows, by message id.
+func callVerdicts(ctx context.Context, lq leadstore.Queries, now time.Time, rows ...[]leadstore.CallRow) (map[int64]callVerdict, error) {
+	rules, err := loadCallRules(ctx, lq)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]callVerdict{}
+	for _, rs := range rows {
+		for _, c := range rs {
+			v, err := rules.check(ctx, c, now)
+			if err != nil {
+				return nil, err
+			}
+			out[c.MessageID] = v
+		}
+	}
+	return out, nil
+}
+
 // todayFromStore words the store's Today into the console's view v (its filter set). Each
 // time shows once: a call's due time and a reply's time go in At, an email's in its line.
-// A call due today goes under CallsNow only when it can be made now (calls allowed, its
-// country's calls on, inside its calling hours); else under CallsDue with the reason in its
-// line. A call whose earlier step is still unsent is not due, whatever its due time: it goes
-// with the waiting calls.
-func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc *time.Location, v console.TodayView, pol callPolicies) console.TodayView {
+// A call due today goes under CallsNow only when the call rule says it is callable now
+// (verdicts, by message id; a call with no verdict is not callable); else under CallsDue
+// with the reason in its line. A call whose campaign rules have its country's calls off is
+// callable with a warning in its line (the operator's call). A call whose earlier step is
+// still unsent is not due, whatever its due time: it goes with the waiting calls.
+func todayFromStore(t leadstore.Today, loc *time.Location, v console.TodayView, verdicts map[int64]callVerdict) console.TodayView {
 	clock := func(at time.Time) string { return at.In(loc).Format("15:04") }
 	callable := func(c leadstore.CallRow) bool {
-		return v.CallsOff == "" && c.WaitsOnStep == nil && !pol.off(c.CampaignID, c.Country) &&
-			inCallWindow(now, cfg.Policy(c.Country).Location())
+		return c.WaitsOnStep == nil && verdicts[c.MessageID].Callable
 	}
 	call := func(c leadstore.CallRow, waiting bool) console.TodayItem {
+		vd := verdicts[c.MessageID]
 		line := fmt.Sprintf("Step %d · call", c.Step+1)
 		switch {
 		case c.WaitsOnStep != nil:
@@ -130,16 +151,19 @@ func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc
 			line += " · waits on " + waitsOnCall(c)
 		case waiting:
 			line += " · not due yet"
-		case !inCallWindow(now, cfg.Policy(c.Country).Location()):
-			line += " · outside calling hours now (09:30 to 17:00 their time, weekdays)"
+		case !vd.Callable:
+			line += " · not callable: " + console.AfterColon(cmp.Or(vd.Reason, "the call rules could not be read"))
+		}
+		// A waiting call the rules already refuse says why, as its card does; only the calling
+		// hours are left out, since they come round before it is due.
+		if (waiting || c.WaitsOnStep != nil) && !vd.Callable && vd.Rule != compliance.RuleWindow && vd.Reason != "" {
+			line += " · not callable: " + console.AfterColon(vd.Reason)
 		}
 		if c.Outcome != "" {
 			line += " · last time: " + console.OutcomeWords(c.Outcome)
 		}
-		if pol.off(c.CampaignID, c.Country) {
-			line += " · " + callsOffShort(c.Country)
-		} else if !waiting && c.WaitsOnStep == nil && v.CallsOff != "" {
-			line += " · calls are off"
+		if vd.CampaignOff != "" {
+			line += " · " + callsOffShort(c.Country) + ": your call"
 		}
 		if c.Shadow {
 			line += " · shadow batch"
@@ -227,19 +251,21 @@ func (b *backend) LeadCall(ctx context.Context, messageID int64) (console.CallCa
 	if err != nil {
 		return console.CallCard{}, err
 	}
-	pol, err := loadCallPolicies(ctx, lq)
+	rules, err := loadCallRules(ctx, lq)
 	if err != nil {
 		return console.CallCard{}, err
 	}
-	card := callCard(c)
-	card.NotDue = notDueWords(c, b.now(), b.loc)
+	now := b.now()
+	vd, err := rules.check(ctx, c, now)
+	if err != nil {
+		return console.CallCard{}, err
+	}
+	card := callCard(c, vd)
+	card.NotDue = notDueWords(c, now, b.loc)
 	if c.State == leadstore.MsgDone && c.Outcome != "" {
 		if card.Done, err = callAdvanced(ctx, b.s.Pool(), c); err != nil {
 			return console.CallCard{}, err
 		}
-	}
-	if pol.off(c.CampaignID, c.Country) {
-		card.CallsOff = callsOffCard(c.Country)
 	}
 	return card, nil
 }
@@ -269,14 +295,15 @@ func notDueWaitsWords(step int, channel string) string {
 	return "This call isn't due yet: it waits on " + waitsOnStepWords(step, channel) + ". Record what happened once it's due."
 }
 
-// callCard words one call row as its card. In CP3 no call is callable.
-func callCard(c leadstore.CallRow) console.CallCard {
+// callCard words one call row as its card under the call rule's verdict vd: callable or
+// not with the reason, the screening status, and the campaign-rules warning.
+func callCard(c leadstore.CallRow, vd callVerdict) console.CallCard {
 	card := console.CallCard{
 		MessageID: c.MessageID, LeadID: c.LeadID, OrgName: orgWords(c.OrgName, c.OrgDomain),
 		Number: c.Phone, Dial: dial.Number(c.PhoneNormalized, c.Country), SourceURL: c.SourceURL, SourceReadAt: c.FetchedAt,
 		FoundByResearch: strings.HasPrefix(c.DerivedBy, "research"),
 		TalkingPoints:   leadconfig.CallLines(c.Card),
-		Callable:        false, BlockedReason: callsOffWords, Screening: callScreeningWords,
+		Callable:        vd.Callable, BlockedReason: vd.Reason, Screening: vd.Screening, CallsOff: vd.CampaignOff,
 		Shadow: c.Shadow, Due: c.DueAt,
 	}
 	if c.Outcome != "" && c.OutcomeAt != nil {
@@ -319,10 +346,11 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 		return nil, err
 	}
 	out := sequenceSteps(steps)
-	pol, err := loadCallPolicies(ctx, lq)
+	rules, err := loadCallRules(ctx, lq)
 	if err != nil {
 		return nil, err
 	}
+	now := b.now()
 	for i, st := range steps {
 		if st.Type != campaign.StepCall || st.MessageID == 0 {
 			continue
@@ -331,7 +359,20 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 		if err != nil {
 			return nil, err
 		}
-		if pol.off(c.CampaignID, c.Country) {
+		if st.State != leadstore.MsgApproved {
+			if rules.off(c.CampaignID, c.Country) {
+				out[i].Note = callsOffShort(c.Country)
+			}
+			continue
+		}
+		vd, err := rules.check(ctx, c, now)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case vd.lasting():
+			out[i].Note = "not callable: " + console.AfterColon(vd.Reason)
+		case vd.CampaignOff != "":
 			out[i].Note = callsOffShort(c.Country)
 		}
 	}

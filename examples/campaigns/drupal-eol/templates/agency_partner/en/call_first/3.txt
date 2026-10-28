@@ -1,0 +1,9 @@
+Subject: Re: Drupal upgrade help for {{.OrgName}}: the details
+
+Hello,
+
+A short follow-up to my note after our call. The free one-page upgrade-risk report on one client site still stands, and it is yours to keep.
+
+Is that worth a reply?
+
+{{.Footer}}

@@ -35,6 +35,10 @@ type LeadsBackend interface {
 	// Campaigns is every campaign of the operator's account, each at its latest spec
 	// version, for the Campaigns tab. It never writes.
 	Campaigns(ctx context.Context) ([]CampaignView, error)
+	// LeadReport is lead id's upgrade-risk report, built from its stored facts. It never
+	// writes. ErrNotFound for no such lead; a lead with no report (no Drupal site finding)
+	// wraps ErrUserFixable with the words to show.
+	LeadReport(ctx context.Context, id int64) (LeadReport, error)
 }
 
 // ErrLeadsNotSetUp is what the leads backend returns when this server has no usable
@@ -65,6 +69,9 @@ const (
 	LeadSkip      = "skip"      // ID lead
 	LeadClear     = "clear"     // ID lead
 	LeadLabel     = "label"     // ID lead, Value the band (LabelBands) or LabelClear
+	// LeadLookAgain asks the research job to look for a contact again (ID lead); refused
+	// within 90 days of the last attempt that ran, with the date it may run.
+	LeadLookAgain = "look-again"
 )
 
 // LeadAction is one write from a leads page.
@@ -105,6 +112,16 @@ type LeadsPage struct {
 	Checked      int            // sites probed yesterday
 	Drupal       int            // of those, on Drupal
 	Suppressions Suppressions
+	// Starred are the default campaign's starred leads a batch would not take now, each with
+	// why, in the operator's order (the batch refusal's own list); empty when none is out.
+	Starred []StarredOut
+}
+
+// StarredOut is one starred lead a batch would not take, and why, in plain words.
+type StarredOut struct {
+	LeadID int64
+	Domain string
+	Why    string
 }
 
 // Sending is the sending state: the operator's switch, today's sends against the ramp, and
@@ -203,6 +220,9 @@ type LeadMessage struct {
 	Label, Channel, To, Subject, Body string
 	From                              MessageFrom // an email's From, fixed when it was drafted
 	State, CancelReason               string      // State "" while a draft
+	// Claude is set for a message Claude wrote: each claim with the stored fact it rests on.
+	// nil for a template message.
+	Claude *ClaudeWriting
 }
 
 // PriorityForm is the priority profile as a form holds it (Settings' fallback order). Points are keyed

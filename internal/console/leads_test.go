@@ -999,7 +999,9 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		{"/leads", "LeadList", http.StatusOK, ""},
 		{"/leads/outreach", "Leads", http.StatusOK, ""},
 		{"/leads/settings", "LeadSettings", http.StatusOK, ""},
-		{"/leads/campaigns", "Campaigns", http.StatusOK, ""},
+		{"/leads/campaigns", "Campaigns", http.StatusOK, "DraftGates"},
+		{"/leads/drafts", "DraftSamples", http.StatusOK, ""},
+		{"/leads/drafts/4/review", "", http.StatusMethodNotAllowed, ""},
 		{"/leads/priorities", "", http.StatusSeeOther, ""},
 		{"/leads/batches/3", "LeadBatch", http.StatusOK, ""},
 		{"/leads/5", "LeadDetail", http.StatusOK, "LeadSequence"},
@@ -1323,5 +1325,50 @@ func TestLeadMessagesRows(t *testing.T) {
 				t.Errorf("%s lacks %q: %q", sel, d, r)
 			}
 		}
+	}
+}
+
+// TestLeadsOutreachShadowServer (D6): on a server where sending isn't set up, Outreach offers
+// neither "Make the next batch now" nor "Pause sending" (both could only refuse) and says how
+// batches are made there; with starred leads that are out, a standing numbered list says why
+// each is out, whatever the sending state. With sending set up the buttons are back.
+func TestLeadsOutreachShadowServer(t *testing.T) {
+	b := richBackend("x")
+	b.leads.Sending.SetUp = false
+	b.leads.Starred = []StarredOut{
+		{LeadID: 5, Domain: "northwind.example", Why: "country rule: not in this campaign's countries"},
+		{LeadID: 6, Domain: "tailspin.example", Why: "no email yet"},
+	}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/outreach", h.session(t))).Body.String()
+	for _, no := range []string{"Make the next batch now", "Pause sending", `action="/leads/batches/new"`} {
+		if strings.Contains(body, no) {
+			t.Errorf("a shadow-only server offers %q", no)
+		}
+	}
+	for _, want := range []string{"Sending isn't set up on this server yet.", "<code>leadhound leads batch new</code>",
+		"Starred leads and why each is out", `<ol class="notice-list starred-out">`,
+		`<li><a href="/leads/5">northwind.example</a> — country rule: not in this campaign&#39;s countries</li>`,
+		`<li><a href="/leads/6">tailspin.example</a> — no email yet</li>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("shadow /leads/outreach lacks %q", want)
+		}
+	}
+
+	b.leads.Sending.SetUp = true
+	h = newHarness(t, b, false)
+	body = h.do(get("/leads/outreach", h.session(t))).Body.String()
+	for _, want := range []string{"Make the next batch now", "Pause sending", "Starred leads and why each is out"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("live /leads/outreach lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "shadow batches, made from the command line") {
+		t.Error("a live server says batches are made from the command line")
+	}
+	b.leads.Starred = nil
+	h = newHarness(t, b, false)
+	if body = h.do(get("/leads/outreach", h.session(t))).Body.String(); strings.Contains(body, "Starred leads and why each is out") {
+		t.Error("the panel shows with no starred lead out")
 	}
 }

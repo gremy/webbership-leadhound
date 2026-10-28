@@ -28,6 +28,7 @@ type Backend interface {
 	Results(ctx context.Context) (Results, error) // ErrNotFound when there is no preview yet
 	LeadsBackend
 	CallsBackend
+	DraftsBackend
 	MailboxesBackend
 }
 
@@ -321,7 +322,17 @@ type LeadListRow struct {
 	State, Call                  string
 	HasEmail, HasForm, HasPhone  bool
 	Starred, SmallSite           bool
+	// StarNote says up front what starring the lead does besides ordering it, when it has
+	// no usable way to reach it: StarNoteEmail or StarNotePhone; "" otherwise.
+	StarNote string
 }
+
+// The star control's notes (LeadListRow.StarNote): a lead with no usable route, in a country
+// whose rule lets it be emailed, or in a country that is written to through forms only.
+const (
+	StarNoteEmail = "No email yet: starring it looks for one"
+	StarNotePhone = "Calls-first country: starring it looks for a business phone"
+)
 
 // LeadDetailPage is everything stored about one lead, in the order the page shows it: the
 // lead and its finding, the finding's signals, the contact routes, the facts found on its
@@ -345,6 +356,56 @@ type LeadDetailPage struct {
 	Why              []string        // why it ranks here, one plain line each
 	YourCall         LeadCall        // the operator's own call: the "Your call" block
 	ClaudeSpend      string          // what Claude has cost on this lead in words; "" when nothing
+	Research         LeadResearch    // the contact research of the lead's org: the "Contact research" line
+	Report           ReportLink      // the upgrade-risk report: offered, or why not
+}
+
+// The contact research statuses LeadResearch.Status names (the store's own).
+const (
+	ResearchQueued  = "queued"
+	ResearchLooking = "looking"
+	ResearchFound   = "found"
+	ResearchNothing = "nothing"
+	ResearchCapped  = "capped"
+	ResearchError   = "error"
+)
+
+// What a research attempt looks for (LeadResearch.Want).
+const (
+	WantEmail = "email"
+	WantPhone = "phone"
+)
+
+// LeadResearch is the latest contact research of a lead's org, for its page: the console
+// never calls Claude, it only shows what the research job did and asks it to look again.
+type LeadResearch struct {
+	Status   string     // one of the Research* statuses; "" when never researched
+	Want     []string   // what it looks (or looked) for: WantEmail, WantPhone
+	Verified int        // contacts found and checked on their page (found)
+	At       *time.Time // queued: when asked; looking: when it began; else when it finished
+	// NextAt is the first time another attempt may run, when one ran within the last 90
+	// days; nil when one may run now.
+	NextAt *time.Time
+	// CanAsk is true when "Look again" may be offered at all: the lead is new and its
+	// country's rule gives something to look for.
+	CanAsk bool
+}
+
+// Open reports whether an attempt is queued or looking: "Look again" is hidden then.
+func (r LeadResearch) Open() bool { return r.Status == ResearchQueued || r.Status == ResearchLooking }
+
+// ReportLink is the lead page's upgrade-risk report: Ready when it can be downloaded, else
+// Why in plain words ("" hides the line: nothing to say).
+type ReportLink struct {
+	Ready bool
+	Why   string
+}
+
+// LeadReport is the upgrade-risk report of one lead, as the Report link serves it: the
+// self-contained HTML page and the file name to save it under.
+type LeadReport struct {
+	Filename string
+	HTML     []byte
 }
 
 // LeadCall is the operator's own call on a lead, as its page shows it: the band he chose
@@ -597,13 +658,10 @@ type CallsBackend interface {
 type TodayView struct {
 	Campaign  string
 	Campaigns []FilterOption
-	// CallsOff is why no call may be made at all ("" when calls are allowed). In CP3 it is
-	// always set: "Calls are off until the call rules are set up". The calls still show, so
-	// the flow can be walked in shadow.
-	CallsOff string
-	// CallsNow are the calls due today that can be made now: calls allowed, the country's
-	// calls on and inside the lead's calling hours. CallsDue are the calls due today that
-	// cannot be made now, each line saying why (outside calling hours, calls off).
+	// CallsNow are the calls due today that the call rules let be made now (CallCard's
+	// Callable: a usable number, not suppressed, the country's law allowing it, screened
+	// where needed, inside the lead's calling hours). CallsDue are the calls due today that
+	// cannot be made now, each line saying why.
 	// CallsOverdue are the calls due before today and not yet made.
 	CallsNow, CallsDue, CallsOverdue []TodayItem
 	// CallsWaiting are the first few calls of approved batches that are not due yet, each
@@ -651,8 +709,10 @@ type CallCard struct {
 	FoundByResearch bool
 	LineKind        string   // "direct" | "decision-maker" | "switchboard" | "" unknown
 	TalkingPoints   []string // three, one line each
-	// Callable is whether the call may be made now; BlockedReason says why not ("Calls are off
-	// until the call rules are set up"). Recording an outcome works either way.
+	// Callable is whether the call may be made now under the call rules (number,
+	// suppression, wrong number, the country's law, screening, hours); BlockedReason says why
+	// not, in plain words with no closing full stop ("outside calling hours now (…)"). The
+	// outcome of a call that is due can be recorded either way.
 	Callable      bool
 	BlockedReason string
 	Screening     string     // the number's screening status in words ("not required", ...)
@@ -706,4 +766,125 @@ type SequenceStep struct {
 	Shadow    bool
 	Note      string // a short note shown after the state ("calls off for IE in the campaign rules")
 	CallNote  string // a call's latest outcome note, the operator's own words; "" when none
+}
+
+// DraftsBackend is what the Drafts tab and the Campaigns tab's gate line read and write: the
+// sampled Claude drafts of a campaign and the operator's review of each. The console never
+// calls Claude; `leads drafts sample` writes the samples.
+type DraftsBackend interface {
+	// DraftSamples is campaign's sampled drafts (its slug; "" the account's first campaign),
+	// newest first, at most limit (<= 0: all), with the campaign's gate and the campaigns the
+	// filter offers. An unknown slug wraps ErrUserFixable with the words to show. It never
+	// writes.
+	DraftSamples(ctx context.Context, campaign string, limit int) (DraftsPage, error)
+	// ReviewDraft records the operator's verdict on sampled draft generationID: VerdictApprove
+	// (no reasons), or VerdictReject with at least one of ReviewReasons ("other" needs a
+	// note). The latest review of a draft wins. A draft the check refused, an unknown draft or
+	// bad input wraps ErrUserFixable with the words to show.
+	ReviewDraft(ctx context.Context, generationID int64, verdict string, reasons []string, note string) error
+	// DraftGates is each campaign's Claude-draft gate, by slug. It never writes.
+	DraftGates(ctx context.Context) (map[string]DraftGate, error)
+}
+
+// A review's verdict, as the store takes it.
+const (
+	VerdictApprove = "approve"
+	VerdictReject  = "reject"
+)
+
+// ReviewReasons are the reasons a reject may name, in the form's order, as the store takes
+// them; ReasonOther needs a note.
+var ReviewReasons = []string{"wrong_tone", "too_long", "unclear", "factual", "other"}
+
+// ReasonOther is the reject reason that needs a note.
+const ReasonOther = "other"
+
+// DraftGate is a campaign's Claude-draft trust gate: whether batches may draft with Claude,
+// and the gate in one line ("Claude drafts: not trusted yet: 14 of 20 reviewed, 86% approved").
+type DraftGate struct {
+	Trusted bool
+	Summary string
+}
+
+// DraftsPage is one campaign's sampled drafts, newest first, with its gate. Campaign is the
+// slug the backend took; Campaigns are the filter's choices ("" when there is no campaign).
+type DraftsPage struct {
+	Campaign  string
+	Campaigns []FilterOption
+	Gate      DraftGate
+	Samples   []DraftSample
+}
+
+// DraftSample is one sampled draft: its lead, the facts it rests on, what it says with each
+// claim's cites resolved to the fact and its source row, the check's verdict and the latest
+// review. A draft the check refused shows why and cannot be reviewed (Reviewable false).
+type DraftSample struct {
+	GenerationID  int64
+	LeadID        int64
+	Domain        string
+	At            time.Time
+	Attempt       int  // 1, or 2 for the retry after a refused first try
+	Fake          bool // the fake decider wrote it: a test draft that never counts toward the gate
+	CheckOK       bool
+	Reviewable    bool
+	Failures      []DraftFailure
+	Facts         []DraftFact
+	Steps         []DraftStep
+	TalkingPoints []DraftParagraph
+	Review        *DraftReview // nil: not reviewed yet
+}
+
+// DraftFailure is one reason the check refused a draft: where in plain words ("email 1,
+// paragraph 2", "the talking points"), the message, and the rule's code for the details.
+type DraftFailure struct {
+	Where, Msg, Code string
+}
+
+// DraftFact is one fact of a draft's fact sheet: its id on the sheet (F2), label, value, the
+// group it belongs to ("lead" | "sender" | "offer"), and the row it came from. ContextOnly
+// marks the org's own text, which a draft may never quote.
+type DraftFact struct {
+	ID, Label, Value, Group string
+	Table                   string
+	RowID                   int64
+	ContextOnly             bool
+}
+
+// DraftStep is one email of a draft. Step counts from 0.
+type DraftStep struct {
+	Step       int
+	Subject    string
+	Paragraphs []DraftParagraph
+}
+
+// DraftParagraph is one paragraph or talking point with its cites resolved.
+type DraftParagraph struct {
+	Text   string
+	PainID string
+	Cites  []DraftCite
+}
+
+// DraftCite is one cited fact: its id on the sheet, label, value and source row. Missing
+// marks a cite that names no fact on the sheet (the check refuses it).
+type DraftCite struct {
+	ID, Label, Value, Table string
+	RowID                   int64
+	Missing                 bool
+}
+
+// DraftReview is the latest review of a draft: VerdictApprove or VerdictReject with its
+// reasons (ReviewReasons) and note.
+type DraftReview struct {
+	Verdict string
+	Reasons []string
+	Note    string
+	At      time.Time
+}
+
+// ClaudeWriting is how a message Claude wrote rests on stored facts, for the batch page:
+// each paragraph (each talking point, for a call) with its cited facts. Paragraphs carry no
+// text when the generation's own text could not be read; the cites still show.
+type ClaudeWriting struct {
+	GenerationID int64
+	Paragraphs   []DraftParagraph
 }
