@@ -310,7 +310,34 @@ func TestLeadsCallsCommand(t *testing.T) {
 
 	out := w.mustRun(t, "leads", "calls", "list")
 	wantLines(t, "list before", out, callsOffWords, "No call is scheduled.")
-	refused("waiting on the email before it", "Not due yet: this call waits on the email before it. Nothing was saved.", fmt.Sprint(call), "no_answer")
+	refused("waiting on the email before it", "This call isn't due yet: it waits on step 2 (email). Record what happened once it's due. Nothing was saved.", fmt.Sprint(call), "no_answer")
+
+	// A call given a due time while its earlier emails are still unsent (as the dev shadow
+	// walk had it) is just as not due: connected and do_not_call are refused, nothing is
+	// written and steps 4 and 5 stay as they were, rather than taking the outcome and leaving
+	// the later emails to go.
+	earlyLead := w.lead(t, "callearly.example")
+	earlyIDs := w.seqBatch(t, true, earlyLead, "callearly.example", w.phoneFact(t, earlyLead, "+441632960005"), cp3FiveSteps, 0)
+	if _, err := storetest.OwnerConn(t).Exec(ctx, `UPDATE outreach_message SET due_at = $2 WHERE id = $1`,
+		earlyIDs[2], w.clock.now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	out = w.mustRun(t, "leads", "calls", "list")
+	wantLines(t, "list early", out, fmt.Sprintf("message %d · callearly.example · step 3", earlyIDs[2]), "not due yet: waits on step 2 (email)")
+	for _, o := range []string{"connected", "do_not_call"} {
+		refused("early "+o, "This call isn't due yet: it waits on step 2 (email).", fmt.Sprint(earlyIDs[2]), o)
+	}
+	if n := w.count(t, `SELECT count(*) FROM call_outcome WHERE message_id = $1`, earlyIDs[2]); n != 0 {
+		t.Errorf("early: %d outcomes written, want 0", n)
+	}
+	for _, st := range []int{2, 3, 4} {
+		if r := w.row(t, earlyIDs[st]); r.state != leadstore.MsgApproved {
+			t.Errorf("early: step %d = %+v, want approved and untouched", st+1, r)
+		}
+	}
+	if n := w.count(t, `SELECT count(*) FROM suppression WHERE kind = 'phone' AND value = $1`, leadstore.PhoneSuppressionValue("+441632960005")); n != 0 {
+		t.Error("early: a refused do_not_call wrote a suppression")
+	}
 	refused("an email row", "is not a call. Nothing was saved.", fmt.Sprint(ids[0]), "connected")
 
 	// Steps 0 and 1 go (shadow); the call falls due.
@@ -346,7 +373,7 @@ func TestLeadsCallsCommand(t *testing.T) {
 	out = w.mustRun(t, "leads", "calls", "list", "--due")
 	wantLines(t, "list due", out, callsOffWords, fmt.Sprintf("message %d", call))
 	out = w.mustRun(t, "leads", "calls", "outcome", fmt.Sprint(call), "no_answer", "--note", "rang twice")
-	wantLines(t, "outcome", out, "Saved: no answer. (shadow batch)", "Next: the email at step 4 is due")
+	wantLines(t, "outcome", out, "Saved: no answer. (shadow batch)", `The "tried to reach you" email is due`)
 	if r := w.row(t, call); r.state != leadstore.MsgDone {
 		t.Errorf("call row = %+v, want done", r)
 	}
@@ -367,7 +394,7 @@ func TestLeadsCallsCommand(t *testing.T) {
 	refused("after the lead was suppressed", "The sequence has ended", fmt.Sprint(stopIDs[2]), "connected")
 
 	out = w.mustRun(t, "leads", "calls", "outcome", fmt.Sprint(dncIDs[2]), "do_not_call")
-	wantLines(t, "do not call", out, "Saved: do not call. (shadow batch)", "The sequence has ended", "Their number is on the do-not-call list now.")
+	wantLines(t, "do not call", out, "Saved: do not call. (shadow batch)", "The sequence has ended: the remaining emails are cancelled.", "Their number is on the do-not-call list now.")
 	for _, st := range []int{3, 4} {
 		if r := w.row(t, dncIDs[st]); r.state != leadstore.MsgCancelled || r.reason != campaign.CancelDoNotCall {
 			t.Errorf("do not call: step %d = %+v, want cancelled %s", st, r, campaign.CancelDoNotCall)

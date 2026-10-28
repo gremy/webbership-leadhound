@@ -13,7 +13,7 @@
 <article class="card record call-card" id="call-{{$c.MessageID}}">
   {{if $c.Shadow}}<p><span class="tag">shadow batch</span> <span class="hint">Practice: no email from this batch leaves the server.</span></p>{{end}}
   <p class="call-number-row">
-    {{with telHref $c.Number}}<a class="call-number" href="tel:{{.}}">{{$c.Number}}</a>{{else}}<span class="call-number">{{or $c.Number "No number on file"}}</span>{{end}}
+    {{with telHref $c.Dial}}<a class="call-number" href="tel:{{.}}">{{or $c.Number .}}</a>{{else}}<span class="call-number">{{or $c.Number "No number on file"}}</span>{{end}}
   </p>
   <dl class="fields">
     <div><dt>Where it came from</dt><dd>{{if $c.FoundByResearch}}Found by research{{with $c.SourceURL}}: {{template "call_link" .}}{{end}}{{else if $c.SourceURL}}Read on {{template "call_link" $c.SourceURL}}{{with $c.SourceReadAt}} · {{when .}}{{end}}{{else}}not on file{{end}}</dd></div>

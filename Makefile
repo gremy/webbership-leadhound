@@ -175,10 +175,10 @@ console-password:
 	else rm -f "$$tmp"; exit 1; fi
 
 ## console-local: serve the console on loopback in dev mode, with .env's settings and the hash make console-password wrote
-## (without LEADHOUND_MAILBOX_KEY_FILE: the console never holds the mailbox key, and serve refuses it)
+## (without LEADHOUND_MAILBOX_KEY_FILE or LEADHOUND_ANTHROPIC_KEY_FILE: the console never holds either key, and serve refuses them)
 console-local:
 	@test -f data/console-password.hash || { echo "console-local: run make console-password first"; exit 1; }
-	@set -a; . ./.env; set +a; LEADHOUND_CONSOLE_PASSWORD_HASH=$$(cat data/console-password.hash) env -u LEADHOUND_MAILBOX_KEY_FILE go run $(CMD) serve --dev
+	@set -a; . ./.env; set +a; LEADHOUND_CONSOLE_PASSWORD_HASH=$$(cat data/console-password.hash) env -u LEADHOUND_MAILBOX_KEY_FILE -u LEADHOUND_ANTHROPIC_KEY_FILE go run $(CMD) serve --dev
 
 ## mailbox-key: write a local mailbox key pair to data/mailbox.key (mode 0600; never overwritten) and print the two .env lines to add by hand
 mailbox-key:

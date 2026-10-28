@@ -601,9 +601,11 @@ type TodayView struct {
 	// always set: "Calls are off until the call rules are set up". The calls still show, so
 	// the flow can be walked in shadow.
 	CallsOff string
-	// CallsNow are the calls due and inside the lead's calling hours now; CallsOverdue the
-	// calls due before today and not yet made.
-	CallsNow, CallsOverdue []TodayItem
+	// CallsNow are the calls due today that can be made now: calls allowed, the country's
+	// calls on and inside the lead's calling hours. CallsDue are the calls due today that
+	// cannot be made now, each line saying why (outside calling hours, calls off).
+	// CallsOverdue are the calls due before today and not yet made.
+	CallsNow, CallsDue, CallsOverdue []TodayItem
 	// CallsWaiting are the first few calls of approved batches that are not due yet, each
 	// line saying what it waits on; CallsWaitingTotal counts them all.
 	CallsWaiting      []TodayItem
@@ -632,7 +634,10 @@ type TodayItem struct {
 type CallCard struct {
 	MessageID, LeadID int64
 	OrgName           string
-	Number            string // the number as found ("+44 20 7946 0000")
+	Number            string // the number as found ("+44 (0)20 7946 0000"), shown as text
+	// Dial is the stored normalised number the tel: link dials ("+442079460000"); "" when
+	// there is none (an erased fact), and then the card shows no link.
+	Dial string
 	// Where the number came from: the page it was read on and when, or FoundByResearch with
 	// the URL research cited.
 	SourceURL       string

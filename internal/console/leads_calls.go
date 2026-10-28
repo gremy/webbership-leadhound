@@ -103,22 +103,21 @@ func lineKindWords(k string) string {
 	return k
 }
 
-// telHref is a number as a tel: link takes it: a leading + and the digits, nothing else;
-// "" when there are no digits, so the number is shown as text.
-func telHref(n string) string {
-	var b strings.Builder
-	for i, r := range strings.TrimSpace(n) {
-		switch {
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '+' && i == 0:
-			b.WriteRune(r)
-		}
-	}
-	if strings.TrimLeft(b.String(), "+") == "" {
+// telHref is the card's dial number (CallCard.Dial, the stored normalised number) as a tel:
+// link takes it, when it is one: an optional leading + then digits only. Anything else gives
+// "", so the card shows the number as text with no link. It never rebuilds a number from the
+// text as printed: "+44 (0)20 ..." keeps the national 0 there, and dialling it is wrong.
+func telHref(dial string) string {
+	digits := strings.TrimPrefix(dial, "+")
+	if digits == "" {
 		return ""
 	}
-	return b.String()
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return dial
 }
 
 // seqRow is one step of a lead's Sequence section, worded.

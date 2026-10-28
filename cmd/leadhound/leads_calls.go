@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -131,7 +130,9 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 	for _, c := range calls {
 		line := fmt.Sprintf("message %d · %s · step %d · due %s", c.MessageID, callOrgWords(c), c.Step+1,
 			c.DueAt.In(loc).Format("Mon 2 Jan 15:04"))
-		if !c.DueAt.After(now) && !inCallWindow(now, cfg.Policy(c.Country).Location()) {
+		if c.WaitsOnStep != nil {
+			line += " · not due yet: waits on " + waitsOnStepWords(*c.WaitsOnStep, c.WaitsOnChannel)
+		} else if !c.DueAt.After(now) && !inCallWindow(now, cfg.Policy(c.Country).Location()) {
 			line += " · outside calling hours now (09:30 to 17:00 their time, weekdays)"
 		}
 		if c.Shadow {
@@ -255,7 +256,7 @@ func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 	if err != nil {
 		return "", err
 	}
-	return outcomeLine(rec, steps, cfg.Policy(c.Country).Location()), nil
+	return outcomeLine(rec, steps, c.Step, cfg.Policy(c.Country).Location()), nil
 }
 
 // leadEmail is lead id's email route, "" when it has none.
@@ -294,8 +295,12 @@ func callRefusalWords(err error) string {
 	case errors.Is(err, leadstore.ErrNotCall):
 		return "That message is not a call. Nothing was saved."
 	case errors.Is(err, leadstore.ErrNotDue):
-		if strings.Contains(err.Error(), "waits on an earlier step") {
-			return "Not due yet: this call waits on the email before it. Nothing was saved."
+		var nd *leadstore.NotDueError
+		switch {
+		case errors.As(err, &nd) && nd.WaitsOnStep >= 0:
+			return notDueWaitsWords(nd.WaitsOnStep, nd.WaitsOnChannel) + " Nothing was saved."
+		case errors.As(err, &nd) && nd.DueAt == nil:
+			return "Not due yet: this call waits on an earlier step. Nothing was saved."
 		}
 		return "Not due yet. Nothing was saved."
 	case errors.Is(err, leadstore.ErrSequenceEnded):
@@ -324,46 +329,15 @@ func callRefusalWords(err error) string {
 	return ""
 }
 
-// outcomeLine says what was saved and what happens next: the steps that fell due (with
-// their time in loc) and that the sequence ended, or that nothing is scheduled.
-func outcomeLine(rec leadstore.CallRecorded, steps []leadstore.SequenceStep, loc *time.Location) string {
+// outcomeLine says what was saved and what the sequence did after it, read from the lead's
+// steps as they stand after the outcome (steps; callStep is the call's step, loc the lead's
+// zone): the next step after the call and when it is due, or that the sequence ended.
+func outcomeLine(rec leadstore.CallRecorded, steps []leadstore.SequenceStep, callStep int, loc *time.Location) string {
 	words := "Saved: " + strings.ReplaceAll(rec.Outcome, "_", " ") + "."
 	if rec.Shadow {
 		words += " (shadow batch)"
 	}
-	byID := map[int64]leadstore.SequenceStep{}
-	for _, st := range steps {
-		if st.MessageID > 0 {
-			byID[st.MessageID] = st
-		}
-	}
-	var next []string
-	for _, id := range slices.Sorted(maps.Keys(rec.Due)) {
-		st := byID[id]
-		kind := "the email"
-		if st.Type == campaign.StepCall {
-			kind = "the next call"
-		}
-		when := rec.Due[id]
-		if t, err := time.Parse(time.RFC3339, when); err == nil {
-			when = t.In(loc).Format("Mon 2 Jan 15:04")
-		}
-		next = append(next, fmt.Sprintf("%s at step %d is due %s", kind, st.Step+1, when))
-	}
-	pending := false
-	for _, st := range steps {
-		if st.State == leadstore.MsgApproved {
-			pending = true
-		}
-	}
-	switch {
-	case len(next) > 0:
-		words += " Next: " + strings.Join(next, "; ") + "."
-	case pending:
-		words += " The next step waits on the one before it."
-	default:
-		words += " The sequence has ended; nothing more goes to this lead."
-	}
+	words += " " + afterCallWords(steps, callStep, loc)
 	if rec.Suppressed {
 		words += " Their number is on the do-not-call list now."
 	}
@@ -371,4 +345,52 @@ func outcomeLine(rec leadstore.CallRecorded, steps []leadstore.SequenceStep, loc
 		words += " Their agreement to get an email is recorded."
 	}
 	return words
+}
+
+// afterCallWords is what happens after call step callStep, from the steps that follow it: the
+// first one still to go and when it is due, else that the sequence ended (with what it
+// cancelled).
+func afterCallWords(steps []leadstore.SequenceStep, callStep int, loc *time.Location) string {
+	final := -1
+	for _, st := range steps {
+		final = max(final, st.Step)
+	}
+	cancelled, cancelledCall := 0, false
+	for _, st := range steps {
+		if st.Step <= callStep || st.MessageID == 0 {
+			continue
+		}
+		switch st.State {
+		case leadstore.MsgApproved:
+			name := stepName(st, final)
+			if st.DueAt == nil {
+				return name + " has no time yet; it is scheduled once the step before it is done."
+			}
+			return name + " is due " + st.DueAt.In(loc).Format("Mon 2 Jan 15:04") + "."
+		case leadstore.MsgCancelled:
+			cancelled++
+			cancelledCall = cancelledCall || st.Type == campaign.StepCall
+		}
+	}
+	switch {
+	case cancelled > 0 && cancelledCall:
+		return "The sequence has ended: the remaining steps are cancelled."
+	case cancelled > 0:
+		return "The sequence has ended: the remaining emails are cancelled."
+	}
+	return "The sequence has ended; nothing more goes to this lead."
+}
+
+// stepName names a step that follows a call, with a capital: the "tried to reach you" email,
+// the final email, the next call, or the email at its 1-based step.
+func stepName(st leadstore.SequenceStep, final int) string {
+	switch {
+	case st.Type == campaign.StepCall:
+		return "The next call"
+	case st.When == campaign.WhenCallNotConnected:
+		return `The "tried to reach you" email`
+	case st.Step == final:
+		return "The final email"
+	}
+	return fmt.Sprintf("The email at step %d", st.Step+1)
 }

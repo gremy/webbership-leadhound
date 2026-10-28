@@ -47,8 +47,12 @@ func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayVie
 	return todayFromStore(t, setup.leads, now, b.loc, v, pol), nil
 }
 
-// waitsOnCall words what call row c waits on: "the email before it", "the email at step 2".
+// waitsOnCall words what call row c waits on: "step 2 (email)" when an earlier step is still
+// unsent, else "the email before it", "the email at step 2".
 func waitsOnCall(c leadstore.CallRow) string {
+	if c.WaitsOnStep != nil {
+		return waitsOnStepWords(*c.WaitsOnStep, c.WaitsOnChannel)
+	}
 	if c.PrevStep < 0 {
 		return "an earlier step"
 	}
@@ -59,13 +63,29 @@ func waitsOnCall(c leadstore.CallRow) string {
 	return console.WaitsOnWords(typ, c.PrevStep, c.Step)
 }
 
+// waitsOnStepWords names an unsent earlier step by its 1-based number and channel:
+// "step 2 (email)".
+func waitsOnStepWords(step int, channel string) string {
+	return fmt.Sprintf("step %d (%s)", step+1, channelWords(channel))
+}
+
 // todayFromStore words the store's Today into the console's view v (its filter set). Each
 // time shows once: a call's due time and a reply's time go in At, an email's in its line.
+// A call due today goes under CallsNow only when it can be made now (calls allowed, its
+// country's calls on, inside its calling hours); else under CallsDue with the reason in its
+// line. A call whose earlier step is still unsent is not due, whatever its due time: it goes
+// with the waiting calls.
 func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc *time.Location, v console.TodayView, pol callPolicies) console.TodayView {
 	clock := func(at time.Time) string { return at.In(loc).Format("15:04") }
+	callable := func(c leadstore.CallRow) bool {
+		return v.CallsOff == "" && c.WaitsOnStep == nil && !pol.off(c.CampaignID, c.Country) &&
+			inCallWindow(now, cfg.Policy(c.Country).Location())
+	}
 	call := func(c leadstore.CallRow, waiting bool) console.TodayItem {
 		line := fmt.Sprintf("Step %d · call", c.Step+1)
 		switch {
+		case c.WaitsOnStep != nil:
+			line += " · waits on " + waitsOnCall(c)
 		case waiting && c.DueAt == nil:
 			line += " · waits on " + waitsOnCall(c)
 		case waiting:
@@ -78,6 +98,8 @@ func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc
 		}
 		if pol.off(c.CampaignID, c.Country) {
 			line += " · " + callsOffShort(c.Country)
+		} else if !waiting && c.WaitsOnStep == nil && v.CallsOff != "" {
+			line += " · calls are off"
 		}
 		if c.Shadow {
 			line += " · shadow batch"
@@ -106,16 +128,29 @@ func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc
 		}
 		return out
 	}
+	var early []console.TodayItem // due by the clock, but an earlier step is unsent
 	for _, c := range t.CallsDueNow {
-		v.CallsNow = append(v.CallsNow, call(c, false))
+		switch {
+		case c.WaitsOnStep != nil:
+			early = append(early, call(c, true))
+		case callable(c):
+			v.CallsNow = append(v.CallsNow, call(c, false))
+		default:
+			v.CallsDue = append(v.CallsDue, call(c, false))
+		}
 	}
 	for _, c := range t.CallsOverdue {
+		if c.WaitsOnStep != nil {
+			early = append(early, call(c, true))
+			continue
+		}
 		v.CallsOverdue = append(v.CallsOverdue, call(c, false))
 	}
 	for _, c := range t.CallsWaiting {
 		v.CallsWaiting = append(v.CallsWaiting, call(c, true))
 	}
-	v.CallsWaitingTotal = t.CallsWaitingN
+	v.CallsWaiting = append(early, v.CallsWaiting...)
+	v.CallsWaitingTotal = t.CallsWaitingN + len(early)
 	for _, r := range t.RepliesWaiting {
 		at := r.RepliedAt
 		v.Replies = append(v.Replies, console.TodayItem{LeadID: r.LeadID, OrgName: orgWords(r.OrgName, r.OrgDomain),
@@ -164,11 +199,15 @@ func (b *backend) LeadCall(ctx context.Context, messageID int64) (console.CallCa
 	return card, nil
 }
 
-// notDueWords says why call c takes no outcome yet at now: it waits on an earlier step, or
-// its due time is still to come. "" when it is due, or no longer waiting at all.
+// notDueWords says why call c takes no outcome yet at now: an earlier step is still unsent
+// (whatever its due time), it waits on an earlier step, or its due time is still to come. ""
+// when it is due, or no longer waiting at all.
 func notDueWords(c leadstore.CallRow, now time.Time, loc *time.Location) string {
 	if c.State != leadstore.MsgApproved {
 		return ""
+	}
+	if c.WaitsOnStep != nil {
+		return notDueWaitsWords(*c.WaitsOnStep, c.WaitsOnChannel)
 	}
 	if c.DueAt == nil {
 		return "Not due yet: this call waits on " + waitsOnCall(c) + "."
@@ -179,11 +218,17 @@ func notDueWords(c leadstore.CallRow, now time.Time, loc *time.Location) string 
 	return ""
 }
 
+// notDueWaitsWords is the card's and the refusal's line for a call whose earlier step is
+// still unsent.
+func notDueWaitsWords(step int, channel string) string {
+	return "This call isn't due yet: it waits on " + waitsOnStepWords(step, channel) + ". Record what happened once it's due."
+}
+
 // callCard words one call row as its card. In CP3 no call is callable.
 func callCard(c leadstore.CallRow) console.CallCard {
 	card := console.CallCard{
 		MessageID: c.MessageID, LeadID: c.LeadID, OrgName: orgWords(c.OrgName, c.OrgDomain),
-		Number: c.Phone, SourceURL: c.SourceURL, SourceReadAt: c.FetchedAt,
+		Number: c.Phone, Dial: c.PhoneNormalized, SourceURL: c.SourceURL, SourceReadAt: c.FetchedAt,
 		FoundByResearch: strings.HasPrefix(c.DerivedBy, "research"),
 		TalkingPoints:   leadconfig.CallLines(c.Card),
 		Callable:        false, BlockedReason: callsOffWords, Screening: callScreeningWords,

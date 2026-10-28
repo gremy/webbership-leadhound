@@ -77,7 +77,7 @@ func richToday(text string) TodayView {
 func richCall(text string) CallCard {
 	at := testSent
 	return CallCard{
-		MessageID: 9, LeadID: 5, OrgName: text, Number: "+44 20 7946 0000",
+		MessageID: 9, LeadID: 5, OrgName: text, Number: "+44 (0)20 7946 0000", Dial: "+442079460000",
 		SourceURL: "https://northwind.example/contact", SourceReadAt: &at, LineKind: "direct",
 		TalkingPoints: []string{"Your site runs Drupal 10, which ends on 9 December.", "The update keeps your modules working.", text},
 		BlockedReason: "Calls are off until the call rules are set up",
@@ -170,7 +170,7 @@ func TestCallCard(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		"<h1>Call Northwind Trading</h1>", `<a href="/leads/today" aria-current="true">Today</a>`,
-		`href="tel:&#43;442079460000"`, "&#43;44 20 7946 0000</a>",
+		`href="tel:&#43;442079460000"`, "&#43;44 (0)20 7946 0000</a>",
 		`Read on <a href="https://northwind.example/contact" rel="noopener noreferrer nofollow">`,
 		"<dt>Line</dt><dd>a direct line</dd>",
 		"Say who you are and why you're calling. Your number must be shown.",
@@ -200,6 +200,38 @@ func TestCallCard(t *testing.T) {
 	}
 	if w := h.do(get("/leads/calls/99", h.session(t))); w.Code != http.StatusNotFound {
 		t.Errorf("no such call: %d", w.Code)
+	}
+}
+
+// TestCallCardDialsNormalised: the tel: link dials the stored normalised number, never one
+// rebuilt from the printed text ("+44 (0)20 7803 1100" printed, +442078031100 dialled), and
+// the visible text stays as printed. No normalised number (an erased fact): no link at all.
+func TestCallCardDialsNormalised(t *testing.T) {
+	for _, c := range []struct {
+		number, dial, wantHref, wantText string
+	}{
+		{"+44 (0)20 7803 1100", "+442078031100", `href="tel:&#43;442078031100"`, "&#43;44 (0)20 7803 1100</a>"},
+		{"0044 20 7803 1100", "+442078031100", `href="tel:&#43;442078031100"`, "0044 20 7803 1100</a>"},
+		{"", "", "", "No number on file"},
+		{"+44 (0)20 7803 1100", "", "", `<span class="call-number">&#43;44 (0)20 7803 1100</span>`},
+	} {
+		b := richBackend("x")
+		b.call.Number, b.call.Dial = c.number, c.dial
+		h := newHarness(t, b, false)
+		body := h.do(get("/leads/calls/9", h.session(t))).Body.String()
+		if c.wantHref == "" {
+			if strings.Contains(body, `href="tel:`) {
+				t.Errorf("%q / %q: a tel: link with no normalised number", c.number, c.dial)
+			}
+		} else if !strings.Contains(body, c.wantHref) {
+			t.Errorf("%q / %q: no %s", c.number, c.dial, c.wantHref)
+		}
+		if !strings.Contains(body, c.wantText) {
+			t.Errorf("%q / %q: the card lacks %q", c.number, c.dial, c.wantText)
+		}
+		if strings.Contains(body, "tel:&#43;4402078031100") {
+			t.Errorf("%q: dials the printed number with its national 0", c.number)
+		}
 	}
 }
 
@@ -404,10 +436,12 @@ func TestSequenceWords(t *testing.T) {
 	}
 }
 
+// TestTelHref: only a normalised number (optional +, then digits) becomes a tel: target;
+// printed text, a stray + or anything else gives no link.
 func TestTelHref(t *testing.T) {
 	for in, want := range map[string]string{
-		"+44 20 7946 0000": "+442079460000", "(020) 7946-0000": "02079460000", "+": "", "": "",
-		"javascript:alert(1)": "1", "0040+721": "0040721",
+		"+442078031100": "+442078031100", "02079460000": "02079460000", "+": "", "": "",
+		"+44 (0)20 7803 1100": "", "(020) 7946-0000": "", "javascript:alert(1)": "", "0040+721": "", "++44": "",
 	} {
 		if got := telHref(in); got != want {
 			t.Errorf("telHref(%q) = %q, want %q", in, got, want)
@@ -503,7 +537,7 @@ func TestCallCardNotDue(t *testing.T) {
 // sitting on the POST URL, and the card shows the refusal as an error once.
 func TestCallOutcomeRefusedRedirects(t *testing.T) {
 	b := richBackend("x")
-	b.outcomeErr = fmt.Errorf("%w: %s", ErrUserFixable, "Not due yet: this call waits on the email before it.")
+	b.outcomeErr = fmt.Errorf("%w: %s", ErrUserFixable, "This call isn't due yet: it waits on step 2 (email). Record what happened once it's due. Nothing was saved.")
 	h := newHarness(t, b, false)
 	c := h.session(t)
 	w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}, "back": {"/leads/today"}}, c))
@@ -513,7 +547,7 @@ func TestCallOutcomeRefusedRedirects(t *testing.T) {
 	r := get("/leads/calls/9", c)
 	r.AddCookie(cookieNamed(w, "__Host-lh_flash"))
 	body := h.do(r).Body.String()
-	if !strings.Contains(body, `<p class="notice notice-error" role="alert">Not due yet: this call waits on the email before it.</p>`) {
+	if !strings.Contains(body, `<p class="notice notice-error" role="alert">This call isn&#39;t due yet: it waits on step 2 (email). Record what happened once it&#39;s due. Nothing was saved.</p>`) {
 		t.Errorf("the card does not show the refusal as an error:\n%s", body)
 	}
 }
@@ -540,5 +574,46 @@ func TestTodayCallsWaiting(t *testing.T) {
 	body = h.do(get("/leads/today", h.session(t))).Body.String()
 	if strings.Contains(body, "below") || !strings.Contains(body, "<strong>Calls are off until the call rules are set up.</strong>") {
 		t.Errorf("an empty Today's banner: %s", body[strings.Index(body, "calls-off")-40:][:300])
+	}
+}
+
+// TestTodayCallsDue: calls due but not callable now are listed under "Calls due" with their
+// reason, never under "Calls to make now", whose heading then carries no count and whose
+// empty line points at them; the section sits straight after "Calls to make now".
+func TestTodayCallsDue(t *testing.T) {
+	b := richBackend("x")
+	b.today = TodayView{CallsOff: "Calls are off until the call rules are set up",
+		CallsDue: []TodayItem{
+			{LeadID: 5, MessageID: 9, OrgName: "Northwind", Line: "Step 3 · call · outside calling hours now (09:30 to 17:00 their time, weekdays)"},
+			{LeadID: 6, MessageID: 11, OrgName: "Contoso", Line: "Step 3 · call · calls are off"},
+		}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/today", h.session(t))).Body.String()
+	now := strings.Index(body, "Calls to make now")
+	due := strings.Index(body, `id="today-calls-due-title">Calls due <span class="today-count">2</span>`)
+	overdue := strings.Index(body, "Calls overdue")
+	if now < 0 || due < now || overdue < due {
+		t.Fatalf("sections out of order: now %d, due %d, overdue %d", now, due, overdue)
+	}
+	if head := body[now : strings.Index(body[now:], "</h2>")+now]; strings.Contains(head, "today-count") {
+		t.Errorf("Calls to make now counts calls that cannot be made: %q", head)
+	}
+	for _, want := range []string{
+		"None of the calls due can be made right now; they are under Calls due, each with the reason.",
+		`<a href="/leads/calls/9">Northwind</a>`, "outside calling hours now (09:30 to 17:00 their time, weekdays)",
+		`<a href="/leads/calls/11">Contoso</a>`, "Step 3 · call · calls are off",
+		"The calls below still show",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Today lacks %q", want)
+		}
+	}
+	if strings.Index(body, "Northwind") > strings.Index(body, "Contoso") {
+		t.Error("Calls due lost the store's order")
+	}
+	// No calls due: no section.
+	b.today = TodayView{}
+	if body := h.do(get("/leads/today", h.session(t))).Body.String(); strings.Contains(body, "today-calls-due") {
+		t.Error("an empty Today shows Calls due")
 	}
 }

@@ -35,6 +35,34 @@ var (
 	ErrBadOutcome = errors.New("bad call outcome")
 )
 
+// NotDueError is ErrNotDue with why: the step the call waits on (an earlier step of its lead
+// in the batch that is not yet sent, shadow-sent or done; WaitsOnStep is 0-based, -1 when
+// none is named) or, when it waits on nothing, the due time still to come (nil: none yet).
+type NotDueError struct {
+	WaitsOnStep    int
+	WaitsOnChannel string // the waited-on step's channel: email | phone | form | linkedin
+	DueAt          *time.Time
+}
+
+func (e *NotDueError) Error() string {
+	switch {
+	case e.WaitsOnStep >= 0:
+		return fmt.Sprintf("%s: it waits on step %d (%s)", ErrNotDue, e.WaitsOnStep+1, e.WaitsOnChannel)
+	case e.DueAt != nil:
+		return fmt.Sprintf("%s: due %s", ErrNotDue, e.DueAt.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("%s: it waits on an earlier step", ErrNotDue)
+}
+
+// Unwrap makes a NotDueError match ErrNotDue.
+func (e *NotDueError) Unwrap() error { return ErrNotDue }
+
+// pendingBefore is the condition on an earlier row w of the same lead and batch that a later
+// step still waits on: anything not sent, shadow-sent, done or cancelled. It matches where
+// campaign.Next stops its walk, so no later step can be due while such a row exists.
+const pendingBefore = `w.lead_id = m.lead_id AND w.batch_id = m.batch_id AND w.step < m.step
+	   AND w.state NOT IN ('sent', 'shadow_sent', 'done', 'cancelled')`
+
 // MaxCallNote is the longest note a call outcome may carry (call_outcome_note_check).
 const MaxCallNote = 500
 
@@ -71,7 +99,9 @@ type beginner interface {
 // account accountID (0: DefaultAccountID), in one transaction (a savepoint when q already runs
 // in one) with the lead and its messages locked:
 //   - refused (nothing written) when the row is not a call (ErrNotCall), is not approved
-//     (ErrMessageState), is not due at now (ErrNotDue), was cancelled because the lead replied,
+//     (ErrMessageState), is not due at now (ErrNotDue, as a *NotDueError: an earlier step of
+//     the lead is not yet sent or done, whatever the call's due time, or no due time yet, or
+//     one still to come), was cancelled because the lead replied,
 //     opted out, bounced or was suppressed (ErrSequenceEnded: "They replied: the sequence has
 //     ended"), or already has an outcome the sequence moved on from (ErrCallAdvanced, naming
 //     the first outcome). A second outcome on a call nothing has moved on from (no later step
@@ -310,10 +340,24 @@ func (q Queries) callRefusal(ctx context.Context, id int64, r callRow, first str
 		return fmt.Errorf("message %d is %s: %w", id, r.state, ErrMessageState)
 	case !r.shadow && slices.Contains([]string{LeadReplied, LeadOptedOut, LeadBounced, LeadSuppressed, LeadClosed}, r.leadState):
 		return ended(r.leadState)
+	}
+	// Not due while an earlier step is unsent, whatever the due time says: campaign.Next
+	// counts from the last completed step, so an outcome here would cancel and schedule
+	// nothing and leave the later emails to go out.
+	nd := &NotDueError{WaitsOnStep: -1}
+	err := q.db.QueryRow(ctx,
+		`SELECT w.step, w.channel FROM outreach_message m JOIN outreach_message w ON `+pendingBefore+`
+		 WHERE m.id = $1 ORDER BY w.step DESC LIMIT 1`, id).Scan(&nd.WaitsOnStep, &nd.WaitsOnChannel)
+	switch {
+	case err == nil:
+		return nd
+	case !errors.Is(err, pgx.ErrNoRows):
+		return err
 	case r.dueAt == nil:
-		return fmt.Errorf("%w: it waits on an earlier step", ErrNotDue)
+		return nd
 	case r.dueAt.After(now):
-		return fmt.Errorf("%w: due %s", ErrNotDue, r.dueAt.UTC().Format(time.RFC3339))
+		nd.DueAt = r.dueAt
+		return nd
 	}
 	return nil
 }
@@ -422,6 +466,12 @@ type CallRow struct {
 	// row in the batch that was not cancelled; -1 and "" when there is none.
 	PrevStep    int    `db:"prev_step" json:"prev_step"`
 	PrevChannel string `db:"prev_channel" json:"prev_channel,omitempty"`
+	// WaitsOnStep and WaitsOnChannel are the nearest earlier row of the lead in the batch that
+	// is not yet sent, shadow-sent, done or cancelled: while there is one the call is not due,
+	// whatever its due time says (RecordCallOutcome refuses it); its 0-based step. nil and ""
+	// when there is none.
+	WaitsOnStep    *int   `db:"waits_on_step" json:"waits_on_step,omitempty"`
+	WaitsOnChannel string `db:"waits_on_channel" json:"waits_on_channel,omitempty"`
 }
 
 const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign_id, o.id AS org_id, o.name AS org_name,
@@ -429,7 +479,8 @@ const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign
 	  m.body_text AS card, m.phone_fact_id, coalesce(f.value, '') AS phone, coalesce(f.normalized, '') AS phone_normalized,
 	  coalesce(h.url, '') AS source_url, h.fetched_at, coalesce(f.derived_by, '') AS derived_by,
 	  coalesce(co.outcome, '') AS outcome, co.at AS outcome_at, coalesce(co.note, '') AS note,
-	  coalesce(pv.step, -1) AS prev_step, coalesce(pv.channel, '') AS prev_channel
+	  coalesce(pv.step, -1) AS prev_step, coalesce(pv.channel, '') AS prev_channel,
+	  wt.step AS waits_on_step, coalesce(wt.channel, '') AS waits_on_channel
 	 FROM outreach_message m
 	 JOIN outreach_batch b ON b.id = m.batch_id
 	 JOIN lead l ON l.id = m.lead_id
@@ -440,6 +491,8 @@ const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign
 	   ORDER BY c.id DESC LIMIT 1) co ON true
 	 LEFT JOIN LATERAL (SELECT p.step, p.channel FROM outreach_message p WHERE p.lead_id = m.lead_id
 	   AND p.batch_id = m.batch_id AND p.step < m.step AND p.state <> 'cancelled' ORDER BY p.step DESC LIMIT 1) pv ON true
+	 LEFT JOIN LATERAL (SELECT w.step, w.channel FROM outreach_message w WHERE ` + pendingBefore + `
+	   ORDER BY w.step DESC LIMIT 1) wt ON true
 	 WHERE m.channel = 'phone'`
 
 // CallsDue returns the approved call steps of approved batches of account accountID (0:

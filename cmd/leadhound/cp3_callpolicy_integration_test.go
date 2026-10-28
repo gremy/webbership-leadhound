@@ -136,7 +136,7 @@ func TestBatchCallPolicyByCountry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if card.CallsOff != "Calls to Ireland are off in this campaign's rules. Your call whether to ring; if you don't, choose Skipped." ||
-		card.NotDue != "Not due yet: this call waits on the email before it." {
+		card.NotDue != "This call isn't due yet: it waits on step 2 (email). Record what happened once it's due." {
 		t.Errorf("IE card: calls off %q, not due %q", card.CallsOff, card.NotDue)
 	}
 	if card, err := b.LeadCall(ctx, gbCall); err != nil || card.CallsOff != "" {
@@ -155,7 +155,7 @@ func TestBatchCallPolicyByCountry(t *testing.T) {
 			gbLine = it.Line
 		}
 	}
-	if !strings.Contains(ieLine, "calls off for IE in the campaign rules") || !strings.Contains(ieLine, "waits on the email before it") ||
+	if !strings.Contains(ieLine, "calls off for IE in the campaign rules") || !strings.Contains(ieLine, "waits on step 2 (email)") ||
 		gbLine == "" || strings.Contains(gbLine, "calls off") || today.CallsWaitingTotal != 2 {
 		t.Errorf("Today waiting: IE %q, GB %q, total %d", ieLine, gbLine, today.CallsWaitingTotal)
 	}

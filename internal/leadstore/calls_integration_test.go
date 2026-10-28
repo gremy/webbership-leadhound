@@ -209,6 +209,62 @@ func TestCallOutcomeGrid(t *testing.T) {
 		}
 	})
 
+	// A call with a due time while an earlier step of its lead is still unsent (the state the
+	// shadow walk reached on dev): the engine counts from the last completed step, so an
+	// outcome taken here would cancel and schedule nothing and leave steps 3 and 4 approved.
+	// It is refused like any call not yet due, naming the step it waits on, and writes nothing.
+	t.Run("refused while an earlier step is unsent, even with a due time", func(t *testing.T) {
+		for _, o := range []string{campaign.OutcomeConnected, campaign.OutcomeDoNotCall, campaign.OutcomeNoAnswer} {
+			f := newOutreachFixture(t)
+			s := f.seqBatch(t, true, f.siteLead(t, "call-early-"+strings.ReplaceAll(o, "_", "-")+".localhost", nil, 7, "info@call-early.localhost"))
+			f.send(t, s, true, 0, day(0)) // step 1 (index 1) is now due at day(3), unsent
+			if _, err := f.owner.Exec(ctx, `UPDATE outreach_message SET due_at = $2 WHERE id = $1`, s.msg[2], day(1)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.q.RecordCallOutcome(ctx, 0, s.msg[2], o, "", nil, leadstore.ActorGremy, day(2), plainDays)
+			var nd *leadstore.NotDueError
+			if !errors.Is(err, leadstore.ErrNotDue) || !errors.As(err, &nd) || nd.WaitsOnStep != 1 || nd.WaitsOnChannel != "email" {
+				t.Fatalf("%s with step 2 unsent: %v, want not due, waiting on step 2 (email)", o, err)
+			}
+			if !strings.Contains(err.Error(), "waits on step 2 (email)") {
+				t.Errorf("%s: %q does not name step 2", o, err)
+			}
+			for _, step := range []int{1, 2, 3, 4} {
+				if r := f.rowOf(t, s.msg[step]); r.state != leadstore.MsgApproved {
+					t.Errorf("%s: step %d = %+v, want approved and untouched", o, step+1, r)
+				}
+			}
+			var n int
+			if err := f.owner.QueryRow(ctx, `SELECT count(*) FROM call_outcome WHERE message_id = $1`, s.msg[2]).Scan(&n); err != nil || n != 0 {
+				t.Errorf("%s: outcomes = %d, %v; want 0", o, n, err)
+			}
+			if got := f.suppressions(t)["phone "+leadstore.PhoneSuppressionValue(callNumber)]; got != "" {
+				t.Errorf("%s: a refused outcome wrote a suppression %q", o, got)
+			}
+			// The call row read model says what it waits on.
+			c, err := f.q.CallByID(ctx, 0, s.msg[2])
+			if err != nil || c.WaitsOnStep == nil || *c.WaitsOnStep != 1 || c.WaitsOnChannel != "email" {
+				t.Errorf("%s: call row waits on %v %q, %v; want step index 1, email", o, c.WaitsOnStep, c.WaitsOnChannel, err)
+			}
+			// Once step 2 is sent and the call due, the outcome applies and the sequence moves.
+			f.send(t, s, true, 1, day(3))
+			if c, err := f.q.CallByID(ctx, 0, s.msg[2]); err != nil || c.WaitsOnStep != nil {
+				t.Errorf("%s: after step 2 sent, call row waits on %v, %v; want nil", o, c.WaitsOnStep, err)
+			}
+			res, err := f.q.RecordCallOutcome(ctx, 0, s.msg[2], o, "", nil, leadstore.ActorGremy, day(3), plainDays)
+			if err != nil {
+				t.Fatalf("%s once due: %v", o, err)
+			}
+			if o == campaign.OutcomeNoAnswer {
+				if res.Due[s.msg[3]] == "" {
+					t.Errorf("%s once due: %+v, want step 4 scheduled", o, res)
+				}
+			} else if res.Cancelled[s.msg[3]] == "" || res.Cancelled[s.msg[4]] == "" {
+				t.Errorf("%s once due: %+v, want steps 4 and 5 cancelled", o, res)
+			}
+		}
+	})
+
 	t.Run("refused on an email row", func(t *testing.T) {
 		f := newOutreachFixture(t)
 		s := f.seqBatch(t, false, f.siteLead(t, "call-email.localhost", nil, 7, "info@call-email.localhost"))
