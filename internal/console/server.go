@@ -75,6 +75,7 @@ var routes = []route{
 	{"GET /login", "/login", true, (*server).loginPage},
 	{"POST /login", "/login", true, (*server).login},
 	{"POST /logout", "/logout", false, (*server).logout},
+	{"POST /theme", "/theme", true, (*server).setTheme},
 	{"GET /{$}", "/", false, (*server).dashboard},
 	{"GET /jobs", "/jobs", false, (*server).jobs},
 	{"POST /jobs/track", "/jobs/track", false, (*server).track},
@@ -163,16 +164,17 @@ var ruleFields = []string{"company", "title", "description", "location"}
 
 // server holds what the handlers share.
 type server struct {
-	b      Backend
-	a      *Auth
-	opt    Options
-	log    *slog.Logger
-	cookie string // the session cookie's name
-	flash  string // the one-time message cookie's name
-	device string // the trusted-device cookie's name
-	pages  map[string]*template.Template
-	next   map[string]bool // the pages a sign-in may return to
-	nextAt []string        // the patterns of signed-in pages with an id in their path
+	b         Backend
+	a         *Auth
+	opt       Options
+	log       *slog.Logger
+	cookie    string // the session cookie's name
+	flash     string // the one-time message cookie's name
+	device    string // the trusted-device cookie's name
+	themeName string // the theme cookie's name
+	pages     map[string]*template.Template
+	next      map[string]bool // the pages a sign-in may return to
+	nextAt    []string        // the patterns of signed-in pages with an id in their path
 }
 
 // page is what the layout renders.
@@ -181,6 +183,8 @@ type page struct {
 	Active   string
 	Nav      []navItem
 	SignedIn bool
+	Theme    string // system, light or dark
+	Back     string // where the theme switch goes back to
 	Message  string
 	Error    bool
 	Data     any
@@ -219,7 +223,7 @@ type loginView struct{ Next string }
 
 // New returns the console's handler. Every response carries the security
 // headers; cross-origin POSTs are refused; POST bodies are capped at 64 KiB;
-// every route but the sign-in page, static files, robots.txt, the favicon and
+// every route but the sign-in page, the theme switch, static files, robots.txt, the favicon and
 // /healthz needs
 // a session.
 func New(b Backend, a *Auth, opt Options) http.Handler {
@@ -230,17 +234,18 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 		opt.Logger = slog.New(slog.DiscardHandler)
 	}
 	s := &server{
-		b:      b,
-		a:      a,
-		opt:    opt,
-		log:    opt.Logger,
-		cookie: "__Host-lh_session",
-		flash:  "__Host-lh_flash",
-		device: "__Host-lh_device",
-		next:   make(map[string]bool),
+		b:         b,
+		a:         a,
+		opt:       opt,
+		log:       opt.Logger,
+		cookie:    "__Host-lh_session",
+		flash:     "__Host-lh_flash",
+		device:    "__Host-lh_device",
+		themeName: "__Host-lh_theme",
+		next:      make(map[string]bool),
 	}
 	if opt.Dev {
-		s.cookie, s.flash, s.device = "lh_session", "lh_flash", "lh_device"
+		s.cookie, s.flash, s.device, s.themeName = "lh_session", "lh_flash", "lh_device", "lh_theme"
 	}
 	s.pages = s.parseTemplates()
 
@@ -321,6 +326,7 @@ func (s *server) funcs() template.FuncMap {
 		"row":          func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
 		"ruleFields":   func() []string { return ruleFields },
 		"cssVersion":   func() string { return cssVersion },
+		"themes":       func() []themeOption { return themeOptions },
 		"approveWords": approveWords,
 		"maxText":      func() int { return maxLeadsText },
 		"add":          func(a, b int) int { return a + b },
@@ -550,6 +556,8 @@ func (s *server) nextWithID(p string) bool {
 // render writes the named page inside the layout with status code.
 func (s *server) render(w http.ResponseWriter, r *http.Request, code int, name string, p page) {
 	p.Nav = nav
+	p.Theme = s.theme(r)
+	p.Back = themeBack(r, p)
 	s.write(w, r, code, s.pages[name], "layout", p)
 }
 

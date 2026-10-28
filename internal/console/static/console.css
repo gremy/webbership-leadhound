@@ -23,8 +23,13 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* Dark tokens. CSS cannot share one block between a media query and a selector, so
+   the same list stands twice: for the device's own dark setting unless Light is chosen,
+   and for Dark chosen. Change both together; TestCSSHasBothDarkSelectors fails when
+   they differ. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #111418;
     --surface: #1a1f25;
     --text: #e6e9ed;
@@ -42,6 +47,30 @@
     --focus: #9dbbff;
     --shadow: none;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111418;
+  --surface: #1a1f25;
+  --text: #e6e9ed;
+  --muted: #9aa4b1;
+  --border: #2d343c;
+  --accent: #7aa2f7;
+  --accent-text: #0e1420;
+  --accent-soft: #1f2a40;
+  --good: #6cc895;
+  --good-soft: #17301f;
+  --warn: #e2b55c;
+  --warn-soft: #33290f;
+  --bad: #f28b82;
+  --bad-soft: #3a1d1b;
+  --focus: #9dbbff;
+  --shadow: none;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 *,
@@ -148,8 +177,59 @@ main {
   letter-spacing: 0.01em;
 }
 
-.logout {
+.bar-end {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.logout,
+.theme {
   margin: 0;
+}
+
+/* The theme switch: three quiet buttons, the chosen one marked. */
+.theme fieldset {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.theme button {
+  min-height: 36px;
+  padding: 0 0.6rem;
+  font-size: 0.875rem;
+  border-radius: 6px;
+}
+
+/* Reserves the bold label's width, so choosing a theme never moves the header. */
+.theme button::after {
+  content: attr(data-label);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 600;
+}
+
+.theme button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+@media (max-width: 639px) {
+  .bar {
+    gap: 0.5rem;
+  }
+
+  .bar-end .quiet {
+    padding: 0 0.45rem;
+  }
 }
 
 .site-header nav ul,

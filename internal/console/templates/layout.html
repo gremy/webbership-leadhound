@@ -1,10 +1,10 @@
 {{define "layout"}}<!doctype html>
-<html lang="en">
+<html lang="en"{{if ne .Theme "system"}} data-theme="{{.Theme}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="{{if eq .Theme "system"}}light dark{{else}}{{.Theme}}{{end}}">
 <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"selfRequestsOnly":true,"attributesToSettle":["class","width","height"]}'>
 <title>{{.Title}} · LeadHound</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
@@ -16,11 +16,20 @@
 <header class="site-header">
   <div class="bar">
     <span class="brand">LeadHound</span>
-    {{if .SignedIn}}
-    <form class="logout" method="post" action="/logout">
-      <button type="submit" class="quiet">Sign out</button>
-    </form>
-    {{end}}
+    <div class="bar-end">
+      <form class="theme" method="post" action="/theme">
+        <fieldset>
+          <legend class="visually-hidden">Theme</legend>
+          <input type="hidden" name="back" value="{{.Back}}">
+          {{range themes}}<button type="submit" class="quiet" name="theme" value="{{.Value}}" data-label="{{.Label}}" aria-pressed="{{if eq .Value $.Theme}}true{{else}}false{{end}}">{{.Label}}</button>{{end}}
+        </fieldset>
+      </form>
+      {{if .SignedIn}}
+      <form class="logout" method="post" action="/logout">
+        <button type="submit" class="quiet">Sign out</button>
+      </form>
+      {{end}}
+    </div>
   </div>
   {{if .SignedIn}}
   <nav aria-label="Main">

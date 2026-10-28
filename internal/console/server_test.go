@@ -390,7 +390,7 @@ func TestRoutesNeedSession(t *testing.T) {
 }
 
 func TestPublicRoutes(t *testing.T) {
-	want := map[string]bool{"GET /login": true, "POST /login": true, "GET /static/": true, "GET /robots.txt": true, "GET /favicon.ico": true, "GET /healthz": true}
+	want := map[string]bool{"GET /login": true, "POST /login": true, "POST /theme": true, "GET /static/": true, "GET /robots.txt": true, "GET /favicon.ico": true, "GET /healthz": true}
 	for _, rt := range routes {
 		if rt.public != want[rt.pattern] {
 			t.Errorf("%s public = %v, want %v", rt.pattern, rt.public, want[rt.pattern])
