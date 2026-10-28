@@ -6,7 +6,9 @@
 </div>
 {{template "leads_tabs" (leadsTab "today" false)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
-{{if not $c.Callable}}<p class="notice notice-warn call-blocked" role="note"><strong>{{$c.BlockedReason}}</strong> You can still record an outcome below to walk the flow.</p>{{end}}
+{{with $c.NotDue}}<p class="notice notice-warn call-not-due" role="note">{{.}}</p>{{end}}
+{{with $c.CallsOff}}<p class="notice notice-warn call-off-rules" role="note">{{.}}</p>{{end}}
+{{if not $c.Callable}}<p class="notice notice-warn call-blocked" role="note"><strong>{{$c.BlockedReason}}.</strong> {{if $c.NotDue}}Once it is due, you{{else}}You{{end}} can still record an outcome below to walk the flow.</p>{{end}}
 
 <article class="card record call-card" id="call-{{$c.MessageID}}">
   {{if $c.Shadow}}<p><span class="tag">shadow batch</span> <span class="hint">Practice: no email from this batch leaves the server.</span></p>{{end}}
@@ -47,7 +49,7 @@
         <input id="consent-address" name="consent_address" type="email" maxlength="254" autocomplete="off">
       </fieldset>
       <div class="outcome-buttons" role="group" aria-label="What happened on the call">
-        {{range $v.Outcomes}}<button type="submit" name="outcome" value="{{.}}" title="{{outcomeHelp .}}">{{outcomeWords .}}</button>{{end}}
+        {{range $v.Outcomes}}<button type="submit" name="outcome" value="{{.}}" title="{{outcomeHelp .}}"{{if $c.NotDue}} disabled{{end}}>{{outcomeWords .}}</button>{{end}}
       </div>
     </form>
     <details class="call-help">

@@ -131,7 +131,7 @@
     {{if $d.Messages}}
     {{range $d.Messages}}
     <details class="lead-message">
-      <summary>{{.Label}}{{with .Channel}} · {{.}}{{end}}{{with .State}} · {{.}}{{end}}</summary>
+      <summary><span class="lead-message-label">{{.Label}}</span>{{with .State}}<span class="lead-message-state">{{.}}</span>{{end}}</summary>
       <p class="message-head">In <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Due}} · due {{when .}}{{end}}{{with .Sent}} · sent {{when .}}{{end}}</p>
       {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
       <div class="message-body">{{.Body}}</div>

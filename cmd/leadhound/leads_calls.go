@@ -124,6 +124,10 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 		}
 		return nil
 	}
+	pol, err := loadCallPolicies(ctx, lq)
+	if err != nil {
+		return err
+	}
 	for _, c := range calls {
 		line := fmt.Sprintf("message %d · %s · step %d · due %s", c.MessageID, callOrgWords(c), c.Step+1,
 			c.DueAt.In(loc).Format("Mon 2 Jan 15:04"))
@@ -135,6 +139,9 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 		}
 		if c.Outcome != "" {
 			line += " · last: " + strings.ReplaceAll(c.Outcome, "_", " ")
+		}
+		if pol.off(c.CampaignID, c.Country) {
+			line += " · " + callsOffShort(c.Country) + ": your call"
 		}
 		_, _ = fmt.Fprintln(w, line)
 	}

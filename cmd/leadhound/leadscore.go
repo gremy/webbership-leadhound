@@ -329,9 +329,12 @@ type NewBatchOutcome struct {
 	Skipped []DroppedLead
 	// Calls are the call steps drafted; CallsLeftOut counts the email leads whose call steps
 	// (and the steps that wait on a call) were left out, by why (callNoNumber,
-	// callSuppressed). Both stay empty when the sequence has no call step.
+	// callSuppressed). CallsOff counts the call steps drafted in a country whose call policy
+	// is off in the campaign's rules, by country code ("" unknown): the operator's call. All
+	// stay empty when the sequence has no call step.
 	Calls        int
 	CallsLeftOut map[string]int
+	CallsOff     map[string]int
 	Sizing       *BatchSizing  // a live batch's sizing; nil for shadow
 	Rooms        map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
 }
@@ -473,6 +476,8 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			var phone *leadstore.Fact
 			leftOut := ""
 			if plan.hasCall() && c.Channel == leadconfig.ChannelEmail {
+				// has_callable_phone: a phone fact that is not suppressed. A country whose call
+				// policy is off still gets its call drafted; the operator decides whether to ring.
 				if f, ok, why := pickPhone(facts[c.OrgID], suppressedPhones); ok {
 					phone = &f
 				} else {
@@ -493,6 +498,12 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			for _, d := range ds {
 				if d.Channel == leadstore.ChannelPhone {
 					out.Calls++
+					if !plan.callsAllowed(c.Country) {
+						if out.CallsOff == nil {
+							out.CallsOff = map[string]int{}
+						}
+						out.CallsOff[countryCode(c.Country)]++
+					}
 				}
 			}
 			from := cmp.Or(strings.TrimSpace(mb.FromName), bs.leads.Sender.Name)
@@ -715,6 +726,18 @@ type BatchView struct {
 	Evidence      map[int64]leadstore.Evidence
 	ContentSHA256 []byte // recomputed from the rows now
 	Changed       bool   // the rows no longer hash to what batch new stored: never approvable
+	// CallsOff are the lead ids whose call step is drafted where the campaign's rules have
+	// calls off (the operator's call), with the country code.
+	CallsOff map[int64]string
+}
+
+// callsOffCounts counts v.CallsOff by country.
+func (v BatchView) callsOffCounts() map[string]int {
+	out := map[string]int{}
+	for _, c := range v.CallsOff {
+		out[c]++
+	}
+	return out
 }
 
 // Approvable reports whether the view may carry the approve form or line.
@@ -757,7 +780,19 @@ func batchView(ctx context.Context, lq leadstore.Queries, id int64) (BatchView, 
 	if err != nil {
 		return BatchView{}, err
 	}
-	return BatchView{Batch: b, Items: items, Evidence: ev, ContentSHA256: sum, Changed: !bytes.Equal(sum, b.ContentSHA256)}, nil
+	pol, err := loadCallPolicies(ctx, lq)
+	if err != nil {
+		return BatchView{}, err
+	}
+	off := map[int64]string{}
+	for _, it := range items {
+		for _, m := range it.Msgs {
+			if m.Channel == leadstore.ChannelPhone && pol.off(b.CampaignID, it.Org.Country) {
+				off[it.Lead.ID] = countryCode(it.Org.Country)
+			}
+		}
+	}
+	return BatchView{Batch: b, Items: items, Evidence: ev, ContentSHA256: sum, Changed: !bytes.Equal(sum, b.ContentSHA256), CallsOff: off}, nil
 }
 
 // ApproveRequest is one approval: the batch, the hash its reader was shown, and the item

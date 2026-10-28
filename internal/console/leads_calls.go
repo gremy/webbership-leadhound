@@ -138,7 +138,7 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		return " " + t.In(s.opt.Location).Format("Mon 2 Jan 15:04")
 	}
 	out := make([]seqRow, 0, len(steps))
-	for _, st := range steps {
+	for i, st := range steps {
 		r := seqRow{Step: st.Step, Kind: "an email"}
 		if st.Type == "call" {
 			r.Kind = "a phone call"
@@ -152,9 +152,9 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		case SeqDue:
 			r.Words = "due" + at(st.At)
 		case SeqWaiting:
-			r.Words = "waiting on the call"
-			if st.Type == "call" {
-				r.Words = "waiting on the email before it"
+			r.Words = "waiting"
+			if p, ok := waitsOn(steps, i); ok {
+				r.Words = "waiting on " + WaitsOnWords(p.Type, p.Step, st.Step)
 			}
 		case SeqSent:
 			r.Words = "sent" + at(st.At)
@@ -175,9 +175,39 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		default:
 			r.Words = strings.ReplaceAll(st.State, "_", " ")
 		}
+		if st.Note != "" {
+			r.Words += " · " + st.Note
+		}
 		out = append(out, r)
 	}
 	return out
+}
+
+// waitsOn is the step steps[i] waits on: the nearest earlier step that has a row and was
+// not cancelled (a step skipped for no number, or cancelled, is passed over).
+func waitsOn(steps []SequenceStep, i int) (SequenceStep, bool) {
+	for j := i - 1; j >= 0; j-- {
+		if p := steps[j]; p.MessageID > 0 && p.State != SeqCancelled && p.State != SeqNoNumber {
+			return p, true
+		}
+	}
+	return SequenceStep{}, false
+}
+
+// WaitsOnWords names the step a step waits on: "the call" or "the email before it" when it
+// is the step just before, else with its 1-based step number ("the email at step 2").
+func WaitsOnWords(prevType string, prevStep, step int) string {
+	what := "the email"
+	if prevType == "call" {
+		what = "the call"
+	}
+	if prevStep == step-1 {
+		if prevType == "call" {
+			return what
+		}
+		return what + " before it"
+	}
+	return what + " at step " + strconv.Itoa(prevStep+1)
 }
 
 // callView is what the call card renders: the backend's card, the outcomes in order, the
@@ -204,8 +234,13 @@ func (s *server) leadCall(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.renderCall(w, r, http.StatusOK, id, s.takeFlash(w, r), false, "")
+	msg, isErr := strings.CutPrefix(s.takeFlash(w, r), errFlash)
+	s.renderCall(w, r, http.StatusOK, id, msg, isErr, "")
 }
+
+// errFlash marks a flash that is a refusal, shown as an error. A control character, so no
+// message a backend words can start with it.
+const errFlash = "\x1ferr\x1f"
 
 func (s *server) renderCall(w http.ResponseWriter, r *http.Request, code int, id int64, msg string, isErr bool, note string) {
 	c, err := s.b.LeadCall(r.Context(), id)
@@ -224,8 +259,9 @@ func (s *server) renderCall(w http.ResponseWriter, r *http.Request, code int, id
 // leadCallOutcome is POST /leads/calls/{message}/outcome: outcome (one of the six), an
 // optional note (at most 500 characters) and, for connected, consent and consent_address.
 // An outcome the form never offers is refused (400) before the backend; a long note or a
-// bad address shows the card again with the refusal (422). Saved, it goes back (303) to the
-// page back names (the card when none) with the backend's line.
+// bad address shows the card again with the refusal (422), keeping the note. A refusal of
+// the backend's ("not due yet") goes back (303) to the card, which shows it as an error.
+// Saved, it goes back (303) to the page back names (the card when none) with its line.
 func (s *server) leadCallOutcome(w http.ResponseWriter, r *http.Request) {
 	const do = "call-outcome"
 	id, ok := messageID(r)
@@ -272,8 +308,10 @@ func (s *server) leadCallOutcome(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusUnprocessableEntity, "leads_off", page{Title: "Leads", Active: leadsPath, SignedIn: true})
 		return
 	case errors.Is(err, ErrUserFixable):
+		// Back to the card (post, redirect, get), so a reload never posts again.
 		s.leadsLog(do, "refused")
-		s.renderCall(w, r, http.StatusUnprocessableEntity, id, refusalWords(err), true, note)
+		s.setFlash(w, errFlash+refusalWords(err))
+		http.Redirect(w, r, leadCallPath+strconv.FormatInt(id, 10), http.StatusSeeOther)
 		return
 	case errors.Is(err, ErrNotFound):
 		s.leadsLog(do, "not found")

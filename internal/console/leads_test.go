@@ -1288,3 +1288,40 @@ func TestLeadDetailSignalsByFetch(t *testing.T) {
 		t.Errorf("no signals made %v", got)
 	}
 }
+
+// TestLeadMessagesRows: the lead page lists its messages as one full-width row each, the
+// label on the left and the state on the right, the channel said once (in the label); and a
+// Today section's number badge sits on its heading's first line, however it wraps.
+func TestLeadMessagesRows(t *testing.T) {
+	h := newHarness(t, richBackend("Northwind Trading"), false)
+	body := h.do(get("/leads/5", h.session(t))).Body.String()
+	want := `<summary><span class="lead-message-label">email 1 of 3</span><span class="lead-message-state">draft</span></summary>`
+	if !strings.Contains(body, want) {
+		t.Errorf("the lead page lacks %q", want)
+	}
+	css, err := staticFS.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := func(sel string) string {
+		i := strings.Index(string(css), "\n"+sel+" {")
+		if i < 0 {
+			return ""
+		}
+		r := string(css[i:])
+		return r[:strings.Index(r, "}")]
+	}
+	for sel, decls := range map[string][]string{
+		".lead-message > summary":          {"display: flex;", "width: 100%;"},
+		".today-section h2":                {"align-items: flex-start;"},
+		".today-step":                      {"margin-top: calc((1lh - 1.6rem) / 2);"},
+		".outcome-buttons button:disabled": {"cursor: not-allowed;", "border-style: dashed;"},
+	} {
+		r := rule(sel)
+		for _, d := range decls {
+			if !strings.Contains(r, d) {
+				t.Errorf("%s lacks %q: %q", sel, d, r)
+			}
+		}
+	}
+}

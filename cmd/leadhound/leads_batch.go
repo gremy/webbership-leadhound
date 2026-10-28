@@ -151,6 +151,9 @@ func runBatchNew(ctx context.Context, args []string) error {
 	if line := callsLine(out); line != "" {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
+	if line := callsOffLine(out.CallsOff); line != "" {
+		_, _ = fmt.Fprintln(stdout, line)
+	}
 	if out.Sizing != nil {
 		_, _ = fmt.Fprintf(stdout, "Sizing: %s.\n", out.Sizing.Words())
 	}
@@ -565,6 +568,9 @@ func printBatch(w io.Writer, v BatchView, only int) {
 	if b.Shadow {
 		p("Shadow batch: nothing is sent and its leads stay new.\n")
 	}
+	if line := callsOffLine(v.callsOffCounts()); line != "" {
+		p("%s\n", line)
+	}
 	for _, it := range items {
 		if only != 0 && it.N != only {
 			continue
@@ -572,7 +578,10 @@ func printBatch(w io.Writer, v BatchView, only int) {
 		p("\n%d. %s · %s · %s\n", it.N, it.Org.Domain, it.Lead.Kind, it.Lead.Channel)
 		printEvidence(w, ev[it.Lead.ID])
 		for _, m := range it.Msgs {
-			p("\n   -- %s --\n", messageLabel(m, len(it.Msgs)))
+			p("\n   -- %s --\n", messageLabel(m, stepCount(b, it.Msgs)))
+			if c, ok := v.CallsOff[it.Lead.ID]; ok && m.Channel == leadstore.ChannelPhone {
+				p("   %s\n", callsOffCard(c))
+			}
 			if m.Channel == "email" && m.FromAddress != "" {
 				p("   From: %s\n", fromLine(m.FromName, m.FromAddress))
 			}
@@ -621,7 +630,7 @@ func messageLabel(m leadstore.Message, n int) string {
 	var label string
 	switch m.Channel {
 	case "email":
-		label = fmt.Sprintf("email %d of %d · message %d", m.Step+1, n, m.ID)
+		label = fmt.Sprintf("step %d of %d · email · message %d", m.Step+1, n, m.ID)
 		if m.InReplyTo != "" {
 			label += " · a reply in the same thread"
 		}
@@ -630,7 +639,7 @@ func messageLabel(m leadstore.Message, n int) string {
 	case "linkedin":
 		label = fmt.Sprintf("LinkedIn note · message %d · when used: leadhound leads done %d", m.ID, m.ID)
 	case leadstore.ChannelPhone:
-		label = fmt.Sprintf("call card · step %d · message %d · after the call: leadhound leads calls outcome %d <what happened>", m.Step+1, m.ID, m.ID)
+		label = fmt.Sprintf("step %d of %d · call · message %d · after the call: leadhound leads calls outcome %d <what happened>", m.Step+1, n, m.ID, m.ID)
 	}
 	if m.State != leadstore.MsgDraft {
 		label += " · " + m.State
@@ -948,4 +957,23 @@ func outboxMessage(m leadstore.Message, senderName, from string, date time.Time)
 		mm.References = []string{m.InReplyTo}
 	}
 	return mm
+}
+
+// stepCount is how many steps a lead's sequence has in batch b, for "step N of M": the
+// length of the sequence the batch froze for the lead, else (a legacy batch, or a sequence
+// the batch does not hold) its highest step. A lead whose call steps were left out still
+// counts them, so its last email reads "step 5 of 5", as the lead page's Sequence does.
+func stepCount(b leadstore.Batch, msgs []leadstore.Message) int {
+	n := 0
+	for _, m := range msgs {
+		n = max(n, m.Step+1)
+	}
+	seqs, err := b.Sequences()
+	if err != nil || seqs == nil || len(msgs) == 0 {
+		return n
+	}
+	if seq := seqs.For(msgs[0].SequenceName); len(seq) > 0 {
+		return max(n, len(seq))
+	}
+	return n
 }

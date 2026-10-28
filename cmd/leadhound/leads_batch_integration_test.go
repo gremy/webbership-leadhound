@@ -194,7 +194,7 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 		"Evidence: x-generator = 10 · https://contoso.example/ · fetched",
 		"4. wingtip.example · agency_partner · email\n", "To: hello@wingtip.example",
 		`Finding: agency page https://www.wingtip.example/services/drupal-upgrades says "upgrades from Drupal 7 to Drupal 10"`,
-		"email 3 of 3", "LinkedIn note · message",
+		"step 3 of 3 · email", "LinkedIn note · message",
 		"Approve: leadhound leads batch approve 1 --hash "+hash)
 	if !strings.HasSuffix(out, "Approve: leadhound leads batch approve 1 --hash "+hash+"\n") {
 		t.Errorf("show does not end with the approve line")

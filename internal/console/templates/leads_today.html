@@ -18,7 +18,7 @@
 </form>
 {{end}}
 
-{{with $t.CallsOff}}<p class="notice notice-warn calls-off" role="note"><strong>{{.}}</strong> The calls below still show, so you can open a card and walk the flow; nothing is dialled for you.</p>{{end}}
+{{with $t.CallsOff}}<p class="notice notice-warn calls-off" role="note"><strong>{{.}}.</strong> {{if or $t.CallsNow $t.CallsOverdue $t.CallsWaiting}}The calls below still show, so you can open a card and walk the flow; nothing is dialled for you.{{else}}Nothing is dialled for you.{{end}}</p>{{end}}
 
 <section class="card today-section" id="today-calls-now" aria-labelledby="today-calls-now-title">
   <h2 id="today-calls-now-title"><span class="today-step" aria-hidden="true">1</span> Calls to make now{{with $t.CallsNow}} <span class="today-count">{{len .}}</span>{{end}}</h2>
@@ -33,6 +33,15 @@
   <ul class="item-list">{{range $t.CallsOverdue}}{{template "today_call" .}}{{end}}</ul>
   <p class="hint">Make the call, or record it as skipped so the last email can go.</p>
   {{else}}<p class="empty">Nothing overdue.</p>{{end}}
+</section>
+
+<section class="card today-section" id="today-calls-waiting" aria-labelledby="today-calls-waiting-title">
+  <h2 id="today-calls-waiting-title">Calls waiting{{with $t.CallsWaitingTotal}} <span class="today-count">{{.}}</span>{{end}}</h2>
+  {{if $t.CallsWaiting}}
+  <p class="hint">Not due yet: each waits on an earlier step of its lead. Open a card to read it ahead.</p>
+  <ul class="item-list">{{range $t.CallsWaiting}}{{template "today_call" .}}{{end}}</ul>
+  {{with $v.MoreWaiting}}<p class="hint">and {{.}} more.</p>{{end}}
+  {{else}}<p class="empty">No calls waiting. Calls in approved batches show here until they fall due.</p>{{end}}
 </section>
 
 <section class="card today-section" id="today-replies" aria-labelledby="today-replies-title">

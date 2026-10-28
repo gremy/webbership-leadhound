@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
@@ -257,4 +258,51 @@ func TestOrgNameValue(t *testing.T) {
 // contact-form text and the LinkedIn note for a form lead), with the zero reader for ids.
 func draftLead(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config, idDomain string) ([]leadstore.DraftRow, error) {
 	return draftSequence(legacyPlan(cfg), c, ev, cfg, nil, idDomain, zeroReader{})
+}
+
+// TestStepLabels: every place the member sees a step numbers it 1-based as "Step N" with the
+// lead's sequence length, the same as the lead page's Sequence section; a lead whose sequence
+// lost its call steps (no number) still reads "step 5 of 5", never "email 5 of 3".
+func TestStepLabels(t *testing.T) {
+	seq := []campaign.Step{
+		{Step: 0, Type: campaign.StepEmail}, {Step: 1, Type: campaign.StepEmail, AfterBusinessDays: 3},
+		{Step: 2, Type: campaign.StepCall, When: campaign.WhenHasCallablePhone},
+		{Step: 3, Type: campaign.StepEmail, When: campaign.WhenCallNotConnected},
+		{Step: 4, Type: campaign.StepEmail, AfterBusinessDays: 5},
+	}
+	raw, err := json.Marshal(leadstore.BatchSequences{campaign.SequenceDefault: seq})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := leadstore.Batch{ID: 1, Sequence: raw}
+	noPhone := []leadstore.Message{
+		{ID: 51, Step: 0, Channel: "email"},
+		{ID: 52, Step: 1, Channel: "email", InReplyTo: "x"},
+		{ID: 53, Step: 4, Channel: "email", InReplyTo: "x"},
+	}
+	n := stepCount(b, noPhone)
+	if got := messageLabel(noPhone[2], n); !strings.HasPrefix(got, "step 5 of 5 · email · message 53") {
+		t.Errorf("batch show: %q", got)
+	}
+	if got := consoleMessageLabel(noPhone[2], n); !strings.HasPrefix(got, "Step 5 of 5 · email · message 53") {
+		t.Errorf("console batch: %q", got)
+	}
+	call := leadstore.Message{ID: 3, Step: 2, Channel: leadstore.ChannelPhone, State: leadstore.MsgDraft}
+	if got := messageLabel(call, n); !strings.HasPrefix(got, "step 3 of 5 · call · message 3") {
+		t.Errorf("batch show call: %q", got)
+	}
+	if got := consoleMessageLabel(call, n); got != "Step 3 of 5 · call · message 3" {
+		t.Errorf("console batch call: %q", got)
+	}
+	if got := detailMessageLabel(leadstore.DetailMessage{ID: 29, Step: 3, Channel: "email", Shadow: true}); got != "Step 4 · email · message 29 · shadow batch" {
+		t.Errorf("lead page: %q", got)
+	}
+	if got := detailMessageLabel(leadstore.DetailMessage{ID: 28, Step: 2, Channel: leadstore.ChannelPhone}); got != "Step 3 · call · message 28" {
+		t.Errorf("lead page call: %q", got)
+	}
+	// A legacy batch (no stored sequence) counts its own steps.
+	legacy := []leadstore.Message{{ID: 1, Step: 0, Channel: "email"}, {ID: 2, Step: 1, Channel: "email"}, {ID: 3, Step: 2, Channel: "email"}}
+	if got := messageLabel(legacy[2], stepCount(leadstore.Batch{ID: 2}, legacy)); !strings.HasPrefix(got, "step 3 of 3 · email") {
+		t.Errorf("legacy: %q", got)
+	}
 }

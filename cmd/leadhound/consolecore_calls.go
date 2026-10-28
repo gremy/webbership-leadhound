@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -39,26 +40,44 @@ func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayVie
 	if err != nil {
 		return console.TodayView{}, err
 	}
-	return todayFromStore(t, setup.leads, now, b.loc, v), nil
+	pol, err := loadCallPolicies(ctx, lq)
+	if err != nil {
+		return console.TodayView{}, err
+	}
+	return todayFromStore(t, setup.leads, now, b.loc, v, pol), nil
 }
 
-// todayFromStore words the store's Today into the console's view v (its filter set).
-func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc *time.Location, v console.TodayView) console.TodayView {
+// waitsOnCall words what call row c waits on: "the email before it", "the email at step 2".
+func waitsOnCall(c leadstore.CallRow) string {
+	if c.PrevStep < 0 {
+		return "an earlier step"
+	}
+	typ := campaign.StepEmail
+	if c.PrevChannel == leadstore.ChannelPhone {
+		typ = campaign.StepCall
+	}
+	return console.WaitsOnWords(typ, c.PrevStep, c.Step)
+}
+
+// todayFromStore words the store's Today into the console's view v (its filter set). Each
+// time shows once: a call's due time and a reply's time go in At, an email's in its line.
+func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc *time.Location, v console.TodayView, pol callPolicies) console.TodayView {
 	clock := func(at time.Time) string { return at.In(loc).Format("15:04") }
-	call := func(c leadstore.CallRow, overdue bool) console.TodayItem {
-		line := "Call · step " + fmt.Sprint(c.Step+1)
-		if c.DueAt != nil {
-			if overdue {
-				line += " · due " + c.DueAt.In(loc).Format("Mon 2 Jan")
-			} else {
-				line += " · due " + clock(*c.DueAt)
-			}
-		}
-		if !inCallWindow(now, cfg.Policy(c.Country).Location()) {
+	call := func(c leadstore.CallRow, waiting bool) console.TodayItem {
+		line := fmt.Sprintf("Step %d · call", c.Step+1)
+		switch {
+		case waiting && c.DueAt == nil:
+			line += " · waits on " + waitsOnCall(c)
+		case waiting:
+			line += " · not due yet"
+		case !inCallWindow(now, cfg.Policy(c.Country).Location()):
 			line += " · outside calling hours now (09:30 to 17:00 their time, weekdays)"
 		}
 		if c.Outcome != "" {
 			line += " · last time: " + strings.ReplaceAll(c.Outcome, "_", " ")
+		}
+		if pol.off(c.CampaignID, c.Country) {
+			line += " · " + callsOffShort(c.Country)
 		}
 		if c.Shadow {
 			line += " · shadow batch"
@@ -69,7 +88,7 @@ func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc
 		var line string
 		switch it.Channel {
 		case "email":
-			line = fmt.Sprintf("Email at step %d · goes out by the send job · due %s", it.Step+1, clock(it.DueAt))
+			line = fmt.Sprintf("Step %d · email · goes out by the send job · due %s", it.Step+1, clock(it.DueAt))
 		case "form":
 			line = "Contact form text · use it by hand, then mark it done"
 		case "linkedin":
@@ -80,15 +99,23 @@ func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc
 		if it.Shadow {
 			line += " · shadow batch"
 		}
-		at := it.DueAt
-		return console.TodayItem{LeadID: it.LeadID, MessageID: it.MessageID, OrgName: orgWords(it.OrgName, it.OrgDomain), Line: line, At: &at}
+		out := console.TodayItem{LeadID: it.LeadID, MessageID: it.MessageID, OrgName: orgWords(it.OrgName, it.OrgDomain), Line: line}
+		if it.Channel != "email" { // an email's time is in its line already
+			at := it.DueAt
+			out.At = &at
+		}
+		return out
 	}
 	for _, c := range t.CallsDueNow {
 		v.CallsNow = append(v.CallsNow, call(c, false))
 	}
 	for _, c := range t.CallsOverdue {
-		v.CallsOverdue = append(v.CallsOverdue, call(c, true))
+		v.CallsOverdue = append(v.CallsOverdue, call(c, false))
 	}
+	for _, c := range t.CallsWaiting {
+		v.CallsWaiting = append(v.CallsWaiting, call(c, true))
+	}
+	v.CallsWaitingTotal = t.CallsWaitingN
 	for _, r := range t.RepliesWaiting {
 		at := r.RepliedAt
 		v.Replies = append(v.Replies, console.TodayItem{LeadID: r.LeadID, OrgName: orgWords(r.OrgName, r.OrgDomain),
@@ -117,14 +144,39 @@ func (b *backend) LeadCall(ctx context.Context, messageID int64) (console.CallCa
 	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
 		return console.CallCard{}, err
 	}
-	c, err := b.lq().CallByID(ctx, leadstore.DefaultAccountID, messageID)
+	lq := b.lq()
+	c, err := lq.CallByID(ctx, leadstore.DefaultAccountID, messageID)
 	if errors.Is(err, leadstore.ErrMessageNotFound) {
 		return console.CallCard{}, console.ErrNotFound
 	}
 	if err != nil {
 		return console.CallCard{}, err
 	}
-	return callCard(c), nil
+	pol, err := loadCallPolicies(ctx, lq)
+	if err != nil {
+		return console.CallCard{}, err
+	}
+	card := callCard(c)
+	card.NotDue = notDueWords(c, b.now(), b.loc)
+	if pol.off(c.CampaignID, c.Country) {
+		card.CallsOff = callsOffCard(c.Country)
+	}
+	return card, nil
+}
+
+// notDueWords says why call c takes no outcome yet at now: it waits on an earlier step, or
+// its due time is still to come. "" when it is due, or no longer waiting at all.
+func notDueWords(c leadstore.CallRow, now time.Time, loc *time.Location) string {
+	if c.State != leadstore.MsgApproved {
+		return ""
+	}
+	if c.DueAt == nil {
+		return "Not due yet: this call waits on " + waitsOnCall(c) + "."
+	}
+	if c.DueAt.After(now) {
+		return "Not due yet: due " + c.DueAt.In(loc).Format("Mon 2 Jan 15:04") + "."
+	}
+	return ""
 }
 
 // callCard words one call row as its card. In CP3 no call is callable.
@@ -176,7 +228,24 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 	if err != nil {
 		return nil, err
 	}
-	return sequenceSteps(steps), nil
+	out := sequenceSteps(steps)
+	pol, err := loadCallPolicies(ctx, lq)
+	if err != nil {
+		return nil, err
+	}
+	for i, st := range steps {
+		if st.Type != campaign.StepCall || st.MessageID == 0 {
+			continue
+		}
+		c, err := lq.CallByID(ctx, leadstore.DefaultAccountID, st.MessageID)
+		if err != nil {
+			return nil, err
+		}
+		if pol.off(c.CampaignID, c.Country) {
+			out[i].Note = callsOffShort(c.Country)
+		}
+	}
+	return out, nil
 }
 
 // sequenceSteps maps the store's steps onto the console's states.

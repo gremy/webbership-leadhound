@@ -38,7 +38,19 @@ type batchPlan struct {
 	templates leadconfig.Templates     // the email steps (and the call card) by kind and language
 	rules     outreach.StepRules       // the zero value for the legacy plan
 	forbid    map[string][]*regexp.Regexp
+	// callsOn are the countries (ISO 3166-1 alpha-2) whose call policy is on in the spec. A
+	// lead elsewhere still gets its call drafted (the operator's call), counted as calls off.
+	callsOn map[string]bool
 }
+
+// callsAllowed reports whether country's call policy is on in the plan's campaign. The
+// legacy plan has no call step, so it never asks.
+func (p batchPlan) callsAllowed(country string) bool {
+	return p.callsOn[countryCode(country)]
+}
+
+// countryCode is country as the specs key it: trimmed, upper case.
+func countryCode(country string) string { return strings.ToUpper(strings.TrimSpace(country)) }
 
 // emailSteps is how many email steps a lead's sequence has at most: what the mailbox ramp
 // counts per lead.
@@ -132,7 +144,12 @@ func filePlan(dataDir string, spec campaign.Spec) (batchPlan, error) {
 	for name, seq := range spec.Sequences {
 		seqs[name] = seq
 	}
-	p := batchPlan{sequences: seqs, seq: spec.Sequence, templates: t, forbid: map[string][]*regexp.Regexp{}}
+	p := batchPlan{sequences: seqs, seq: spec.Sequence, templates: t, forbid: map[string][]*regexp.Regexp{}, callsOn: map[string]bool{}}
+	for code, c := range spec.Countries {
+		if c.Call {
+			p.callsOn[strings.ToUpper(code)] = true
+		}
+	}
 	for _, st := range spec.Sequence {
 		if st.Type == campaign.StepEmail {
 			p.rules.EmailSteps = append(p.rules.EmailSteps, st.Step)

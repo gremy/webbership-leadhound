@@ -29,8 +29,32 @@ func TestCallsOffInCP3(t *testing.T) {
 		t.Errorf("callsOffWords = %q", callsOffWords)
 	}
 	v := todayFromStore(leadstore.Today{CallsDueNow: []leadstore.CallRow{{MessageID: 1, OrgDomain: "a.example", DueAt: &due}}},
-		leadconfig.Config{}, due, time.UTC, console.TodayView{CallsOff: callsOffWords})
+		leadconfig.Config{}, due, time.UTC, console.TodayView{CallsOff: callsOffWords}, nil)
 	if v.CallsOff != callsOffWords || len(v.CallsNow) != 1 {
 		t.Errorf("today = %+v", v)
+	}
+}
+
+// TestTodayTimeOnce: a Today row shows its time once: an email's due time in its line (At
+// nil), a call's in At only (its line has no clock), never both.
+func TestTodayTimeOnce(t *testing.T) {
+	due := time.Date(2026, 10, 28, 11, 30, 0, 0, time.UTC)
+	v := todayFromStore(leadstore.Today{
+		CallsDueNow:    []leadstore.CallRow{{MessageID: 1, OrgDomain: "a.example", Step: 2, DueAt: &due, Shadow: true}},
+		CallsOverdue:   []leadstore.CallRow{{MessageID: 2, OrgDomain: "b.example", Step: 2, DueAt: &due}},
+		EmailsDueCount: 1,
+		EmailsDue:      []leadstore.TodayItem{{MessageID: 3, OrgDomain: "c.example", Channel: "email", Step: 0, DueAt: due, Shadow: true}},
+	}, leadconfig.Config{}, due, time.UTC, console.TodayView{}, nil)
+	for _, it := range append(append(v.CallsNow, v.CallsOverdue...), v.Emails...) {
+		inLine := strings.Contains(it.Line, "11:30") || strings.Contains(it.Line, "due")
+		if inLine && it.At != nil {
+			t.Errorf("%s: the time shows twice: %q and At %v", it.OrgName, it.Line, it.At)
+		}
+		if !inLine && it.At == nil {
+			t.Errorf("%s: no time at all: %q", it.OrgName, it.Line)
+		}
+	}
+	if len(v.Emails) != 1 || !strings.Contains(v.Emails[0].Line, "Step 1 · email") {
+		t.Errorf("email line: %+v", v.Emails)
 	}
 }

@@ -604,6 +604,10 @@ type TodayView struct {
 	// CallsNow are the calls due and inside the lead's calling hours now; CallsOverdue the
 	// calls due before today and not yet made.
 	CallsNow, CallsOverdue []TodayItem
+	// CallsWaiting are the first few calls of approved batches that are not due yet, each
+	// line saying what it waits on; CallsWaitingTotal counts them all.
+	CallsWaiting      []TodayItem
+	CallsWaitingTotal int
 	// Replies are the replies waiting for the operator, newest first.
 	Replies []TodayItem
 	// EmailsDue is how many emails the send job sends today; Emails the first few of them.
@@ -644,6 +648,12 @@ type CallCard struct {
 	Latest        *CallLog   // the latest outcome recorded; nil when none
 	Shadow        bool       // the call belongs to a shadow batch
 	Due           *time.Time // when the call fell due; nil when not scheduled
+	// NotDue says why an outcome cannot be recorded yet ("Not due yet: this call waits on the
+	// email before it."); "" when the call is due. The outcome buttons are disabled while set.
+	NotDue string
+	// CallsOff warns that calls to the lead's country are off in the campaign's rules: the
+	// operator decides whether to ring. "" when they are on.
+	CallsOff string
 }
 
 // CallLog is one recorded call outcome: Outcome one of campaign.Outcomes, the note, and for
@@ -679,4 +689,5 @@ type SequenceStep struct {
 	Reason    string
 	Outcome   string
 	Shadow    bool
+	Note      string // a short note shown after the state ("calls off for IE in the campaign rules")
 }

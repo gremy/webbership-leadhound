@@ -119,7 +119,7 @@ func TestTodayPage(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<a href="/leads/today" aria-current="page">Today</a>`,
-		"<strong>Calls are off until the call rules are set up</strong>",
+		"<strong>Calls are off until the call rules are set up.</strong> The calls below still show",
 		`<a href="/leads/calls/9">Northwind Trading</a>`, `<a href="/leads/calls/11">Contoso Ltd</a>`,
 		"step 3 call, a direct line · due Sat 24 Oct 04:50",
 		`<a href="/leads/7">Fabrikam</a>`, "7 emails go out today, sent by the send job.",
@@ -175,7 +175,7 @@ func TestCallCard(t *testing.T) {
 		"<dt>Line</dt><dd>a direct line</dd>",
 		"Say who you are and why you're calling. Your number must be shown.",
 		"<li>Your site runs Drupal 10, which ends on 9 December.</li>", "<li>Northwind Trading</li>",
-		`class="notice notice-warn call-blocked"`, "<strong>Calls are off until the call rules are set up</strong>",
+		`class="notice notice-warn call-blocked"`, "<strong>Calls are off until the call rules are set up.</strong>",
 		"call rules not set up yet: calls are off", "No answer · Sat 24 Oct 04:50", "rang out", "shadow batch",
 		`action="/leads/calls/9/outcome"`, `name="consent" value="yes"`, `name="consent_address"`, `maxlength="500"`,
 	} {
@@ -248,7 +248,7 @@ func TestCallOutcome(t *testing.T) {
 }
 
 // TestCallOutcomeRefused: an unknown outcome is 400 and a long note or bad address 422,
-// all before the backend; a backend refusal is shown on the card in its words.
+// all before the backend; a backend refusal goes back to the card, shown there in its words.
 func TestCallOutcomeRefused(t *testing.T) {
 	for _, form := range []url.Values{{"outcome": {"hung_up"}}, {}, {"outcome": {" "}}} {
 		b := richBackend("x")
@@ -284,11 +284,17 @@ func TestCallOutcomeRefused(t *testing.T) {
 		b := richBackend("x")
 		b.outcomeErr = fmt.Errorf("%w: %s", ErrUserFixable, words)
 		h := newHarness(t, b, false)
-		w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}, "note": {"kept"}}, h.session(t)))
-		body := w.Body.String()
-		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(body, strings.ReplaceAll(words, "'", "&#39;")) ||
-			!strings.Contains(body, `class="notice notice-error"`) || !strings.Contains(body, `value="kept"`) {
-			t.Errorf("%q: %d %s", words, w.Code, body)
+		c := h.session(t)
+		w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}, "note": {"kept"}}, c))
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads/calls/9" {
+			t.Errorf("%q: %d to %q", words, w.Code, w.Header().Get("Location"))
+			continue
+		}
+		r := get("/leads/calls/9", c)
+		r.AddCookie(cookieNamed(w, "__Host-lh_flash"))
+		if body := h.do(r).Body.String(); !strings.Contains(body, strings.ReplaceAll(words, "'", "&#39;")) ||
+			!strings.Contains(body, `class="notice notice-error"`) {
+			t.Errorf("%q: the card does not show it: %s", words, body)
 		}
 	}
 	b = richBackend("x")
@@ -372,7 +378,7 @@ func TestSequenceWords(t *testing.T) {
 		{Step: 1, Type: "call", State: SeqNoNumber},
 		{Step: 2, Type: "call", MessageID: 4, State: SeqDone, At: &at, Outcome: campaign.OutcomeWrongNumber},
 		{Step: 3, Type: "email", State: SeqCancelled, Reason: "opt_out"},
-		{Step: 4, Type: "email", State: SeqCheck},
+		{Step: 4, Type: "email", MessageID: 6, State: SeqCheck},
 		{Step: 5, Type: "call", MessageID: 5, State: SeqWaiting},
 	})
 	want := []string{"drafted, waiting for the batch to be approved", "skipped because there was no number we may call",
@@ -406,5 +412,133 @@ func TestTelHref(t *testing.T) {
 		if got := telHref(in); got != want {
 			t.Errorf("telHref(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestSequenceWaitsOn: a waiting step names the step it really waits on, the nearest earlier
+// step that has a row and was not cancelled: "the call" only when that is the call, "the
+// email before it" when it is the email just before, else the email by its step number. A
+// lead with no number never reads "waiting on the call".
+func TestSequenceWaitsOn(t *testing.T) {
+	s := &server{opt: Options{Location: testSent.Location()}}
+	at := testSent
+	phone := s.sequenceRows([]SequenceStep{
+		{Step: 0, Type: "email", MessageID: 1, State: SeqDue, At: &at},
+		{Step: 1, Type: "email", MessageID: 2, State: SeqWaiting},
+		{Step: 2, Type: "call", MessageID: 3, State: SeqWaiting},
+		{Step: 3, Type: "email", MessageID: 4, State: SeqWaiting},
+		{Step: 4, Type: "email", MessageID: 5, State: SeqWaiting},
+	})
+	noPhone := s.sequenceRows([]SequenceStep{
+		{Step: 0, Type: "email", MessageID: 1, State: SeqDue, At: &at},
+		{Step: 1, Type: "email", MessageID: 2, State: SeqWaiting},
+		{Step: 2, Type: "call", State: SeqNoNumber},
+		{Step: 3, Type: "email", State: SeqNoNumber},
+		{Step: 4, Type: "email", MessageID: 3, State: SeqWaiting},
+	})
+	skipped := s.sequenceRows([]SequenceStep{
+		{Step: 0, Type: "email", MessageID: 1, State: SeqSent, At: &at},
+		{Step: 1, Type: "email", MessageID: 2, State: SeqSent, At: &at},
+		{Step: 2, Type: "call", MessageID: 3, State: SeqWaiting},
+		{Step: 3, Type: "email", MessageID: 4, State: SeqCancelled, Reason: campaign.CancelCallSkipped},
+		{Step: 4, Type: "email", MessageID: 5, State: SeqWaiting},
+	})
+	for _, c := range []struct {
+		name string
+		rows []seqRow
+		want []string
+	}{
+		{"phone", phone, []string{"", "waiting on the email before it", "waiting on the email before it", "waiting on the call", "waiting on the email before it"}},
+		{"no phone", noPhone, []string{"", "waiting on the email before it", "", "", "waiting on the email at step 2"}},
+		{"cancelled before", skipped, []string{"", "", "waiting on the email before it", "", "waiting on the call at step 3"}},
+	} {
+		for i, w := range c.want {
+			if w == "" {
+				continue
+			}
+			if c.rows[i].Words != w {
+				t.Errorf("%s step %d: %q, want %q", c.name, i+1, c.rows[i].Words, w)
+			}
+		}
+		if c.name == "no phone" {
+			for _, r := range c.rows {
+				if strings.Contains(r.Words, "call") && !strings.Contains(r.Words, "no number") {
+					t.Errorf("no phone: %q mentions a call", r.Words)
+				}
+			}
+		}
+	}
+}
+
+// TestCallCardNotDue: a call that is not due says why near the top and its six outcome
+// buttons stay visible but disabled; a due call's buttons are live. A calls-off warning
+// shows when the backend sets one.
+func TestCallCardNotDue(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	b.call.NotDue = "Not due yet: this call waits on the email before it."
+	b.call.CallsOff = "Calls to Ireland are off in this campaign's rules. Your call whether to ring; if you don't, choose Skipped."
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/calls/9", h.session(t))).Body.String()
+	for _, want := range []string{
+		`<p class="notice notice-warn call-not-due" role="note">Not due yet: this call waits on the email before it.</p>`,
+		"Calls to Ireland are off in this campaign&#39;s rules. Your call whether to ring; if you don&#39;t, choose Skipped.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card lacks %q", want)
+		}
+	}
+	if n := strings.Count(body, `name="outcome"`); n != 6 {
+		t.Errorf("%d outcome buttons, want 6 (visible)", n)
+	}
+	if n := strings.Count(body, `disabled>`); n != 6 {
+		t.Errorf("%d disabled buttons, want 6", n)
+	}
+	h = newHarness(t, richBackend("x"), false)
+	if body := h.do(get("/leads/calls/9", h.session(t))).Body.String(); strings.Contains(body, "disabled>") || strings.Contains(body, "call-not-due") {
+		t.Error("a due call's card is disabled")
+	}
+}
+
+// TestCallOutcomeRefusedRedirects: a backend refusal goes back (303) to the card, never
+// sitting on the POST URL, and the card shows the refusal as an error once.
+func TestCallOutcomeRefusedRedirects(t *testing.T) {
+	b := richBackend("x")
+	b.outcomeErr = fmt.Errorf("%w: %s", ErrUserFixable, "Not due yet: this call waits on the email before it.")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}, "back": {"/leads/today"}}, c))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads/calls/9" {
+		t.Fatalf("refused: %d to %q, want 303 to the card", w.Code, w.Header().Get("Location"))
+	}
+	r := get("/leads/calls/9", c)
+	r.AddCookie(cookieNamed(w, "__Host-lh_flash"))
+	body := h.do(r).Body.String()
+	if !strings.Contains(body, `<p class="notice notice-error" role="alert">Not due yet: this call waits on the email before it.</p>`) {
+		t.Errorf("the card does not show the refusal as an error:\n%s", body)
+	}
+}
+
+// TestTodayCallsWaiting: calls not due yet are listed with what they wait on, each linked to
+// its card, under their own heading; the calls-off banner is two sentences and says "below"
+// only when a call is listed.
+func TestTodayCallsWaiting(t *testing.T) {
+	b := richBackend("x")
+	b.today = TodayView{CallsOff: "Calls are off until the call rules are set up",
+		CallsWaiting:      []TodayItem{{LeadID: 5, MessageID: 9, OrgName: "Northwind", Line: "Step 3 · call · waits on the email before it"}},
+		CallsWaitingTotal: 3}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/today", h.session(t))).Body.String()
+	for _, want := range []string{
+		"Calls waiting", `<a href="/leads/calls/9">Northwind</a>`, "Step 3 · call · waits on the email before it",
+		"and 2 more.", "<strong>Calls are off until the call rules are set up.</strong> The calls below still show",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Today lacks %q", want)
+		}
+	}
+	b.today = TodayView{CallsOff: "Calls are off until the call rules are set up"}
+	body = h.do(get("/leads/today", h.session(t))).Body.String()
+	if strings.Contains(body, "below") || !strings.Contains(body, "<strong>Calls are off until the call rules are set up.</strong>") {
+		t.Errorf("an empty Today's banner: %s", body[strings.Index(body, "calls-off")-40:][:300])
 	}
 }

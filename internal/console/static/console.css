@@ -1202,14 +1202,28 @@ details.inline summary {
   margin-top: 1rem;
   font-size: 0.95rem;
 }
+/* A lead's messages: one full-width row each, the label left and the state right. */
 .lead-message {
-  margin-top: 0.75rem;
+  margin-top: 0.5rem;
 }
 .lead-message > summary {
+  display: flex;
+  width: 100%;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
   max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
   text-align: left;
+}
+.lead-message-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.lead-message-state {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 .lead-message[open] > summary {
   margin-bottom: 0.5rem;
@@ -1649,11 +1663,13 @@ details.inline summary {
 }
 .today-section h2 {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   margin-top: 0;
 }
 .today-step {
+  /* Sits on the heading's first line, however many lines the heading wraps to. */
+  margin-top: calc((1lh - 1.6rem) / 2);
   display: inline-grid;
   place-items: center;
   width: 1.6rem;
@@ -1718,8 +1734,19 @@ details.inline summary {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
 }
+/* A call not due yet: the outcomes stay in view, plainly not clickable. */
+.outcome-buttons button:disabled {
+  color: var(--muted);
+  background: var(--bg);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+.outcome-buttons button:disabled:hover {
+  border-color: var(--border);
+}
 @media (max-width: 639px) {
   .outcome-buttons {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+

@@ -733,13 +733,13 @@ func detailMessageLabel(m leadstore.DetailMessage) string {
 	var l string
 	switch m.Channel {
 	case "email":
-		l = fmt.Sprintf("Email %d · message %d", m.Step+1, m.ID)
+		l = fmt.Sprintf("Step %d · email · message %d", m.Step+1, m.ID)
 	case "form":
 		l = fmt.Sprintf("Contact form text · message %d", m.ID)
 	case "linkedin":
 		l = fmt.Sprintf("LinkedIn note · message %d", m.ID)
 	case leadstore.ChannelPhone:
-		l = fmt.Sprintf("Call · step %d · message %d", m.Step+1, m.ID)
+		l = fmt.Sprintf("Step %d · call · message %d", m.Step+1, m.ID)
 	default:
 		l = fmt.Sprintf("Message %d", m.ID)
 	}

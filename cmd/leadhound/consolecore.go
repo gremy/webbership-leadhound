@@ -516,10 +516,13 @@ func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, e
 		li := console.LeadItem{N: it.N, LeadID: it.Lead.ID, Domain: it.Org.Domain, Kind: it.Lead.Kind, Channel: it.Lead.Channel, Route: it.Route,
 			Finding: findingLines(v.Evidence[it.Lead.ID])}
 		for _, m := range it.Msgs {
-			lm := console.LeadMessage{ID: m.ID, Label: consoleMessageLabel(m, len(it.Msgs)), Channel: m.Channel, To: m.ToAddress,
+			lm := console.LeadMessage{ID: m.ID, Label: consoleMessageLabel(m, stepCount(v.Batch, it.Msgs)), Channel: m.Channel, To: m.ToAddress,
 				Subject: m.Subject, Body: strings.TrimRight(m.BodyText, "\n"), CancelReason: m.CancelReason}
 			if m.Channel == "email" && m.FromAddress != "" {
 				lm.From = console.MessageFrom{Name: m.FromName, Address: m.FromAddress}
+			}
+			if c, ok := v.CallsOff[it.Lead.ID]; ok && m.Channel == leadstore.ChannelPhone {
+				lm.Label += " · " + callsOffShort(c)
 			}
 			if m.State != leadstore.MsgDraft {
 				lm.State = m.State
@@ -550,7 +553,7 @@ func findingLines(e leadstore.Evidence) []string {
 func consoleMessageLabel(m leadstore.Message, n int) string {
 	switch m.Channel {
 	case "email":
-		l := fmt.Sprintf("Email %d of %d · message %d", m.Step+1, n, m.ID)
+		l := fmt.Sprintf("Step %d of %d · email · message %d", m.Step+1, n, m.ID)
 		if m.InReplyTo != "" {
 			l += " · a reply in the same thread"
 		}
@@ -560,7 +563,7 @@ func consoleMessageLabel(m leadstore.Message, n int) string {
 	case "linkedin":
 		return fmt.Sprintf("LinkedIn note · message %d", m.ID)
 	case leadstore.ChannelPhone:
-		return fmt.Sprintf("Call card · step %d of %d · message %d", m.Step+1, n, m.ID)
+		return fmt.Sprintf("Step %d of %d · call · message %d", m.Step+1, n, m.ID)
 	}
 	return fmt.Sprintf("Message %d", m.ID)
 }

@@ -418,13 +418,18 @@ type CallRow struct {
 	Outcome         string     `db:"outcome" json:"outcome,omitempty"`         // the latest outcome; "" before any
 	OutcomeAt       *time.Time `db:"outcome_at" json:"outcome_at,omitempty"`
 	Note            string     `db:"note" json:"note,omitempty"`
+	// PrevStep and PrevChannel are the step this call waits on: the lead's nearest earlier
+	// row in the batch that was not cancelled; -1 and "" when there is none.
+	PrevStep    int    `db:"prev_step" json:"prev_step"`
+	PrevChannel string `db:"prev_channel" json:"prev_channel,omitempty"`
 }
 
 const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign_id, o.id AS org_id, o.name AS org_name,
 	  o.domain AS org_domain, o.country, m.step, m.state, m.cancel_reason, m.due_at, b.shadow, m.subject,
 	  m.body_text AS card, m.phone_fact_id, coalesce(f.value, '') AS phone, coalesce(f.normalized, '') AS phone_normalized,
 	  coalesce(h.url, '') AS source_url, h.fetched_at, coalesce(f.derived_by, '') AS derived_by,
-	  coalesce(co.outcome, '') AS outcome, co.at AS outcome_at, coalesce(co.note, '') AS note
+	  coalesce(co.outcome, '') AS outcome, co.at AS outcome_at, coalesce(co.note, '') AS note,
+	  coalesce(pv.step, -1) AS prev_step, coalesce(pv.channel, '') AS prev_channel
 	 FROM outreach_message m
 	 JOIN outreach_batch b ON b.id = m.batch_id
 	 JOIN lead l ON l.id = m.lead_id
@@ -433,6 +438,8 @@ const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign
 	 LEFT JOIN http_fetch h ON h.id = f.fetch_id
 	 LEFT JOIN LATERAL (SELECT c.outcome, c.at, c.note FROM call_outcome c WHERE c.message_id = m.id
 	   ORDER BY c.id DESC LIMIT 1) co ON true
+	 LEFT JOIN LATERAL (SELECT p.step, p.channel FROM outreach_message p WHERE p.lead_id = m.lead_id
+	   AND p.batch_id = m.batch_id AND p.step < m.step AND p.state <> 'cancelled' ORDER BY p.step DESC LIMIT 1) pv ON true
 	 WHERE m.channel = 'phone'`
 
 // CallsDue returns the approved call steps of approved batches of account accountID (0:
@@ -448,6 +455,28 @@ func (q Queries) CallsDue(ctx context.Context, accountID, campaignID int64, now 
 		return nil, fmt.Errorf("leadstore: calls due: %w", err)
 	}
 	return rows, nil
+}
+
+// TodayWaitingFew is how many waiting calls Today lists beside their count.
+const TodayWaitingFew = 10
+
+// CallsWaiting returns the approved call steps of approved batches of account accountID (0:
+// DefaultAccountID) and campaign campaignID (0: every campaign) that are not due at now: no
+// due time yet (they wait on an earlier step) or one still to come. The first limit, those
+// with a due time first (soonest first), then by id; and how many there are in all.
+func (q Queries) CallsWaiting(ctx context.Context, accountID, campaignID int64, now time.Time, limit int) ([]CallRow, int, error) {
+	const where = ` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND b.account_id = $1
+		   AND ($2::bigint = 0 OR b.campaign_id = $2::bigint) AND (m.due_at IS NULL OR m.due_at > $3)`
+	var n int
+	if err := q.db.QueryRow(ctx, `SELECT count(*) FROM (`+callRowSQL+where+`) x`, orAccount(accountID), campaignID, now).Scan(&n); err != nil {
+		return nil, 0, fmt.Errorf("leadstore: calls waiting: %w", err)
+	}
+	rows, err := collect(ctx, q.db, pgx.RowToStructByName[CallRow],
+		callRowSQL+where+` ORDER BY m.due_at NULLS LAST, m.id LIMIT $4`, orAccount(accountID), campaignID, now, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("leadstore: calls waiting: %w", err)
+	}
+	return rows, n, nil
 }
 
 // CallByID returns call step messageID of account accountID (0: DefaultAccountID) in any
@@ -496,8 +525,10 @@ const TodayFirstFew = 5
 // emails the send job sends today (count and the first few), manual items due.
 type Today struct {
 	Now            time.Time   `json:"now"`
-	CallsDueNow    []CallRow   `json:"calls_due_now"`   // due since the start of today, up to now
-	CallsOverdue   []CallRow   `json:"calls_overdue"`   // due before today
+	CallsDueNow    []CallRow   `json:"calls_due_now"` // due since the start of today, up to now
+	CallsOverdue   []CallRow   `json:"calls_overdue"` // due before today
+	CallsWaiting   []CallRow   `json:"calls_waiting"` // not due yet: the first TodayWaitingFew
+	CallsWaitingN  int         `json:"calls_waiting_count"`
 	RepliesWaiting []TodayLead `json:"replies_waiting"` // leads in state replied, newest first
 	EmailsDueCount int         `json:"emails_due_count"`
 	EmailsDue      []TodayItem `json:"emails_due"` // the first TodayFirstFew, oldest due first
@@ -515,6 +546,9 @@ func (q Queries) TodayView(ctx context.Context, accountID, campaignID int64, now
 	t := Today{Now: now, CallsDueNow: []CallRow{}, CallsOverdue: []CallRow{}}
 	calls, err := q.CallsDue(ctx, accountID, campaignID, now)
 	if err != nil {
+		return Today{}, fmt.Errorf("leadstore: today: %w", err)
+	}
+	if t.CallsWaiting, t.CallsWaitingN, err = q.CallsWaiting(ctx, accountID, campaignID, now, TodayWaitingFew); err != nil {
 		return Today{}, fmt.Errorf("leadstore: today: %w", err)
 	}
 	for _, c := range calls {
