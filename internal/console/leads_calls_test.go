@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 )
@@ -121,7 +125,7 @@ func TestTodayPage(t *testing.T) {
 		`<a href="/leads/today" aria-current="page">Today</a>`,
 		"<strong>Calls are off until the call rules are set up.</strong> The calls below still show",
 		`<a href="/leads/calls/9">Northwind Trading</a>`, `<a href="/leads/calls/11">Contoso Ltd</a>`,
-		"step 3 call, a direct line · due Sat 24 Oct 04:50",
+		`step 3 call, a direct line · <span class="nowrap">due Sat 24 Oct 04:50</span>`,
 		`<a href="/leads/7">Fabrikam</a>`, "7 emails go out today, sent by the send job.",
 		`<a href="/leads/8">Tailspin</a>`, "and 5 more.", `<a href="/leads/12">Adatum</a>`,
 		`<option value="wp-eol" selected>WordPress end-of-life</option>`,
@@ -590,7 +594,7 @@ func TestTodayCallsDue(t *testing.T) {
 	h := newHarness(t, b, false)
 	body := h.do(get("/leads/today", h.session(t))).Body.String()
 	now := strings.Index(body, "Calls to make now")
-	due := strings.Index(body, `id="today-calls-due-title">Calls due <span class="today-count">2</span>`)
+	due := strings.Index(body, `id="today-calls-due-title"><span class="today-step" aria-hidden="true">2</span> Calls due <span class="today-count">2</span>`)
 	overdue := strings.Index(body, "Calls overdue")
 	if now < 0 || due < now || overdue < due {
 		t.Fatalf("sections out of order: now %d, due %d, overdue %d", now, due, overdue)
@@ -615,5 +619,143 @@ func TestTodayCallsDue(t *testing.T) {
 	b.today = TodayView{}
 	if body := h.do(get("/leads/today", h.session(t))).Body.String(); strings.Contains(body, "today-calls-due") {
 		t.Error("an empty Today shows Calls due")
+	}
+}
+
+// TestTodaySectionsNumbered: every section shown has a number, in display order with no gap;
+// "Calls due" (due today, can't be made now) has one only when it shows, straight after
+// "Calls to make now"; the calls not due yet come last.
+func TestTodaySectionsNumbered(t *testing.T) {
+	step := regexp.MustCompile(`id="today-([a-z-]+)-title"><span class="today-step" aria-hidden="true">(\d+)</span>`)
+	for _, c := range []struct {
+		name string
+		due  bool
+		want []string
+	}{
+		{"no calls due", false, []string{"calls-now", "calls-overdue", "replies", "emails", "manual", "calls-waiting"}},
+		{"calls due", true, []string{"calls-now", "calls-due", "calls-overdue", "replies", "emails", "manual", "calls-waiting"}},
+	} {
+		b := richBackend("Northwind Trading")
+		if c.due {
+			at := testSent
+			b.today.CallsDue = []TodayItem{{LeadID: 14, MessageID: 15, OrgName: "Wingtip", Line: "Step 3 · call · calls off for BE in the campaign rules", At: &at}}
+		}
+		h := newHarness(t, b, false)
+		body := h.do(get("/leads/today", h.session(t))).Body.String()
+		got := step.FindAllStringSubmatch(body, -1)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: %d numbered sections, want %d: %v", c.name, len(got), len(c.want), got)
+		}
+		for i, m := range got {
+			if m[1] != c.want[i] || m[2] != strconv.Itoa(i+1) {
+				t.Errorf("%s: section %d is %s numbered %s, want %s numbered %d", c.name, i, m[1], m[2], c.want[i], i+1)
+			}
+		}
+		if strings.Count(body, `class="card today-section"`) != len(c.want) {
+			t.Errorf("%s: a section without a number", c.name)
+		}
+	}
+}
+
+// TestTodayDueTimeKeptTogether: a call's due date and time sit in one no-wrap span, so a long
+// reason never splits "due Sat 24 Oct 04:50" across lines.
+func TestTodayDueTimeKeptTogether(t *testing.T) {
+	h := newHarness(t, richBackend("Northwind Trading"), false)
+	body := h.do(get("/leads/today", h.session(t))).Body.String()
+	if !strings.Contains(body, `<span class="nowrap">due Sat 24 Oct 04:50</span>`) {
+		t.Error("the due time is not in a no-wrap span")
+	}
+	css, err := os.ReadFile("static/console.css")
+	if err != nil || !regexp.MustCompile(`\.nowrap \{\s*white-space: nowrap;`).Match(css) {
+		t.Errorf("no .nowrap rule (%v)", err)
+	}
+}
+
+// TestTodayShadowManual: with no form or LinkedIn note listed but some in shadow batches, the
+// empty state says they are practice instead of that none exist.
+func TestTodayShadowManual(t *testing.T) {
+	b := richBackend("x")
+	b.today = TodayView{ShadowManual: 54}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/today", h.session(t))).Body.String()
+	if !strings.Contains(body, "54 forms and LinkedIn notes are in shadow batches and not listed here: shadow batches are practice.") {
+		t.Error("the shadow empty state is missing")
+	}
+	if strings.Contains(body, "No forms or LinkedIn notes due.") {
+		t.Error("says none are due while shadow batches hold some")
+	}
+	b.today = TodayView{ShadowManual: 1}
+	if body := h.do(get("/leads/today", h.session(t))).Body.String(); !strings.Contains(body, "1 form or LinkedIn note is in shadow batches") {
+		t.Error("the singular shadow line is missing")
+	}
+}
+
+// TestCallCardDone: once the sequence has moved on after the outcome, the card says Done with
+// the outcome in the buttons' words and its time, drops the due line and the calls-off
+// banners, and every outcome button is disabled with the reason.
+func TestCallCardDone(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	at := testSent
+	b.call.Done = true
+	b.call.Latest = &CallLog{Outcome: campaign.OutcomeConnected, Note: "spoke to Ana", At: at}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/calls/9", h.session(t))).Body.String()
+	for _, want := range []string{"<strong>Done: Got through · Sat 24 Oct 04:50.</strong>",
+		"The sequence has moved on, so another outcome can't be recorded.", "The buttons are off"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a done card lacks %q", want)
+		}
+	}
+	if n := strings.Count(body, `" disabled>`); n != 6 {
+		t.Errorf("%d disabled outcome buttons, want 6", n)
+	}
+	for _, not := range []string{"<dt>Due</dt>", "call-blocked", "connected"} {
+		if strings.Contains(strings.ReplaceAll(body, `value="connected"`, ""), not) {
+			t.Errorf("a done card shows %q", not)
+		}
+	}
+	// Not done: the buttons work.
+	b = richBackend("Northwind Trading")
+	h = newHarness(t, b, false)
+	if body := h.do(get("/leads/calls/9", h.session(t))).Body.String(); strings.Contains(body, " disabled>") || strings.Contains(body, "call-done") {
+		t.Error("a card not done shows as done")
+	}
+}
+
+// TestSequenceCallNote: a made call's line carries the operator's note, on one line, cut when
+// long, and escaped on the page.
+func TestSequenceCallNote(t *testing.T) {
+	s := &server{opt: Options{Location: testSent.Location()}}
+	at := testSent
+	long := strings.Repeat("word ", 40)
+	rows := s.sequenceRows([]SequenceStep{
+		{Step: 2, Type: "call", MessageID: 4, State: SeqDone, At: &at, Outcome: campaign.OutcomeConnected, CallNote: "spoke to\nAna"},
+		{Step: 2, Type: "call", MessageID: 5, State: SeqDone, At: &at, Outcome: campaign.OutcomeNoAnswer, CallNote: long},
+	})
+	if want := `called Sat 24 Oct 04:50: got through · "spoke to Ana"`; rows[0].Words != want {
+		t.Errorf("got %q, want %q", rows[0].Words, want)
+	}
+	if n := utf8.RuneCountInString(rows[1].Words); !strings.HasSuffix(rows[1].Words, `…"`) || n > 160 {
+		t.Errorf("long note not cut: %d %q", n, rows[1].Words)
+	}
+	b := richBackend("Northwind Trading")
+	b.seq = []SequenceStep{{Step: 2, Type: "call", MessageID: 9, State: SeqDone, At: &at, Outcome: campaign.OutcomeConnected, CallNote: "<b>ok</b>"}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/5", h.session(t))).Body.String()
+	if strings.Contains(body, "<b>ok</b>") || !strings.Contains(body, "&lt;b&gt;ok&lt;/b&gt;") {
+		t.Error("the note is not escaped on the lead page")
+	}
+}
+
+// TestOutcomeWordsAreTheButtons: the saved line the console falls back to uses the button's words.
+func TestOutcomeWordsAreTheButtons(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"voicemail"}}, c))
+	r := get("/leads/calls/9", c)
+	r.AddCookie(cookieNamed(w, "__Host-lh_flash"))
+	if body := h.do(r).Body.String(); !strings.Contains(body, "Saved: Left a voicemail.") {
+		t.Error("the fallback saved line does not use the button words")
 	}
 }

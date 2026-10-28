@@ -46,9 +46,10 @@ var callOutcomeHelp = map[string]string{
 	campaign.OutcomeSkipped:     "No call this time; the last email still goes.",
 }
 
-// outcomeWords is a call outcome in words; one the console does not know is shown with
-// its underscores as spaces.
-func outcomeWords(o string) string {
+// OutcomeWords is a call outcome in the outcome buttons' own words ("Got through"); one the
+// console does not know is shown with its underscores as spaces. It is the one source of
+// these words: the card, the saved line, Today and the lead page all use it.
+func OutcomeWords(o string) string {
 	if w, ok := callOutcomeWords[o]; ok {
 		return w
 	}
@@ -163,7 +164,10 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		case SeqDone:
 			r.Words = "called" + at(st.At)
 			if st.Outcome != "" {
-				r.Words += ": " + strings.ToLower(outcomeWords(st.Outcome))
+				r.Words += ": " + strings.ToLower(OutcomeWords(st.Outcome))
+			}
+			if n := shortNote(st.CallNote); n != "" {
+				r.Words += ` · "` + n + `"`
 			}
 		case SeqCancelled:
 			r.Words = "cancelled: " + cancelWords(st.Reason)
@@ -180,6 +184,20 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		out = append(out, r)
 	}
 	return out
+}
+
+// seqNoteMax is how many characters of the operator's call note the Sequence section shows.
+const seqNoteMax = 120
+
+// shortNote is note on one line, cut to seqNoteMax characters with "…" when longer. The
+// template escapes it.
+func shortNote(note string) string {
+	n := strings.Join(strings.Fields(note), " ")
+	if utf8.RuneCountInString(n) <= seqNoteMax {
+		return n
+	}
+	r := []rune(n)
+	return strings.TrimSpace(string(r[:seqNoteMax-1])) + "…"
 }
 
 // waitsOn is the step steps[i] waits on: the nearest earlier step that has a row and was
@@ -322,7 +340,7 @@ func (s *server) leadCallOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.leadsLog(do, "ok")
-	s.setFlash(w, cmp.Or(msg, "Saved: "+strings.ToLower(outcomeWords(outcome))+"."))
+	s.setFlash(w, cmp.Or(msg, "Saved: "+OutcomeWords(outcome)+"."))
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
 

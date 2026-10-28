@@ -198,3 +198,41 @@ func TestCSSHasBothDarkSelectors(t *testing.T) {
 		t.Error(`:root[data-theme="light"] does not set color-scheme: light`)
 	}
 }
+
+// TestThemeKeepsFlash: the page that showed a flash carries it in the theme switch, and the
+// switch sets it again, so the line is still there on the page it goes back to. Anything that
+// is not an encoded flash is dropped.
+func TestThemeKeepsFlash(t *testing.T) {
+	b := richBackend("x")
+	b.outcomeMsg = "Saved: No answer. The \"tried to reach you\" email is due Thu 29 Oct 09:30."
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}}, c))
+	fl := cookieNamed(w, "__Host-lh_flash")
+	if fl == nil {
+		t.Fatal("no flash")
+	}
+	page := h.do(get("/leads/calls/9", c, fl)).Body.String()
+	m := regexp.MustCompile(`name="flash" value="([^"]+)"`).FindStringSubmatch(page)
+	if m == nil || m[1] != fl.Value {
+		t.Fatalf("the theme switch does not carry the flash: %v", m)
+	}
+	w = h.do(post("/theme", url.Values{"theme": {"dark"}, "back": {"/leads/calls/9"}, "flash": {m[1]}}, c))
+	again := cookieNamed(w, "__Host-lh_flash")
+	if again == nil || again.Value != fl.Value || again.MaxAge <= 0 {
+		t.Fatalf("the theme switch did not set the flash again: %+v", again)
+	}
+	if body := h.do(get("/leads/calls/9", c, again)).Body.String(); !strings.Contains(body, "Saved: No answer.") {
+		t.Error("the flash is gone after the theme switch")
+	}
+	// No flash on the page: none carried, none set.
+	if body := h.do(get("/leads/calls/9", c)).Body.String(); strings.Contains(body, `name="flash"`) {
+		t.Error("a page with no flash carries one")
+	}
+	for _, bad := range []string{"not base64!", strings.Repeat("A", maxFlashCarry+1)} {
+		w = h.do(post("/theme", url.Values{"theme": {"dark"}, "back": {"/"}, "flash": {bad}}, c))
+		if cookieNamed(w, "__Host-lh_flash") != nil {
+			t.Errorf("flash %.12q set", bad)
+		}
+	}
+}

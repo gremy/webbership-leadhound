@@ -185,6 +185,7 @@ type page struct {
 	SignedIn bool
 	Theme    string // system, light or dark
 	Back     string // where the theme switch goes back to
+	Flash    string // the flash this request carried, encoded, so the theme switch keeps it
 	Message  string
 	Error    bool
 	Data     any
@@ -349,7 +350,7 @@ func (s *server) funcs() template.FuncMap {
 		"shortSHA":     shortSHA,
 		"telHref":      telHref,
 		"lineKind":     lineKindWords,
-		"outcomeWords": outcomeWords,
+		"outcomeWords": OutcomeWords,
 		"outcomeHelp":  func(o string) string { return callOutcomeHelp[o] },
 		"changed":      func(what string, src SettingSource) string { return changedWords(what, src, s.opt.Location) },
 		"leadAct": func(id int64, do, label, back, sr string) leadActView {
@@ -509,6 +510,29 @@ func (s *server) takeFlashAt(w http.ResponseWriter, r *http.Request) (string, bo
 	return msg, atCall
 }
 
+// maxFlashCarry caps the encoded flash the theme switch carries back (a cookie holds ~4 KB).
+const maxFlashCarry = 2048
+
+// flashCarry is the flash cookie this request carried, still encoded, when it is a valid
+// one; "". The page reads (and clears) the flash as it renders, so the theme switch posts it
+// back and setTheme sets it again: switching the theme never loses the line on the page.
+func (s *server) flashCarry(r *http.Request) string {
+	c, err := r.Cookie(s.flash)
+	if err != nil || !validFlash(c.Value) {
+		return ""
+	}
+	return c.Value
+}
+
+// validFlash reports whether v is a non-empty encoded flash no longer than maxFlashCarry.
+func validFlash(v string) bool {
+	if v == "" || len(v) > maxFlashCarry {
+		return false
+	}
+	_, err := base64.RawURLEncoding.DecodeString(v)
+	return err == nil
+}
+
 // safeNext returns next when it is the path of a signed-in page, with its query;
 // anything else, another host included, is "/".
 func (s *server) safeNext(next string) string {
@@ -558,6 +582,7 @@ func (s *server) render(w http.ResponseWriter, r *http.Request, code int, name s
 	p.Nav = nav
 	p.Theme = s.theme(r)
 	p.Back = themeBack(r, p)
+	p.Flash = s.flashCarry(r)
 	s.write(w, r, code, s.pages[name], "layout", p)
 }
 

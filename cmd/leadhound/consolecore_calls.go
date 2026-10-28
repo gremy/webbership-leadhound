@@ -9,8 +9,10 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/dial"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
 // The console's CallsBackend: the Today tab, the call card, its outcome and a lead's
@@ -44,7 +46,45 @@ func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayVie
 	if err != nil {
 		return console.TodayView{}, err
 	}
-	return todayFromStore(t, setup.leads, now, b.loc, v, pol), nil
+	v = todayFromStore(t, setup.leads, now, b.loc, v, pol)
+	if len(v.Manual) == 0 {
+		if v.ShadowManual, err = shadowManualCount(ctx, b.s.Pool(), campaignID); err != nil {
+			return console.TodayView{}, err
+		}
+	}
+	return v, nil
+}
+
+// shadowManualCount is how many contact forms and LinkedIn notes of approved shadow batches
+// of campaign campaignID (0: every campaign) are approved and not yet done: shadow batches
+// are practice, so Today does not list them and its empty state says they exist.
+func shadowManualCount(ctx context.Context, db store.DBTX, campaignID int64) (int, error) {
+	var n int
+	err := db.QueryRow(ctx,
+		`SELECT count(*) FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
+		 WHERE b.shadow AND b.approved_at IS NOT NULL AND b.account_id = $1
+		   AND ($2::bigint = 0 OR b.campaign_id = $2::bigint)
+		   AND m.state = 'approved' AND m.channel IN ('form', 'linkedin')`,
+		leadstore.DefaultAccountID, campaignID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("console: today: shadow forms and notes: %w", err)
+	}
+	return n, nil
+}
+
+// callAdvanced reports whether the lead's sequence has moved on after call c: a later step of
+// its batch is no longer waiting unscheduled. The store refuses a second outcome then
+// (leadstore callRefusal, ErrCallAdvanced); this mirrors its test so the card can say so
+// before the operator tries.
+func callAdvanced(ctx context.Context, db store.DBTX, c leadstore.CallRow) (bool, error) {
+	var advanced bool
+	err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM outreach_message WHERE lead_id = $1 AND batch_id = $2 AND step > $3
+		   AND (state <> 'approved' OR due_at IS NOT NULL))`, c.LeadID, c.BatchID, c.Step).Scan(&advanced)
+	if err != nil {
+		return false, fmt.Errorf("console: call %d: %w", c.MessageID, err)
+	}
+	return advanced, nil
 }
 
 // waitsOnCall words what call row c waits on: "step 2 (email)" when an earlier step is still
@@ -94,7 +134,7 @@ func todayFromStore(t leadstore.Today, cfg leadconfig.Config, now time.Time, loc
 			line += " · outside calling hours now (09:30 to 17:00 their time, weekdays)"
 		}
 		if c.Outcome != "" {
-			line += " · last time: " + strings.ReplaceAll(c.Outcome, "_", " ")
+			line += " · last time: " + console.OutcomeWords(c.Outcome)
 		}
 		if pol.off(c.CampaignID, c.Country) {
 			line += " · " + callsOffShort(c.Country)
@@ -193,6 +233,11 @@ func (b *backend) LeadCall(ctx context.Context, messageID int64) (console.CallCa
 	}
 	card := callCard(c)
 	card.NotDue = notDueWords(c, b.now(), b.loc)
+	if c.State == leadstore.MsgDone && c.Outcome != "" {
+		if card.Done, err = callAdvanced(ctx, b.s.Pool(), c); err != nil {
+			return console.CallCard{}, err
+		}
+	}
 	if pol.off(c.CampaignID, c.Country) {
 		card.CallsOff = callsOffCard(c.Country)
 	}
@@ -228,7 +273,7 @@ func notDueWaitsWords(step int, channel string) string {
 func callCard(c leadstore.CallRow) console.CallCard {
 	card := console.CallCard{
 		MessageID: c.MessageID, LeadID: c.LeadID, OrgName: orgWords(c.OrgName, c.OrgDomain),
-		Number: c.Phone, Dial: c.PhoneNormalized, SourceURL: c.SourceURL, SourceReadAt: c.FetchedAt,
+		Number: c.Phone, Dial: dial.Number(c.PhoneNormalized, c.Country), SourceURL: c.SourceURL, SourceReadAt: c.FetchedAt,
 		FoundByResearch: strings.HasPrefix(c.DerivedBy, "research"),
 		TalkingPoints:   leadconfig.CallLines(c.Card),
 		Callable:        false, BlockedReason: callsOffWords, Screening: callScreeningWords,
@@ -247,7 +292,7 @@ func (b *backend) LeadCallOutcome(ctx context.Context, messageID int64, outcome,
 	if err != nil {
 		return "", err
 	}
-	line, err := recordCall(ctx, b.lq(), setup.leads, b.now(), messageID, outcome, note, consent, consentAddress)
+	line, err := recordCall(ctx, b.lq(), setup.leads, b.now(), b.loc, messageID, outcome, note, consent, consentAddress)
 	var r *callRefusalError
 	switch {
 	case errors.As(err, &r):
@@ -297,7 +342,7 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 func sequenceSteps(steps []leadstore.SequenceStep) []console.SequenceStep {
 	out := make([]console.SequenceStep, 0, len(steps))
 	for _, st := range steps {
-		s := console.SequenceStep{Step: st.Step, Type: st.Type, MessageID: st.MessageID, Reason: st.CancelReason, Outcome: st.Outcome}
+		s := console.SequenceStep{Step: st.Step, Type: st.Type, MessageID: st.MessageID, Reason: st.CancelReason, Outcome: st.Outcome, CallNote: st.Note}
 		switch st.State {
 		case leadstore.MsgDraft:
 			s.State = console.SeqDraft

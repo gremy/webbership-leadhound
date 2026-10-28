@@ -21,6 +21,7 @@
         <fieldset>
           <legend class="visually-hidden">Theme</legend>
           <input type="hidden" name="back" value="{{.Back}}">
+          {{with .Flash}}<input type="hidden" name="flash" value="{{.}}">{{end}}
           {{range themes}}<button type="submit" class="quiet" name="theme" value="{{.Value}}" data-label="{{.Label}}" aria-pressed="{{if eq .Value $.Theme}}true{{else}}false{{end}}">{{.Label}}</button>{{end}}
         </fieldset>
       </form>

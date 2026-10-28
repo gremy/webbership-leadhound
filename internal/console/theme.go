@@ -1,6 +1,7 @@
 package console
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/url"
 	"path"
@@ -92,5 +93,12 @@ func (s *server) setTheme(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(themeTTL / time.Second),
 	})
+	// The page the switch was on read its flash as it rendered; set it again so the page it
+	// goes back to still shows it. Only an encoded flash is taken, and cross-site posts never
+	// reach here, so it is the page's own line; the template escapes it when shown.
+	if f := r.PostForm.Get("flash"); validFlash(f) {
+		b, _ := base64.RawURLEncoding.DecodeString(f)
+		s.setFlash(w, string(b))
+	}
 	http.Redirect(w, r, safeBack(r.PostForm.Get("back")), http.StatusSeeOther) //nolint:gosec // G710: safeBack keeps it a path on this site
 }

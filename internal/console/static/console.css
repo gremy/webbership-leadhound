@@ -1760,6 +1760,10 @@ details.inline summary {
   font-size: 0.9rem;
   flex: 0 0 auto;
 }
+/* A value that must not break across lines ("due Wed 28 Oct 09:47"). */
+.nowrap {
+  white-space: nowrap;
+}
 .today-count {
   font-size: 0.9rem;
   font-weight: 600;

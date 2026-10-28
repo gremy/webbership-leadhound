@@ -373,14 +373,14 @@ func TestLeadsCallsCommand(t *testing.T) {
 	out = w.mustRun(t, "leads", "calls", "list", "--due")
 	wantLines(t, "list due", out, callsOffWords, fmt.Sprintf("message %d", call))
 	out = w.mustRun(t, "leads", "calls", "outcome", fmt.Sprint(call), "no_answer", "--note", "rang twice")
-	wantLines(t, "outcome", out, "Saved: no answer. (shadow batch)", `The "tried to reach you" email is due`)
+	wantLines(t, "outcome", out, "Saved: No answer. (shadow batch)", `The "tried to reach you" email is due`)
 	if r := w.row(t, call); r.state != leadstore.MsgDone {
 		t.Errorf("call row = %+v, want done", r)
 	}
 	if r := w.row(t, ids[3]); r.due == nil {
 		t.Errorf("step 3 = %+v, want scheduled", r)
 	}
-	refused("a second outcome", "Already recorded as no answer, and the sequence has moved on. Nothing was saved.", fmt.Sprint(call), "voicemail")
+	refused("a second outcome", "Already recorded as No answer, and the sequence has moved on. Nothing was saved.", fmt.Sprint(call), "voicemail")
 	if n := outcomes(); n != 1 {
 		t.Errorf("outcomes = %d, want 1", n)
 	}
@@ -394,7 +394,7 @@ func TestLeadsCallsCommand(t *testing.T) {
 	refused("after the lead was suppressed", "The sequence has ended", fmt.Sprint(stopIDs[2]), "connected")
 
 	out = w.mustRun(t, "leads", "calls", "outcome", fmt.Sprint(dncIDs[2]), "do_not_call")
-	wantLines(t, "do not call", out, "Saved: do not call. (shadow batch)", "The sequence has ended: the remaining emails are cancelled.", "Their number is on the do-not-call list now.")
+	wantLines(t, "do not call", out, "Saved: Do not call. (shadow batch)", "The sequence has ended: the remaining emails are cancelled.", "Their number is on the do-not-call list now.")
 	for _, st := range []int{3, 4} {
 		if r := w.row(t, dncIDs[st]); r.state != leadstore.MsgCancelled || r.reason != campaign.CancelDoNotCall {
 			t.Errorf("do not call: step %d = %+v, want cancelled %s", st, r, campaign.CancelDoNotCall)

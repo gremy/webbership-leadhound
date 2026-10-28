@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,18 @@ func TestCallCardDial(t *testing.T) {
 			t.Errorf("%q: dial %q, number %q; want dial %q and the printed number", c.printed, card.Dial, card.Number, c.want)
 		}
 	}
+	// A number printed nationally is kept as national digits; the card dials it with the
+	// lead's country code, and with no country it gives no link rather than a wrong one.
+	value, norm, ok := enrich.NormalizePhone("01437 720202")
+	if !ok {
+		t.Fatal("01437 720202 does not normalise")
+	}
+	if card := callCard(leadstore.CallRow{MessageID: 3, Phone: value, PhoneNormalized: norm, Country: "GB"}); card.Dial != "+441437720202" {
+		t.Errorf("GB national: dial %q, want +441437720202", card.Dial)
+	}
+	if card := callCard(leadstore.CallRow{MessageID: 4, Phone: value, PhoneNormalized: norm}); card.Dial != "" || card.Number != "01437 720202" {
+		t.Errorf("no country: dial %q number %q, want no dial and the printed number", card.Dial, card.Number)
+	}
 	if card := callCard(leadstore.CallRow{MessageID: 2}); card.Dial != "" || card.Number != "" {
 		t.Errorf("erased fact: dial %q number %q, want none", card.Dial, card.Number)
 	}
@@ -133,17 +146,17 @@ func TestOutcomeLine(t *testing.T) {
 		want, not  string
 	}{
 		{campaign.OutcomeConnected, steps(leadstore.MsgCancelled, leadstore.MsgCancelled, nil, nil), false,
-			"Saved: connected. (shadow batch) The sequence has ended: the remaining emails are cancelled.", "waits on"},
+			"Saved: Got through. (shadow batch) The sequence has ended: the remaining emails are cancelled.", "waits on"},
 		{campaign.OutcomeDoNotCall, steps(leadstore.MsgCancelled, leadstore.MsgCancelled, nil, nil), true,
-			"Saved: do not call. (shadow batch) The sequence has ended: the remaining emails are cancelled. Their number is on the do-not-call list now.", "waits on"},
+			"Saved: Do not call. (shadow batch) The sequence has ended: the remaining emails are cancelled. Their number is on the do-not-call list now.", "waits on"},
 		{campaign.OutcomeNoAnswer, steps(leadstore.MsgApproved, leadstore.MsgApproved, &due, nil), false,
-			`Saved: no answer. (shadow batch) The "tried to reach you" email is due Thu 29 Oct 09:30.`, "final"},
+			`Saved: No answer. (shadow batch) The "tried to reach you" email is due Thu 29 Oct 09:30.`, "final"},
 		{campaign.OutcomeVoicemail, steps(leadstore.MsgApproved, leadstore.MsgApproved, &due, nil), false,
-			`Saved: voicemail. (shadow batch) The "tried to reach you" email is due Thu 29 Oct 09:30.`, "final"},
+			`Saved: Left a voicemail. (shadow batch) The "tried to reach you" email is due Thu 29 Oct 09:30.`, "final"},
 		{campaign.OutcomeWrongNumber, steps(leadstore.MsgCancelled, leadstore.MsgApproved, nil, &due), false,
-			"Saved: wrong number. (shadow batch) The final email is due Thu 29 Oct 09:30.", "ended"},
+			"Saved: Wrong number. (shadow batch) The final email is due Thu 29 Oct 09:30.", "ended"},
 		{campaign.OutcomeSkipped, steps(leadstore.MsgCancelled, leadstore.MsgApproved, nil, &due), false,
-			"Saved: skipped. (shadow batch) The final email is due Thu 29 Oct 09:30.", "ended"},
+			"Saved: Skipped. (shadow batch) The final email is due Thu 29 Oct 09:30.", "ended"},
 	} {
 		got := outcomeLine(leadstore.CallRecorded{Outcome: c.outcome, Shadow: true, Suppressed: c.suppressed}, c.steps, 2, time.UTC)
 		if got != c.want {
@@ -182,5 +195,53 @@ func TestTodayCallableSplit(t *testing.T) {
 	off := todayFromStore(leadstore.Today{CallsDueNow: rows}, leadconfig.Config{}, inHours, time.UTC, console.TodayView{CallsOff: callsOffWords}, nil)
 	if len(off.CallsNow) != 0 || len(off.CallsDue) != 2 || !strings.Contains(off.CallsDue[1].Line, "calls are off") {
 		t.Errorf("calls off: now %+v due %+v", off.CallsNow, off.CallsDue)
+	}
+}
+
+// TestOutcomeLineButtonWordsAndOperatorZone: the saved line names the outcome in the
+// buttons' own words, never its code, and gives the next step's time in the zone it is handed
+// (the operator's), the zone every other console time uses.
+func TestOutcomeLineButtonWordsAndOperatorZone(t *testing.T) {
+	bucharest, err := time.LoadLocation("Europe/Bucharest")
+	if err != nil {
+		t.Skip("no tz data:", err)
+	}
+	due := time.Date(2026, 10, 28, 7, 50, 0, 0, time.UTC) // 07:50 London, 09:50 Bucharest
+	steps := []leadstore.SequenceStep{
+		{Step: 2, Type: campaign.StepCall, MessageID: 3, State: leadstore.MsgDone},
+		{Step: 3, Type: campaign.StepEmail, When: campaign.WhenCallNotConnected, MessageID: 4, State: leadstore.MsgApproved, DueAt: &due},
+	}
+	got := outcomeLine(leadstore.CallRecorded{Outcome: campaign.OutcomeVoicemail}, steps, 2, bucharest)
+	if want := `Saved: Left a voicemail. The "tried to reach you" email is due Wed 28 Oct 09:50.`; got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	for _, o := range campaign.Outcomes {
+		line := outcomeLine(leadstore.CallRecorded{Outcome: o}, nil, 2, time.UTC)
+		if !strings.HasPrefix(line, "Saved: "+console.OutcomeWords(o)+".") || strings.Contains(line, "_") {
+			t.Errorf("%s: %q", o, line)
+		}
+	}
+	if got := callRefusalWords(fmt.Errorf("record: already recorded as no_answer: %w", leadstore.ErrCallAdvanced)); !strings.Contains(got, "Already recorded as No answer,") {
+		t.Errorf("advanced refusal: %q", got)
+	}
+}
+
+// TestTodayLastOutcomeWords: a call's last outcome on Today reads in the buttons' words.
+func TestTodayLastOutcomeWords(t *testing.T) {
+	due := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
+	v := todayFromStore(leadstore.Today{CallsOverdue: []leadstore.CallRow{{MessageID: 1, OrgDomain: "a.example", DueAt: &due, Outcome: campaign.OutcomeWrongNumber}}},
+		leadconfig.Config{}, due, time.UTC, console.TodayView{}, nil)
+	if len(v.CallsOverdue) != 1 || !strings.Contains(v.CallsOverdue[0].Line, "last time: Wrong number") {
+		t.Errorf("line: %+v", v.CallsOverdue)
+	}
+}
+
+// TestSequenceStepsCarryCallNote: the lead page's steps carry the operator's call note.
+func TestSequenceStepsCarryCallNote(t *testing.T) {
+	at := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
+	out := sequenceSteps([]leadstore.SequenceStep{{Step: 2, Type: campaign.StepCall, MessageID: 3, State: leadstore.MsgDone,
+		Outcome: campaign.OutcomeConnected, OutcomeAt: &at, Note: "spoke to Ana, send the report"}})
+	if len(out) != 1 || out[0].CallNote != "spoke to Ana, send the report" || out[0].State != console.SeqDone {
+		t.Errorf("steps: %+v", out)
 	}
 }

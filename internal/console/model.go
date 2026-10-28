@@ -617,6 +617,10 @@ type TodayView struct {
 	Emails    []TodayItem
 	// Manual are the contact forms and LinkedIn notes due, to use by hand.
 	Manual []TodayItem
+	// ShadowManual counts the approved contact forms and LinkedIn notes of shadow batches
+	// that are not listed under Manual: shadow batches are practice, so the empty state says
+	// so rather than that none exist.
+	ShadowManual int
 }
 
 // TodayItem is one line of the Today tab: the lead, the message it is about (0 when none),
@@ -635,8 +639,10 @@ type CallCard struct {
 	MessageID, LeadID int64
 	OrgName           string
 	Number            string // the number as found ("+44 (0)20 7946 0000"), shown as text
-	// Dial is the stored normalised number the tel: link dials ("+442079460000"); "" when
-	// there is none (an erased fact), and then the card shows no link.
+	// Dial is the international number the tel: link dials ("+442079460000"), built from the
+	// stored normalised number and the lead's country (internal/dial); "" when there is none
+	// (an erased fact, or a national number of an unknown country), and then the card shows
+	// the number as text with no link.
 	Dial string
 	// Where the number came from: the page it was read on and when, or FoundByResearch with
 	// the URL research cited.
@@ -656,6 +662,10 @@ type CallCard struct {
 	// NotDue says why an outcome cannot be recorded yet ("Not due yet: this call waits on the
 	// email before it."); "" when the call is due. The outcome buttons are disabled while set.
 	NotDue string
+	// Done is set once an outcome is recorded and the sequence has moved on after it: the
+	// store refuses a second outcome then, so the card shows "Done" with Latest and disables
+	// the outcome buttons.
+	Done bool
 	// CallsOff warns that calls to the lead's country are off in the campaign's rules: the
 	// operator decides whether to ring. "" when they are on.
 	CallsOff string
@@ -695,4 +705,5 @@ type SequenceStep struct {
 	Outcome   string
 	Shadow    bool
 	Note      string // a short note shown after the state ("calls off for IE in the campaign rules")
+	CallNote  string // a call's latest outcome note, the operator's own words; "" when none
 }

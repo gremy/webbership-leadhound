@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
+	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
@@ -139,7 +140,7 @@ func listCalls(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config,
 			line += " · shadow batch"
 		}
 		if c.Outcome != "" {
-			line += " · last: " + strings.ReplaceAll(c.Outcome, "_", " ")
+			line += " · last: " + console.OutcomeWords(c.Outcome)
 		}
 		if pol.off(c.CampaignID, c.Country) {
 			line += " · " + callsOffShort(c.Country) + ": your call"
@@ -191,7 +192,11 @@ func runCallsOutcome(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	line, err := recordCall(ctx, leadstore.NewQueries(s.Pool()), setup.leads, leadsNow(), id, outcome, *note, agreed, *address)
+	loc, err := leadsZone()
+	if err != nil {
+		return err
+	}
+	line, err := recordCall(ctx, leadstore.NewQueries(s.Pool()), setup.leads, leadsNow(), loc, id, outcome, *note, agreed, *address)
 	var r *callRefusalError
 	switch {
 	case errors.As(err, &r):
@@ -215,10 +220,11 @@ func (e *callRefusalError) Error() string { return e.words }
 
 // recordCall records outcome on call id at now with the lead's own calendar (its country's
 // zone and the business hours), consent (connected only) at address ("" for the lead's own
-// email address), and returns the line saying what happens next. A refusal is a
+// email address), and returns the line saying what happens next, its times in the operator's
+// zone opLoc (as every other time the console and the CLI show). A refusal is a
 // *callRefusalError; a message that is no call of the account wraps errCallNotFound. It logs
 // ids and counts only, never the number or the note.
-func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, now time.Time,
+func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, now time.Time, opLoc *time.Location,
 	id int64, outcome, note string, consent bool, address string) (string, error) {
 	c, err := lq.CallByID(ctx, leadstore.DefaultAccountID, id)
 	if errors.Is(err, leadstore.ErrMessageNotFound) {
@@ -256,7 +262,7 @@ func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 	if err != nil {
 		return "", err
 	}
-	return outcomeLine(rec, steps, c.Step, cfg.Policy(c.Country).Location()), nil
+	return outcomeLine(rec, steps, c.Step, opLoc), nil
 }
 
 // leadEmail is lead id's email route, "" when it has none.
@@ -314,7 +320,7 @@ func callRefusalWords(err error) string {
 		if i := strings.Index(msg, "already recorded as "); i >= 0 {
 			first, _, _ = strings.Cut(msg[i+len("already recorded as "):], ":")
 		}
-		return "Already recorded as " + strings.ReplaceAll(first, "_", " ") + ", and the sequence has moved on. Nothing was saved."
+		return "Already recorded as " + console.OutcomeWords(first) + ", and the sequence has moved on. Nothing was saved."
 	case errors.Is(err, leadstore.ErrMessageState):
 		return "That call is not waiting for an outcome (its batch is not approved, or it was left out). Nothing was saved."
 	case errors.Is(err, leadstore.ErrBadOutcome):
@@ -330,10 +336,10 @@ func callRefusalWords(err error) string {
 }
 
 // outcomeLine says what was saved and what the sequence did after it, read from the lead's
-// steps as they stand after the outcome (steps; callStep is the call's step, loc the lead's
-// zone): the next step after the call and when it is due, or that the sequence ended.
+// steps as they stand after the outcome (steps; callStep is the call's step, loc the
+// operator's zone): the outcome in the buttons' own words, then the next step after the call and when it is due, or that the sequence ended.
 func outcomeLine(rec leadstore.CallRecorded, steps []leadstore.SequenceStep, callStep int, loc *time.Location) string {
-	words := "Saved: " + strings.ReplaceAll(rec.Outcome, "_", " ") + "."
+	words := "Saved: " + console.OutcomeWords(rec.Outcome) + "."
 	if rec.Shadow {
 		words += " (shadow batch)"
 	}
