@@ -91,7 +91,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // enrich_attempt (00012), lead_relevance and lead_relevance_eval (00013), lead_setting
 // (00014) and lead_label (00015) are append-only; account takes no UPDATE, campaign takes
 // UPDATE on retired_at only, and campaign_version is append-only (00016), which also
-// recreates suppression_active, so its revokes above run again. It runs after every migrate, a no-op one
+// recreates suppression_active, so its revokes above run again; call_outcome and
+// email_consent are append-only (00017), whose new outreach_message and outreach_batch
+// columns are fixed at insert and join no pointer grant. It runs after every migrate, a no-op one
 // too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
@@ -214,6 +216,12 @@ BEGIN
   END IF;
   IF to_regclass('public.campaign_version') IS NOT NULL THEN
     REVOKE UPDATE ON public.campaign_version FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.call_outcome') IS NOT NULL THEN
+    REVOKE UPDATE ON public.call_outcome FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.email_consent') IS NOT NULL THEN
+    REVOKE UPDATE ON public.email_consent FROM leadhound_app;
   END IF;
 END
 $$`

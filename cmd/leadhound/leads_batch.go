@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -146,6 +148,9 @@ func runBatchNew(ctx context.Context, args []string) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "Batch %d (%s): %s. Read: leadhound leads batch show %d\n",
 		out.BatchID, batchKind(out.Shadow), out.Counts, out.BatchID)
+	if line := callsLine(out); line != "" {
+		_, _ = fmt.Fprintln(stdout, line)
+	}
 	if out.Sizing != nil {
 		_, _ = fmt.Fprintf(stdout, "Sizing: %s.\n", out.Sizing.Words())
 	}
@@ -179,6 +184,26 @@ func batchKind(shadow bool) string {
 		return "shadow"
 	}
 	return "live"
+}
+
+// callsLine says how many call steps a batch drafted and why the others were left out:
+// "Calls: 3 call steps; left out for 2 leads (no phone number on file: 1, its number is on the
+// do-not-call list: 1)." "" when the sequence has no call step.
+func callsLine(out NewBatchOutcome) string {
+	if out.Calls == 0 && len(out.CallsLeftOut) == 0 {
+		return ""
+	}
+	line := "Calls: " + plural(out.Calls, "call step", "call steps")
+	if len(out.CallsLeftOut) > 0 {
+		total := 0
+		var why []string
+		for _, k := range slices.Sorted(maps.Keys(out.CallsLeftOut)) {
+			total += out.CallsLeftOut[k]
+			why = append(why, fmt.Sprintf("%s: %d", k, out.CallsLeftOut[k]))
+		}
+		line += fmt.Sprintf("; the call and its follow-up email left out for %s (%s)", plural(total, "lead", "leads"), strings.Join(why, ", "))
+	}
+	return line + "."
 }
 
 // batchCounts says "8 emails, 2 contact forms, 1 LinkedIn note": email leads, form texts
@@ -280,78 +305,126 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// draftLead renders and checks one lead's whole sequence: the three email steps, threaded
-// to the first email's Message-ID, for an email lead; the contact-form text (step 0) and
-// the LinkedIn note (step 1) for a form lead. Any render or Check problem drops the lead.
-func draftLead(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
+// draftSequence renders and checks one lead's whole sequence under plan. An email lead gets
+// one row per step of plan.seq: each email step from the plan's templates, threaded to the
+// first email's Message-ID, with the step's condition; a call step (only with phone, the
+// number its call steps dial) a phone row whose subject is "Call <org name>" and whose body
+// is the call card (call.txt rendered, three talking points). Without phone, the call steps
+// and the steps that need a call or a callable number (has_callable_phone,
+// call_not_connected, email_consent) get no row. A form lead gets the contact-form text
+// (step 0) and the LinkedIn note (step 1) from leads.yaml's templates, whatever the plan.
+// The footer is leads.yaml's. Any render or Check problem drops the lead.
+func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config,
+	phone *leadstore.Fact, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
 	slots, err := leadSlots(c, ev, cfg)
 	if err != nil {
 		return nil, err
 	}
 	policy := cfg.Policy(c.Country)
-	set, ok := cfg.Templates.Set(c.Kind, policy.Lang)
-	if !ok {
-		return nil, fmt.Errorf("no %s templates in language %q", c.Kind, policy.Lang)
-	}
 	type text struct {
 		tmpl    outreach.Template
 		channel string
 		step    int
+		when    string
 	}
 	var texts []text
 	switch c.Channel {
 	case leadconfig.ChannelEmail:
+		set, ok := plan.templates.Set(c.Kind, policy.Lang)
+		if !ok {
+			return nil, fmt.Errorf("no %s templates in language %q", c.Kind, policy.Lang)
+		}
 		footer := cfg.Templates.Footers[policy.Footer]
-		if len(set.Steps) != leadconfig.Steps || footer == nil {
+		if footer == nil || (plan.legacy && len(set.Steps) != leadconfig.Steps) {
 			return nil, fmt.Errorf("no email templates or footer for country %q", c.Country)
 		}
 		if c.RouteKind != leadstore.RouteEmail || c.Route == "" {
 			return nil, errors.New("the lead has no email route")
 		}
-		for i, e := range set.Steps {
-			texts = append(texts, text{outreach.EmailTemplate(e, footer), "email", i})
+		for _, st := range plan.seq {
+			when := st.When
+			if when == campaign.WhenAlways {
+				when = ""
+			}
+			needsPhone := st.Type == campaign.StepCall || slices.Contains(
+				[]string{campaign.WhenHasCallablePhone, campaign.WhenCallNotConnected, campaign.WhenEmailConsent}, st.When)
+			if needsPhone && phone == nil {
+				continue
+			}
+			switch st.Type {
+			case campaign.StepEmail:
+				e, ok := set.Email[st.Step]
+				if set.Email == nil && st.Step < len(set.Steps) {
+					e, ok = set.Steps[st.Step], true
+				}
+				if !ok {
+					return nil, fmt.Errorf("no %s template for email step %d in language %q", c.Kind, st.Step, policy.Lang)
+				}
+				texts = append(texts, text{outreach.EmailTemplate(e, footer), "email", st.Step, when})
+			case campaign.StepCall:
+				if set.Call == nil {
+					return nil, fmt.Errorf("no %s call card in language %q", c.Kind, policy.Lang)
+				}
+				texts = append(texts, text{outreach.FormTemplate(set.Call), leadstore.ChannelPhone, st.Step, when})
+			}
 		}
 	case leadconfig.ChannelForm:
+		set, ok := cfg.Templates.Set(c.Kind, policy.Lang)
+		if !ok {
+			return nil, fmt.Errorf("no %s templates in language %q", c.Kind, policy.Lang)
+		}
 		if set.Form == nil || set.LinkedIn == nil {
 			return nil, fmt.Errorf("no form or LinkedIn template in language %q", policy.Lang)
 		}
-		texts = append(texts, text{outreach.FormTemplate(set.Form), "form", 0}, text{outreach.LinkedInTemplate(set.LinkedIn), "linkedin", 1})
+		texts = append(texts, text{outreach.FormTemplate(set.Form), "form", 0, ""}, text{outreach.LinkedInTemplate(set.LinkedIn), "linkedin", 1, ""})
 	default:
 		return nil, fmt.Errorf("channel %q has no drafts", c.Channel)
 	}
+	rules := plan.rulesFor(c.Kind)
 	var out []leadstore.DraftRow
 	first := ""
 	for _, t := range texts {
+		label := t.channel
+		if t.channel == leadstore.ChannelPhone {
+			label = "call card"
+		}
 		d, err := outreach.Render(t.tmpl, slots)
 		if err != nil {
-			return nil, fmt.Errorf("%s step %d: %w", t.channel, t.step, err)
+			return nil, fmt.Errorf("%s step %d: %w", label, t.step, err)
 		}
 		checkStep := t.step
 		if t.channel != "email" {
 			checkStep = 0
 		}
-		if p := outreach.Check(d, checkStep, cfg); len(p) > 0 {
+		if p := outreach.CheckIn(d, checkStep, cfg, rules); len(p) > 0 {
 			msgs := make([]string, len(p))
 			for i, x := range p {
 				msgs[i] = x.String()
 			}
-			return nil, fmt.Errorf("%s step %d: %s", t.channel, t.step, strings.Join(msgs, "; "))
+			return nil, fmt.Errorf("%s step %d: %s", label, t.step, strings.Join(msgs, "; "))
 		}
 		raw, err := slotsJSON(d.Slots)
 		if err != nil {
 			return nil, err
 		}
-		row := leadstore.DraftRow{LeadID: c.LeadID, Step: t.step, Channel: t.channel, Subject: d.Subject, Body: d.Body, Slots: raw}
-		if t.channel == "email" {
+		row := leadstore.DraftRow{LeadID: c.LeadID, Step: t.step, Channel: t.channel, Subject: d.Subject, Body: d.Body, Slots: raw, Condition: t.when}
+		switch t.channel {
+		case "email":
 			row.To = c.Route
 			if row.MessageID, err = outreach.NewMessageID(idDomain, rnd); err != nil {
 				return nil, err
 			}
-			if t.step == 0 {
+			if first == "" {
 				first = row.MessageID
 			} else {
 				row.InReplyTo = first
 			}
+		case leadstore.ChannelPhone:
+			if n := len(leadconfig.CallLines(d.Body)); n != leadconfig.CallPoints {
+				return nil, fmt.Errorf("call card step %d: %d talking points, want %d", t.step, n, leadconfig.CallPoints)
+			}
+			row.Subject = "Call " + cmpOr(slots.OrgName.Value, c.Domain)
+			row.PhoneFactID = phone.ID
 		}
 		out = append(out, row)
 	}
@@ -556,6 +629,8 @@ func messageLabel(m leadstore.Message, n int) string {
 		label = fmt.Sprintf("contact form text · message %d · when used: leadhound leads done %d", m.ID, m.ID)
 	case "linkedin":
 		label = fmt.Sprintf("LinkedIn note · message %d · when used: leadhound leads done %d", m.ID, m.ID)
+	case leadstore.ChannelPhone:
+		label = fmt.Sprintf("call card · step %d · message %d · after the call: leadhound leads calls outcome %d <what happened>", m.Step+1, m.ID, m.ID)
 	}
 	if m.State != leadstore.MsgDraft {
 		label += " · " + m.State

@@ -1,0 +1,11 @@
+Subject: Re: Drupal {{.Major}} on {{.Host}}
+
+Hello,
+
+I tried to call you this week but did not get through, so a short note instead.
+
+If it helps, I can send the free one-page upgrade-risk report for {{.OrgName}}. It takes you a few minutes to read and is yours to keep.
+
+Would that be useful?
+
+{{.Footer}}

@@ -250,7 +250,7 @@ func TestLeadsNotSetUp(t *testing.T) {
 	b.dash.Leads = nil
 	h := newHarness(t, b, false)
 	c := h.session(t)
-	for _, p := range []string{"/leads", "/leads/outreach", "/leads/settings", "/leads/batches/3", "/leads/5"} {
+	for _, p := range []string{"/leads", "/leads/outreach", "/leads/settings", "/leads/batches/3", "/leads/5", "/leads/today", "/leads/calls/9"} {
 		w := h.do(get(p, c))
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), leadsNotSetUp) {
 			t.Errorf("%s: %d %s", p, w.Code, w.Body.String())
@@ -341,7 +341,7 @@ func TestLeadsNeverLogSubmittedValues(t *testing.T) {
 			continue
 		}
 		routesSeen++
-		target := strings.NewReplacer("{id}", secretID, "{lead}", secretID, "{action}", "defer", "{section}", "who").Replace(path)
+		target := strings.NewReplacer("{id}", secretID, "{lead}", secretID, "{message}", secretID, "{action}", "defer", "{section}", "who").Replace(path)
 		for _, do := range []string{"pause", "save", "preview", "reset", "up:" + secret} {
 			for _, e := range errs {
 				b := richBackend("x")
@@ -382,12 +382,12 @@ func TestNoLeadsWriteOnGet(t *testing.T) {
 		}
 		h.do(get(rt.sample+"?do=save&hash=0123456789ab&action=applied", c))
 	}
-	for _, name := range []string{"LeadAct", "AddRule", "DisableRule", "Track", "SaveLeadSettings"} {
+	for _, name := range []string{"LeadAct", "AddRule", "DisableRule", "Track", "SaveLeadSettings", "LeadCallOutcome"} {
 		if n := h.b.n(name); n != 0 {
 			t.Errorf("a GET called %s %d times", name, n)
 		}
 	}
-	for _, name := range []string{"LeadList", "LeadDetail", "Leads", "LeadSettings", "Campaigns"} {
+	for _, name := range []string{"LeadList", "LeadDetail", "Leads", "LeadSettings", "Campaigns", "LeadsToday", "LeadCall", "LeadSequence"} {
 		if h.b.n(name) == 0 {
 			t.Errorf("the sweep never reached %s", name)
 		}
@@ -835,7 +835,7 @@ func TestLeadDetailPage(t *testing.T) {
 	last := -1
 	for _, section := range []string{"<h2>Finding</h2>", "<h2>Ways to reach them</h2>", "<h2>From their site</h2>",
 		`<h2 id="call-title">Your call</h2>`, "<h2>Agency page</h2>", "<h2>The site</h2>", "<h2>History</h2>",
-		"<h2>Place in the queue</h2>", "<h2>Messages</h2>", "<h2>Why it ranks here</h2>"} {
+		"<h2>Place in the queue</h2>", "<h2>Messages</h2>", "<h2>Sequence</h2>", "<h2>Why it ranks here</h2>"} {
 		i := strings.Index(body, section)
 		if i < 0 || i < last {
 			t.Errorf("%s missing or out of order", section)
@@ -994,18 +994,23 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 	cases := []struct {
 		path, read string
 		code       int
+		also       string // a second read the page makes
 	}{
-		{"/leads", "LeadList", http.StatusOK},
-		{"/leads/outreach", "Leads", http.StatusOK},
-		{"/leads/settings", "LeadSettings", http.StatusOK},
-		{"/leads/campaigns", "Campaigns", http.StatusOK},
-		{"/leads/priorities", "", http.StatusSeeOther},
-		{"/leads/batches/3", "LeadBatch", http.StatusOK},
-		{"/leads/5", "LeadDetail", http.StatusOK},
-		{"/leads/next", "", http.StatusSeeOther},
-		{"/leads/batches", "", http.StatusNotFound},
-		{"/leads/settings/who", "", http.StatusMethodNotAllowed},
-		{"/leads/5/star", "", http.StatusMethodNotAllowed},
+		{"/leads", "LeadList", http.StatusOK, ""},
+		{"/leads/outreach", "Leads", http.StatusOK, ""},
+		{"/leads/settings", "LeadSettings", http.StatusOK, ""},
+		{"/leads/campaigns", "Campaigns", http.StatusOK, ""},
+		{"/leads/priorities", "", http.StatusSeeOther, ""},
+		{"/leads/batches/3", "LeadBatch", http.StatusOK, ""},
+		{"/leads/5", "LeadDetail", http.StatusOK, "LeadSequence"},
+		{"/leads/today", "LeadsToday", http.StatusOK, ""},
+		{"/leads/calls/9", "LeadCall", http.StatusOK, ""},
+		{"/leads/calls/9/outcome", "", http.StatusMethodNotAllowed, ""},
+		{"/leads/calls", "", http.StatusNotFound, ""},
+		{"/leads/next", "", http.StatusSeeOther, ""},
+		{"/leads/batches", "", http.StatusNotFound, ""},
+		{"/leads/settings/who", "", http.StatusMethodNotAllowed, ""},
+		{"/leads/5/star", "", http.StatusMethodNotAllowed, ""},
 	}
 	for _, c := range cases {
 		b := richBackend("x")
@@ -1017,7 +1022,7 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		switch {
 		case c.read == "" && b.total() != 0:
 			t.Errorf("%s reached the backend %d times", c.path, b.total())
-		case c.read != "" && (b.n(c.read) != 1 || b.total() != 1):
+		case c.read != "" && (b.n(c.read) != 1 || c.also != "" && b.n(c.also) != 1 || b.total() != 1+min(len(c.also), 1)):
 			t.Errorf("%s: %s called %d times, %d reads in all", c.path, c.read, b.n(c.read), b.total())
 		}
 	}

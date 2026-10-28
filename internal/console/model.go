@@ -27,6 +27,7 @@ type Backend interface {
 	RunNowCard(ctx context.Context) (RunNowCard, error)
 	Results(ctx context.Context) (Results, error) // ErrNotFound when there is no preview yet
 	LeadsBackend
+	CallsBackend
 	MailboxesBackend
 }
 
@@ -567,3 +568,115 @@ func (e *SettingsRefused) Error() string {
 
 // Unwrap makes a SettingsRefused an ErrUserFixable.
 func (e *SettingsRefused) Unwrap() error { return ErrUserFixable }
+
+// CallsBackend is what the Today view, the call card and a lead's Sequence section read
+// and write. Every read and write loads the leads settings afresh, as LeadsBackend's do,
+// and returns ErrLeadsNotSetUp when they are missing or broken.
+type CallsBackend interface {
+	// LeadsToday is the day's work, decision-first, for one campaign (its slug, as the
+	// list's campaign filter takes it) or every campaign (""). It never writes.
+	LeadsToday(ctx context.Context, campaign string) (TodayView, error)
+	// LeadCall is one call row's card; ErrNotFound for no such message or one that is not
+	// a call. It never writes.
+	LeadCall(ctx context.Context, messageID int64) (CallCard, error)
+	// LeadCallOutcome records what happened on a call: outcome is one of campaign.Outcomes,
+	// note at most 500 characters ("" for none); consent and consentAddress only for
+	// connected (they agreed to get an email, at that address; "" for the lead's own). It
+	// returns the line to show the operator ("" for the console's own). A refusal the
+	// operator can read ("not due yet", "They replied: the sequence has ended") wraps
+	// ErrUserFixable with its words; ErrNotFound for no such call.
+	LeadCallOutcome(ctx context.Context, messageID int64, outcome, note string, consent bool, consentAddress string) (string, error)
+	// LeadSequence is one lead's steps, in order, across its latest batch; none before a
+	// batch drafted anything for it. ErrNotFound for no such lead. It never writes.
+	LeadSequence(ctx context.Context, leadID int64) ([]SequenceStep, error)
+}
+
+// TodayView is the Today tab: what to do today, in the order to do it. Campaign is the
+// campaign slug the backend took ("" every campaign), echoed by the filter; Campaigns are
+// the filter's choices, as LeadFilterOptions.Campaigns.
+type TodayView struct {
+	Campaign  string
+	Campaigns []FilterOption
+	// CallsOff is why no call may be made at all ("" when calls are allowed). In CP3 it is
+	// always set: "Calls are off until the call rules are set up". The calls still show, so
+	// the flow can be walked in shadow.
+	CallsOff string
+	// CallsNow are the calls due and inside the lead's calling hours now; CallsOverdue the
+	// calls due before today and not yet made.
+	CallsNow, CallsOverdue []TodayItem
+	// Replies are the replies waiting for the operator, newest first.
+	Replies []TodayItem
+	// EmailsDue is how many emails the send job sends today; Emails the first few of them.
+	EmailsDue int
+	Emails    []TodayItem
+	// Manual are the contact forms and LinkedIn notes due, to use by hand.
+	Manual []TodayItem
+}
+
+// TodayItem is one line of the Today tab: the lead, the message it is about (0 when none),
+// the organisation's name, one plain line about it (no internal codes), and its time (due,
+// or received for a reply; nil when none).
+type TodayItem struct {
+	LeadID, MessageID int64
+	OrgName           string
+	Line              string
+	At                *time.Time
+}
+
+// CallCard is one call row's card: who to call, on which number, where the number came
+// from, what to say, whether calls are allowed, and what happened last time.
+type CallCard struct {
+	MessageID, LeadID int64
+	OrgName           string
+	Number            string // the number as found ("+44 20 7946 0000")
+	// Where the number came from: the page it was read on and when, or FoundByResearch with
+	// the URL research cited.
+	SourceURL       string
+	SourceReadAt    *time.Time
+	FoundByResearch bool
+	LineKind        string   // "direct" | "decision-maker" | "switchboard" | "" unknown
+	TalkingPoints   []string // three, one line each
+	// Callable is whether the call may be made now; BlockedReason says why not ("Calls are off
+	// until the call rules are set up"). Recording an outcome works either way.
+	Callable      bool
+	BlockedReason string
+	Screening     string     // the number's screening status in words ("not required", ...)
+	Latest        *CallLog   // the latest outcome recorded; nil when none
+	Shadow        bool       // the call belongs to a shadow batch
+	Due           *time.Time // when the call fell due; nil when not scheduled
+}
+
+// CallLog is one recorded call outcome: Outcome one of campaign.Outcomes, the note, and for
+// connected whether they agreed to get an email.
+type CallLog struct {
+	Outcome, Note string
+	EmailConsent  bool
+	At            time.Time
+}
+
+// The states of a sequence step (SequenceStep.State). The console words each one.
+const (
+	SeqDraft     = "draft"     // drafted, the batch not approved yet
+	SeqDue       = "due"       // approved and due at At
+	SeqWaiting   = "waiting"   // approved, waiting on the step before it (a call, say)
+	SeqSent      = "sent"      // an email sent (or shadow-sent, Shadow) at At
+	SeqDone      = "done"      // a call made, Outcome recorded at At
+	SeqCancelled = "cancelled" // cancelled for Reason
+	SeqNoNumber  = "no_number" // a call step with no row: there was no number we may call
+	SeqCheck     = "check"     // an email that may have gone out: check it by hand
+)
+
+// SequenceStep is one step of a lead's sequence. Step counts from 0; Type is "email" or
+// "call"; MessageID is the step's row (0 for SeqNoNumber). Reason is the cancel reason as
+// stored (campaign.Cancel* or the store's own, e.g. "opt_out"); Outcome the call outcome for
+// SeqDone; Shadow marks a shadow-sent email.
+type SequenceStep struct {
+	Step      int
+	Type      string
+	MessageID int64
+	State     string
+	At        *time.Time
+	Reason    string
+	Outcome   string
+	Shadow    bool
+}

@@ -35,7 +35,7 @@ type leadListView struct {
 	NoLeads    bool   // there are no leads at all
 	NoneMatch  bool   // there are leads, but none matches the filter
 	Back       string // this page, filter and page kept: where a row's action comes back to
-	Order      bool   // sorted by the outreach order: rows carry Up, Down, Pin to top, Push back, Skip
+	Order      bool   // sorted by theTab   string // today | list | outreach | campaigns | settingsorder: rows carry Up, Down, Pin to top, Push back, Skip
 	// The table's optional columns: State only when the filter is not the default (open
 	// leads), Relevance and Order only when a row has one, Your call when a row has one or
 	// the list is the leads to label.
@@ -52,7 +52,8 @@ type leadDetailView struct {
 	Back    string
 	Message string
 	Error   bool
-	AtCall  bool // Message is about the call: it shows inside the "Your call" block, not at the top
+	AtCall  bool     // Message is about the call: it shows inside the "Your call" block, not at the top
+	Seq     []seqRow // the lead's sequence, worded
 }
 
 // callAnchor is the "Your call" block's id: a call goes back to it.
@@ -111,10 +112,14 @@ func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, 
 	if s.leadsRead(w, r, code, err) {
 		return
 	}
+	seq, err := s.b.LeadSequence(r.Context(), id)
+	if s.leadsRead(w, r, code, err) {
+		return
+	}
 	title := cmp.Or(d.Name, d.Domain, "Lead "+strconv.FormatInt(id, 10))
 	s.render(w, r, code, "lead_detail", page{Title: title, Active: leadsPath, SignedIn: true,
 		Data: leadDetailView{Data: d, Fetches: signalFetches(d.Signals), Back: leadsPath + "/" + strconv.FormatInt(id, 10),
-			Message: msg, Error: isErr, AtCall: atCall}})
+			Message: msg, Error: isErr, AtCall: atCall, Seq: s.sequenceRows(seq)}})
 }
 
 // leadAct is POST /leads/{id}/{action}: star, unstar, up, down, top, defer, skip or clear

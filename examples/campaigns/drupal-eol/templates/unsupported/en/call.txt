@@ -1,0 +1,3 @@
+Say who you are: {{.SenderName}}, a Drupal developer who works with organisations on older Drupal sites.
+Drupal {{.Major}} has had no security updates since {{.EOLDate}}: ask who looks after the site for {{.OrgName}}.
+Offer the free one-page upgrade-risk report, theirs to keep, sent by email if they say yes.

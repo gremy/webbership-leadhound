@@ -15,9 +15,10 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
-// campaignsDataDir sets LEADHOUND_DATA_DIR to a copy of the examples data directory with the
-// given campaign files, folder → spec.
-func campaignsDataDir(t *testing.T, files map[string]string) {
+// campaignsDataDir sets LEADHOUND_DATA_DIR to a copy of the examples data directory (its
+// own campaigns/drupal-eol included) with the given campaign files, folder → spec, each
+// with a copy of the example campaign's templates. It returns the directory.
+func campaignsDataDir(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.CopyFS(dir, os.DirFS("../../examples")); err != nil {
@@ -25,14 +26,17 @@ func campaignsDataDir(t *testing.T, files map[string]string) {
 	}
 	for folder, body := range files {
 		d := filepath.Join(dir, campaign.Dir, folder)
-		if err := os.MkdirAll(d, 0o750); err != nil {
-			t.Fatal(err)
+		if _, err := os.Stat(filepath.Join(d, defaultTemplatesDir)); err != nil {
+			if err := os.CopyFS(filepath.Join(d, defaultTemplatesDir), os.DirFS("../../examples/campaigns/drupal-eol/templates")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := os.WriteFile(filepath.Join(d, campaign.FileName), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("LEADHOUND_DATA_DIR", dir)
+	return dir
 }
 
 // specYAML is the campaign package's valid spec under slug.
@@ -64,9 +68,40 @@ func TestCampaignsCheck(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("check exited %d: %s", code, errOut)
 	}
-	for _, want := range []string{"agencies: ok · ", "drupal-eol: ok · Drupal end-of-life · 3 kinds · 3 steps · writer template"} {
+	// The examples hold campaigns/drupal-eol: its own five-step spec replaces the one
+	// leads.yaml gives.
+	for _, want := range []string{"agencies: ok · ", "drupal-eol: ok · Drupal end-of-life · 3 kinds · 5 steps · writer template"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("check output lacks %q:\n%s", want, out)
+		}
+	}
+
+	// With no campaigns folder, the legacy campaign from leads.yaml is the only one.
+	dir := campaignsDataDir(t, nil)
+	if err := os.RemoveAll(filepath.Join(dir, campaign.Dir)); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut = runCampaigns(t, "check")
+	if code != 0 || strings.TrimSpace(out) != "drupal-eol: ok · Drupal end-of-life · 3 kinds · 3 steps · writer template" {
+		t.Errorf("no campaigns folder: exited %d:\n%s%s", code, out, errOut)
+	}
+
+	// A campaign's templates are checked too: a missing call card and a two-line one.
+	dir = campaignsDataDir(t, map[string]string{"agencies": specYAML(t, "agencies")})
+	tdir := filepath.Join(dir, campaign.Dir, "agencies", defaultTemplatesDir)
+	if err := os.Remove(filepath.Join(tdir, "d10", "en", "call.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tdir, "unsupported", "en", "call.txt"), []byte("one\ntwo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut = runCampaigns(t, "check")
+	if code != 2 || out != "" {
+		t.Fatalf("bad templates exited %d:\n%s%s", code, out, errOut)
+	}
+	for _, want := range []string{"d10/en/call.txt is missing", "unsupported/en/call.txt has 2 lines"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("check does not name %q:\n%s", want, errOut)
 		}
 	}
 

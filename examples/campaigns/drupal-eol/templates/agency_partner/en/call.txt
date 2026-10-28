@@ -1,0 +1,3 @@
+Say who you are: {{.SenderName}}, a Drupal developer who works with agencies as a quiet partner on upgrades.
+Ask whether {{.OrgName}} has a Drupal upgrade waiting that the team has no room for.
+Offer a free one-page upgrade-risk report on one client site, theirs to keep and share, sent by email if they say yes.

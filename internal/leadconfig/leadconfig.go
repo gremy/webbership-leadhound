@@ -196,6 +196,7 @@ func (cfg Config) Clone() Config {
 		c.Templates.Sets = make(map[SetKey]Set, len(cfg.Templates.Sets))
 		for k, set := range cfg.Templates.Sets {
 			set.Steps = slices.Clone(set.Steps)
+			set.Email = maps.Clone(set.Email)
 			c.Templates.Sets[k] = set
 		}
 	}
@@ -745,10 +746,13 @@ type Email struct {
 }
 
 // Set is one kind's templates in one language. Steps is empty when the language is used by
-// form countries only.
+// form countries only. A campaign's own templates (LoadCampaignTemplates) fill Email, by step
+// number, and Call instead of Steps, Form and LinkedIn.
 type Set struct {
 	Steps          []Email
 	Form, LinkedIn *template.Template
+	Email          map[int]Email      // a campaign's email steps by step number; nil for leads.yaml's
+	Call           *template.Template // a campaign's call.txt: three talking points, one per line
 }
 
 // Templates are the parsed templates. Every template is parsed with missingkey=error and
@@ -940,3 +944,123 @@ func digest(files map[string][]byte) string {
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// CallFile is a campaign's call card template; CallPoints is how many lines it holds: one
+// talking point each.
+const (
+	CallFile   = "call.txt"
+	CallPoints = 3
+)
+
+// CampaignTemplates names what a campaign's template folder must hold: for every kind and
+// language, <kind>/<lang>/<step>.txt for each email step of its sequence and, when the
+// sequence has a call step, call.txt. The footers, contact-form and LinkedIn texts stay
+// leads.yaml's.
+type CampaignTemplates struct {
+	Kinds      []string
+	Langs      []string
+	EmailSteps []int // the sequence's email steps, in order
+	Call       bool  // the sequence has a call step
+}
+
+// LoadCampaignTemplates reads, parses and test-renders a campaign's templates from dir, as
+// req names them, reporting every missing, unparsable or unrenderable file at once. call.txt
+// must hold exactly CallPoints non-blank lines. Each Set has Email (by step number) and Call
+// filled; Footers is empty. SHA256 is the digest over every file read.
+func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error) {
+	var p []string
+	files := map[string][]byte{}
+	readT := func(rel string) (string, bool) {
+		b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel))) // #nosec G304 -- the operator's own data directory; rel is built from checked names
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			p = append(p, "template "+rel+" is missing")
+			return "", false
+		case err != nil:
+			p = append(p, fmt.Sprintf("template %s: %v", rel, err))
+			return "", false
+		}
+		files[rel] = b
+		if strings.TrimSpace(string(b)) == "" {
+			p = append(p, "template "+rel+" is empty")
+			return "", false
+		}
+		return string(b), true
+	}
+	all := sampleSlots(true)
+	parse := func(rel, text string) *template.Template {
+		t, err := template.New(rel).Option("missingkey=error").Parse(text)
+		if err != nil {
+			p = append(p, fmt.Sprintf("template %s does not parse: %v", rel, err))
+			return nil
+		}
+		if err := t.Execute(io.Discard, all); err != nil {
+			p = append(p, fmt.Sprintf("template %s does not render: %v (slots: %s)", rel, err, strings.Join(slotsOf(all), ", ")))
+			return nil
+		}
+		return t
+	}
+
+	t := Templates{Sets: map[SetKey]Set{}, Footers: map[string]*template.Template{}}
+	kinds, langs := slices.Clone(req.Kinds), slices.Clone(req.Langs)
+	slices.Sort(kinds)
+	slices.Sort(langs)
+	for _, kind := range slices.Compact(kinds) {
+		if !fileName.MatchString(kind) {
+			p = append(p, fmt.Sprintf("kind %q is not a folder name", kind))
+			continue
+		}
+		for _, lang := range slices.Compact(langs) {
+			if !langCode.MatchString(lang) {
+				p = append(p, fmt.Sprintf("language %q is not a two-letter code", lang))
+				continue
+			}
+			base := kind + "/" + lang + "/"
+			set := Set{Email: map[int]Email{}}
+			for _, step := range req.EmailSteps {
+				rel := fmt.Sprintf("%s%d.txt", base, step)
+				text, ok := readT(rel)
+				if !ok {
+					continue
+				}
+				subject, body, err := splitEmail(text)
+				if err != nil {
+					p = append(p, fmt.Sprintf("template %s: %v", rel, err))
+					continue
+				}
+				set.Email[step] = Email{Subject: parse(rel, subject), Body: parse(rel, body)}
+			}
+			if req.Call {
+				rel := base + CallFile
+				if text, ok := readT(rel); ok {
+					raw := strings.Split(strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n")), "\n")
+					if n := len(callLines(text)); n != CallPoints || len(raw) != CallPoints {
+						p = append(p, fmt.Sprintf("template %s has %d lines; it must hold exactly %d talking points, one per line, no blank line between", rel, len(raw), CallPoints))
+					} else {
+						set.Call = parse(rel, text)
+					}
+				}
+			}
+			t.Sets[SetKey{kind, lang}] = set
+		}
+	}
+	if len(p) > 0 {
+		return Templates{}, fmt.Errorf("leadconfig: templates in %s: %w: %s", dir, ErrInvalid, strings.Join(p, "; "))
+	}
+	t.SHA256 = digest(files)
+	return t, nil
+}
+
+// callLines is a call card's lines, line ends normalised and blank lines left out.
+func callLines(text string) []string {
+	var out []string
+	for _, l := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// CallLines splits a rendered call card into its talking points, one per non-blank line.
+func CallLines(text string) []string { return callLines(text) }

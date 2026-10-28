@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
 )
@@ -409,8 +412,9 @@ func (q Queries) SendingIDs(ctx context.Context) ([]int64, error) {
 	return ids, nil
 }
 
-// ScheduleFollowup gives the approved step of lead's sequence in batch its due time, when it
-// has none yet. It reports whether a message was scheduled.
+// ScheduleFollowup gives the approved email step of lead's sequence in batch its due time,
+// when it has none yet. It reports whether a message was scheduled. The legacy (NULL
+// sequence) send path's call; a sequence-driven batch uses ApplyDecision.
 func (q Queries) ScheduleFollowup(ctx context.Context, batchID, leadID int64, step int, due time.Time) (bool, error) {
 	tag, err := q.db.Exec(ctx,
 		`UPDATE outreach_message SET due_at = $4
@@ -420,6 +424,64 @@ func (q Queries) ScheduleFollowup(ctx context.Context, batchID, leadID int64, st
 		return false, fmt.Errorf("leadstore: schedule follow-up: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// SetDueIfUnset gives approved message id its due time when it has none yet (due_at only moves
+// from NULL: a time already set is never changed). It reports whether the row changed.
+func (q Queries) SetDueIfUnset(ctx context.Context, id int64, due time.Time) (bool, error) {
+	tag, err := q.db.Exec(ctx,
+		`UPDATE outreach_message SET due_at = $2 WHERE id = $1 AND state = 'approved' AND due_at IS NULL`, id, due)
+	if err != nil {
+		return false, fmt.Errorf("leadstore: set due %d: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// CancelMessage cancels message id with reason when it is still pending (approved). It
+// reports whether the row changed.
+func (q Queries) CancelMessage(ctx context.Context, id int64, reason string) (bool, error) {
+	tag, err := q.db.Exec(ctx,
+		`UPDATE outreach_message SET state = 'cancelled', cancel_reason = $2 WHERE id = $1 AND state = 'approved'`, id, reason)
+	if err != nil {
+		return false, fmt.Errorf("leadstore: cancel message %d: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// DecisionApplied is what ApplyDecision changed.
+type DecisionApplied struct {
+	Scheduled int // rows given a due time
+	Cancelled int // rows cancelled
+}
+
+// ApplyDecision applies one campaign.Next decision: cancels first (a row both cancelled and
+// due cannot happen, but a cancel wins), then due times, each only on a row still approved
+// and a due time only from NULL. Rows in ascending id order, so two writers lock alike. Run
+// it in the transaction that read the rows the decision was made from.
+func (q Queries) ApplyDecision(ctx context.Context, d campaign.Decision) (DecisionApplied, error) {
+	var res DecisionApplied
+	for _, id := range slices.Sorted(maps.Keys(d.Cancel)) {
+		ok, err := q.CancelMessage(ctx, id, d.Cancel[id])
+		if err != nil {
+			return res, err
+		}
+		if ok {
+			res.Cancelled++
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(d.Due)) {
+		if _, cancelled := d.Cancel[id]; cancelled {
+			continue
+		}
+		ok, err := q.SetDueIfUnset(ctx, id, d.Due[id])
+		if err != nil {
+			return res, err
+		}
+		if ok {
+			res.Scheduled++
+		}
+	}
+	return res, nil
 }
 
 // SelftestDraft is the one message a selftest sends.

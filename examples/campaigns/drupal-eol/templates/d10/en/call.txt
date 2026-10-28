@@ -1,0 +1,3 @@
+Say who you are: {{.SenderName}}, a Drupal developer who keeps Drupal sites current.
+Drupal {{.Major}} stops getting security updates on {{.EOLDate}}: ask who plans the update to Drupal 11 for {{.OrgName}}.
+Offer the free one-page upgrade-risk report, theirs to keep, sent by email if they say yes.

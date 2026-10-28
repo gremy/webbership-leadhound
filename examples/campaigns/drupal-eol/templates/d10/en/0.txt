@@ -1,0 +1,15 @@
+Subject: {{.Host}} and the Drupal {{.Major}} end of life
+
+Hello,
+
+I'm {{.SenderName}}, a Drupal developer. I work with organisations and agencies that keep their Drupal sites current.
+
+Drupal {{.Major}} stops getting security updates on {{.EOLDate}}. After that, new security holes stay open. Some modules need new versions for Drupal 11, and a few have none yet. Drupal 11 also needs newer PHP, so hosting may change too.
+
+Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.
+
+I can write a free one-page upgrade-risk report for {{.OrgName}} on the update to Drupal 11. It is yours to keep. Reply and I will send it.
+
+Worth 10 minutes to find out?
+
+{{.Footer}}

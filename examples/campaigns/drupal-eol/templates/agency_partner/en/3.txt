@@ -1,0 +1,11 @@
+Subject: Re: Drupal upgrade help for {{.OrgName}}
+
+Hello,
+
+I tried to call you this week but did not get through, so a short note instead.
+
+The offer stands: a free one-page upgrade-risk report on one client site, yours to keep and share under your name.
+
+Would that be useful?
+
+{{.Footer}}

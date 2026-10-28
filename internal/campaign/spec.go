@@ -67,8 +67,30 @@ type Spec struct {
 	Writer       string             `yaml:"writer" json:"writer"`
 	Offer        Offer              `yaml:"offer" json:"offer"`
 	Copy         Copy               `yaml:"copy" json:"copy"`
-	Sequence     []Step             `yaml:"sequence" json:"sequence"`
+	Sequence     []Step             `yaml:"sequence" json:"sequence"`           // the default sequence
 	TemplatesDir string             `yaml:"templates_dir" json:"templates_dir"` // relative to the campaign folder
+	// Sequences holds the named sequences beside the default one (call_first). A
+	// sequences.default in the file is moved into Sequence by Decode, so both spellings hash
+	// alike; omitempty keeps the hash of a spec without named sequences as it was.
+	Sequences map[string][]Step `yaml:"sequences" json:"sequences,omitempty"`
+}
+
+// Sequence names.
+const (
+	SequenceDefault   = "default"
+	SequenceCallFirst = "call_first"
+)
+
+// SequenceFor returns the named sequence: "" or "default" is the default one; nil when the
+// spec has no sequence of that name.
+func (s Spec) SequenceFor(name string) []Step {
+	if name == "" || name == SequenceDefault {
+		if len(s.Sequence) > 0 {
+			return s.Sequence
+		}
+		return s.Sequences[SequenceDefault]
+	}
+	return s.Sequences[name]
 }
 
 // Product is what the campaign sells.
@@ -133,6 +155,13 @@ func Decode(b []byte) (Spec, error) {
 			return Spec{}, fmt.Errorf("campaign: %w: the file is empty", ErrInvalid)
 		}
 		return Spec{}, fmt.Errorf("campaign: %w: %s", ErrInvalid, err.Error())
+	}
+	if def, ok := s.Sequences[SequenceDefault]; ok && len(s.Sequence) == 0 {
+		s.Sequence = def
+		delete(s.Sequences, SequenceDefault)
+	}
+	if len(s.Sequences) == 0 {
+		s.Sequences = nil
 	}
 	return s, nil
 }
@@ -216,8 +245,12 @@ func (s Spec) Check(opts CheckOptions) error {
 			}
 		}
 	}
+	longest := len(s.Sequence)
+	for _, seq := range s.Sequences {
+		longest = max(longest, len(seq))
+	}
 	for _, step := range sortedKeys(s.Copy.MaxWords) {
-		if step < 0 || step >= len(s.Sequence) {
+		if step < 0 || step >= longest {
 			add("copy.max_words: step %d is not in the sequence", step)
 		}
 		if s.Copy.MaxWords[step] <= 0 {
@@ -238,44 +271,70 @@ func (s Spec) checkSequence() []error {
 	add := func(format string, a ...any) {
 		errs = append(errs, fmt.Errorf("campaign %q: %w: "+format, append([]any{s.Slug, ErrInvalid}, a...)...))
 	}
-	if len(s.Sequence) == 0 {
-		add("sequence is empty")
-		return errs
+	if _, ok := s.Sequences[SequenceDefault]; ok {
+		add("set either sequence or sequences.default, not both")
 	}
-	if len(s.Sequence) > MaxSteps {
-		add("sequence has %d steps; at most %d", len(s.Sequence), MaxSteps)
+	checkSteps(add, "sequence", s.Sequence, StepEmail)
+	for _, name := range sortedKeys(s.Sequences) {
+		switch name {
+		case SequenceDefault:
+		case SequenceCallFirst:
+			checkSteps(add, "sequences."+name, s.Sequences[name], StepCall)
+		default:
+			add("sequences: %q is not a known sequence (known: %s, %s)", name, SequenceDefault, SequenceCallFirst)
+		}
+	}
+	return errs
+}
+
+// checkSteps checks one sequence, named label in the messages: steps 0, 1, 2 … with no gap,
+// at most MaxSteps, starting with first, known types and conditions, and call_not_connected
+// and email_consent only after a call step.
+func checkSteps(add func(string, ...any), label string, seq []Step, first string) {
+	if len(seq) == 0 {
+		add("%s is empty", label)
+		return
+	}
+	if len(seq) > MaxSteps {
+		add("%s has %d steps; at most %d", label, len(seq), MaxSteps)
 	}
 	seenCall := false
-	for i, st := range s.Sequence {
+	for i, st := range seq {
 		if st.Step != i {
-			add("sequence[%d]: step is %d; steps run 0, 1, 2 … in order with no gap", i, st.Step)
+			add("%s[%d]: step is %d; steps run 0, 1, 2 … in order with no gap", label, i, st.Step)
 		}
 		switch st.Type {
 		case StepEmail, StepCall:
 		default:
-			add("sequence[%d]: type %q must be %q or %q", i, st.Type, StepEmail, StepCall)
+			add("%s[%d]: type %q must be %q or %q", label, i, st.Type, StepEmail, StepCall)
 		}
-		if i == 0 && st.Type != StepEmail {
-			add("sequence must start with an email, not %q", st.Type)
+		if i == 0 && st.Type != first {
+			add("%s must start with %s %s, not %q", label, article(first), first, st.Type)
 		}
 		if st.AfterBusinessDays < 0 {
-			add("sequence[%d]: after_business_days %d is below 0", i, st.AfterBusinessDays)
+			add("%s[%d]: after_business_days %d is below 0", label, i, st.AfterBusinessDays)
 		}
 		switch st.When {
-		case "", WhenAlways, WhenHasCallablePhone, WhenEmailConsent:
-		case WhenCallNotConnected:
+		case "", WhenAlways, WhenHasCallablePhone:
+		case WhenCallNotConnected, WhenEmailConsent:
 			if !seenCall {
-				add("sequence[%d]: when %q needs a call step before it", i, WhenCallNotConnected)
+				add("%s[%d]: when %q needs a call step before it", label, i, st.When)
 			}
 		default:
-			add("sequence[%d]: when %q must be one of %s, %s, %s, %s", i, st.When,
+			add("%s[%d]: when %q must be one of %s, %s, %s, %s", label, i, st.When,
 				WhenAlways, WhenHasCallablePhone, WhenCallNotConnected, WhenEmailConsent)
 		}
 		if st.Type == StepCall {
 			seenCall = true
 		}
 	}
-	return errs
+}
+
+func article(word string) string {
+	if strings.ContainsRune("aeiou", rune(word[0])) {
+		return "an"
+	}
+	return "a"
 }
 
 // Canonical returns the spec as stable JSON and its SHA-256 in hex. Map keys are sorted and

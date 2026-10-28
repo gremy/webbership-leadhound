@@ -141,6 +141,15 @@
   </section>
 
   <section>
+    <h2>Sequence</h2>
+    {{if $v.Seq}}
+    <ol class="item-list sequence-steps">
+      {{range $v.Seq}}<li><span class="item-head">Step {{add .Step 1}}: {{.Kind}}</span><span class="item-meta">{{.Words}}{{with .Card}} · <a href="{{.}}">Open the call card</a>{{end}}</span></li>{{end}}
+    </ol>
+    {{else}}<p class="muted">No sequence yet: it starts when a batch with this lead is approved.</p>{{end}}
+  </section>
+
+  <section>
     <h2>Why it ranks here</h2>
     {{if $d.Why}}<ul class="evidence">{{range $d.Why}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">No reasons on file.</p>{{end}}
   </section>

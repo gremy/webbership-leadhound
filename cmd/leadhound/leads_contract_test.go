@@ -45,7 +45,7 @@ func contractBatch(t *testing.T) []leadstore.DraftRow {
 	}
 	var drafts []leadstore.DraftRow
 	for _, l := range leads {
-		ds, err := draftLead(l.c, l.ev, cfg, "sender.example", zeroReader{})
+		ds, err := draftLead(l.c, l.ev, cfg, "sender.example")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -1,0 +1,9 @@
+Subject: Re: Drupal upgrade help for {{.OrgName}}
+
+Hello,
+
+This is my last note, and I will leave it there. If a Drupal upgrade ever needs an extra pair of hands, reply to this address at any time, even months from now, and I will pick it up.
+
+Thank you for reading, and good luck with the work.
+
+{{.Footer}}

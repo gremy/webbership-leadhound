@@ -181,5 +181,13 @@ BEGIN
   IF to_regclass('public.campaign_version') IS NOT NULL THEN
     REVOKE UPDATE ON public.campaign_version FROM leadhound_app;
   END IF;
+  -- Call outcomes and email consents (00017) are append-only. The columns 00017 adds to
+  -- outreach_message and outreach_batch are fixed at insert: the pointer grants above stay.
+  IF to_regclass('public.call_outcome') IS NOT NULL THEN
+    REVOKE UPDATE ON public.call_outcome FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.email_consent') IS NOT NULL THEN
+    REVOKE UPDATE ON public.email_consent FROM leadhound_app;
+  END IF;
 END
 $$;

@@ -1,0 +1,11 @@
+Subject: Re: Drupal {{.Major}} on {{.Host}}
+
+Hello again,
+
+A short follow-up in case my note got buried. Drupal {{.Major}} has had no security updates since {{.EOLDate}}, and each month on it makes the move a little harder.
+
+The free one-page upgrade-risk report for {{.OrgName}} still stands. It shows what is at risk and what an upgrade would involve, and it is yours to keep.
+
+Shall I send it over?
+
+{{.Footer}}

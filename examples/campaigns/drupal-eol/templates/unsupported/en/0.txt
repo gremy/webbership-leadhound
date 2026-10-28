@@ -1,0 +1,15 @@
+Subject: Drupal {{.Major}} on {{.Host}}
+
+Hello,
+
+I'm {{.SenderName}}, a Drupal developer. I work with organisations and agencies that still run older Drupal sites.
+
+Drupal {{.Major}} stopped getting security updates on {{.EOLDate}}. New security holes in it stay open. Modules no longer get fixes, so small faults pile up. And newer PHP versions will not run the old code, so hosting gets harder.
+
+Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.
+
+I can write a free one-page upgrade-risk report for {{.OrgName}}: what is at risk and what an upgrade involves. It is yours to keep. Reply and I will send it.
+
+Worth 10 minutes to find out?
+
+{{.Footer}}

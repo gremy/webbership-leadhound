@@ -236,7 +236,7 @@ func TestCampaignsRegister(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(views) != 2 || views[0].Slug != "drupal-eol" || views[0].SpecSource != "file" || len(views[0].Steps) != 3 ||
+	if len(views) != 2 || views[0].Slug != "drupal-eol" || views[0].SpecSource != "file" || len(views[0].Steps) != 5 ||
 		views[1].Slug != "agencies" || len(views[1].Steps) != 5 || views[1].Steps[4].AfterBusinessDays != 6 {
 		t.Errorf("console views = %+v", views)
 	}

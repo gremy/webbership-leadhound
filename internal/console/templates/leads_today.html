@@ -1,0 +1,73 @@
+{{define "content"}}
+{{$v := .Data}}{{$t := $v.T}}
+<div class="page-head">
+  <h1>Today</h1>
+</div>
+{{template "leads_tabs" (leadsTab "today" true)}}
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+<p class="lede">What needs you today, in the order to do it.</p>
+
+{{with $t.Campaigns}}
+<form method="get" action="/leads/today" class="today-filter">
+  <label for="today-campaign">Campaign</label>
+  <select id="today-campaign" name="campaign">
+    <option value="">Every campaign</option>
+    {{range .}}<option value="{{.Value}}"{{if eq .Value $t.Campaign}} selected{{end}}>{{.Label}}</option>{{end}}
+  </select>
+  <button type="submit">Show</button>
+</form>
+{{end}}
+
+{{with $t.CallsOff}}<p class="notice notice-warn calls-off" role="note"><strong>{{.}}</strong> The calls below still show, so you can open a card and walk the flow; nothing is dialled for you.</p>{{end}}
+
+<section class="card today-section" id="today-calls-now" aria-labelledby="today-calls-now-title">
+  <h2 id="today-calls-now-title"><span class="today-step" aria-hidden="true">1</span> Calls to make now{{with $t.CallsNow}} <span class="today-count">{{len .}}</span>{{end}}</h2>
+  {{if $t.CallsNow}}
+  <ul class="item-list">{{range $t.CallsNow}}{{template "today_call" .}}{{end}}</ul>
+  {{else}}<p class="empty">No calls to make right now. A call comes due a few business days after a lead's emails, inside their office hours; it shows here then.</p>{{end}}
+</section>
+
+<section class="card today-section" id="today-calls-overdue" aria-labelledby="today-calls-overdue-title">
+  <h2 id="today-calls-overdue-title"><span class="today-step" aria-hidden="true">2</span> Calls overdue{{with $t.CallsOverdue}} <span class="today-count">{{len .}}</span>{{end}}</h2>
+  {{if $t.CallsOverdue}}
+  <ul class="item-list">{{range $t.CallsOverdue}}{{template "today_call" .}}{{end}}</ul>
+  <p class="hint">Make the call, or record it as skipped so the last email can go.</p>
+  {{else}}<p class="empty">Nothing overdue.</p>{{end}}
+</section>
+
+<section class="card today-section" id="today-replies" aria-labelledby="today-replies-title">
+  <h2 id="today-replies-title"><span class="today-step" aria-hidden="true">3</span> Replies waiting{{with $t.Replies}} <span class="today-count">{{len .}}</span>{{end}}</h2>
+  {{if $t.Replies}}
+  <ul class="item-list">{{range $t.Replies}}{{template "today_lead" .}}{{end}}</ul>
+  {{else}}<p class="empty">No replies waiting. When someone answers, they show here first.</p>{{end}}
+</section>
+
+<section class="card today-section" id="today-emails" aria-labelledby="today-emails-title">
+  <h2 id="today-emails-title"><span class="today-step" aria-hidden="true">4</span> Emails due today{{with $t.EmailsDue}} <span class="today-count">{{.}}</span>{{end}}</h2>
+  {{if $t.EmailsDue}}
+  <p>{{plural $t.EmailsDue "email goes" "emails go"}} out today, sent by the send job. Nothing to do unless one looks wrong.</p>
+  {{with $t.Emails}}<ul class="item-list">{{range .}}{{template "today_lead" .}}{{end}}</ul>{{end}}
+  {{with $v.MoreEmails}}<p class="hint">and {{.}} more.</p>{{end}}
+  {{else}}<p class="empty">No emails due today. The send job sends them on its own as they fall due.</p>{{end}}
+</section>
+
+<section class="card today-section" id="today-manual" aria-labelledby="today-manual-title">
+  <h2 id="today-manual-title"><span class="today-step" aria-hidden="true">5</span> Forms and LinkedIn notes to send by hand{{with $t.Manual}} <span class="today-count">{{len .}}</span>{{end}}</h2>
+  {{if $t.Manual}}
+  <ul class="item-list">{{range $t.Manual}}{{template "today_lead" .}}{{end}}</ul>
+  <p class="hint">Send each one yourself, then mark it done on <a href="/leads/outreach">Outreach</a>.</p>
+  {{else}}<p class="empty">No forms or LinkedIn notes due. They show here once a batch with them is approved.</p>{{end}}
+</section>
+{{end}}
+
+{{/* today_call is one call of the Today tab: the organisation, a link to its card, its line and when it fell due. */}}
+{{define "today_call"}}<li>
+  <span class="item-head"><a href="/leads/calls/{{.MessageID}}">{{or .OrgName "A lead"}}</a></span>
+  <span class="item-meta">{{.Line}}{{with .At}}{{if $.Line}} · {{end}}due {{when .}}{{end}} · <a href="/leads/{{.LeadID}}">Lead page</a></span>
+</li>{{end}}
+
+{{/* today_lead is one line of the Today tab about a lead: the organisation, its line and its time. */}}
+{{define "today_lead"}}<li>
+  <span class="item-head"><a href="/leads/{{.LeadID}}">{{or .OrgName "A lead"}}</a></span>
+  {{if or .Line .At}}<span class="item-meta">{{.Line}}{{with .At}}{{if $.Line}} · {{end}}{{when .}}{{end}}</span>{{end}}
+</li>{{end}}

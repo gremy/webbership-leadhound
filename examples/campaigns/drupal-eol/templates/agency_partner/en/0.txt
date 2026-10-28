@@ -1,0 +1,15 @@
+Subject: Drupal upgrade help for {{.OrgName}}
+
+Hello {{.OrgName}} team,
+
+I'm {{.SenderName}}, a Drupal developer. I work with agencies as a quiet partner on upgrades, under their name.
+
+Upgrades tend to arrive together, when several clients hit an end-of-life date at once. They are slow, careful work that ties up a team for weeks. And a fixed price is hard to quote before anyone has looked inside the site.
+
+Recently I took a Drupal 7 site for Harbour Lane Studio to Drupal 10, with no downtime.
+
+Pick one client site and I will write a free one-page upgrade-risk report on it, yours to keep and share under your name.
+
+Worth 10 minutes to find out?
+
+{{.Footer}}

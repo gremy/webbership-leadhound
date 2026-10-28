@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -649,6 +650,12 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 	var items, plan []outreach.PlanItem
 	retired := map[int64]bool{}
 	for _, row := range rows {
+		if row.Channel != "email" {
+			// A call (or any manual step) is never sent or claimed here, whatever the query
+			// returned: the operator makes it and records what happened.
+			r.rep.skipped++
+			continue
+		}
 		self := row.LeadKind == leadstore.LeadSelftest
 		// A selftest goes in its own run only; an ordinary run never sends one.
 		if (only != 0) != self || (only != 0 && row.ID != only) {
@@ -893,7 +900,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	}
 	// Claimed or cancelled since Plan (another sender, a sync), or the other kind of batch
 	// (RA1: a shadow send never touches a live batch, nor a live send a shadow one).
-	if row.State != leadstore.MsgApproved || row.Shadow == r.live || row.MailboxID != mb.ID {
+	if row.Channel != "email" || row.State != leadstore.MsgApproved || row.Shadow == r.live || row.MailboxID != mb.ID {
 		r.rep.skipped++
 		return false, nil
 	}
@@ -1120,14 +1127,38 @@ func (r *sendRun) cancel(ctx context.Context, row leadstore.SendRow, reason stri
 // followUp schedules the sequence's next step in its own statement, after the send is
 // committed; a failure is the note followup.
 func (r *sendRun) followUp(ctx context.Context, row leadstore.SendRow, sentAt time.Time) {
-	if err := r.scheduleNext(ctx, r.lq, row, sentAt); err != nil {
+	var err error
+	if r.s != nil {
+		err = leadsInTx(ctx, r.s.Pool(), func(tq leadstore.Queries) error { return r.scheduleNext(ctx, tq, row, sentAt) })
+	} else {
+		err = r.scheduleNext(ctx, r.lq, row, sentAt)
+	}
+	if err != nil {
 		r.rep.note(noteFollowup)
 	}
 }
 
-// scheduleNext gives the sequence's next step its due time from this send: step 1
-// followup_business_days[0] business days after step 0, step 2 [1] days after step 1.
+// scheduleNext moves the lead's sequence on after this send, with tq (run it in one
+// transaction: the decision is applied over the rows it was read from). A batch that stores
+// its sequence runs campaign.Next (leadstore.SequenceDecision) and applies its due times and
+// cancels; a batch from before sequences (none stored) keeps the old rule, legacyNext.
 func (r *sendRun) scheduleNext(ctx context.Context, tq leadstore.Queries, row leadstore.SendRow, sentAt time.Time) error {
+	loc, bh := r.rowLoc(row.LeadKind, row.OrgCountry), r.setup.leads.Schedule.BusinessHours
+	cal := campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
+	d, legacy, err := tq.SequenceDecision(ctx, row.ID, sentAt, cal)
+	if err != nil {
+		return err
+	}
+	if legacy {
+		return r.legacyNext(ctx, tq, row, sentAt)
+	}
+	_, err = tq.ApplyDecision(ctx, d)
+	return err
+}
+
+// legacyNext gives a legacy batch's next step its due time from this send: step 1
+// followup_business_days[0] business days after step 0, step 2 [1] days after step 1.
+func (r *sendRun) legacyNext(ctx context.Context, tq leadstore.Queries, row leadstore.SendRow, sentAt time.Time) error {
 	days := r.setup.leads.Schedule.FollowupBusinessDays
 	if row.Step >= len(days) || row.Step >= 2 {
 		return nil

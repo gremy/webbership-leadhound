@@ -559,6 +559,8 @@ func consoleMessageLabel(m leadstore.Message, n int) string {
 		return fmt.Sprintf("Contact form text · message %d", m.ID)
 	case "linkedin":
 		return fmt.Sprintf("LinkedIn note · message %d", m.ID)
+	case leadstore.ChannelPhone:
+		return fmt.Sprintf("Call card · step %d of %d · message %d", m.Step+1, n, m.ID)
 	}
 	return fmt.Sprintf("Message %d", m.ID)
 }

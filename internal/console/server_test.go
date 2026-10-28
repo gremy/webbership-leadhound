@@ -58,6 +58,14 @@ type fakeBackend struct {
 	detail    LeadDetailPage
 	campaigns []CampaignView
 
+	today       TodayView
+	todayQ      string // the campaign the last LeadsToday call asked for
+	call        CallCard
+	seq         []SequenceStep
+	outcomeMsg  string
+	outcomeErr  error // returned by LeadCallOutcome
+	lastOutcome outcomeCall
+
 	runOut     RunOutcome
 	runErr     error // returned by RunNow
 	lastRun    RunRequest
@@ -230,6 +238,9 @@ func richBackend(text string) *fakeBackend {
 		list:      richLeadList(text),
 		detail:    richLeadDetail(text),
 		campaigns: richCampaigns(text),
+		today:     richToday(text),
+		call:      richCall(text),
+		seq:       richSequence(),
 		runOut:    RunOutcome{Message: text},
 		runCard:   richCard(text),
 		results:   richResults(text),

@@ -55,7 +55,7 @@ func TestMailboxSizingDriftOneMailbox(t *testing.T) {
 							old := batchSizing(cfg, ld, now, size)
 							mb := outreach.MailboxLoad{ID: 1, Domain: "sender.example", FirstSend: first, SentToday: ld.sentToday,
 								Waiting: ld.approved + ld.toCheck, Ready: true}
-							got, rooms := mailboxSizing(cfg, []outreach.MailboxLoad{mb}, ld.toCheck, now, size)
+							got, rooms := mailboxSizing(cfg, []outreach.MailboxLoad{mb}, ld.toCheck, now, size, 0)
 							want := old
 							want.Mailboxes = 1
 							if got != want {
@@ -91,7 +91,7 @@ func TestMailboxSizingSpread(t *testing.T) {
 	cfg := sizingConfig(t, "2026-10-27", 10)
 	cfg.Caps.DomainPerDay = 4
 	one := []outreach.MailboxLoad{{ID: 1, Domain: "sender.example", Ready: true}, {ID: 2, Domain: "sender.example", Ready: true}}
-	z, rooms := mailboxSizing(cfg, one, 0, tue, 10)
+	z, rooms := mailboxSizing(cfg, one, 0, tue, 10, 0)
 	if z.Room != 12 || z.Leads != 4 || z.Mailboxes != 2 || rooms[1]+rooms[2] != 12 {
 		t.Errorf("one domain: %+v, rooms %v", z, rooms)
 	}
@@ -100,7 +100,7 @@ func TestMailboxSizingSpread(t *testing.T) {
 	}
 	cfg.Caps.DomainPerDay = 0 // the default, 50
 	two := []outreach.MailboxLoad{{ID: 1, Domain: "sender.example", Ready: true}, {ID: 2, Domain: "other.example", Ready: true}, {ID: 3, Domain: "third.example"}}
-	z, rooms = mailboxSizing(cfg, two, 0, tue, 20)
+	z, rooms = mailboxSizing(cfg, two, 0, tue, 20, 0)
 	if z.Room != 60 || z.Leads != 20 || z.Mailboxes != 2 || rooms[1] != 30 || rooms[2] != 30 || rooms[3] != 0 {
 		t.Errorf("two domains: %+v, rooms %v", z, rooms)
 	}

@@ -3,6 +3,8 @@ package outreach
 import (
 	"fmt"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -29,7 +31,18 @@ const (
 	RuleSubjectLength = "subject-length" // the subject is over MaxSubjectRunes
 	RuleSubjectBang   = "subject-bang"   // the subject holds "!"
 	RuleURL           = "url"            // a URL other than the finding's or the sender's site
+	RuleForbidden     = "forbidden"      // a pattern the campaign forbids for the lead's kind matches
+	RuleExclamation   = "exclamation"    // the campaign allows no "!" and the email holds one
 )
+
+// stepList is "0, 1, 3, 4".
+func stepList(steps []int) string {
+	parts := make([]string, len(steps))
+	for i, s := range steps {
+		parts[i] = strconv.Itoa(s)
+	}
+	return strings.Join(parts, ", ")
+}
 
 // Problem is one reason a draft may not go out.
 type Problem struct {
@@ -62,6 +75,32 @@ func (p Problem) String() string { return p.Rule + ": " + p.Detail }
 // with trailing punctuation dropped. It must be the FindingURL slot, the sender's site_url
 // (a trailing "/" ignored either way), or, when bare, the Host or Domain slot.
 func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
+	return CheckIn(d, step, cfg, StepRules{})
+}
+
+// StepRules are a campaign sequence's rules for Check. The zero value is the legacy
+// three-step sequence: email steps 0 to leadconfig.Steps-1 held to copy.first_words (step 0)
+// and copy.followup_words (the rest), minimum and maximum.
+type StepRules struct {
+	// EmailSteps are the sequence's email steps; an email at any other step is refused.
+	// nil: the legacy steps.
+	EmailSteps []int
+	// MaxWords is the campaign's copy.max_words: the most words above the footer per step,
+	// with no minimum. A step it leaves out takes the legacy maximum (first_words or
+	// followup_words). Used only when EmailSteps is set.
+	MaxWords map[int]int
+	// BannedWords are the campaign's own banned words, checked beside copy.banned_words.
+	BannedWords []string
+	// Forbid are patterns the draft's subject and body must not match (the campaign's
+	// copy.forbid_by_kind for the lead's kind), as Forbid's text says.
+	Forbid []*regexp.Regexp
+	// NoLinksInStep0 refuses any URL above the footer of the first email (copy.links_in_step0
+	// off); NoExclamation refuses "!" anywhere in an email (copy.exclamation off).
+	NoLinksInStep0, NoExclamation bool
+}
+
+// CheckIn is Check under a campaign sequence's rules (see StepRules).
+func CheckIn(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Problem {
 	var p []Problem
 	add := func(rule, format string, a ...any) {
 		p = append(p, Problem{Rule: rule, Detail: fmt.Sprintf(format, a...)})
@@ -69,7 +108,12 @@ func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
 	text := d.Subject + "\n" + d.Body
 
 	if d.Kind == DraftEmail {
-		p = append(p, checkEmail(d, step, cfg)...)
+		p = append(p, checkEmail(d, step, cfg, rules)...)
+	}
+	for _, re := range rules.Forbid {
+		if re.MatchString(text) {
+			add(RuleForbidden, "the text matches %q, which this campaign forbids for the lead's kind", re.String())
+		}
 	}
 
 	for _, bad := range []string{"{{", "<no value>"} {
@@ -93,7 +137,7 @@ func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
 			add(RuleSource, "%s names table %s but no row", name, s.Source.Table)
 		}
 	}
-	for _, w := range cfg.Copy.BannedWords {
+	for _, w := range append(slices.Clone(cfg.Copy.BannedWords), rules.BannedWords...) {
 		if checkWordRe(w).MatchString(text) {
 			add(RuleBanned, "the text uses %q", w)
 		}
@@ -162,7 +206,7 @@ func Check(d Draft, step int, cfg leadconfig.Config) []Problem {
 }
 
 // checkEmail holds the rules only an email gets.
-func checkEmail(d Draft, step int, cfg leadconfig.Config) []Problem {
+func checkEmail(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Problem {
 	var p []Problem
 	add := func(rule, format string, a ...any) {
 		p = append(p, Problem{Rule: rule, Detail: fmt.Sprintf(format, a...)})
@@ -171,14 +215,34 @@ func checkEmail(d Draft, step int, cfg leadconfig.Config) []Problem {
 	if step == 0 {
 		bounds, which = cfg.Copy.FirstWords, "first email"
 	}
+	if rules.NoLinksInStep0 && step == 0 && len(checkURLs(d.BodyAboveFooter)) > 0 {
+		add(RuleURL, "the first email holds a link above the footer; this campaign allows none there")
+	}
+	if rules.NoExclamation && strings.Contains(d.Body, "!") {
+		add(RuleExclamation, "the email holds \"!\"; this campaign allows none")
+	}
+	words := len(strings.Fields(d.BodyAboveFooter))
 	switch {
+	case rules.EmailSteps != nil && !slices.Contains(rules.EmailSteps, step):
+		add(RuleStep, "step %d is not an email step of the sequence (%s)", step, stepList(rules.EmailSteps))
+	case rules.EmailSteps != nil:
+		most, ok := rules.MaxWords[step]
+		if !ok && len(bounds) == 2 {
+			most, ok = bounds[1], true
+		}
+		switch {
+		case !ok:
+			add(RuleWords, "copy has no word bound for step %d", step)
+		case words > most:
+			add(RuleWords, "%d words above the footer, step %d allows at most %d", words, step, most)
+		}
 	case step < 0 || step >= leadconfig.Steps:
 		add(RuleStep, "step %d is outside 0 to %d", step, leadconfig.Steps-1)
 	case len(bounds) != 2:
 		add(RuleWords, "copy has no %s word bounds", which)
 	default:
-		if n := len(strings.Fields(d.BodyAboveFooter)); n < bounds[0] || n > bounds[1] {
-			add(RuleWords, "%d words above the footer, a %s needs %d to %d", n, which, bounds[0], bounds[1])
+		if words < bounds[0] || words > bounds[1] {
+			add(RuleWords, "%d words above the footer, a %s needs %d to %d", words, which, bounds[0], bounds[1])
 		}
 	}
 	if n := utf8.RuneCountInString(d.Subject); n > MaxSubjectRunes {

@@ -75,11 +75,26 @@ func loadCampaigns() ([]campaign.Spec, error) {
 	return checkedCampaigns(cfg.DataDir, &lc)
 }
 
-// checkedCampaigns is campaign.LoadAll, its problems as one usage error, one per line.
+// checkedCampaigns is campaign.LoadAll, and for each campaign with its own folder its
+// templates (campaignTemplates: every email step of its sequences and the call card), its
+// problems as one usage error, one per line.
 func checkedCampaigns(dataDir string, lc *leadconfig.Config) ([]campaign.Spec, error) {
 	specs, err := campaign.LoadAll(dataDir, lc)
 	if err != nil {
 		return nil, usageError("the campaigns do not pass their checks:\n%s", campaignProblems(err))
+	}
+	var errs []error
+	for _, sp := range specs {
+		if _, ok, err := campaignFile(dataDir, sp.Slug); err != nil {
+			errs = append(errs, err)
+		} else if ok {
+			if _, err := campaignTemplates(dataDir, sp); err != nil {
+				errs = append(errs, fmt.Errorf("campaign %q: %w", sp.Slug, err))
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return nil, usageError("the campaigns do not pass their checks:\n%s", campaignProblems(errors.Join(errs...)))
 	}
 	return specs, nil
 }

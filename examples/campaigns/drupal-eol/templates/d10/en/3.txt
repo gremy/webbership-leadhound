@@ -1,0 +1,11 @@
+Subject: Re: {{.Host}} and the Drupal {{.Major}} end of life
+
+Hello,
+
+I tried to call you this week but did not get through, so a short note instead.
+
+If it helps, I can send the free one-page report on updating {{.OrgName}} to Drupal 11. It takes a few minutes to read and is yours to keep.
+
+Would that be useful?
+
+{{.Footer}}

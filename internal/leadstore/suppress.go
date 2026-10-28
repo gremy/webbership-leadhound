@@ -2,8 +2,11 @@ package leadstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +18,8 @@ import (
 const (
 	SuppressAddress = "address"
 	SuppressDomain  = "domain"
+	// SuppressPhone holds PhoneSuppressionValue of a normalised number, never the number.
+	SuppressPhone = "phone"
 )
 
 // The reasons a suppression can carry (suppression_reason_check).
@@ -23,7 +28,47 @@ const (
 	ReasonBounce    = "bounce"
 	ReasonRepliedNo = "replied_no"
 	ReasonManual    = "manual"
+	// The phone-only reasons (suppression_phone_reason_check).
+	ReasonDoNotCall = "do_not_call" // asked on a call not to be called again
+	ReasonTPS       = "tps"         // on the UK Telephone Preference Service list
+	ReasonCTPS      = "ctps"        // on the UK Corporate TPS list
 )
+
+// phoneValueRE is the shape of a phone suppression's value (suppression_phone_value_check).
+var phoneValueRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// PhoneSuppressionValue is the value a phone suppression holds for the normalised number
+// normalized (org_fact.normalized: + and 8 to 15 digits): "sha256:" and the lower-case hex
+// sha256 of it, so a suppression never holds the number itself. phoneHashSQL computes the
+// same in SQL; the two must agree.
+func PhoneSuppressionValue(normalized string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(normalized)))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// phoneHashSQL is the SQL twin of PhoneSuppressionValue over the SQL expression expr.
+func phoneHashSQL(expr string) string {
+	return `('sha256:' || encode(sha256(convert_to(` + expr + `, 'UTF8')), 'hex'))`
+}
+
+// phoneSuppressedSQL is a SQL condition that is true when an active phone suppression of
+// account acct (an SQL expression) holds the number of org_fact id factID (an SQL expression).
+func phoneSuppressedSQL(acct, factID string) string {
+	return `EXISTS (SELECT 1 FROM org_fact pf JOIN suppression_active px ON px.account_id = ` + acct + `
+	  AND px.kind = 'phone' AND px.value = ` + phoneHashSQL("pf.normalized") + `
+	  WHERE pf.id = ` + factID + `)`
+}
+
+// validSuppression reports whether kind and reason go together under the checks.
+func validSuppression(kind, reason string) bool {
+	switch kind {
+	case SuppressAddress, SuppressDomain:
+		return reason == ReasonOptOut || reason == ReasonBounce || reason == ReasonRepliedNo || reason == ReasonManual
+	case SuppressPhone:
+		return reason == ReasonDoNotCall || reason == ReasonTPS || reason == ReasonCTPS || reason == ReasonManual
+	}
+	return false
+}
 
 var (
 	// ErrUnknownSuppression is returned by Suppress for a kind or reason outside the checks.
@@ -49,14 +94,17 @@ type Suppressed struct {
 // suppressions (after a lift the next one records again, FO6), and applies it (the grid's suppress column): every lead it
 // reaches (its route address, its org's domain, or a pending message's recipient, a
 // domain reaching its subdomains too) has its pending messages cancelled, and a lead in
-// state new or batched moves to suppressed. A lead in another state keeps it. Run it in a
+// state new or batched moves to suppressed. A lead in another state keeps it. A phone
+// suppression (kind phone, value PhoneSuppressionValue of the number, reason do_not_call, tps,
+// ctps or manual) reaches the leads whose org lists that number or whose pending call dials
+// it, and cancels only their pending call rows: not being called is not an opt-out of email,
+// so their lead state and email rows are left alone. Run it in a
 // transaction. The suppression is account accountID's (0: DefaultAccountID): it blocks every
 // campaign of that account and reaches only that account's leads.
 func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, reason, source string) (Suppressed, error) {
 	accountID = orAccount(accountID)
 	v := strings.ToLower(strings.TrimSpace(value))
-	if (kind != SuppressAddress && kind != SuppressDomain) ||
-		(reason != ReasonOptOut && reason != ReasonBounce && reason != ReasonRepliedNo && reason != ReasonManual) {
+	if !validSuppression(kind, reason) {
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w: %q %q", ErrUnknownSuppression, kind, reason)
 	}
 	local, dom, at := strings.Cut(v, "@")
@@ -67,6 +115,8 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w: not an address", ErrBadSuppressValue)
 	case kind == SuppressDomain && at:
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w: a domain has no @", ErrBadSuppressValue)
+	case kind == SuppressPhone && !phoneValueRE.MatchString(v):
+		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w: a phone suppression holds sha256:<hex>", ErrBadSuppressValue)
 	}
 	if kind == SuppressDomain {
 		// A domain suppression covers the whole registrable domain: mail.acme.de → acme.de.
@@ -101,6 +151,16 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 	cancel := "suppressed: " + reason
 	for _, id := range ids {
 		res.Leads++
+		if kind == SuppressPhone {
+			tag, err := q.db.Exec(ctx,
+				`UPDATE outreach_message SET state = 'cancelled', cancel_reason = $2
+				 WHERE lead_id = $1 AND channel = 'phone' AND state IN ('draft', 'approved')`, id, cancel)
+			if err != nil {
+				return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
+			}
+			res.Cancelled += tag.RowsAffected()
+			continue
+		}
 		n, err := q.CancelPending(ctx, CancelTarget{LeadID: id}, cancel)
 		if err != nil {
 			return Suppressed{}, fmt.Errorf("leadstore: suppress: %w", err)
@@ -125,6 +185,12 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 // (which leads to stop) and LiftSuppression (which leads it had stopped) share it, so the two
 // cannot drift.
 func reachSQL(kind string) string {
+	if kind == SuppressPhone {
+		return `(EXISTS (SELECT 1 FROM org_fact f WHERE f.org_id = l.org_id AND f.kind = 'phone'
+		    AND ` + phoneHashSQL("f.normalized") + ` = $1)
+		  OR EXISTS (SELECT 1 FROM outreach_message m JOIN org_fact f ON f.id = m.phone_fact_id
+		    WHERE m.lead_id = l.id AND m.state IN ('draft', 'approved') AND ` + phoneHashSQL("f.normalized") + ` = $1))`
+	}
 	if kind == SuppressAddress {
 		return `((r.kind = 'email' AND r.value = $1)
 		  OR EXISTS (SELECT 1 FROM outreach_message m WHERE m.lead_id = l.id
@@ -142,11 +208,13 @@ func reachSQL(kind string) string {
 // inAccountSQL is the SQL condition on lead l that is true when its campaign is account $2's.
 const inAccountSQL = `l.campaign_id IN (SELECT c.id FROM campaign c WHERE c.account_id = $2)`
 
-// Suppressions is every suppressed address and domain, lower case, sorted, each once
-// (outreach.NewSuppressionSet takes the two lists).
+// Suppressions is every suppressed address, domain and phone, lower case, sorted, each once
+// (outreach.NewSuppressionSet takes the first two lists). Phones holds phone suppression
+// values (PhoneSuppressionValue), never a domain.
 type Suppressions struct {
 	Addresses []string
 	Domains   []string
+	Phones    []string
 }
 
 // SuppressionSet returns every active suppression (none lifted, FO6) of account accountID
@@ -162,12 +230,17 @@ func (q Queries) SuppressionSet(ctx context.Context, accountID int64) (Suppressi
 	if err != nil {
 		return Suppressions{}, fmt.Errorf("leadstore: suppression set: %w", err)
 	}
-	s := Suppressions{Addresses: []string{}, Domains: []string{}}
+	s := Suppressions{Addresses: []string{}, Domains: []string{}, Phones: []string{}}
 	for _, r := range rows {
-		if r.Kind == SuppressAddress {
+		switch r.Kind {
+		case SuppressAddress:
 			s.Addresses = append(s.Addresses, r.Value)
-		} else {
+		case SuppressDomain:
 			s.Domains = append(s.Domains, r.Value)
+		case SuppressPhone:
+			s.Phones = append(s.Phones, r.Value)
+		default:
+			return Suppressions{}, fmt.Errorf("leadstore: suppression set: unknown kind %q", r.Kind)
 		}
 	}
 	return s, nil

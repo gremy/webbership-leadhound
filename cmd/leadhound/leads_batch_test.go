@@ -41,7 +41,7 @@ func TestDraftLeadEmailSequence(t *testing.T) {
 			{Signal: leadstore.Signal{Signal: "x-drupal-cache", FetchID: 11}, Fetch: demoFetch},
 			{Signal: leadstore.Signal{Signal: "Drupal.settings", FetchID: 11}, Fetch: demoFetch},
 		}}
-	ds, err := draftLead(c, ev, cfg, "sender.example", zeroReader{})
+	ds, err := draftLead(c, ev, cfg, "sender.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestDraftLeadFormAndAgency(t *testing.T) {
 	ev := leadstore.Evidence{ProbeID: i64(6), Major: 10, ExactVersion: "10.6.14",
 		Signals: []leadstore.EvidenceSignal{{Signal: leadstore.Signal{Signal: "core-asset-v", Value: "10.6.14", FetchID: 12},
 			Fetch: leadstore.EvidenceFetch{ID: 12, URL: "https://contoso.example/"}}}}
-	ds, err := draftLead(form, ev, cfg, "shadow.invalid", zeroReader{})
+	ds, err := draftLead(form, ev, cfg, "shadow.invalid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestDraftLeadFormAndAgency(t *testing.T) {
 	agency := leadstore.Candidate{LeadID: 5, OrgID: 4, Domain: "wingtip.example", OrgName: "Wingtip Digital", Country: "GB",
 		Kind: leadstore.LeadAgencyPartner, Channel: leadstore.ChannelEmail, RouteKind: leadstore.RouteEmail, Route: "hello@wingtip.example"}
 	aev := leadstore.Evidence{AgencyFindingID: i64(9), FindingURL: "https://www.wingtip.example/services/drupal-upgrades"}
-	ds, err = draftLead(agency, aev, cfg, "shadow.invalid", zeroReader{})
+	ds, err = draftLead(agency, aev, cfg, "shadow.invalid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestDraftLeadDrops(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := draftLead(tc.c, tc.ev, cfg, "shadow.invalid", zeroReader{})
+			_, err := draftLead(tc.c, tc.ev, cfg, "shadow.invalid")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %v, want it to name %q", err, tc.want)
 			}
@@ -133,7 +133,7 @@ func TestDraftLeadDrupal9(t *testing.T) {
 		Channel: leadstore.ChannelEmail, RouteKind: leadstore.RouteEmail, Route: "info@tailspin.example"}
 	ev := leadstore.Evidence{ProbeID: i64(5), Major: 9, Signals: []leadstore.EvidenceSignal{
 		{Signal: leadstore.Signal{Signal: "x-generator", Value: "9", FetchID: 11}, Fetch: demoFetch}}}
-	ds, err := draftLead(c, ev, cfg, "shadow.invalid", zeroReader{})
+	ds, err := draftLead(c, ev, cfg, "shadow.invalid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestDraftLeadNoOptOutLine(t *testing.T) {
 		Channel: leadstore.ChannelEmail, RouteKind: leadstore.RouteEmail, Route: "info@northwind.example"}
 	ev := leadstore.Evidence{ProbeID: i64(5), Major: 7, Signals: []leadstore.EvidenceSignal{
 		{Signal: leadstore.Signal{Signal: "Drupal.settings", FetchID: 11}, Fetch: demoFetch}}}
-	if _, err := draftLead(c, ev, cfg, "shadow.invalid", zeroReader{}); err == nil || !strings.Contains(err.Error(), "OptOutLine") {
+	if _, err := draftLead(c, ev, cfg, "shadow.invalid"); err == nil || !strings.Contains(err.Error(), "OptOutLine") {
 		t.Errorf("err = %v, want the missing OptOutLine named", err)
 	}
 }
@@ -250,4 +250,11 @@ func TestOrgNameValue(t *testing.T) {
 	if n := len([]rune(orgNameValue(long))); n > 80 {
 		t.Errorf("a long name keeps %d runes", n)
 	}
+}
+
+// draftLead renders and checks one lead's whole sequence on leads.yaml's legacy flow (the
+// three email steps, threaded to the first email's Message-ID, for an email lead; the
+// contact-form text and the LinkedIn note for a form lead), with the zero reader for ids.
+func draftLead(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config, idDomain string) ([]leadstore.DraftRow, error) {
+	return draftSequence(legacyPlan(cfg), c, ev, cfg, nil, idDomain, zeroReader{})
 }

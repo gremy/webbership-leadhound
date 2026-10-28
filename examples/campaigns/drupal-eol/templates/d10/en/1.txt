@@ -1,0 +1,11 @@
+Subject: Re: {{.Host}} and the Drupal {{.Major}} end of life
+
+Hello again,
+
+A short follow-up in case my note got buried. The update from Drupal {{.Major}} to Drupal 11 is mostly routine when it is planned early, and harder when it is rushed near {{.EOLDate}}.
+
+The free one-page upgrade-risk report for {{.OrgName}} still stands, and it is yours to keep.
+
+Shall I send it over?
+
+{{.Footer}}

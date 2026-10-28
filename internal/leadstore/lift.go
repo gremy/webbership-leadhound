@@ -43,7 +43,8 @@ type SuppressionRow struct {
 }
 
 // Domain is the domain a lift must be confirmed with: a domain suppression's value, an
-// address suppression's part after the @.
+// address suppression's part after the @, a phone suppression's whole value (its sha256:
+// hash; there is no domain).
 func (r SuppressionRow) Domain() string {
 	if r.Kind == SuppressAddress {
 		if at := strings.LastIndexByte(r.Value, '@'); at >= 0 {
@@ -181,6 +182,15 @@ func (q Queries) LiftSuppression(ctx context.Context, id int64, domain, reason, 
 // outreach.Suppressed over SuppressionSet (the send-time check), each active row that matches
 // on its own. Only the rows of the lifted row's account accountID count.
 func (q Queries) stillBlocking(ctx context.Context, accountID int64, row SuppressionRow) ([]SuppressionRow, error) {
+	if row.Kind == SuppressPhone {
+		// A phone hash is never a domain: only another active row on the same number blocks it.
+		return collect(ctx, q.db, scanSuppressionRow,
+			`SELECT s.id, s.kind, s.value, s.reason, s.source, s.created_at,
+			   NULL::timestamptz, '', ''
+			 FROM suppression_active s
+			 WHERE s.account_id = $2 AND s.kind = 'phone' AND s.value = $1
+			 ORDER BY s.id`, row.Value, accountID)
+	}
 	addr, dom := "", row.Value
 	if row.Kind == SuppressAddress {
 		addr, dom = row.Value, ""

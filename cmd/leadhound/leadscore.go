@@ -155,13 +155,21 @@ type sizingLoad struct {
 	sentToday int        // leads send's count for today's cap (SentSince the start of today)
 	approved  int        // live emails approved and not yet sent
 	toCheck   int        // live emails maybe sent or left sending
+	// steps is how many emails each lead counts against the ramp: the email steps of the
+	// batch's sequence (a call step sends nothing). 0: the legacy sequence's 1 +
+	// len(followup_business_days).
+	steps int
 }
 
 // batchSizing sizes a live batch at now (in the operator's zone) for at most size leads.
 // Today counts only while its sending window is still to come or open (todayOpen), with
 // what today's sends have used taken off its cap; the other days count their whole cap.
 func batchSizing(cfg leadconfig.Config, ld sizingLoad, now time.Time, size int) BatchSizing {
-	z := BatchSizing{Waiting: ld.approved + ld.toCheck, ToCheck: ld.toCheck, Steps: 1 + len(cfg.Schedule.FollowupBusinessDays), Size: size}
+	steps := ld.steps
+	if steps <= 0 {
+		steps = 1 + len(cfg.Schedule.FollowupBusinessDays)
+	}
+	z := BatchSizing{Waiting: ld.approved + ld.toCheck, ToCheck: ld.toCheck, Steps: steps, Size: size}
 	firstSend := ld.firstSend
 	if firstSend == nil && cfg.Caps.StartDate.IsFirstSend() {
 		// No send yet: today is day 0 for every day counted, not each day its own day 0.
@@ -197,8 +205,8 @@ func batchSizing(cfg leadconfig.Config, ld sizingLoad, now time.Time, size int) 
 // Waiting, SentToday and ToCheck (toCheck, the store's count of mail to check by hand) are
 // the ready mailboxes'. With exactly one ready mailbox it is batchSizing for that mailbox's
 // load, field for field, Mailboxes aside (MB-R7). It returns each mailbox's room too.
-func mailboxSizing(cfg leadconfig.Config, mbs []outreach.MailboxLoad, toCheck int, now time.Time, size int) (BatchSizing, map[int64]int) {
-	var ld sizingLoad
+func mailboxSizing(cfg leadconfig.Config, mbs []outreach.MailboxLoad, toCheck int, now time.Time, size, steps int) (BatchSizing, map[int64]int) {
+	ld := sizingLoad{steps: steps}
 	ready := 0
 	bare := slices.Clone(mbs)
 	for i, m := range mbs {
@@ -272,13 +280,16 @@ type batchSetup struct {
 	leads  leadconfig.Config
 	shadow bool           // batchMode: the batch would be shadow
 	loc    *time.Location // the operator's zone (LEADHOUND_TZ): the days the ramp counts
+	// dataDir is LEADHOUND_DATA_DIR, where a campaign's own folder is read (resolveBatchPlan);
+	// "" drafts every campaign on the legacy plan.
+	dataDir string
 	// settingsIgnored: the saved settings no longer pass leads.yaml's checks, so leads is the
 	// file alone, without the operator's kinds_off, skip_rank_over and the rest.
 	settingsIgnored bool
 }
 
 func newBatchSetup(setup leadsSetup, loc *time.Location) batchSetup {
-	return batchSetup{leads: setup.leads, shadow: batchMode(setup.env), loc: loc, settingsIgnored: len(setup.settings.Ignored) > 0}
+	return batchSetup{leads: setup.leads, shadow: batchMode(setup.env), loc: loc, dataDir: setup.dataDir, settingsIgnored: len(setup.settings.Ignored) > 0}
 }
 
 // NewBatchRequest is one `batch new`.
@@ -316,8 +327,13 @@ type NewBatchOutcome struct {
 	// Skipped are the campaign's new leads whose business is already in a conversation in
 	// another campaign of the account (one business, one conversation), each with why.
 	Skipped []DroppedLead
-	Sizing  *BatchSizing  // a live batch's sizing; nil for shadow
-	Rooms   map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
+	// Calls are the call steps drafted; CallsLeftOut counts the email leads whose call steps
+	// (and the steps that wait on a call) were left out, by why (callNoNumber,
+	// callSuppressed). Both stay empty when the sequence has no call step.
+	Calls        int
+	CallsLeftOut map[string]int
+	Sizing       *BatchSizing  // a live batch's sizing; nil for shadow
+	Rooms        map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
 }
 
 // newBatch drafts the next batch with lq, which the caller runs in one transaction: it
@@ -366,7 +382,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if len(byID) == 0 {
 		return out, refused("Add a mailbox first: Mailboxes in the console, or leads mailboxes add.")
 	}
-	steps := 1 + len(bs.leads.Schedule.FollowupBusinessDays)
+	plan, err := resolveBatchPlan(ctx, lq, bs, campaignID)
+	if err != nil {
+		return out, err
+	}
+	steps := plan.emailSteps()
 	opts, err := batchCandidateOptions(ctx, lq, bs, now)
 	if err != nil {
 		return out, err
@@ -393,7 +413,7 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			room[id] = n * steps
 		}
 	} else {
-		z, r, err := liveSizing(ctx, lq, bs, now, n, mbs)
+		z, r, err := liveSizing(ctx, lq, bs, now, n, steps, mbs)
 		if err != nil {
 			return out, err
 		}
@@ -407,6 +427,16 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 		room, n = maps.Clone(r), z.Leads
 	}
 	var drafts []leadstore.DraftRow
+	suppressedPhones := map[string]bool{}
+	if plan.hasCall() {
+		set, err := lq.SuppressionSet(ctx, leadstore.DefaultAccountID)
+		if err != nil {
+			return out, err
+		}
+		for _, v := range set.Phones {
+			suppressedPhones[v] = true
+		}
+	}
 	for start := 0; start < len(cands) && out.Leads < n; start += evidenceSpan {
 		span := cands[start:min(start+evidenceSpan, len(cands))]
 		ids := make([]int64, len(span))
@@ -417,6 +447,20 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 		if err != nil {
 			return out, err
 		}
+		facts := map[int64][]leadstore.Fact{}
+		if plan.hasCall() {
+			orgs := make([]int64, len(span))
+			for i, c := range span {
+				orgs[i] = c.OrgID
+			}
+			fs, err := lq.OrgFacts(ctx, orgs)
+			if err != nil {
+				return out, err
+			}
+			for _, f := range fs {
+				facts[f.OrgID] = append(facts[f.OrgID], f)
+			}
+		}
 		for _, c := range span {
 			if out.Leads >= n {
 				break
@@ -426,10 +470,30 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 				break // no mailbox has room for one more lead
 			}
 			mb := byID[id]
-			ds, err := draftLead(c, ev[c.LeadID], bs.leads, outreach.MessageIDDomain(mb.Address), rand.Reader)
+			var phone *leadstore.Fact
+			leftOut := ""
+			if plan.hasCall() && c.Channel == leadconfig.ChannelEmail {
+				if f, ok, why := pickPhone(facts[c.OrgID], suppressedPhones); ok {
+					phone = &f
+				} else {
+					leftOut = why
+				}
+			}
+			ds, err := draftSequence(plan, c, ev[c.LeadID], bs.leads, phone, outreach.MessageIDDomain(mb.Address), rand.Reader)
 			if err != nil {
 				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: err.Error()})
 				continue
+			}
+			if leftOut != "" {
+				if out.CallsLeftOut == nil {
+					out.CallsLeftOut = map[string]int{}
+				}
+				out.CallsLeftOut[leftOut]++
+			}
+			for _, d := range ds {
+				if d.Channel == leadstore.ChannelPhone {
+					out.Calls++
+				}
 			}
 			from := cmp.Or(strings.TrimSpace(mb.FromName), bs.leads.Sender.Name)
 			for i := range ds {
@@ -443,8 +507,9 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if len(drafts) == 0 {
 		return out, nil
 	}
-	tsha, _ := hex.DecodeString(bs.leads.Templates.SHA256)
-	if out.BatchID, _, err = lq.CreateBatch(ctx, bs.shadow, drafts, tsha); err != nil {
+	tsha, _ := hex.DecodeString(plan.templates.SHA256)
+	meta := leadstore.BatchMeta{CampaignID: campaignID, Sequences: plan.sequences}
+	if out.BatchID, _, err = lq.CreateBatchFor(ctx, meta, bs.shadow, drafts, tsha); err != nil {
 		return out, err
 	}
 	out.Counts = countDrafts(drafts)
@@ -520,7 +585,7 @@ func readyForLeads(m leadstore.MailboxStatus) bool {
 // count toward its domain): each mailbox's waiting emails, today's sends as leads send counts
 // them for its cap and, with caps.start_date first-send, its first live send; only those
 // readyForLeads get room. It reads the store only.
-func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, size int, mbs []leadstore.MailboxStatus) (BatchSizing, map[int64]int, error) {
+func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, size, steps int, mbs []leadstore.MailboxStatus) (BatchSizing, map[int64]int, error) {
 	now = now.In(bs.loc)
 	_, toCheck, err := lq.WaitingEmails(ctx)
 	if err != nil {
@@ -539,7 +604,7 @@ func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now ti
 		}
 		loads = append(loads, ml)
 	}
-	z, room := mailboxSizing(bs.leads, loads, toCheck, now, size)
+	z, room := mailboxSizing(bs.leads, loads, toCheck, now, size, steps)
 	return z, room, nil
 }
 
@@ -744,6 +809,9 @@ func approveBatch(ctx context.Context, s *store.Store, cfg leadconfig.Config, no
 	t := now()
 	var manual []int64
 	due := func(m leadstore.Message) time.Time {
+		if m.Channel == leadstore.ChannelPhone {
+			return time.Time{} // a call falls due as the sequence reaches it, never at approval
+		}
 		if m.Channel != "email" {
 			manual = append(manual, m.ID)
 			return time.Time{}

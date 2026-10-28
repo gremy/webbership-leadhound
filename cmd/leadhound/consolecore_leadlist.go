@@ -681,6 +681,8 @@ func channelWords(ch string) string {
 		return "contact form"
 	case "linkedin":
 		return "LinkedIn"
+	case leadstore.ChannelPhone:
+		return "phone call"
 	}
 	return strings.ReplaceAll(ch, "_", " ")
 }
@@ -736,6 +738,8 @@ func detailMessageLabel(m leadstore.DetailMessage) string {
 		l = fmt.Sprintf("Contact form text · message %d", m.ID)
 	case "linkedin":
 		l = fmt.Sprintf("LinkedIn note · message %d", m.ID)
+	case leadstore.ChannelPhone:
+		l = fmt.Sprintf("Call · step %d · message %d", m.Step+1, m.ID)
 	default:
 		l = fmt.Sprintf("Message %d", m.ID)
 	}

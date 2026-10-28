@@ -1,0 +1,410 @@
+package console
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/gremy/webbership-leadhound/internal/campaign"
+)
+
+// outcomeCall is what the last LeadCallOutcome call was asked.
+type outcomeCall struct {
+	ID             int64
+	Outcome, Note  string
+	Consent        bool
+	ConsentAddress string
+}
+
+func (f *fakeBackend) LeadsToday(_ context.Context, c string) (TodayView, error) {
+	f.count("LeadsToday")
+	f.mu.Lock()
+	f.todayQ = c
+	f.mu.Unlock()
+	t := f.today
+	t.Campaign = c // the backend echoes the campaign it took
+	return t, f.leadsRead()
+}
+
+func (f *fakeBackend) LeadCall(_ context.Context, id int64) (CallCard, error) {
+	f.count("LeadCall")
+	if err := f.leadsRead(); err != nil {
+		return CallCard{}, err
+	}
+	if id != f.call.MessageID {
+		return CallCard{}, ErrNotFound
+	}
+	return f.call, nil
+}
+
+func (f *fakeBackend) LeadCallOutcome(_ context.Context, id int64, outcome, note string, consent bool, addr string) (string, error) {
+	f.count("LeadCallOutcome")
+	f.mu.Lock()
+	f.lastOutcome = outcomeCall{ID: id, Outcome: outcome, Note: note, Consent: consent, ConsentAddress: addr}
+	f.mu.Unlock()
+	return f.outcomeMsg, f.outcomeErr
+}
+
+func (f *fakeBackend) LeadSequence(_ context.Context, id int64) ([]SequenceStep, error) {
+	f.count("LeadSequence")
+	if err := f.leadsRead(); err != nil {
+		return nil, err
+	}
+	if id != f.detail.LeadID {
+		return nil, ErrNotFound
+	}
+	return f.seq, nil
+}
+
+func richToday(text string) TodayView {
+	at := testSent
+	return TodayView{
+		Campaigns:    []FilterOption{{"drupal-eol", "Drupal end-of-life"}, {"wp-eol", "WordPress end-of-life"}},
+		CallsOff:     "Calls are off until the call rules are set up",
+		CallsNow:     []TodayItem{{LeadID: 5, MessageID: 9, OrgName: text, Line: "step 3 call, a direct line", At: &at}},
+		CallsOverdue: []TodayItem{{LeadID: 6, MessageID: 11, OrgName: "Contoso Ltd", Line: "step 3 call", At: &at}},
+		Replies:      []TodayItem{{LeadID: 7, OrgName: "Fabrikam", Line: "replied to the first email", At: &at}},
+		EmailsDue:    7,
+		Emails:       []TodayItem{{LeadID: 8, OrgName: "Tailspin", Line: "the second email"}, {LeadID: 10, OrgName: "Litware", Line: "the last email"}},
+		Manual:       []TodayItem{{LeadID: 12, MessageID: 13, OrgName: "Adatum", Line: "contact form"}},
+	}
+}
+
+func richCall(text string) CallCard {
+	at := testSent
+	return CallCard{
+		MessageID: 9, LeadID: 5, OrgName: text, Number: "+44 20 7946 0000",
+		SourceURL: "https://northwind.example/contact", SourceReadAt: &at, LineKind: "direct",
+		TalkingPoints: []string{"Your site runs Drupal 10, which ends on 9 December.", "The update keeps your modules working.", text},
+		BlockedReason: "Calls are off until the call rules are set up",
+		Screening:     "call rules not set up yet: calls are off",
+		Latest:        &CallLog{Outcome: campaign.OutcomeNoAnswer, Note: "rang out", At: testSent},
+		Shadow:        true, Due: &at,
+	}
+}
+
+func richSequence() []SequenceStep {
+	at := testSent
+	return []SequenceStep{
+		{Step: 0, Type: "email", MessageID: 20, State: SeqSent, At: &at},
+		{Step: 1, Type: "email", MessageID: 21, State: SeqSent, At: &at, Shadow: true},
+		{Step: 2, Type: "call", MessageID: 9, State: SeqDue, At: &at},
+		{Step: 3, Type: "email", MessageID: 22, State: SeqWaiting},
+		{Step: 4, Type: "email", MessageID: 23, State: SeqCancelled, Reason: campaign.CancelCallConnected},
+	}
+}
+
+// TestTodayPage: the Today tab shows its five sections in order, the calls-off banner, each
+// call linked to its card, the email count with the first few, and the campaign filter.
+func TestTodayPage(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	h := newHarness(t, b, false)
+	w := h.do(get("/leads/today?campaign=wp-eol", h.session(t)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	last := -1
+	for _, section := range []string{"Calls to make now", "Calls overdue", "Replies waiting", "Emails due today",
+		"Forms and LinkedIn notes to send by hand"} {
+		i := strings.Index(body, section)
+		if i < 0 || i < last {
+			t.Errorf("%s missing or out of order", section)
+		}
+		last = i
+	}
+	for _, want := range []string{
+		`<a href="/leads/today" aria-current="page">Today</a>`,
+		"<strong>Calls are off until the call rules are set up</strong>",
+		`<a href="/leads/calls/9">Northwind Trading</a>`, `<a href="/leads/calls/11">Contoso Ltd</a>`,
+		"step 3 call, a direct line · due Sat 24 Oct 04:50",
+		`<a href="/leads/7">Fabrikam</a>`, "7 emails go out today, sent by the send job.",
+		`<a href="/leads/8">Tailspin</a>`, "and 5 more.", `<a href="/leads/12">Adatum</a>`,
+		`<option value="wp-eol" selected>WordPress end-of-life</option>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Today lacks %q", want)
+		}
+	}
+	if b.todayQ != "wp-eol" {
+		t.Errorf("campaign %q reached the backend, want wp-eol", b.todayQ)
+	}
+}
+
+// TestTodayEmpty: every section says what comes next when it has nothing; no banner when
+// calls are allowed; no filter without campaigns.
+func TestTodayEmpty(t *testing.T) {
+	b := richBackend("x")
+	b.today = TodayView{}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/today", h.session(t))).Body.String()
+	for _, want := range []string{"No calls to make right now.", "Nothing overdue.", "No replies waiting.",
+		"No emails due today. The send job sends them on its own", "No forms or LinkedIn notes due."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("empty Today lacks %q", want)
+		}
+	}
+	for _, not := range []string{"calls-off", `id="today-campaign"`} {
+		if strings.Contains(body, not) {
+			t.Errorf("empty Today shows %q", not)
+		}
+	}
+	if b.todayQ != "" {
+		t.Errorf("campaign %q, want every campaign", b.todayQ)
+	}
+}
+
+// TestCallCard: the card shows the number as a tel: link, where it came from, the line, the
+// opener, the three talking points, the blocked banner and six outcome buttons posting to
+// the card's outcome route.
+func TestCallCard(t *testing.T) {
+	h := newHarness(t, richBackend("Northwind Trading"), false)
+	w := h.do(get("/leads/calls/9", h.session(t)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"<h1>Call Northwind Trading</h1>", `<a href="/leads/today" aria-current="true">Today</a>`,
+		`href="tel:&#43;442079460000"`, "&#43;44 20 7946 0000</a>",
+		`Read on <a href="https://northwind.example/contact" rel="noopener noreferrer nofollow">`,
+		"<dt>Line</dt><dd>a direct line</dd>",
+		"Say who you are and why you're calling. Your number must be shown.",
+		"<li>Your site runs Drupal 10, which ends on 9 December.</li>", "<li>Northwind Trading</li>",
+		`class="notice notice-warn call-blocked"`, "<strong>Calls are off until the call rules are set up</strong>",
+		"call rules not set up yet: calls are off", "No answer · Sat 24 Oct 04:50", "rang out", "shadow batch",
+		`action="/leads/calls/9/outcome"`, `name="consent" value="yes"`, `name="consent_address"`, `maxlength="500"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card lacks %q", want)
+		}
+	}
+	for _, o := range campaign.Outcomes {
+		if !strings.Contains(body, `name="outcome" value="`+o+`"`) {
+			t.Errorf("no %s button", o)
+		}
+	}
+	if n := strings.Count(body, `name="outcome"`); n != 6 {
+		t.Errorf("%d outcome buttons, want 6", n)
+	}
+	// Calls allowed: no banner.
+	b := richBackend("x")
+	b.call.Callable, b.call.BlockedReason = true, ""
+	h = newHarness(t, b, false)
+	if body := h.do(get("/leads/calls/9", h.session(t))).Body.String(); strings.Contains(body, "call-blocked") {
+		t.Error("a callable card shows the blocked banner")
+	}
+	if w := h.do(get("/leads/calls/99", h.session(t))); w.Code != http.StatusNotFound {
+		t.Errorf("no such call: %d", w.Code)
+	}
+}
+
+// TestCallOutcome: each outcome reaches the backend with the note and, for connected only,
+// the consent, then goes back (303) to the card with the backend's line.
+func TestCallOutcome(t *testing.T) {
+	cases := []struct {
+		form url.Values
+		want outcomeCall
+		next string
+	}{
+		{url.Values{"outcome": {"no_answer"}, "note": {"  rang out "}, "back": {"/leads/calls/9"}},
+			outcomeCall{ID: 9, Outcome: "no_answer", Note: "rang out"}, "/leads/calls/9"},
+		{url.Values{"outcome": {"connected"}, "consent": {"yes"}, "consent_address": {" ana@northwind.example "}},
+			outcomeCall{ID: 9, Outcome: "connected", Consent: true, ConsentAddress: "ana@northwind.example"}, "/leads/calls/9"},
+		{url.Values{"outcome": {"voicemail"}, "consent": {"yes"}, "consent_address": {"ana@northwind.example"}, "back": {"/leads/today?campaign=wp-eol"}},
+			outcomeCall{ID: 9, Outcome: "voicemail"}, "/leads/today?campaign=wp-eol"},
+		{url.Values{"outcome": {"skipped"}, "back": {"https://evil.example/"}}, outcomeCall{ID: 9, Outcome: "skipped"}, "/leads"},
+	}
+	for _, c := range cases {
+		b := richBackend("x")
+		b.outcomeMsg = "Saved. The last email goes on Tue 27 Oct."
+		h := newHarness(t, b, false)
+		w := h.do(post("/leads/calls/9/outcome", c.form, h.session(t)))
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != c.next {
+			t.Errorf("%v: %d to %q, want 303 to %q", c.form, w.Code, w.Header().Get("Location"), c.next)
+		}
+		if b.lastOutcome != c.want {
+			t.Errorf("%v: backend asked %+v, want %+v", c.form, b.lastOutcome, c.want)
+		}
+		if fl := cookieNamed(w, "__Host-lh_flash"); fl == nil || fl.Value == "" {
+			t.Errorf("%v: no flash", c.form)
+		}
+	}
+	// The flash shows on the card.
+	b := richBackend("x")
+	b.outcomeMsg = "Saved. The last email goes on Tue 27 Oct."
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}}, c))
+	r := get("/leads/calls/9", c)
+	r.AddCookie(cookieNamed(w, "__Host-lh_flash"))
+	if body := h.do(r).Body.String(); !strings.Contains(body, "Saved. The last email goes on Tue 27 Oct.") {
+		t.Error("the card does not show the saved line")
+	}
+}
+
+// TestCallOutcomeRefused: an unknown outcome is 400 and a long note or bad address 422,
+// all before the backend; a backend refusal is shown on the card in its words.
+func TestCallOutcomeRefused(t *testing.T) {
+	for _, form := range []url.Values{{"outcome": {"hung_up"}}, {}, {"outcome": {" "}}} {
+		b := richBackend("x")
+		h := newHarness(t, b, false)
+		if w := h.do(post("/leads/calls/9/outcome", form, h.session(t))); w.Code != http.StatusBadRequest {
+			t.Errorf("%v: %d, want 400", form, w.Code)
+		}
+		if b.total() != 0 {
+			t.Errorf("%v reached the backend", form)
+		}
+	}
+	for form, want := range map[string]url.Values{
+		noteTooLong:    {"outcome": {"skipped"}, "note": {strings.Repeat("é", 501)}},
+		badConsentAddr: {"outcome": {"connected"}, "consent": {"yes"}, "consent_address": {"not an address"}},
+	} {
+		b := richBackend("x")
+		h := newHarness(t, b, false)
+		w := h.do(post("/leads/calls/9/outcome", want, h.session(t)))
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), form) {
+			t.Errorf("%q: %d", form, w.Code)
+		}
+		if b.n("LeadCallOutcome") != 0 {
+			t.Errorf("%q reached LeadCallOutcome", form)
+		}
+	}
+	// Exactly 500 characters is taken.
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	if w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"skipped"}, "note": {strings.Repeat("é", 500)}}, h.session(t))); w.Code != http.StatusSeeOther {
+		t.Errorf("a 500-character note: %d", w.Code)
+	}
+	for _, words := range []string{"Not due yet: this call is due on Mon 2 Nov.", "They replied: the sequence has ended."} {
+		b := richBackend("x")
+		b.outcomeErr = fmt.Errorf("%w: %s", ErrUserFixable, words)
+		h := newHarness(t, b, false)
+		w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}, "note": {"kept"}}, h.session(t)))
+		body := w.Body.String()
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(body, strings.ReplaceAll(words, "'", "&#39;")) ||
+			!strings.Contains(body, `class="notice notice-error"`) || !strings.Contains(body, `value="kept"`) {
+			t.Errorf("%q: %d %s", words, w.Code, body)
+		}
+	}
+	b = richBackend("x")
+	b.outcomeErr = errors.New("database gone")
+	h = newHarness(t, b, false)
+	if w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}}, h.session(t))); w.Code != http.StatusInternalServerError ||
+		strings.Contains(w.Body.String(), "database gone") {
+		t.Errorf("a failure: %d %s", w.Code, w.Body.String())
+	}
+	b = richBackend("x")
+	b.outcomeErr = ErrNotFound
+	h = newHarness(t, b, false)
+	if w := h.do(post("/leads/calls/9/outcome", url.Values{"outcome": {"no_answer"}}, h.session(t))); w.Code != http.StatusNotFound {
+		t.Errorf("no such call: %d", w.Code)
+	}
+	for _, p := range []string{"/leads/calls/0/outcome", "/leads/calls/x/outcome"} {
+		b := richBackend("x")
+		h := newHarness(t, b, false)
+		if w := h.do(post(p, url.Values{"outcome": {"no_answer"}}, h.session(t))); w.Code != http.StatusNotFound || b.total() != 0 {
+			t.Errorf("%s: %d, %d backend calls", p, w.Code, b.total())
+		}
+	}
+}
+
+// TestCallOutcomeCrossOrigin: an outcome from another site is refused before the backend,
+// signed in or not, and one without a session never writes.
+func TestCallOutcomeCrossOrigin(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	form := url.Values{"outcome": {"do_not_call"}}
+	r := post("/leads/calls/9/outcome", form, c)
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	if w := h.do(r); w.Code != http.StatusForbidden {
+		t.Errorf("cross-site: %d, want 403", w.Code)
+	}
+	r = post("/leads/calls/9/outcome", form, c)
+	r.Header.Set("Origin", "https://evil.example")
+	if w := h.do(r); w.Code != http.StatusForbidden {
+		t.Errorf("cross-origin: %d, want 403", w.Code)
+	}
+	if w := h.do(post("/leads/calls/9/outcome", form)); w.Code != http.StatusUnauthorized {
+		t.Errorf("without a session: %d, want 401", w.Code)
+	}
+	if n := b.n("LeadCallOutcome"); n != 0 {
+		t.Errorf("LeadCallOutcome called %d times", n)
+	}
+}
+
+// TestLeadSequenceSection: the lead page words each step's state, after Messages, and links
+// a call step to its card; a lead with no steps says when they start.
+func TestLeadSequenceSection(t *testing.T) {
+	h := newHarness(t, richBackend("Northwind Trading"), false)
+	body := h.do(get("/leads/5", h.session(t))).Body.String()
+	for _, want := range []string{
+		`<span class="item-head">Step 1: an email</span><span class="item-meta">sent Sat 24 Oct 04:50</span>`,
+		"sent in shadow Sat 24 Oct 04:50 (nothing left the server)",
+		`Step 3: a phone call</span><span class="item-meta">due Sat 24 Oct 04:50 · <a href="/leads/calls/9">Open the call card</a>`,
+		"Step 4: an email</span><span class=\"item-meta\">waiting on the call",
+		"cancelled: the call got through, so the sequence ended",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Sequence section lacks %q", want)
+		}
+	}
+	b := richBackend("x")
+	b.seq = nil
+	h = newHarness(t, b, false)
+	if body := h.do(get("/leads/5", h.session(t))).Body.String(); !strings.Contains(body, "No sequence yet") {
+		t.Error("an empty sequence says nothing")
+	}
+}
+
+// TestSequenceWords: every state and the store's own cancel reasons are worded, with no
+// internal code left in.
+func TestSequenceWords(t *testing.T) {
+	s := &server{opt: Options{Location: testSent.Location()}}
+	at := testSent
+	rows := s.sequenceRows([]SequenceStep{
+		{Step: 0, Type: "email", State: SeqDraft},
+		{Step: 1, Type: "call", State: SeqNoNumber},
+		{Step: 2, Type: "call", MessageID: 4, State: SeqDone, At: &at, Outcome: campaign.OutcomeWrongNumber},
+		{Step: 3, Type: "email", State: SeqCancelled, Reason: "opt_out"},
+		{Step: 4, Type: "email", State: SeqCheck},
+		{Step: 5, Type: "call", MessageID: 5, State: SeqWaiting},
+	})
+	want := []string{"drafted, waiting for the batch to be approved", "skipped because there was no number we may call",
+		"called Sat 24 Oct 04:50: wrong number", "cancelled: they opted out", "may have gone out: check it on the Outreach page",
+		"waiting on the email before it"}
+	for i, r := range rows {
+		if r.Words != want[i] || strings.Contains(r.Words, "_") {
+			t.Errorf("step %d: %q, want %q", i, r.Words, want[i])
+		}
+	}
+	if rows[1].Card != "" || rows[2].Card != "/leads/calls/4" {
+		t.Errorf("cards: %q %q", rows[1].Card, rows[2].Card)
+	}
+	for _, reason := range campaign.EngineReasons {
+		if w := cancelWords(reason); strings.Contains(w, "_") || w == reason {
+			t.Errorf("%s is not worded: %q", reason, w)
+		}
+	}
+	for _, o := range campaign.Outcomes {
+		if callOutcomeWords[o] == "" || callOutcomeHelp[o] == "" {
+			t.Errorf("outcome %s has no words", o)
+		}
+	}
+}
+
+func TestTelHref(t *testing.T) {
+	for in, want := range map[string]string{
+		"+44 20 7946 0000": "+442079460000", "(020) 7946-0000": "02079460000", "+": "", "": "",
+		"javascript:alert(1)": "1", "0040+721": "0040721",
+	} {
+		if got := telHref(in); got != want {
+			t.Errorf("telHref(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

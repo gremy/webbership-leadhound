@@ -25,13 +25,7 @@ func Legacy(cfg *leadconfig.Config) Spec {
 		countries[code] = Country{Email: c.Channel == leadconfig.ChannelEmail, Lang: c.Lang}
 	}
 
-	seq := make([]Step, leadconfig.Steps)
-	for i := range seq {
-		seq[i] = Step{Step: i, Type: StepEmail, When: WhenAlways}
-		if i > 0 && i-1 < len(cfg.Schedule.FollowupBusinessDays) {
-			seq[i].AfterBusinessDays = cfg.Schedule.FollowupBusinessDays[i-1]
-		}
-	}
+	seq := LegacySequence(cfg.Schedule.FollowupBusinessDays)
 
 	maxWords := map[int]int{}
 	if len(cfg.Copy.FirstWords) == 2 {

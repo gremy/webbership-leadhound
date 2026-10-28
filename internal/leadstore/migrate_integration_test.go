@@ -111,7 +111,7 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 // appendOnlyLeadTables are the append-only lead tables from 00010 on: INSERT and SELECT, no
 // UPDATE, no DELETE.
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
-	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account"}
+	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -190,12 +190,12 @@ var pointerColumns = map[string][2][]string{
 	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "finding_id", "channel", "route_id"},
 		{"org_id", "created_at", "campaign_id"}},
 	"outreach_batch": {{"approved_at", "approved_hash"},
-		{"shadow", "created_at", "content_sha256", "templates_sha256", "account_id"}},
+		{"shadow", "created_at", "content_sha256", "templates_sha256", "account_id", "campaign_id", "sequence"}},
 	// 00016: a campaign's one pointer is retired_at; its owner, slug and name are fixed.
 	"campaign": {{"retired_at"}, {"account_id", "slug", "name", "created_at"}},
 	"outreach_message": {{"state", "due_at", "sent_at", "smtp_reply", "cancel_reason", "approved_sha256"},
 		{"batch_id", "lead_id", "step", "channel", "to_address", "subject", "body_text", "message_id",
-			"in_reply_to", "slots", "created_at"}},
+			"in_reply_to", "slots", "created_at", "condition", "phone_fact_id", "sequence_name"}},
 }
 
 // assertPointerColumns fails the test when the app role holds table-wide UPDATE on an
@@ -256,6 +256,56 @@ func TestLeadsMigrateFromEmpty(t *testing.T) {
 	if err := owner.QueryRow(ctx, `SELECT a.slug, c.slug FROM campaign c JOIN account a ON a.id = c.account_id
 		WHERE a.id = 1 AND c.id = 1`).Scan(&acct, &camp); err != nil || acct != "operator" || camp != "drupal-eol" {
 		t.Fatalf("seeded account and campaign = %q %q (%v), want operator drupal-eol", acct, camp, err)
+	}
+
+	// 00017: a phone suppression holds a hash, never the number, and the phone reasons are
+	// phone-only; the step, channel and condition lists and the consent pairing are in place.
+	tx, err := owner.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	hash := "sha256:" + strings.Repeat("ab", 32)
+	if _, err := tx.Exec(ctx, "INSERT INTO suppression (kind, value, reason) VALUES ('phone', $1, 'do_not_call')", hash); err != nil {
+		t.Fatalf("insert hashed phone suppression: %v", err)
+	}
+	for _, q := range []string{
+		"INSERT INTO suppression (kind, value, reason) VALUES ('phone', '+441234567890', 'tps')",
+		"INSERT INTO suppression (kind, value, reason) VALUES ('domain', 'tps.example', 'ctps')",
+	} {
+		if _, err := tx.Exec(ctx, "SAVEPOINT s"); err != nil {
+			t.Fatalf("savepoint: %v", err)
+		}
+		if _, err := tx.Exec(ctx, q); sqlState(err) != "23514" {
+			t.Errorf("%s: err = %v, want 23514 check_violation", q, err)
+		}
+		if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT s"); err != nil {
+			t.Fatalf("rollback to savepoint: %v", err)
+		}
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	for _, c := range [][2]string{
+		{"outreach_message_step_check", "step <= 9"},
+		{"outreach_message_channel_check", "'phone'"},
+		{"outreach_message_condition_check", "'email_consent'"},
+		{"outreach_message_phone_fact_check", "'phone'"},
+		{"outreach_batch_sequence_check", "'object'"},
+		{"call_outcome_consent_check", "consent_address"},
+		{"call_outcome_note_check", "500"},
+		{"email_consent_wording_check", "500"},
+	} {
+		var def string
+		if err := owner.QueryRow(ctx, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", c[0]).Scan(&def); err != nil {
+			t.Errorf("constraint %s: %v", c[0], err)
+		} else if !strings.Contains(def, c[1]) {
+			t.Errorf("constraint %s = %s, want it to name %s", c[0], def, c[1])
+		}
+	}
+	var onDelete string
+	if err := owner.QueryRow(ctx, `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'outreach_message'::regclass
+		AND contype = 'f' AND confrelid = 'org_fact'::regclass`).Scan(&onDelete); err != nil || onDelete != "n" {
+		t.Errorf("outreach_message.phone_fact_id on delete = %q (%v), want n (SET NULL)", onDelete, err)
 	}
 
 	// The app role can write the new tables through the owner's default privileges.
@@ -371,6 +421,9 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM campaign",
 		"DELETE FROM campaign_version",
 		"TRUNCATE campaign",
+		"DELETE FROM call_outcome",
+		"DELETE FROM email_consent",
+		"TRUNCATE call_outcome",
 		"DELETE FROM lead_kind",
 		"DELETE FROM lead_channel",
 		"TRUNCATE lead_kind",
@@ -431,6 +484,18 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE sender_mailbox SET account_id = 1",
 		"UPDATE suppression SET account_id = 1",
 		"UPDATE lead_setting SET account_id = 1",
+		// 00017: call outcomes and consents are append-only, and a batch's frozen sequences,
+		// its campaign, and a row's condition, phone fact and sequence name are fixed.
+		"UPDATE call_outcome SET outcome = 'connected'",
+		"UPDATE call_outcome SET note = ''",
+		"UPDATE call_outcome SET email_consent = false, consent_address = NULL",
+		"UPDATE email_consent SET address = 'x@example.invalid'",
+		"UPDATE email_consent SET wording = 'rewritten'",
+		"UPDATE outreach_batch SET sequence = NULL",
+		"UPDATE outreach_batch SET campaign_id = 1",
+		"UPDATE outreach_message SET condition = 'always'",
+		"UPDATE outreach_message SET phone_fact_id = NULL",
+		"UPDATE outreach_message SET sequence_name = NULL",
 		// The reference rows change only by migration.
 		"UPDATE lead_kind SET outreach = true",
 		"UPDATE lead_channel SET label = ''",

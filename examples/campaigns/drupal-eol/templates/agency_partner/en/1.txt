@@ -1,0 +1,11 @@
+Subject: Re: Drupal upgrade help for {{.OrgName}}
+
+Hello again,
+
+A short follow-up in case my note got buried. If an upgrade is waiting that your team has no room for, I can take it under your name, at a price agreed before we start.
+
+The free one-page upgrade-risk report on one client site still stands, and it is yours to keep.
+
+Is that worth a reply?
+
+{{.Footer}}

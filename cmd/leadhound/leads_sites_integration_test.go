@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -22,12 +23,18 @@ var sitesFixtureDomains = []string{
 }
 
 // leadsDB empties the test database (leads tables included), points the commands at it and
-// at a copy of examples/ as the data dir, with live fetching off.
+// at a copy of examples/ as the data dir, with live fetching off. The copy leaves out the
+// example campaigns/ folder, as a data dir from before campaign files has none: the legacy
+// campaign leads.yaml gives is the only one, and a batch needs no registered version.
+// campaignsDataDir is the data dir with the campaign files.
 func leadsDB(t *testing.T) string {
 	t.Helper()
 	leadstoretest.Reset(t)
 	dir := t.TempDir()
 	if err := os.CopyFS(dir, os.DirFS("../../examples")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, campaign.Dir)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEADHOUND_DATABASE_URL", storetest.AppDSN())

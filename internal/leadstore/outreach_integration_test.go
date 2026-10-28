@@ -566,6 +566,7 @@ func TestSuppressGrid(t *testing.T) {
 			want := leadstore.Suppressions{
 				Addresses: []string{"info@bounced.localhost", "info@contacted.localhost", "info@new.localhost"},
 				Domains:   []string{"batched.localhost", "replied.localhost", "skipped.localhost"},
+				Phones:    []string{},
 			}
 			if !reflect.DeepEqual(set, want) {
 				t.Errorf("suppression set = %+v, want %+v", set, want)

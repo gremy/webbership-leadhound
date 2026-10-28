@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 )
 
 // The states an outreach message can be in (outreach_message_state_check).
@@ -70,7 +72,27 @@ var (
 	// ErrBatchApproved is returned by DiscardBatch for an approved batch: what was approved
 	// stays, and send decides each message.
 	ErrBatchApproved = errors.New("leadstore: batch is approved")
+	// ErrBadDraft is returned by CreateBatch for a draft whose sequence fields do not fit: a
+	// call row without its phone fact or with an address, a phone fact on a non-call row, an
+	// unknown condition, two sequence names for one lead, or a sequence name the batch's
+	// sequences do not hold.
+	ErrBadDraft = errors.New("leadstore: draft does not fit its sequence")
 )
+
+// ChannelPhone is a call step's channel (outreach_message_channel_check): never sent by
+// leads send; the operator records its outcome (RecordCallOutcome).
+const ChannelPhone = "phone"
+
+// The step conditions a row can carry (outreach_message_condition_check); empty means
+// ConditionAlways.
+const (
+	ConditionAlways           = campaign.WhenAlways
+	ConditionHasCallablePhone = campaign.WhenHasCallablePhone
+	ConditionCallNotConnected = campaign.WhenCallNotConnected
+	ConditionEmailConsent     = campaign.WhenEmailConsent
+)
+
+var conditions = []string{ConditionAlways, ConditionHasCallablePhone, ConditionCallNotConnected, ConditionEmailConsent}
 
 // DraftRow is one drafted message for CreateBatch. Its JSON form is what the batch's
 // content hash covers.
@@ -90,6 +112,15 @@ type DraftRow struct {
 	// left with none is refused (ErrBadMailbox).
 	MailboxID int64  `json:"mailbox_id,omitempty"`
 	FromName  string `json:"from_name,omitempty"`
+	// The sequence fields (00017), each omitted from the hash JSON when unset, so an
+	// all-email legacy batch hashes as it did. Condition "" and "always" are one value
+	// (canonicalDrafts folds "always" to ""). A call row (Channel phone) has no To, its
+	// subject "Call <org name>", its body the call card text, and PhoneFactID the org_fact
+	// phone it dials; every other row has no PhoneFactID. SequenceName names the batch
+	// sequence the lead follows ("" = default), the same on every row of one lead.
+	Condition    string `json:"condition,omitempty"`
+	PhoneFactID  int64  `json:"phone_fact_id,omitempty"`
+	SequenceName string `json:"sequence_name,omitempty"`
 }
 
 // canonicalDrafts returns drafts sorted by lead then step, with each Slots re-encoded with
@@ -102,6 +133,9 @@ func canonicalDrafts(drafts []DraftRow) ([]DraftRow, error) {
 	for i := range out {
 		if i > 0 && out[i].LeadID == out[i-1].LeadID && out[i].Step == out[i-1].Step {
 			return nil, fmt.Errorf("%w: lead %d step %d", ErrDuplicateDraft, out[i].LeadID, out[i].Step)
+		}
+		if out[i].Condition == ConditionAlways {
+			out[i].Condition = ""
 		}
 		raw := bytes.TrimSpace(out[i].Slots)
 		if len(raw) == 0 {
@@ -160,11 +194,46 @@ func MessageSHA256(to, subject, body, inReplyTo string) []byte {
 // hash does not depend on that order. templatesSHA is provenance only. The batch belongs to
 // its leads' account (every lead must be of one account). Run it in a transaction.
 func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow, templatesSHA []byte) (batchID int64, contentSHA []byte, err error) {
+	return q.CreateBatchFor(ctx, BatchMeta{}, shadow, drafts, templatesSHA)
+}
+
+// BatchSequences is a batch's frozen sequences (outreach_batch.sequence): sequence name →
+// its steps, "default" for the default one.
+type BatchSequences map[string][]campaign.Step
+
+// For returns the sequence a row with sequence name name follows ("" = default); nil when
+// the batch holds none of that name.
+func (b BatchSequences) For(name string) []campaign.Step {
+	if name == "" {
+		name = campaign.SequenceDefault
+	}
+	return b[name]
+}
+
+// BatchMeta is what a batch stores beside its drafts (00017). The zero value is today's
+// legacy batch: the leads' own campaign, no stored sequence (the legacy 3-step rule).
+type BatchMeta struct {
+	// CampaignID is the campaign the batch drafts for; every lead must be in it. 0: the
+	// leads' campaign when they share one, else DefaultCampaignID.
+	CampaignID int64
+	// Sequences are the campaign's sequences frozen at batch time; nil stores NULL (legacy).
+	// Every row's SequenceName must name one of them; with nil, no row may name one.
+	Sequences BatchSequences
+}
+
+// CreateBatchFor is CreateBatch with the batch's campaign and frozen sequences. A call row
+// (Channel phone) must name a phone fact of its lead's org whose number no active phone
+// suppression of the account holds (else ErrNotDraftable: the batch writer leaves such a
+// lead's call steps out). The content hash covers the call rows like any other.
+func (q Queries) CreateBatchFor(ctx context.Context, meta BatchMeta, shadow bool, drafts []DraftRow, templatesSHA []byte) (batchID int64, contentSHA []byte, err error) {
 	if len(drafts) == 0 {
 		return 0, nil, ErrEmptyBatch
 	}
 	c, err := canonicalDrafts(drafts)
 	if err != nil {
+		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
+	}
+	if err := checkSequenceFields(c, meta.Sequences); err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
 	}
 	if err := inheritMailbox(c); err != nil {
@@ -216,18 +285,44 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 	if len(accounts) != 1 {
 		return 0, nil, fmt.Errorf("leadstore: create batch: leads of %d accounts: %w", len(accounts), ErrNotDraftable)
 	}
+	campaignID, err := q.batchCampaign(ctx, meta.CampaignID, leadIDs)
+	if err != nil {
+		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
+	}
+	if err := q.checkCallRows(ctx, accounts[0], c); err != nil {
+		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
+	}
+	var seqJSON []byte // nil stores NULL
+	if meta.Sequences != nil {
+		if seqJSON, err = json.Marshal(meta.Sequences); err != nil {
+			return 0, nil, fmt.Errorf("leadstore: create batch: sequences: %w", err)
+		}
+	}
 	if err := q.db.QueryRow(ctx,
-		`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256, account_id) VALUES ($1, $2, $3, $4) RETURNING id`,
-		shadow, contentSHA, templatesSHA, accounts[0]).Scan(&batchID); err != nil {
+		`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256, account_id, campaign_id, sequence)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
+		shadow, contentSHA, templatesSHA, accounts[0], campaignID, seqJSON).Scan(&batchID); err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
 	}
 	for _, d := range draftOrder(drafts, c) {
+		cond := d.Condition
+		if cond == "" {
+			cond = ConditionAlways
+		}
+		var factID *int64
+		if d.PhoneFactID != 0 {
+			factID = &d.PhoneFactID
+		}
+		var seqName *string
+		if d.SequenceName != "" {
+			seqName = &d.SequenceName
+		}
 		if _, err := q.db.Exec(ctx,
 			`INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, subject, body_text,
-			   message_id, in_reply_to, slots, mailbox_id, from_name)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			   message_id, in_reply_to, slots, mailbox_id, from_name, condition, phone_fact_id, sequence_name)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 			batchID, d.LeadID, d.Step, d.Channel, d.To, d.Subject, d.Body, d.MessageID, d.InReplyTo, string(d.Slots),
-			d.MailboxID, d.FromName); err != nil {
+			d.MailboxID, d.FromName, cond, factID, seqName); err != nil {
 			return 0, nil, fmt.Errorf("leadstore: create batch: lead %d step %d: %w", d.LeadID, d.Step, err)
 		}
 	}
@@ -240,6 +335,74 @@ func (q Queries) CreateBatch(ctx context.Context, shadow bool, drafts []DraftRow
 		}
 	}
 	return batchID, contentSHA, nil
+}
+
+// checkSequenceFields checks the sequence fields of c (canonical: by lead, then step) against
+// the batch's sequences seqs (nil: a legacy batch).
+func checkSequenceFields(c []DraftRow, seqs BatchSequences) error {
+	for i, d := range c {
+		switch {
+		case d.Condition != "" && !slices.Contains(conditions, d.Condition):
+			return fmt.Errorf("%w: lead %d step %d: unknown condition %q", ErrBadDraft, d.LeadID, d.Step, d.Condition)
+		case d.Channel == ChannelPhone && d.PhoneFactID == 0:
+			return fmt.Errorf("%w: lead %d step %d: a call row names no phone fact", ErrBadDraft, d.LeadID, d.Step)
+		case d.Channel == ChannelPhone && d.To != "":
+			return fmt.Errorf("%w: lead %d step %d: a call row has no address", ErrBadDraft, d.LeadID, d.Step)
+		case d.Channel != ChannelPhone && d.PhoneFactID != 0:
+			return fmt.Errorf("%w: lead %d step %d: only a call row names a phone fact", ErrBadDraft, d.LeadID, d.Step)
+		case i > 0 && c[i-1].LeadID == d.LeadID && c[i-1].SequenceName != d.SequenceName:
+			return fmt.Errorf("%w: lead %d: two sequence names in one batch", ErrBadDraft, d.LeadID)
+		case seqs == nil && d.SequenceName != "":
+			return fmt.Errorf("%w: lead %d: sequence %q in a batch with no sequences", ErrBadDraft, d.LeadID, d.SequenceName)
+		case seqs != nil && seqs.For(d.SequenceName) == nil:
+			return fmt.Errorf("%w: lead %d: the batch holds no sequence %q", ErrBadDraft, d.LeadID, d.SequenceName)
+		}
+	}
+	return nil
+}
+
+// batchCampaign returns the campaign a batch of leadIDs drafts for: want (every lead must be
+// in it) or, when want is 0, the leads' campaign when they share one, else DefaultCampaignID.
+func (q Queries) batchCampaign(ctx context.Context, want int64, leadIDs []int64) (int64, error) {
+	camps, err := collect(ctx, q.db, pgx.RowTo[int64],
+		`SELECT DISTINCT campaign_id FROM lead WHERE id = ANY($1::bigint[]) ORDER BY 1`, leadIDs)
+	if err != nil {
+		return 0, fmt.Errorf("campaign: %w", err)
+	}
+	if want == 0 {
+		if len(camps) == 1 {
+			return camps[0], nil
+		}
+		return DefaultCampaignID, nil
+	}
+	if len(camps) != 1 || camps[0] != want {
+		return 0, fmt.Errorf("leads not all in campaign %d: %w", want, ErrNotDraftable)
+	}
+	return want, nil
+}
+
+// checkCallRows refuses a call row whose phone fact is not a phone of its lead's org, or whose
+// number an active phone suppression of account accountID holds.
+func (q Queries) checkCallRows(ctx context.Context, accountID int64, c []DraftRow) error {
+	for _, d := range c {
+		if d.Channel != ChannelPhone {
+			continue
+		}
+		var ok, suppressed bool
+		err := q.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM org_fact f JOIN lead l ON l.org_id = f.org_id
+			     WHERE f.id = $1 AND l.id = $2 AND f.kind = 'phone'),
+			   `+phoneSuppressedSQL("$3::bigint", "$1::bigint"), d.PhoneFactID, d.LeadID, accountID).Scan(&ok, &suppressed)
+		switch {
+		case err != nil:
+			return fmt.Errorf("lead %d step %d: phone fact: %w", d.LeadID, d.Step, err)
+		case !ok:
+			return fmt.Errorf("%w: lead %d step %d: fact %d is not a phone of its org", ErrBadDraft, d.LeadID, d.Step, d.PhoneFactID)
+		case suppressed:
+			return fmt.Errorf("lead %d step %d (phone suppressed): %w", d.LeadID, d.Step, ErrNotDraftable)
+		}
+	}
+	return nil
 }
 
 // draftOrder returns c (canonical: by lead, then step) with its leads in the order they
@@ -332,16 +495,20 @@ type Message struct {
 	SMTPReply      string          `db:"smtp_reply"`
 	CancelReason   string          `db:"cancel_reason"`
 	CreatedAt      time.Time       `db:"created_at"`
-	MailboxID      int64           `db:"mailbox_id"`   // rows from before mailboxes name the retired placeholder (00008)
-	FromName       string          `db:"from_name"`    // frozen at batch creation
-	FromAddress    string          `db:"from_address"` // the mailbox's address, for reading
+	MailboxID      int64           `db:"mailbox_id"`    // rows from before mailboxes name the retired placeholder (00008)
+	FromName       string          `db:"from_name"`     // frozen at batch creation
+	FromAddress    string          `db:"from_address"`  // the mailbox's address, for reading
+	Condition      string          `db:"condition"`     // always | has_callable_phone | call_not_connected | email_consent
+	PhoneFactID    *int64          `db:"phone_fact_id"` // the number a call row dials; nil on other rows (or after erasure)
+	SequenceName   string          `db:"sequence_name"` // "" on rows from before 00017
 }
 
 // messageCols: from_address is the mailbox's address, which is fixed for the app.
 const messageCols = `m.id, m.batch_id, m.lead_id, m.step, m.channel, m.to_address, m.subject, m.body_text,
   m.message_id, m.in_reply_to, m.slots, m.approved_sha256, m.state, m.due_at, m.sent_at, m.smtp_reply,
   m.cancel_reason, m.created_at, m.mailbox_id, m.from_name,
-  (SELECT fa.address FROM sender_mailbox fa WHERE fa.id = m.mailbox_id) AS from_address`
+  (SELECT fa.address FROM sender_mailbox fa WHERE fa.id = m.mailbox_id) AS from_address,
+  m.condition, m.phone_fact_id, coalesce(m.sequence_name, '') AS sequence_name`
 
 // Batch is one outreach_batch row.
 type Batch struct {
@@ -353,12 +520,33 @@ type Batch struct {
 	ApprovedHash    []byte     `db:"approved_hash"`
 	TemplatesSHA256 []byte     `db:"templates_sha256"`
 	DiscardedAt     *time.Time `db:"discarded_at"`
+	CampaignID      int64      `db:"campaign_id"`
+	// Sequence is the frozen sequences JSON (BatchSequences); nil for a legacy batch.
+	Sequence json.RawMessage `db:"sequence"`
+}
+
+// Sequences decodes b.Sequence; nil for a legacy batch (NULL).
+func (b Batch) Sequences() (BatchSequences, error) {
+	return decodeSequences(b.Sequence)
+}
+
+func decodeSequences(raw []byte) (BatchSequences, error) {
+	t := bytes.TrimSpace(raw)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil, nil
+	}
+	var s BatchSequences
+	if err := json.Unmarshal(t, &s); err != nil {
+		return nil, fmt.Errorf("leadstore: batch sequences: %w", err)
+	}
+	return s, nil
 }
 
 // BatchByID returns batch id, or ErrBatchNotFound.
 func (q Queries) BatchByID(ctx context.Context, id int64) (Batch, error) {
 	b, err := collect(ctx, q.db, pgx.RowToStructByName[Batch],
-		`SELECT id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256, discarded_at
+		`SELECT id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256, discarded_at,
+		   campaign_id, sequence
 		 FROM outreach_batch WHERE id = $1`, id)
 	if err != nil {
 		return Batch{}, fmt.Errorf("leadstore: batch by id: %w", err)
@@ -400,11 +588,18 @@ func (q Queries) BatchContentSHA256(ctx context.Context, batchID int64) ([]byte,
 func DraftsOf(ms []Message) []DraftRow {
 	out := make([]DraftRow, 0, len(ms))
 	for _, m := range ms {
-		out = append(out, DraftRow{
+		d := DraftRow{
 			LeadID: m.LeadID, Step: m.Step, Channel: m.Channel, To: m.ToAddress, Subject: m.Subject,
 			Body: m.BodyText, MessageID: m.MessageID, InReplyTo: m.InReplyTo, Slots: m.Slots,
-			MailboxID: m.MailboxID, FromName: m.FromName,
-		})
+			MailboxID: m.MailboxID, FromName: m.FromName, SequenceName: m.SequenceName,
+		}
+		if m.Condition != ConditionAlways {
+			d.Condition = m.Condition
+		}
+		if m.PhoneFactID != nil {
+			d.PhoneFactID = *m.PhoneFactID
+		}
+		out = append(out, d)
 	}
 	return out
 }
@@ -520,6 +715,14 @@ func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, 
 			if m.State != MsgDraft {
 				continue
 			}
+			reason := reason
+			if reason == "" && m.Channel == ChannelPhone {
+				// A number suppressed since batch new: this call is skipped, the rest of the
+				// lead's steps go on.
+				if reason, err = q.callSuppressed(ctx, leadID, m.PhoneFactID); err != nil {
+					return Approval{}, fmt.Errorf("leadstore: approve batch: %w", err)
+				}
+			}
 			if reason != "" {
 				if _, err := q.db.Exec(ctx,
 					`UPDATE outreach_message SET state = 'skipped', cancel_reason = $2 WHERE id = $1 AND state = 'draft'`,
@@ -551,6 +754,25 @@ func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, 
 	return res, nil
 }
 
+// callSuppressed returns SkipSuppressed when an active phone suppression of lead leadID's
+// account holds the number of fact factID, else "". A call whose fact is gone (erased) is
+// skipped too: there is no number to dial.
+func (q Queries) callSuppressed(ctx context.Context, leadID int64, factID *int64) (string, error) {
+	if factID == nil {
+		return SkipSuppressed, nil
+	}
+	var suppressed bool
+	if err := q.db.QueryRow(ctx,
+		`SELECT `+phoneSuppressedSQL("c.account_id", "$2::bigint")+`
+		 FROM lead l JOIN campaign c ON c.id = l.campaign_id WHERE l.id = $1`, leadID, *factID).Scan(&suppressed); err != nil {
+		return "", err
+	}
+	if suppressed {
+		return SkipSuppressed, nil
+	}
+	return "", nil
+}
+
 // DueMessage is an approved message whose time has come, with what send checks first.
 type DueMessage struct {
 	Message
@@ -560,7 +782,8 @@ type DueMessage struct {
 }
 
 // DueMessages returns the approved messages of approved batches of the given kind (shadow
-// or live) due at or before now, by due time then id. Whatever the lead's state; send
+// or live) due at or before now, by due time then id, call rows left out (CallsDue lists
+// those). Whatever the lead's state; send
 // refuses those whose lead has moved on (a maybe_sent message is never approved again, so
 // it never comes back).
 func (q Queries) DueMessages(ctx context.Context, now time.Time, shadow bool) ([]DueMessage, error) {
@@ -570,7 +793,7 @@ func (q Queries) DueMessages(ctx context.Context, now time.Time, shadow bool) ([
 		 JOIN outreach_batch b ON b.id = m.batch_id
 		 JOIN lead l ON l.id = m.lead_id
 		 JOIN org o ON o.id = l.org_id
-		 WHERE m.state = 'approved' AND b.approved_at IS NOT NULL AND b.shadow = $2
+		 WHERE m.state = 'approved' AND b.approved_at IS NOT NULL AND b.shadow = $2 AND m.channel <> 'phone'
 		   AND m.due_at IS NOT NULL AND m.due_at <= $1
 		 ORDER BY m.due_at, m.id`, now, shadow)
 	if err != nil {
@@ -580,9 +803,11 @@ func (q Queries) DueMessages(ctx context.Context, now time.Time, shadow bool) ([
 }
 
 // MarkSending claims message id for one sender (RA3): approved → sending. It reports
-// whether this call changed it; SMTP proceeds only when it did.
+// whether this call changed it; SMTP proceeds only when it did. A call row (channel phone)
+// is never claimed: the operator makes the call and records its outcome.
 func (q Queries) MarkSending(ctx context.Context, id int64) (bool, error) {
-	tag, err := q.db.Exec(ctx, `UPDATE outreach_message SET state = 'sending' WHERE id = $1 AND state = 'approved'`, id)
+	tag, err := q.db.Exec(ctx, `UPDATE outreach_message SET state = 'sending'
+		WHERE id = $1 AND state = 'approved' AND channel <> 'phone'`, id)
 	if err != nil {
 		return false, fmt.Errorf("leadstore: mark sending: %w", err)
 	}
@@ -617,7 +842,7 @@ func (q Queries) MarkShadowSent(ctx context.Context, id int64, at time.Time) err
 	tag, err := q.db.Exec(ctx,
 		`UPDATE outreach_message m SET state = 'shadow_sent', sent_at = $2
 		 FROM outreach_batch b
-		 WHERE m.id = $1 AND m.state IN ('approved', 'sending') AND b.id = m.batch_id AND b.shadow`, id, at)
+		 WHERE m.id = $1 AND m.state IN ('approved', 'sending') AND m.channel <> 'phone' AND b.id = m.batch_id AND b.shadow`, id, at)
 	return markResult("mark shadow sent", id, tag.RowsAffected(), err)
 }
 
@@ -656,8 +881,9 @@ type CancelTarget struct {
 	Domain string
 }
 
-// CancelPending cancels the pending (draft or approved) messages of t with reason, and
-// returns how many it cancelled. A message already sending or past it is left alone.
+// CancelPending cancels the pending (draft or approved) messages of t with reason, every
+// channel (call rows included) and every batch, and returns how many it cancelled. A message
+// already sending or past it is left alone.
 func (q Queries) CancelPending(ctx context.Context, t CancelTarget, reason string) (int64, error) {
 	dom := strings.ToLower(strings.TrimSpace(t.Domain))
 	if (t.LeadID == 0) == (dom == "") {
