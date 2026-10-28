@@ -1793,7 +1793,7 @@ func TestRemoteKeyOnlyForWorkers(t *testing.T) {
 }
 
 // makeDry runs make -n in the repository root with args and returns its output and error;
-// MAKEFLAGS and CONFIRM from the caller's environment never leak in.
+// MAKEFLAGS, HOST and CONFIRM from the caller's environment (a make deploy HOST=… exports HOST) never leak in.
 func makeDry(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	mk, err := exec.LookPath("make")
@@ -1801,7 +1801,7 @@ func makeDry(t *testing.T, args ...string) (string, error) {
 		t.Skip("no make")
 	}
 	cmd := exec.Command(mk, append([]string{"-n", "-C", ".."}, args...)...) // #nosec G204 -- the test's own Makefile
-	cmd.Env = append(os.Environ(), "MAKEFLAGS=", "CONFIRM=", "REMOTE_CLAUDE=", "ORG=", "REASON=")
+	cmd.Env = append(os.Environ(), "MAKEFLAGS=", "HOST=", "CONFIRM=", "REMOTE_CLAUDE=", "ORG=", "REASON=")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
