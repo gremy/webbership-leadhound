@@ -111,6 +111,9 @@ func runLeadsContacts(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	if off, err := switchedOff(ctx, s, leadstore.JobContacts, commandLeadsContacts, sourceContacts); off || err != nil {
+		return err
+	}
 	lq := leadstore.NewQueries(s.Pool())
 
 	newOrgs, err := orgsFromProbes(ctx, lq, ff.dryRun)

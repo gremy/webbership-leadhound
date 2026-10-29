@@ -464,10 +464,17 @@ func requestCheck(ctx context.Context, lq leadstore.Queries, dataDir string, now
 	return cid, nil
 }
 
-// CheckDone is one check runChecks ran.
+// CheckDone is one check runChecks ran. Note is informational (mailbox.LandingNote when
+// the domain's website did not answer), never part of the outcome or the stored fix.
 type CheckDone struct {
 	MailboxID, CheckID int64
-	Outcome, Fix       string
+	Outcome, Fix, Note string
+}
+
+// landingURL is where a mailbox domain's website lands (mailbox.LandingURL over the default
+// transport); tests swap it, so no test reaches the network.
+var landingURL = func(ctx context.Context, domain string) (string, error) {
+	return mailbox.LandingURL(ctx, nil, domain)
 }
 
 // runChecks runs every requested check, and again until none is left, so a request made
@@ -508,7 +515,11 @@ func runChecks(ctx context.Context, lq leadstore.Queries, key secretbox.PrivateK
 				}
 				return done, err
 			}
-			done = append(done, CheckDone{MailboxID: c.MailboxID, CheckID: c.ID, Outcome: r.Outcome, Fix: r.Fix})
+			d := CheckDone{MailboxID: c.MailboxID, CheckID: c.ID, Outcome: r.Outcome, Fix: r.Fix}
+			if r.LandingURL == nil && r.Outcome != leadstore.CheckDidNotRun {
+				d.Note = mailbox.LandingNote
+			}
+			done = append(done, d)
 		}
 	}
 }
@@ -550,6 +561,11 @@ func checkMailbox(ctx context.Context, lq leadstore.Queries, key secretbox.Priva
 	r.Outcome = leadstore.CheckPassed
 	if r.Fix != "" {
 		r.Outcome = leadstore.CheckFailed
+	}
+	// Where the domain's website lands, for the campaign page. The outcome is decided
+	// above and never depends on it; a site that does not answer stores NULL.
+	if u, err := landingURL(ctx, st.Host()); err == nil {
+		r.LandingURL = &u
 	}
 	return r, nil
 }
@@ -617,6 +633,9 @@ func checksCommand(ctx context.Context, getenv func(string) string, id int64) er
 			_, _ = fmt.Fprintf(stdout, "Mailbox %d: check failed: %s\n", d.MailboxID, d.Fix)
 		default:
 			_, _ = fmt.Fprintf(stdout, "Mailbox %d: check did not run: %s\n", d.MailboxID, d.Fix)
+		}
+		if d.Note != "" {
+			_, _ = fmt.Fprintf(stdout, "Mailbox %d: %s\n", d.MailboxID, d.Note)
 		}
 	}
 	if err != nil {

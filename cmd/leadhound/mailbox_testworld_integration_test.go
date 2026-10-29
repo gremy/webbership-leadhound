@@ -68,6 +68,7 @@ type mailboxSeed struct {
 	selector, fromName string
 	fromNameSet        bool
 	dnsPass            bool
+	unassigned         bool
 }
 
 type mailboxOpt func(*mailboxSeed)
@@ -75,6 +76,10 @@ type mailboxOpt func(*mailboxSeed)
 // withDNSPass records today's full DNS pass for the mailbox's host and selector, stamped
 // with leadsNow() so a test that fixes the clock sees it as today.
 func withDNSPass() mailboxOpt { return func(s *mailboxSeed) { s.dnsPass = true } }
+
+// unassigned leaves the mailbox assigned to no campaign (by default seedMailbox assigns it
+// to the default campaign, so a live batch and send of it may use it).
+func unassigned() mailboxOpt { return func(s *mailboxSeed) { s.unassigned = true } }
 
 // withSelector sets the mailbox's DKIM selector (default sel1, as examples/leads.yaml).
 func withSelector(sel string) mailboxOpt { return func(s *mailboxSeed) { s.selector = sel } }
@@ -87,7 +92,8 @@ func withFromName(n string) mailboxOpt {
 // seedMailbox adds a sending mailbox for address (a reserved name) with its first check
 // passed, logging in as address with testPassword sealed by the test key (currentTestKey).
 // Its servers are leadstoretest.SeedMailbox's, on .invalid; the fakes are keyed by login,
-// so no server name is ever dialled. It records a DNS pass only with withDNSPass().
+// so no server name is ever dialled. It records a DNS pass only with withDNSPass(), and
+// assigns the mailbox to the default campaign unless unassigned().
 func seedMailbox(t *testing.T, lq leadstore.Queries, address string, opts ...mailboxOpt) leadstore.Mailbox {
 	t.Helper()
 	s := mailboxSeed{selector: "sel1"}
@@ -113,6 +119,11 @@ func seedMailbox(t *testing.T, lq leadstore.Queries, address string, opts ...mai
 	}
 	if m, err = lq.MailboxByID(ctx, m.ID); err != nil {
 		t.Fatal(err)
+	}
+	if !s.unassigned {
+		if _, err := lq.SetCampaignMailbox(ctx, leadstore.DefaultCampaignID, m.ID, true, leadstore.ActorGremy); err != nil {
+			t.Fatalf("seed mailbox %s: assign: %v", address, err)
+		}
 	}
 	if s.dnsPass {
 		if err := lq.RecordSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Host()), m.DKIMSelector,

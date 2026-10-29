@@ -407,7 +407,7 @@ func TestLoadOperatorPaused(t *testing.T) {
 		t.Fatalf("cold start paused at %v", s.OperatorPaused)
 	}
 	lq := leadstoretest.Q(t)
-	if err := lq.SetSendPause(ctx, true, "Ilinca"+" asked to wait"); err != nil {
+	if err := lq.SetSendPause(ctx, true, "Ilinca"+" asked to wait", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	s := load()
@@ -417,7 +417,7 @@ func TestLoadOperatorPaused(t *testing.T) {
 	if strings.Contains(show(s), "Ilinca") {
 		t.Error("the pause reason reached the section")
 	}
-	if err := lq.SetSendPause(ctx, false, ""); err != nil {
+	if err := lq.SetSendPause(ctx, false, "", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	if s := load(); s.OperatorPaused != nil {

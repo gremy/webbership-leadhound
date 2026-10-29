@@ -84,6 +84,9 @@ func runLeadsEnrich(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	if off, err := switchedOff(ctx, s, leadstore.JobContacts, commandLeadsEnrich, sourceEnrich); off || err != nil {
+		return err
+	}
 	lq := leadstore.NewQueries(s.Pool())
 
 	orgs, err := orgsToEnrich(ctx, lq, ff.dryRun, *maxOrgs)

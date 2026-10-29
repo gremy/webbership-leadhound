@@ -21,6 +21,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
+	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
 func init() { leadsCommands["sync"] = runLeadsSync }
@@ -386,11 +387,20 @@ func classifyFetched(f mailbox.Fetched, match matcher) (leadstore.Incoming, stri
 	return in, domain
 }
 
+// The run row of `leads sync`, so the inbox sync has a last run (the console's Controls).
+const (
+	commandLeadsSync = "leads-sync"
+	sourceSync       = "mailboxes"
+)
+
 // runLeadsSync is `leads sync`: it reads every sending mailbox that is not retired, each with
 // its own sealed password, applies what came in and prints one line per mailbox, its findings
 // under it. A sync already running makes it exit 0 with that said; with no mailbox it syncs
 // nothing and says so (no key needed). A missing key, or a mailbox that could not be read
-// to the end, fails the command once every other mailbox is synced.
+// to the end, fails the command once every other mailbox is synced. With the inbox sync
+// switched off in the console it reads nothing and exits 0. Every run is recorded, its note
+// the outcome. Only this command honours the sync switch: leads send's own sync (syncAll)
+// never does, so a send never ignores a reply.
 func runLeadsSync(ctx context.Context, args []string) error {
 	if len(args) != 0 {
 		return usageError("usage: leadhound leads sync")
@@ -400,31 +410,53 @@ func runLeadsSync(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	boxes, err := leadstore.NewQueries(s.Pool()).Mailboxes(ctx, leadstore.DefaultAccountID, leadsNow())
+	if off, err := switchedOff(ctx, s, leadstore.JobSync, commandLeadsSync, sourceSync); off || err != nil {
+		return err
+	}
+	q := s.Q()
+	runID, err := q.StartRun(ctx, commandLeadsSync, sourceSync)
 	if err != nil {
 		return err
 	}
+	note, runErr := leadsSyncRun(ctx, s.Pool(), setup)
+	if runErr != nil {
+		note = cmpOr(note, "failed") + ": " + runErr.Error()
+	}
+	if err := q.FinishRun(context.WithoutCancel(ctx), runID, store.RunResult{Note: note}); err != nil {
+		return errors.Join(runErr, err)
+	}
+	return runErr
+}
+
+// leadsSyncRun is the body of leads sync after its run row: it prints what it did and
+// returns the run's note.
+func leadsSyncRun(ctx context.Context, pool *pgxpool.Pool, setup leadsSetup) (string, error) {
+	boxes, err := leadstore.NewQueries(pool).Mailboxes(ctx, leadstore.DefaultAccountID, leadsNow())
+	if err != nil {
+		return "", err
+	}
 	if !slices.ContainsFunc(boxes, func(mb leadstore.MailboxStatus) bool { return mb.State != leadstore.MailboxRetired }) {
 		_, _ = fmt.Fprintln(stdout, "No mailbox to sync: add one in the console (Mailboxes) or with leads mailboxes add.")
-		return nil
+		return "no mailbox to sync", nil
 	}
 	key, err := secretbox.LoadPrivateKey(os.Getenv)
 	if err != nil {
 		_, _ = fmt.Fprintf(stdout, "No sync: the mailbox key is missing (%v); nothing was read.\n", err)
-		return errors.New("leads sync: the mailbox key is missing")
+		return "not synced", errors.New("leads sync: the mailbox key is missing")
 	}
-	res, err := syncAll(ctx, s.Pool(), key, setup.leads, 0)
+	res, err := syncAll(ctx, pool, key, setup.leads, 0)
 	switch {
 	case errors.Is(err, errSyncRunning):
 		_, _ = fmt.Fprintln(stdout, "A sync is running; this one did nothing.")
-		return nil
+		return "a sync was running", nil
 	case err != nil:
-		return err
+		return "", err
 	}
 	ids := slices.Sorted(maps.Keys(res))
-	failed := 0
+	failed, messages := 0, 0
 	for _, id := range ids {
 		ms := res[id]
+		messages += ms.Summary.Messages
 		switch {
 		case !ms.OK:
 			failed++
@@ -440,8 +472,9 @@ func runLeadsSync(ctx context.Context, args []string) error {
 			}
 		}
 	}
+	note := fmt.Sprintf("%s synced, %s", plural(len(ids)-failed, "mailbox", "mailboxes"), plural(messages, "new message", "new messages"))
 	if failed > 0 {
-		return fmt.Errorf("leads sync: %s not synced", plural(failed, "mailbox", "mailboxes"))
+		return note, fmt.Errorf("leads sync: %s not synced", plural(failed, "mailbox", "mailboxes"))
 	}
-	return nil
+	return note, nil
 }

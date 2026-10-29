@@ -32,15 +32,15 @@ func TestSendPause(t *testing.T) {
 		}
 	}
 	check("cold start", false, "")
-	if err := q.SetSendPause(ctx, true, "checking the copy"); err != nil {
+	if err := q.SetSendPause(ctx, true, "checking the copy", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	check("paused", true, "checking the copy")
-	if err := q.SetSendPause(ctx, false, ""); err != nil {
+	if err := q.SetSendPause(ctx, false, "", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	check("resumed", false, "")
-	if err := q.SetSendPause(ctx, true, "again"); err != nil {
+	if err := q.SetSendPause(ctx, true, "again", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	check("paused again", true, "again")
@@ -55,7 +55,7 @@ func TestSendPause(t *testing.T) {
 func TestSendPauseAppendOnly(t *testing.T) {
 	leadstoretest.Reset(t)
 	ctx := context.Background()
-	if err := leadstoretest.Q(t).SetSendPause(ctx, true, "x"); err != nil {
+	if err := leadstoretest.Q(t).SetSendPause(ctx, true, "x", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	app := storetest.AppConn(t)

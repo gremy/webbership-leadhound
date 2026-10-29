@@ -411,7 +411,14 @@ func TestWriterModelTextIsNeverATemplate(t *testing.T) {
 func TestWriterLogsNoDraftText(t *testing.T) {
 	var buf bytes.Buffer
 	s := &scripted{replies: []scriptReply{{json: writerFixture(t, "g3_invented_year")}, {json: writerFixture(t, "clean_d7")}}}
-	w := &Writer{Caller: s, Log: slog.New(slog.NewJSONHandler(&buf, nil))}
+	// Drop the timestamp: its fractional seconds can contain "2019" by chance.
+	noTime := func(groups []string, a slog.Attr) slog.Attr {
+		if len(groups) == 0 && a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	}
+	w := &Writer{Caller: s, Log: slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{ReplaceAttr: noTime}))}
 	in := writerInput(t, "d7")
 	if _, err := w.WriteLead(context.Background(), in); err != nil {
 		t.Fatal(err)

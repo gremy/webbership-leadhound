@@ -64,7 +64,7 @@ func TestSendPauseMidRun(t *testing.T) {
 	q := w.lq
 	w.smtp.onSend = func(n int, _ string) {
 		if n == 0 {
-			if err := q.SetSendPause(context.Background(), true, ""); err != nil {
+			if err := q.SetSendPause(context.Background(), true, "", leadstore.ActorGremy); err != nil {
 				t.Error(err)
 			}
 		}

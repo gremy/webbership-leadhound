@@ -40,13 +40,13 @@ endif
 # REMOTE_VERB3 is the first three, for the leads commands whose third word is the verb.
 empty               :=
 space               := $(empty) $(empty)
-REMOTE_READONLY     := track_list rules_list boards_list leads_suppress_list leads_suppress_check leads_batch_show leads_mailboxes_list
+REMOTE_READONLY     := track_list rules_list boards_list leads_suppress_list leads_suppress_check leads_batch_show leads_mailboxes_list leads_switches_list
 REMOTE_VERB         := $(subst $(space),_,$(strip $(wordlist 1,2,$(ARGS))))
 REMOTE_VERB3        := $(subst $(space),_,$(strip $(wordlist 1,3,$(ARGS))))
 ifneq ($(filter remote,$(MAKECMDGOALS)),)
 ifeq ($(filter $(REMOTE_VERB) $(REMOTE_VERB3),$(REMOTE_READONLY)),)
 ifneq ($(CONFIRM),1)
-$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list, leads suppress list|check, leads batch show, leads mailboxes list))
+$(error remote ARGS='$(ARGS)' writes or reaches the network: add CONFIRM=1 to run it (free: track list, rules list, boards list, leads suppress list|check, leads batch show, leads mailboxes list, leads switches list))
 endif
 endif
 endif

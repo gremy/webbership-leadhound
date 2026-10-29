@@ -3,7 +3,8 @@
 # Run on the server as root (make deploy runs it with sudo). Order: the env files' owner and
 # mode, the Postgres limits on the leadhound roles, the new binary beside the old one, migrate
 # with the new binary as the owner role, then the swap, the mailbox key, the Anthropic key's mode, the backup script, the units,
-# the timers, the leads timers as /etc/leadhound/env switches them, and the console. A failed migrate leaves the old
+# the timers, the one-time carry-over of LEADHOUND_LEADS_SEND to the console's sending switch,
+# the leads timers as /etc/leadhound/env switches them, and the console. A failed migrate leaves the old
 # binary and the old units in place. STAGE is removed once the units are in.
 set -eu
 
@@ -25,10 +26,11 @@ env_value() {
 # leads_timers FILE: the leads timers reach the public web and a mailbox, so each set runs only
 # when FILE switches it on (deploy/README.md, Leads on the server); otherwise it is disabled and
 # stopped, so a deploy never leaves one running that FILE does not ask for. The finding timers
-# need LEADHOUND_LEADS_TIMERS=on. The drafting, sending and reply timers also need
-# LEADHOUND_LEADS_SEND=on and live outreach, so the server never drafts a shadow batch. The
-# mailboxes live in the database (the console's Mailboxes page): a run with no ready mailbox
-# sends nothing and says so.
+# need LEADHOUND_LEADS_TIMERS=on. The drafting, sending and reply timers also need live
+# outreach, so the server never drafts a shadow batch. Whether anything is sent is the
+# console's sending switch, in the database: LEADHOUND_LEADS_SEND is no longer read here
+# (send_switch_convert carried it over once). The mailboxes live in the database too (the
+# console's Mailboxes page): a run with no ready mailbox sends nothing and says so.
 leads_timers() {
 	off=
 	[ "$(env_value "$1" LEADHOUND_LEADS_TIMERS)" = on ] || off="$off LEADHOUND_LEADS_TIMERS=on"
@@ -39,7 +41,6 @@ leads_timers() {
 		systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer
 		echo "install: leads finding timers off (probe, contacts): $1 has no$off"
 	fi
-	[ "$(env_value "$1" LEADHOUND_LEADS_SEND)" = on ] || off="$off LEADHOUND_LEADS_SEND=on"
 	[ "$(env_value "$1" LEADHOUND_OUTREACH)" = live ] || off="$off LEADHOUND_OUTREACH=live"
 	if [ -z "$off" ]; then
 		systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
@@ -48,6 +49,31 @@ leads_timers() {
 		systemctl disable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
 		echo "install: leads sending timers off (batch, send, sync): $1 has no$off"
 	fi
+}
+
+# send_switch_convert ENV MARKER: carries the retired LEADHOUND_LEADS_SEND switch in ENV over
+# to the console's sending switch, once. With no MARKER, the installed binary runs, as leadhound
+# with ENV, leads switches convert-send-env --was with ENV's value (empty when no line sets
+# it), which pauses sending unless that value is on; then MARKER is written (root:root 0640).
+# With MARKER there, nothing runs and ENV's line is never read again, so removing it is safe.
+# A failed conversion fails the deploy and writes no MARKER, so the next deploy tries again.
+# MARKER lives in /etc/leadhound (root:root 0700, the bootstrap in deploy/README.md), not in
+# the leadhound-owned data dir: the app user cannot delete it and a data-dir restore cannot
+# lose it, either of which would make a later deploy convert again and pause sending.
+send_switch_convert() {
+	if [ -e "$2" ]; then
+		echo "install: LEADHOUND_LEADS_SEND was carried over to the console's sending switch already ($2)"
+		return
+	fi
+	was=$(env_value "$1" LEADHOUND_LEADS_SEND)
+	systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound \
+		-p EnvironmentFile="$1" \
+		"$bin/leadhound" leads switches convert-send-env --was "$was" ||
+		fail "the old LEADHOUND_LEADS_SEND switch could not be carried over to the console's sending switch; the leads timers were not changed"
+	(umask 0137 && printf 'LEADHOUND_LEADS_SEND=%s\n' "$was" >"$2")
+	chown root:root "$2"
+	chmod 0640 "$2"
+	echo "install: LEADHOUND_LEADS_SEND=$was carried over to the console's sending switch; the line is no longer read"
 }
 
 # mailbox_key KEY ENV: the mailboxes' key pair. The private key KEY (root:root 0600) is
@@ -149,6 +175,8 @@ systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-pre
 # these, and each starts only its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
 # a request file left from before cannot fire on a deploy.
 systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path
+# Once, before any sending timer can be enabled: the old env switch becomes the console's.
+send_switch_convert /etc/leadhound/env /etc/leadhound/send-switch-converted
 leads_timers /etc/leadhound/env
 systemctl list-timers 'leadhound-*' --no-pager
 rm -rf -- "$stage"

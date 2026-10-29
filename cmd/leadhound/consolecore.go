@@ -1010,7 +1010,7 @@ type SendSwitch struct {
 
 // setSendPause sets the operator's pause switch to pause, with reason, unless it already
 // is (leadstore.SetSendPause appends one row); every send run obeys it before each message.
-func setSendPause(ctx context.Context, lq leadstore.Queries, pause bool, reason string) (SendSwitch, error) {
+func setSendPause(ctx context.Context, lq leadstore.Queries, pause bool, reason, actor string) (SendSwitch, error) {
 	paused, _, at, err := lq.SendPaused(ctx)
 	if err != nil {
 		return SendSwitch{}, err
@@ -1018,14 +1018,14 @@ func setSendPause(ctx context.Context, lq leadstore.Queries, pause bool, reason 
 	if paused == pause {
 		return SendSwitch{Since: at}, nil
 	}
-	if err := lq.SetSendPause(ctx, pause, strings.TrimSpace(reason)); err != nil {
+	if err := lq.SetSendPause(ctx, pause, strings.TrimSpace(reason), actor); err != nil {
 		return SendSwitch{}, err
 	}
 	return SendSwitch{Changed: true}, nil
 }
 
 func (b *backend) setSending(ctx context.Context, pause bool, reason string) (console.LeadOutcome, error) {
-	sw, err := setSendPause(ctx, b.lq(), pause, reason)
+	sw, err := setSendPause(ctx, b.lq(), pause, reason, leadstore.ActorGremy)
 	if err != nil {
 		return console.LeadOutcome{}, err
 	}

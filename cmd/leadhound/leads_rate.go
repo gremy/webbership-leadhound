@@ -84,6 +84,9 @@ func runLeadsRate(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	if off, err := switchedOff(ctx, s, leadstore.JobContacts, commandLeadsRate, cmp.Or(*deciderName, rateDeciderJev)); off || err != nil {
+		return err
+	}
 	c, err := activeCampaign(ctx, leadstore.NewQueries(s.Pool()), *slug)
 	if err != nil {
 		return err

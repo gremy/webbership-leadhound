@@ -134,6 +134,11 @@ BEGIN
   IF to_regclass('public.mailbox_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.mailbox_check FROM leadhound_app;
     GRANT UPDATE (checked_at, smtp_ok, imap_ok, folders_ok, spf, dkim, dmarc, fix, outcome) ON public.mailbox_check TO leadhound_app;
+    -- landing_url comes with leads 00024; a database not yet migrated that far skips it.
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'mailbox_check' AND column_name = 'landing_url') THEN
+      GRANT UPDATE (landing_url) ON public.mailbox_check TO leadhound_app;
+    END IF;
   END IF;
   -- The lead kinds and channels (leads 00010) are reference rows that change only by
   -- migration: the app reads them only.
@@ -222,6 +227,13 @@ BEGIN
   END IF;
   IF to_regclass('public.place') IS NOT NULL THEN
     REVOKE UPDATE ON public.place FROM leadhound_app;
+  END IF;
+  -- The job switches (00023) and the campaign mailbox assignments (00024) are append-only.
+  IF to_regclass('public.job_switch') IS NOT NULL THEN
+    REVOKE UPDATE ON public.job_switch FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.campaign_mailbox') IS NOT NULL THEN
+    REVOKE UPDATE ON public.campaign_mailbox FROM leadhound_app;
   END IF;
 END
 $$;

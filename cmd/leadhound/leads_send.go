@@ -68,6 +68,10 @@ const (
 // checked, its DNS or sync failed, its login refused, or no mailbox at all.
 const holdMailbox outreach.HoldReason = "mailbox"
 
+// holdUnassigned holds a due live message whose mailbox is not (or no longer) assigned to
+// its batch's campaign. It keeps its mailbox: a thread is never moved to another address.
+const holdUnassigned outreach.HoldReason = "unassigned"
+
 // cancelMailboxRetired is the cancel reason of a message whose mailbox is retired: a thread
 // must come from the same address.
 const cancelMailboxRetired = "mailbox retired"
@@ -126,7 +130,7 @@ func (r *sendReport) runNote(runErr error) string {
 		fmt.Sprintf("maybe_sent %d", len(r.maybe)), fmt.Sprintf("retry %d", r.retry),
 		fmt.Sprintf("cancelled %d", r.cancelled), fmt.Sprintf("skipped %d", r.skipped)}
 	var held []string
-	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, outreach.HoldNotDue, holdMailbox} {
+	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, outreach.HoldNotDue, holdMailbox, holdUnassigned} {
 		if n := r.held[h]; n > 0 {
 			held = append(held, fmt.Sprintf("%s %d", h, n))
 		}
@@ -173,11 +177,11 @@ func (r *sendReport) print(w io.Writer) {
 		p("%s cancelled (suppressed, or the lead moved on).\n", plural(int(r.cancelled), "pending message", "pending messages"))
 	}
 	var held []string
-	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, holdMailbox} {
+	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, holdMailbox, holdUnassigned} {
 		if n := r.held[h]; n > 0 {
 			held = append(held, fmt.Sprintf("%s %d", map[outreach.HoldReason]string{
 				outreach.HoldCap: "today's cap", outreach.HoldHours: "outside business hours", outreach.HoldDomain: "one per domain per run",
-				holdMailbox: "its mailbox cannot send now",
+				holdMailbox: "its mailbox cannot send now", holdUnassigned: "mailbox not assigned to the campaign",
 			}[h], n))
 		}
 	}
@@ -259,7 +263,7 @@ func runLeadsSendPause(ctx context.Context, pause bool, args []string) error {
 		why = *reason
 	}
 	// The console's switch runs the same core (consolecore.go).
-	sw, err := setSendPause(ctx, leadstore.NewQueries(s.Pool()), pause, why)
+	sw, err := setSendPause(ctx, leadstore.NewQueries(s.Pool()), pause, why, leadstore.ActorGremy)
 	if err != nil {
 		return err
 	}
@@ -324,6 +328,30 @@ type sendRun struct {
 	accountErr error
 
 	lastSync time.Time
+	// assigned caches, per campaign id, its assigned mailboxes for the planning loop (the
+	// claim transaction reads the assignment again).
+	assigned map[int64]map[int64]bool
+}
+
+// assignedTo reports whether mailbox mailboxID is assigned to campaign campaignID, as read
+// once per campaign per run.
+func (r *sendRun) assignedTo(ctx context.Context, campaignID, mailboxID int64) (bool, error) {
+	set, ok := r.assigned[campaignID]
+	if !ok {
+		cms, err := r.lq.CampaignMailboxes(ctx, campaignID)
+		if err != nil {
+			return false, err
+		}
+		set = make(map[int64]bool, len(cms))
+		for _, cm := range cms {
+			set[cm.MailboxID] = true
+		}
+		if r.assigned == nil {
+			r.assigned = map[int64]map[int64]bool{}
+		}
+		r.assigned[campaignID] = set
+	}
+	return set[mailboxID], nil
 }
 
 // leadsSendRun runs one send in its fixed order, any failure stopping it before SMTP: the
@@ -683,6 +711,20 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 			r.rep.held[holdMailbox]++
 			continue
 		}
+		// A live message goes only from a mailbox assigned to its batch's campaign; held here,
+		// before PlanMailboxes, it takes none of the mailbox's room. A selftest (its own batch,
+		// the operator's address) and a shadow batch (drafted onto every active mailbox) never
+		// need one.
+		if r.live && !self {
+			ok, err := r.assignedTo(ctx, row.CampaignID, row.MailboxID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				r.rep.held[holdUnassigned]++
+				continue
+			}
+		}
 		items = append(items, outreach.PlanItem{
 			MessageID: row.ID, BatchID: row.BatchID, LeadID: row.LeadID, Step: row.Step,
 			Domain: recipientDomain(row.Recipient()), Loc: r.rowLoc(row.LeadKind, row.OrgCountry),
@@ -843,6 +885,8 @@ func recipientDomain(addr string) string {
 var (
 	errClaimRetired = errors.New("the mailbox is retired")
 	errClaimPaused  = errors.New("the mailbox is paused")
+	// errClaimUnassigned: the mailbox was unassigned from the message's campaign during the run.
+	errClaimUnassigned = errors.New("the mailbox is not assigned to the campaign")
 )
 
 // mailboxState reads mailbox id's latest state through tq (the claim's transaction).
@@ -989,6 +1033,14 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		case state == leadstore.MailboxPaused:
 			return errClaimPaused
 		}
+		if r.live && row.LeadKind != leadstore.LeadSelftest {
+			switch ok, err := tq.MailboxAssigned(ctx, row.CampaignID, mb.ID); {
+			case err != nil:
+				return err
+			case !ok:
+				return errClaimUnassigned
+			}
+		}
 		var err error
 		if claimed, err = tq.MarkSending(ctx, row.ID); err != nil || !claimed {
 			return err
@@ -1001,6 +1053,9 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		n, err := r.lq.CancelMailboxPending(ctx, mb.ID, cancelMailboxRetired)
 		r.rep.cancelled += int64(n)
 		return false, err
+	case errors.Is(err, errClaimUnassigned):
+		r.rep.held[holdUnassigned]++
+		return false, nil
 	case errors.Is(err, errClaimPaused):
 		r.block(mb, "it is paused; nothing is sent from it until the operator resumes it", noteMailboxPaused)
 		r.rep.held[holdMailbox]++

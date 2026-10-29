@@ -216,6 +216,9 @@ func runSitesProbe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	if off, err := switchedOff(ctx, s, leadstore.JobProbe, commandLeadsSitesProbe, sourceSites); off || err != nil {
+		return err
+	}
 
 	limit := *maxSites
 	if len(want) > 0 || ff.dryRun {

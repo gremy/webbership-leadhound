@@ -418,9 +418,13 @@ func TestMailboxChecks(t *testing.T) {
 	}
 	yes, no := true, false
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	landing := "https://www.example.com/en/"
+	if cs[0].LandingURL != nil {
+		t.Fatalf("landing before the check = %q, want nil", *cs[0].LandingURL)
+	}
 	if err := q.FinishCheck(ctx, cs[0].ID, leadstore.MailboxCheckResult{
 		SMTPOK: &yes, IMAPOK: &yes, FoldersOK: &no, SPF: &yes, DKIM: &yes, DMARC: &yes,
-		Fix: "create a Junk folder", Outcome: leadstore.CheckFailed,
+		Fix: "create a Junk folder", Outcome: leadstore.CheckFailed, LandingURL: &landing,
 	}, at); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -436,7 +440,8 @@ func TestMailboxChecks(t *testing.T) {
 	st := statusOf(t, q, id, at)
 	c := st.LastCheck
 	if c == nil || c.Outcome != leadstore.CheckFailed || c.CheckedAt == nil || !c.CheckedAt.Equal(at) ||
-		c.FoldersOK == nil || *c.FoldersOK || c.SMTPOK == nil || !*c.SMTPOK || c.Fix != "create a Junk folder" {
+		c.FoldersOK == nil || *c.FoldersOK || c.SMTPOK == nil || !*c.SMTPOK || c.Fix != "create a Junk folder" ||
+		c.LandingURL == nil || *c.LandingURL != landing {
 		t.Fatalf("last check = %+v", c)
 	}
 	next, err := q.RequestCheck(ctx, id, leadstore.ActorSystem)
@@ -444,8 +449,15 @@ func TestMailboxChecks(t *testing.T) {
 		t.Fatalf("new request = %d, %v", next, err)
 	}
 	if st := statusOf(t, q, id, at); st.LastCheck == nil || st.LastCheck.ID != next || st.LastCheck.Outcome != leadstore.CheckRequested ||
-		st.LastCheck.SMTPOK != nil {
+		st.LastCheck.SMTPOK != nil || st.LastCheck.LandingURL != nil {
 		t.Errorf("last check after a new request = %+v", st.LastCheck)
+	}
+	// A site that did not answer: NULL, and the check's own outcome as given.
+	if err := q.FinishCheck(ctx, next, leadstore.MailboxCheckResult{Outcome: leadstore.CheckPassed, Fix: "The domain's website didn't answer."}, at); err != nil {
+		t.Fatalf("finish without a landing: %v", err)
+	}
+	if st := statusOf(t, q, id, at); st.LastCheck == nil || st.LastCheck.LandingURL != nil || st.LastCheck.Outcome != leadstore.CheckPassed {
+		t.Errorf("last check without a landing = %+v", st.LastCheck)
 	}
 	if _, err := q.RequestCheck(ctx, 999, leadstore.ActorOperator); !errors.Is(err, leadstore.ErrMailboxNotFound) {
 		t.Errorf("request for a missing mailbox: %v", err)

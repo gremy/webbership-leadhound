@@ -23,11 +23,15 @@ func (q Queries) SendPaused(ctx context.Context) (paused bool, reason string, at
 	return paused, reason, at, nil
 }
 
-// SetSendPause appends a pause (paused true) or a resume row by the operator. The table is
+// SetSendPause appends a pause (paused true) or a resume row, by actor (ActorGremy, or
+// ActorSystem for the one-time conversion of the old server switch). The table is
 // append-only, so the history of the switch stays.
-func (q Queries) SetSendPause(ctx context.Context, paused bool, reason string) error {
+func (q Queries) SetSendPause(ctx context.Context, paused bool, reason, actor string) error {
+	if actor != ActorGremy && actor != ActorSystem {
+		return fmt.Errorf("leadstore: set send pause: %w: %q", ErrUnknownActor, actor)
+	}
 	if _, err := q.db.Exec(ctx,
-		`INSERT INTO send_pause (paused, reason, actor) VALUES ($1, $2, $3)`, paused, reason, ActorGremy); err != nil {
+		`INSERT INTO send_pause (paused, reason, actor) VALUES ($1, $2, $3)`, paused, reason, actor); err != nil {
 		return fmt.Errorf("leadstore: set send pause: %w", err)
 	}
 	return nil

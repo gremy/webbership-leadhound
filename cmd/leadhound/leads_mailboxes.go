@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -19,7 +20,7 @@ import (
 func init() { leadsCommands["mailboxes"] = runLeadsMailboxes }
 
 const mailboxesUsage = "usage: leadhound leads mailboxes list | add --address A [--login L] [--smtp H:P] [--imap H:P] [--selector S] [--from-name N] [--preset NAME] (the password on stdin) | " +
-	"check ID|--requested | pause ID|--domain D [--reason R] | resume ID|--domain D | retire ID --confirm | keygen --out PATH | pubkey --key PATH"
+	"check ID|--requested | pause ID|--domain D [--reason R] | resume ID|--domain D | retire ID --confirm | assign ID CAMPAIGN | unassign ID CAMPAIGN | keygen --out PATH | pubkey --key PATH"
 
 // mailboxPasswordInput is where add reads the password; tests replace it. The password is
 // never taken from the command line, where other users of the machine could read it.
@@ -52,6 +53,8 @@ func runLeadsMailboxes(ctx context.Context, args []string) error {
 		return mailboxesPause(ctx, verb == "pause", rest)
 	case "retire":
 		return mailboxesRetire(ctx, rest)
+	case "assign", "unassign":
+		return mailboxesAssign(ctx, verb == "assign", rest)
 	}
 	return usageError("unknown mailboxes verb %q; %s", verb, mailboxesUsage)
 }
@@ -149,6 +152,14 @@ func mailboxesList(ctx context.Context) error {
 		_, _ = fmt.Fprintln(stdout, "No mailbox yet: add one with leadhound leads mailboxes add --address A, the password on stdin.")
 		return nil
 	}
+	cs, err := lq.Campaigns(ctx, leadstore.DefaultAccountID)
+	if err != nil {
+		return err
+	}
+	slugs := map[int64]string{}
+	for _, c := range cs {
+		slugs[c.ID] = c.Slug
+	}
 	for _, m := range ms {
 		state := m.State
 		if m.State == leadstore.MailboxPaused {
@@ -171,7 +182,19 @@ func mailboxesList(ctx context.Context) error {
 		if m.DNSPassedToday {
 			dns = "pass"
 		}
-		_, _ = fmt.Fprintf(stdout, "%d  %s · %s · %s · DNS today %s · sent today %d\n", m.ID, m.Address, state, check, dns, m.SentToday)
+		cms, err := lq.MailboxCampaigns(ctx, m.ID)
+		if err != nil {
+			return err
+		}
+		campaigns := "no campaign"
+		if len(cms) > 0 {
+			names := make([]string, len(cms))
+			for i, cm := range cms {
+				names[i] = cmp.Or(slugs[cm.CampaignID], strconv.FormatInt(cm.CampaignID, 10))
+			}
+			campaigns = "campaigns " + strings.Join(names, ", ")
+		}
+		_, _ = fmt.Fprintf(stdout, "%d  %s · %s · %s · DNS today %s · sent today %d · %s\n", m.ID, m.Address, state, check, dns, m.SentToday, campaigns)
 	}
 	return nil
 }
@@ -335,5 +358,51 @@ func mailboxesRetire(ctx context.Context, args []string) error {
 		return mailboxCLIError(err)
 	}
 	_, _ = fmt.Fprintf(stdout, "Mailbox %d is retired; %d unsent messages cancelled.\n", id, n)
+	return nil
+}
+
+// mailboxesAssign is `leads mailboxes assign|unassign ID CAMPAIGN`: a live batch of the
+// campaign is drafted onto, and sent from, only its assigned mailboxes.
+func mailboxesAssign(ctx context.Context, assign bool, args []string) error {
+	if len(args) != 2 {
+		return usageError("%s", mailboxesUsage)
+	}
+	id, err := mailboxID(args[0])
+	if err != nil {
+		return err
+	}
+	slug := args[1]
+	lq, _, _, done, err := mailboxesOpen(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	c, err := lq.CampaignBySlug(ctx, leadstore.DefaultAccountID, slug)
+	if errors.Is(err, leadstore.ErrCampaignNotFound) {
+		return usageError("No campaign is called %q: leadhound leads campaigns list shows them.", slug)
+	} else if err != nil {
+		return err
+	}
+	changed, err := lq.SetCampaignMailbox(ctx, c.ID, id, assign, leadstore.ActorGremy)
+	switch {
+	case errors.Is(err, leadstore.ErrMailboxNotFound):
+		return usageError("There is no mailbox %d: leadhound leads mailboxes list shows them.", id)
+	case errors.Is(err, leadstore.ErrCrossAccount):
+		return usageError("Mailbox %d belongs to another account than %s.", id, slug)
+	case errors.Is(err, leadstore.ErrMailboxRetired):
+		return usageError("Mailbox %d is retired: it cannot be assigned.", id)
+	case err != nil:
+		return err
+	}
+	switch {
+	case assign && !changed:
+		_, _ = fmt.Fprintf(stdout, "Mailbox %d is already assigned to %s.\n", id, slug)
+	case !assign && !changed:
+		_, _ = fmt.Fprintf(stdout, "Mailbox %d is not assigned to %s.\n", id, slug)
+	case assign:
+		_, _ = fmt.Fprintf(stdout, "Mailbox %d is assigned to %s.\n", id, slug)
+	default:
+		_, _ = fmt.Fprintf(stdout, "Mailbox %d is unassigned from %s; its unsent messages of %s are held until it is assigned again.\n", id, slug, slug)
+	}
 	return nil
 }

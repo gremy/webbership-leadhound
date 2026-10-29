@@ -397,6 +397,14 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if len(byID) == 0 {
 		return out, refused("Add a mailbox first: Mailboxes in the console, or leads mailboxes add.")
 	}
+	// A live batch is drafted only onto the campaign's assigned mailboxes; the others stay in
+	// liveSizing's loads, not ready, so their sends today still count toward their domain.
+	var assigned map[int64]bool
+	if !bs.shadow {
+		if assigned, err = campaignAssigned(ctx, lq, campaignID); err != nil {
+			return out, err
+		}
+	}
 	plan, err := resolveBatchPlan(ctx, lq, bs, campaignID)
 	if err != nil {
 		return out, err
@@ -437,12 +445,13 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			room[id] = n * steps
 		}
 	} else {
-		z, r, err := liveSizing(ctx, lq, bs, now, n, steps, mbs)
+		z, r, err := liveSizing(ctx, lq, bs, now, n, steps, mbs, assigned)
 		if err != nil {
 			return out, err
 		}
 		if z.Mailboxes == 0 {
-			return out, notReadyRefusal(ctx, lq, mbs, startOfDay(now, bs.loc))
+			return out, notReadyRefusal(ctx, lq, slices.DeleteFunc(slices.Clone(mbs), func(m leadstore.MailboxStatus) bool { return !assigned[m.ID] }),
+				startOfDay(now, bs.loc))
 		}
 		out.Sizing, out.Rooms = &z, r
 		if z.Leads < 1 {
@@ -758,11 +767,12 @@ func readyForLeads(m leadstore.MailboxStatus) bool {
 	return m.State == leadstore.MailboxActive && m.LastCheck != nil && m.LastCheck.Outcome == leadstore.CheckPassed && m.DNSPassedToday
 }
 
-// liveSizing sizes a live batch over mbs (every mailbox, so a paused one's sends today still
-// count toward its domain): each mailbox's waiting emails, today's sends as leads send counts
-// them for its cap and, with caps.start_date first-send, its first live send; only those
-// readyForLeads get room. It reads the store only.
-func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, size, steps int, mbs []leadstore.MailboxStatus) (BatchSizing, map[int64]int, error) {
+// liveSizing sizes a live batch over mbs (every mailbox, so a paused or unassigned one's
+// sends today still count toward its domain): each mailbox's waiting emails, today's sends
+// as leads send counts them for its cap and, with caps.start_date first-send, its first live
+// send; only those readyForLeads and in assigned (the campaign's mailboxes) get room. It
+// reads the store only.
+func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, size, steps int, mbs []leadstore.MailboxStatus, assigned map[int64]bool) (BatchSizing, map[int64]int, error) {
 	now = now.In(bs.loc)
 	_, toCheck, err := lq.WaitingEmails(ctx)
 	if err != nil {
@@ -774,7 +784,7 @@ func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now ti
 	}
 	loads := make([]outreach.MailboxLoad, 0, len(mbs))
 	for _, m := range mbs {
-		ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain, SentToday: m.SentToday, Waiting: waiting[m.ID], Ready: readyForLeads(m)}
+		ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain, SentToday: m.SentToday, Waiting: waiting[m.ID], Ready: readyForLeads(m) && assigned[m.ID]}
 		if bs.leads.Caps.StartDate.IsFirstSend() && m.FirstLiveSend != nil {
 			fs := m.FirstLiveSend.In(bs.loc)
 			ml.FirstSend = &fs
@@ -783,6 +793,33 @@ func liveSizing(ctx context.Context, lq leadstore.Queries, bs batchSetup, now ti
 	}
 	z, room := mailboxSizing(bs.leads, loads, toCheck, now, size, steps)
 	return z, room, nil
+}
+
+// campaignAssigned is the set of mailboxes assigned to campaign campaignID, or the refusal
+// that names the campaign when it has none: a live batch of it could go from no mailbox.
+func campaignAssigned(ctx context.Context, lq leadstore.Queries, campaignID int64) (map[int64]bool, error) {
+	cms, err := lq.CampaignMailboxes(ctx, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	if len(cms) == 0 {
+		name := fmt.Sprintf("campaign %d", campaignID)
+		cs, err := lq.Campaigns(ctx, leadstore.DefaultAccountID)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cs {
+			if c.ID == campaignID {
+				name = c.Name
+			}
+		}
+		return nil, refused("No mailbox is assigned to %s: assign one on its Campaign page.", name)
+	}
+	assigned := make(map[int64]bool, len(cms))
+	for _, cm := range cms {
+		assigned[cm.MailboxID] = true
+	}
+	return assigned, nil
 }
 
 // notReadyRefusal says why no active mailbox in mbs is ready for new leads (decision 5),

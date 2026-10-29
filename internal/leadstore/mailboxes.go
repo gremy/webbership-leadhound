@@ -118,6 +118,7 @@ type MailboxCheck struct {
 	DMARC       *bool      `db:"dmarc"`
 	Fix         string     `db:"fix"`
 	Outcome     string     `db:"outcome"`
+	LandingURL  *string    `db:"landing_url"` // where https://<host>/ landed; nil when not checked or it did not answer
 }
 
 // MailboxCheckResult is what a check found, for FinishCheck. Outcome is passed, failed or
@@ -126,6 +127,7 @@ type MailboxCheckResult struct {
 	SMTPOK, IMAPOK, FoldersOK, SPF, DKIM, DMARC *bool
 	Fix                                         string
 	Outcome                                     string
+	LandingURL                                  *string // the final URL of https://<host>/; nil when it did not answer
 }
 
 // MailboxStatus is a mailbox with what its readiness is judged by, for a day that starts
@@ -409,9 +411,9 @@ func (q Queries) FinishCheck(ctx context.Context, checkID int64, r MailboxCheckR
 	}
 	tag, err := q.db.Exec(ctx,
 		`UPDATE mailbox_check SET checked_at = $2, smtp_ok = $3, imap_ok = $4, folders_ok = $5,
-		   spf = $6, dkim = $7, dmarc = $8, fix = $9, outcome = $10
+		   spf = $6, dkim = $7, dmarc = $8, fix = $9, outcome = $10, landing_url = $11
 		 WHERE id = $1 AND outcome = 'requested'`,
-		checkID, at, r.SMTPOK, r.IMAPOK, r.FoldersOK, r.SPF, r.DKIM, r.DMARC, r.Fix, r.Outcome)
+		checkID, at, r.SMTPOK, r.IMAPOK, r.FoldersOK, r.SPF, r.DKIM, r.DMARC, r.Fix, r.Outcome, r.LandingURL)
 	if err != nil {
 		return fmt.Errorf("leadstore: finish check: %w", err)
 	}
@@ -422,7 +424,7 @@ func (q Queries) FinishCheck(ctx context.Context, checkID int64, r MailboxCheckR
 }
 
 const checkCols = `c.id, c.mailbox_id, c.requested_at, c.actor, c.checked_at, c.smtp_ok, c.imap_ok, c.folders_ok,
-	c.spf, c.dkim, c.dmarc, c.fix, c.outcome`
+	c.spf, c.dkim, c.dmarc, c.fix, c.outcome, c.landing_url`
 
 // RequestedChecks returns every check still waiting to run, oldest first.
 func (q Queries) RequestedChecks(ctx context.Context) ([]MailboxCheck, error) {
@@ -522,7 +524,7 @@ func (q Queries) Mailboxes(ctx context.Context, accountID int64, since time.Time
 		`SELECT `+mailboxCols+`,
 		   coalesce(st.state, 'active'), coalesce(st.reason, ''), coalesce(st.scope, 'mailbox'), st.at,
 		   ck.id, ck.requested_at, ck.actor, ck.checked_at, ck.smtp_ok, ck.imap_ok, ck.folders_ok,
-		   ck.spf, ck.dkim, ck.dmarc, ck.fix, ck.outcome,
+		   ck.spf, ck.dkim, ck.dmarc, ck.fix, ck.outcome, ck.landing_url,
 		   fl.first, sd.n,
 		   EXISTS (SELECT 1 FROM sender_check sc
 		     WHERE sc.domain_sha256 = sha256(convert_to(`+hostSQL+`, 'UTF8')) AND sc.selector = mb.dkim_selector
@@ -557,7 +559,7 @@ func (q Queries) Mailboxes(ctx context.Context, accountID int64, since time.Time
 			&s.FromName, &s.PasswordSealed, &s.SealedBy, &s.CreatedAt,
 			&s.State, &s.Reason, &s.Scope, &stateAt,
 			&checkID, &requestedAt, &actor, &c.CheckedAt, &c.SMTPOK, &c.IMAPOK, &c.FoldersOK,
-			&c.SPF, &c.DKIM, &c.DMARC, &fix, &outcome,
+			&c.SPF, &c.DKIM, &c.DMARC, &fix, &outcome, &c.LandingURL,
 			&s.FirstLiveSend, &s.SentToday, &s.DNSPassedToday)
 		if err != nil {
 			return MailboxStatus{}, err

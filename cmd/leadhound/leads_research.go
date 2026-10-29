@@ -347,6 +347,9 @@ func runResearchRun(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
+	if off, err := switchedOff(ctx, s, leadstore.JobResearch, commandLeadsResearch, sourceResearch); off || err != nil {
+		return err
+	}
 	q := s.Q()
 	caller, err := newResearchCaller(q)
 	if err != nil {

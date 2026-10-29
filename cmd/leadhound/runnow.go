@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/preview"
 	"github.com/gremy/webbership-leadhound/internal/store"
@@ -483,6 +484,24 @@ func runNowDecision(req console.RunRequest, st console.RunNowAction, f runNowFac
 	}
 }
 
+// runRequestJobs are the request files whose unit runs a job with a switch (job_switch): a
+// request for one while its job is switched off is refused before the file is written.
+var runRequestJobs = map[string]string{researchAction: leadstore.JobResearch}
+
+// switchedOffRequest refuses (console.ErrUserFixable) a request for action while the job its
+// unit runs is switched off; nil for an action whose job is on or has no switch.
+func switchedOffRequest(ctx context.Context, lq leadstore.Queries, action string) error {
+	job, ok := runRequestJobs[action]
+	if !ok {
+		return nil
+	}
+	off, _, err := jobOff(ctx, lq, job)
+	if err != nil || !off {
+		return err
+	}
+	return refuse("%s is switched off on the Controls page.", jobName(job))
+}
+
 // writeRunRequest writes the request time into <dataDir>/run/<action>. A plain write is
 // right: PathChanged= fires when the file is closed after the write, and a torn read of
 // the time only falls back to the file's mtime.
@@ -584,6 +603,9 @@ func (b *backend) RunNow(ctx context.Context, req console.RunRequest) (console.R
 	}
 	msg, err := runNowDecision(req, st, f, local)
 	if err != nil {
+		return console.RunOutcome{}, err
+	}
+	if err := switchedOffRequest(ctx, leadstore.NewQueries(b.s.Pool()), req.Action); err != nil {
 		return console.RunOutcome{}, err
 	}
 	if err := writeRunRequest(b.cfg.DataDir, req.Action, now); err != nil {

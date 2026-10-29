@@ -97,8 +97,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // columns a research run moves only (00018); draft_generation, draft_review and draft_eval
 // are append-only (00019), and so are phone_screening, phone_status and phone_research
 // (00020; the owner alone deletes from them, to erase an org); place_import and place are
-// append-only (00021), whose new org.region column is fixed at insert. It runs after every migrate, a no-op one
-// too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// append-only (00021), whose new org.region column is fixed at insert; job_switch (00023) and
+// campaign_mailbox (00024) are append-only, and mailbox_check gains landing_url as a result
+// column (00024). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -180,6 +181,10 @@ BEGIN
   IF to_regclass('public.mailbox_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.mailbox_check FROM leadhound_app;
     GRANT UPDATE (checked_at, smtp_ok, imap_ok, folders_ok, spf, dkim, dmarc, fix, outcome) ON public.mailbox_check TO leadhound_app;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'mailbox_check' AND column_name = 'landing_url') THEN
+      GRANT UPDATE (landing_url) ON public.mailbox_check TO leadhound_app;
+    END IF;
   END IF;
   IF to_regclass('public.lead_kind') IS NOT NULL THEN
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.lead_kind FROM leadhound_app;
@@ -255,6 +260,12 @@ BEGIN
   END IF;
   IF to_regclass('public.place') IS NOT NULL THEN
     REVOKE UPDATE ON public.place FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.job_switch') IS NOT NULL THEN
+    REVOKE UPDATE ON public.job_switch FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.campaign_mailbox') IS NOT NULL THEN
+    REVOKE UPDATE ON public.campaign_mailbox FROM leadhound_app;
   END IF;
 END
 $$`

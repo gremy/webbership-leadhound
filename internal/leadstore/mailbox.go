@@ -331,7 +331,10 @@ func (q Queries) applyEffects(ctx context.Context, in Incoming, source string, r
 // its lead's state, kind and org.
 type SendRow struct {
 	Message
-	Shadow     bool   `db:"shadow"`
+	Shadow bool `db:"shadow"`
+	// CampaignID is the campaign of the message's batch: a live send goes only from a mailbox
+	// assigned to it.
+	CampaignID int64  `db:"campaign_id"`
 	LeadState  string `db:"lead_state"`
 	LeadKind   string `db:"lead_kind"`
 	OrgDomain  string `db:"org_domain"`
@@ -376,7 +379,7 @@ const consentAddressSQL = `CASE WHEN m.condition = 'email_consent' THEN coalesce
 	  WHERE cm.lead_id = m.lead_id AND cm.batch_id = m.batch_id
 	  ORDER BY co.id DESC LIMIT 1), '') ELSE '' END`
 
-const sendRowSQL = `SELECT ` + messageCols + `, b.shadow, l.state AS lead_state, l.kind AS lead_kind,
+const sendRowSQL = `SELECT ` + messageCols + `, b.shadow, b.campaign_id, l.state AS lead_state, l.kind AS lead_kind,
 	  o.domain AS org_domain, o.country AS org_country, ` + consentAddressSQL + ` AS consent_address
 	 FROM outreach_message m
 	 JOIN outreach_batch b ON b.id = m.batch_id

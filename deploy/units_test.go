@@ -168,8 +168,10 @@ var schedule = map[string]struct {
 
 // leadsFinding and leadsSending are the leads timers install.sh enables only as
 // /etc/leadhound/env switches them on: the finding ones with LEADHOUND_LEADS_TIMERS=on, the
-// sending ones only with that, LEADHOUND_LEADS_SEND=on and live outreach (the mailboxes live
-// in the database, so no env line names one).
+// sending ones only with that and live outreach. LEADHOUND_LEADS_SEND is retired: whether
+// anything is sent is the console's sending switch, in the database, which install.sh's
+// send_switch_convert seeds from the old line once (TestInstallSendSwitchConvert). The
+// mailboxes live in the database too, so no env line names one.
 var (
 	leadsFinding = []string{"leadhound-leads-contacts.timer", "leadhound-leads-probe.timer"}
 	leadsSending = []string{"leadhound-leads-batch.timer", "leadhound-leads-send.timer", "leadhound-leads-sync.timer"}
@@ -1308,8 +1310,8 @@ func installFunc(t *testing.T, name string) string {
 
 // TestInstallLeadsTimers runs install.sh's own leads_timers against env files, with systemctl
 // replaced by a recorder, and checks exactly which leads timers end up enabled, and that every
-// other one is disabled and stopped. The server env today has none of the switch lines, so a
-// deploy leaves every leads timer off.
+// other one is disabled and stopped. LEADHOUND_LEADS_SEND no longer decides any timer: the
+// console's sending switch does, so a line left in the env, on or off, changes nothing here.
 func TestInstallLeadsTimers(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -1352,8 +1354,11 @@ func TestInstallLeadsTimers(t *testing.T) {
 		{"everything, old mailbox lines left in", finding + send + live + user + imap, all},
 		{"everything, quoted as systemd allows", "LEADHOUND_LEADS_TIMERS=\"on\"\nLEADHOUND_LEADS_SEND='on'\nLEADHOUND_OUTREACH=\"live\"\n", all},
 		{"send without finding", send + live, nil},
+		{"finding and live, no send line", finding + live, all},
+		{"live without finding, no send line", live, nil},
+		{"finding and live, send off", finding + "LEADHOUND_LEADS_SEND=off\n" + live, all},
 		{"finding switched off by a later line", finding + send + live + "LEADHOUND_LEADS_TIMERS=off\n", nil},
-		{"send switched off by a later line", finding + send + live + "LEADHOUND_LEADS_SEND=\n", leadsFinding},
+		{"send switched off by a later line, not read any more", finding + send + live + "LEADHOUND_LEADS_SEND=\n", all},
 		{"not quite on", "LEADHOUND_LEADS_TIMERS=online\n" + send + live, nil},
 		{"not quite live", finding + send + "LEADHOUND_OUTREACH=lively\n", leadsFinding},
 		{"commented out", "#LEADHOUND_LEADS_TIMERS=on\n# " + send, nil},

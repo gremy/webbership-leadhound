@@ -51,12 +51,23 @@ func (b *backend) researchOnStar(ctx context.Context, setup leadsSetup, leadID i
 		return ""
 	}
 	words := " " + starQueuedWords(ask)
+	// Research switched off: the attempt stays queued and no request file starts the job.
+	// A switch that cannot be read falls back to the request: the job checks it itself.
+	if err := switchedOffRequest(ctx, b.lq(), researchAction); errors.Is(err, console.ErrUserFixable) {
+		return words + " " + researchOffStarWords
+	} else if err != nil {
+		slog.Default().Warn("console research switch", "failed", 1)
+	}
 	if err := writeRunRequest(setup.dataDir, researchAction, b.now()); err != nil {
 		slog.Default().Warn("console research request file", "failed", 1)
 		words += " It runs on the research job's next run."
 	}
 	return words
 }
+
+// researchOffStarWords ends a star's line when research is switched off: the search stays
+// queued and runs on the research job's first run after the switch is back on.
+const researchOffStarWords = "Research is switched off on the Controls page, so it will run once research is on."
 
 // starQueuedWords is the sentence a star's line gains when it queued research: one sentence,
 // so the line reads as two ("Lead 5 starred: it is last in your order. It has no email yet,
@@ -75,6 +86,9 @@ func starQueuedWords(ask ResearchAsk) string {
 // plain words when it may not run (within 90 days of the last attempt that ran, with the
 // date it may run; a country that is off; a lead past new, suppressed or deferred).
 func (b *backend) lookAgain(ctx context.Context, setup leadsSetup, leadID int64) (console.LeadOutcome, error) {
+	if err := switchedOffRequest(ctx, b.lq(), researchAction); err != nil {
+		return console.LeadOutcome{}, err
+	}
 	ask, err := requestLeadResearch(ctx, b.lq(), setup.leads, leadID, leadstore.ResearchButton, b.now())
 	switch {
 	case errors.Is(err, leadstore.ErrLeadNotFound):

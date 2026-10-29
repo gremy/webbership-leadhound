@@ -295,7 +295,7 @@ func TestSendPauseAndRetire(t *testing.T) {
 	w.batchFrom(t, w.a, false, w.leads(t, "a1.example"))
 	w.batchFrom(t, b, false, w.leads(t, "b1.example"))
 	ctx := context.Background()
-	if err := w.lq.SetSendPause(ctx, true, ""); err != nil {
+	if err := w.lq.SetSendPause(ctx, true, "", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	out := w.mustRun(t, "leads", "send")
@@ -303,7 +303,7 @@ func TestSendPauseAndRetire(t *testing.T) {
 	if len(w.sends) != 0 || len(w.mail.calls) != 0 {
 		t.Fatal("a paused run reached a mailbox")
 	}
-	if err := w.lq.SetSendPause(ctx, false, ""); err != nil {
+	if err := w.lq.SetSendPause(ctx, false, "", leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.lq.SetMailboxState(ctx, w.a.ID, leadstore.MailboxRetired, "done", leadstore.ScopeMailbox, leadstore.ActorOperator); err != nil {
