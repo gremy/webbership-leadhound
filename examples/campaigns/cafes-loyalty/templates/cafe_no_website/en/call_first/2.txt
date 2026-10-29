@@ -1,0 +1,13 @@
+Subject: The stamp card we talked about
+
+Hello,
+
+Thanks for the call. As promised, the details.
+
+I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café. It is a stamp card in Apple Wallet or Google Wallet with the name of {{.OrgName}} on it. You need no website: your regulars sign up from a QR code at the counter.
+
+It is free for 30 days with no card needed, then €19 a month with every feature.
+
+Reply and I will send the demo, or set it up with you in 15 minutes.
+
+{{.Footer}}

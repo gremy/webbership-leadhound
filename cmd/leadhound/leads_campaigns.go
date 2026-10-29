@@ -115,12 +115,16 @@ func checkedCampaigns(dataDir string, lc *leadconfig.Config, trust func(slug str
 	if err != nil {
 		return nil, usageError("the campaigns do not pass their checks:\n%s", campaignProblems(err))
 	}
+	var leads leadconfig.Config // a campaign footer is read from leads.yaml's footers dir
+	if lc != nil {
+		leads = *lc
+	}
 	var errs []error
 	for _, sp := range specs {
 		if _, ok, err := campaignFile(dataDir, sp.Slug); err != nil {
 			errs = append(errs, err)
 		} else if ok {
-			if _, err := campaignTemplates(dataDir, sp); err != nil {
+			if _, err := campaignTemplates(dataDir, sp, leads); err != nil {
 				errs = append(errs, fmt.Errorf("campaign %q: %w", sp.Slug, err))
 			}
 		}

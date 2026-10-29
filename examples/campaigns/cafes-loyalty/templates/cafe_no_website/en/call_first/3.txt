@@ -1,0 +1,9 @@
+Subject: Re: The stamp card we talked about
+
+Hello,
+
+A short follow-up to my note after our call. Here is the demo, so a real card lands in your Wallet: https://demo.example/
+
+Worth 10 minutes to see it on your phone?
+
+{{.Footer}}

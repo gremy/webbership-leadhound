@@ -1,0 +1,15 @@
+Subject: Your stamp card, under your own name
+
+Hello,
+
+I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café.
+
+{{if .VendorName}}{{.OrgName}} already runs a loyalty card on {{.VendorName}}, so you know regulars like being counted.{{else}}{{.OrgName}} already runs a digital loyalty card, so you know regulars like being counted.{{end}} Demo Loyalty is the same idea with only your name on it: a stamp card in Apple Wallet or Google Wallet, in your colours, with every feature on the one plan.
+
+It is free for 30 days with no card needed, then €19 a month.
+
+Reply and I will send you the demo, so you can compare it on your own phone.
+
+Worth 10 minutes to see it on your phone?
+
+{{.Footer}}

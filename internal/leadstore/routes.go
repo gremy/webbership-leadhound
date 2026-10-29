@@ -73,7 +73,7 @@ type Route struct {
 	OrgID     int64     `db:"org_id"`
 	Kind      string    `db:"kind"`
 	Value     string    `db:"value"`
-	FetchID   int64     `db:"fetch_id"`
+	FetchID   int64     `db:"fetch_id"` // 0 for a route read from a place (00022)
 	MXOK      bool      `db:"mx_ok"`
 	DerivedBy string    `db:"derived_by"`
 	FoundAt   time.Time `db:"found_at"`
@@ -82,7 +82,7 @@ type Route struct {
 // RoutesFor returns the routes of org orgID, emails first, then in the order found.
 func (q Queries) RoutesFor(ctx context.Context, orgID int64) ([]Route, error) {
 	routes, err := collect(ctx, q.db, pgx.RowToStructByName[Route],
-		`SELECT id, org_id, kind, value, fetch_id, mx_ok, derived_by, found_at
+		`SELECT id, org_id, kind, value, coalesce(fetch_id, 0) AS fetch_id, mx_ok, derived_by, found_at
 		 FROM contact_route WHERE org_id = $1 ORDER BY kind, id`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: routes for org %d: %w", orgID, err)
@@ -127,7 +127,8 @@ func (q Queries) RecordContactAttempt(ctx context.Context, orgID, runID int64, r
 }
 
 // OrgsNeedingRoutes returns up to limit orgs (limit <= 0: all of them) with no route search
-// and no route found in the RouteRetryAfter before now, oldest org first. Selftest orgs are
+// and no route found in the RouteRetryAfter before now, oldest org first. A route read from a
+// place's map listing (00022) does not count: the org's own pages are still searched. Selftest orgs are
 // never returned, nor an org whose domain is suppressed (orgDomainSuppressedSQL).
 func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time) ([]Org, error) {
 	var lim *int
@@ -140,7 +141,7 @@ func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time
 		 WHERE o.kind <> 'selftest'
 		   AND NOT (o.source = 'place' AND o.site_id IS NULL)
 		   AND NOT EXISTS (SELECT 1 FROM contact_attempt a WHERE a.org_id = o.id AND a.attempted_at > $1)
-		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1)
+		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1 AND r.place_id IS NULL)
 		   AND NOT `+orgDomainSuppressedSQL("o")+`
 		 ORDER BY o.id
 		 LIMIT $2`, now.Add(-RouteRetryAfter), lim)

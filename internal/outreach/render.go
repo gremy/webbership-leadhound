@@ -58,6 +58,11 @@ type Slots struct {
 	IdentityLine Slot
 	OptOutLine   Slot
 	Footer       Slot
+	// VendorName and VendorLink are a café lead's loyalty vendor (cafe.Vendor.Name) and the
+	// campaign's page for it (offer.vendor_links); optional (leadconfig.OptionalSlots): empty
+	// for any other lead, and still passed to the template, which tests them.
+	VendorName Slot
+	VendorLink Slot
 
 	// PrivacyLine is the footer's last line naming the sender's privacy notice
 	// (leadconfig.Sender.PrivacyLine); not a template slot: Render adds it under the
@@ -82,6 +87,7 @@ func (s Slots) named() []renderNamedSlot {
 		{"Exact", s.Exact}, {"EvidenceLine", s.EvidenceLine}, {"FindingURL", s.FindingURL},
 		{"EOLDate", s.EOLDate}, {"SenderName", s.SenderName}, {"IdentityLine", s.IdentityLine},
 		{"OptOutLine", s.OptOutLine}, {"Footer", s.Footer},
+		{"VendorName", s.VendorName}, {"VendorLink", s.VendorLink},
 	}
 }
 
@@ -112,6 +118,10 @@ func (s *Slots) field(name string) *Slot {
 		return &s.OptOutLine
 	case "Footer":
 		return &s.Footer
+	case "VendorName":
+		return &s.VendorName
+	case "VendorLink":
+		return &s.VendorLink
 	}
 	return nil
 }
@@ -285,8 +295,8 @@ type Draft struct {
 const renderFooterMark = "\x00leadhound-footer\x00"
 
 // Render fills a template from slots. Every template runs with missingkey=error over the
-// non-empty slots only, so a template that uses a missing fact returns an error and no
-// draft. For an email the footer renders on its own first (every slot but Footer), then
+// non-empty slots only (plus leadconfig.OptionalSlots, empty or not), so a template that
+// uses a missing fact returns an error and no draft. For an email the footer renders on its own first (every slot but Footer), then
 // sits where the body names {{.Footer}}, or after a blank line when the body does not;
 // nothing but white space may follow it.
 func Render(t Template, s Slots) (Draft, error) {
@@ -295,7 +305,7 @@ func Render(t Template, s Slots) (Draft, error) {
 	}
 	values := map[string]string{}
 	for _, ns := range s.named() {
-		if ns.name != "Footer" && ns.slot.Value != "" {
+		if ns.name != "Footer" && (ns.slot.Value != "" || slices.Contains(leadconfig.OptionalSlots, ns.name)) {
 			values[ns.name] = ns.slot.Value
 		}
 	}

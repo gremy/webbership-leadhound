@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -22,6 +23,8 @@ import (
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 )
 
 // ErrInvalid wraps every problem with a spec.
@@ -130,7 +133,14 @@ type Country struct {
 	// compliance table holds or needs a reason for (compliance.CampaignCountry.Acknowledge);
 	// one line, at most MaxAcknowledge characters.
 	Acknowledge string `yaml:"acknowledge" json:"acknowledge,omitempty"`
+	// Footer names the footer file (footers/<name>.txt) this campaign's emails to the country
+	// end with, instead of leads.yaml's; a plain file name, only with email on. omitempty
+	// keeps older hashes.
+	Footer string `yaml:"footer" json:"footer,omitempty"`
 }
+
+// footerNameRe is leadconfig's plain file-name rule for footers (mirrored; a test pins it).
+var footerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // MaxAcknowledge is the longest country acknowledge, in characters.
 const MaxAcknowledge = 500
@@ -148,7 +158,19 @@ type Offer struct {
 	ReportContains []string `yaml:"report_contains" json:"report_contains,omitempty"`
 	// CallToAction is the closing question, verbatim ("Worth 10 minutes to find out?").
 	CallToAction string `yaml:"call_to_action" json:"call_to_action,omitempty"`
+	// Links are the URLs an email may carry beside the product site: absolute https, at most
+	// MaxOfferLinks, each once. omitempty keeps older hashes.
+	Links []string `yaml:"links" json:"links,omitempty"`
+	// VendorLinks maps a cafe@1 loyalty vendor id (or VendorLinkDefault) to the page an email
+	// names for a café on that vendor: absolute https. omitempty keeps older hashes.
+	VendorLinks map[string]string `yaml:"vendor_links" json:"vendor_links,omitempty"`
 }
+
+// MaxOfferLinks is the most offer.links a spec may list.
+const MaxOfferLinks = 10
+
+// VendorLinkDefault is the offer.vendor_links key used when a café's vendor has no own entry.
+const VendorLinkDefault = "default"
 
 // Pain is one pain a draft may name, applying to a lead when every one of its needs holds
 // (see Need for the closed language).
@@ -283,6 +305,14 @@ func (s Spec) Check(opts CheckOptions) error {
 		}
 		if c.Acknowledge != "" && !oneLine(c.Acknowledge, MaxAcknowledge) {
 			add("countries.%s.acknowledge must be one non-blank line of at most %d characters", code, MaxAcknowledge)
+		}
+		if c.Footer != "" {
+			if !footerNameRe.MatchString(c.Footer) {
+				add("countries.%s.footer: %q is not a plain file name", code, c.Footer)
+			}
+			if !c.Email {
+				add("countries.%s.footer is only for a country with email on", code)
+			}
 		}
 	}
 
@@ -505,8 +535,58 @@ func (s Spec) checkDrafting() []error {
 	if s.Offer.CallToAction != "" && !oneLine(s.Offer.CallToAction, 120) {
 		add("offer.call_to_action must be one line of at most 120 characters")
 	}
+	return append(errs, s.checkLinks()...)
+}
+
+// checkLinks checks offer.links and offer.vendor_links.
+func (s Spec) checkLinks() []error {
+	var errs []error
+	add := func(format string, a ...any) {
+		errs = append(errs, fmt.Errorf("campaign %q: %w: "+format, append([]any{s.Slug, ErrInvalid}, a...)...))
+	}
+	if len(s.Offer.Links) > MaxOfferLinks {
+		add("offer.links has %d links; at most %d", len(s.Offer.Links), MaxOfferLinks)
+	}
+	seen := map[string]bool{}
+	for _, l := range s.Offer.Links {
+		if !httpsURL(l) {
+			add("offer.links: %q is not an absolute https:// URL with a host", l)
+			continue
+		}
+		key := linkKey(l)
+		if seen[key] {
+			add("offer.links: %q is listed twice", l)
+		}
+		seen[key] = true
+	}
+	if len(s.Offer.VendorLinks) > 0 && !slices.Contains(s.Detectors, DetectorCafe) {
+		add("offer.vendor_links is only for a campaign with the %s detector", DetectorCafe)
+	}
+	for _, id := range sortedKeys(s.Offer.VendorLinks) {
+		if id != VendorLinkDefault {
+			if v := cafe.DefaultConfig().Vendor(id); v == nil || v.Kind != cafe.SigLoyalty {
+				add("offer.vendor_links: %q is not a known loyalty vendor id (or %q)", id, VendorLinkDefault)
+			}
+		}
+		if l := s.Offer.VendorLinks[id]; !httpsURL(l) {
+			add("offer.vendor_links.%s: %q is not an absolute https:// URL with a host", id, l)
+		}
+	}
 	return errs
 }
+
+// httpsURL reports whether v is an absolute https URL with a host and no spaces.
+func httpsURL(v string) bool {
+	if v != strings.TrimSpace(v) || strings.ContainsAny(v, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(v)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.Hostname() != "" && u.User == nil
+}
+
+// linkKey is the form two links are compared in (as outreach's URL check does): lower-case,
+// trailing slashes trimmed.
+func linkKey(v string) string { return strings.TrimRight(strings.ToLower(v), "/") }
 
 // oneLine reports whether v is non-blank, holds no line break and has at most most runes.
 func oneLine(v string, most int) bool {

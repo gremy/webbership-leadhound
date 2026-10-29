@@ -52,7 +52,7 @@ type Fact struct {
 	Kind       string    `db:"kind"`
 	Value      string    `db:"value"`
 	Normalized string    `db:"normalized"`
-	FetchID    int64     `db:"fetch_id"`
+	FetchID    int64     `db:"fetch_id"` // 0 for a phone read from a place (00022)
 	DerivedBy  string    `db:"derived_by"`
 	FoundAt    time.Time `db:"found_at"`
 }
@@ -91,7 +91,7 @@ func (q Queries) OrgFacts(ctx context.Context, orgIDs []int64) ([]Fact, error) {
 		return nil, nil
 	}
 	facts, err := collect(ctx, q.db, pgx.RowToStructByName[Fact],
-		`SELECT id, org_id, kind, value, normalized, fetch_id, derived_by, found_at
+		`SELECT id, org_id, kind, value, normalized, coalesce(fetch_id, 0) AS fetch_id, derived_by, found_at
 		 FROM org_fact WHERE org_id = ANY($1) ORDER BY org_id, kind, id`, orgIDs)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: org facts: %w", err)

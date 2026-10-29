@@ -1,0 +1,9 @@
+Subject: Re: Cardul tău de ștampile, cu numele tău
+
+Bună,
+
+Ăsta e ultimul meu mesaj. Dacă vrei vreodată ca pe cardul de la {{.OrgName}} să fie doar numele tău, răspunde-mi oricând și îți trimit demo-ul.
+
+Mulțumesc că ai citit. Spor la cafenea.
+
+{{.Footer}}

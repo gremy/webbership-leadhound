@@ -696,7 +696,7 @@ func (ex *exporter) orgs(ctx context.Context, w *jsonlWriter, _ *exportCounts) e
 func (ex *exporter) routes(ctx context.Context, w *jsonlWriter, _ *exportCounts) error {
 	return each(ctx, ex.tx, "routes", `SELECT o.domain, r.kind, r.value, r.fetch_id, r.mx_ok, r.derived_by, r.found_at
 		FROM contact_route r JOIN org o ON o.id = r.org_id
-		WHERE `+carriedOrgSQL+` ORDER BY r.id`, []any{ex.re}, func(r pgx.Rows) error {
+		WHERE `+carriedOrgSQL+` AND r.fetch_id IS NOT NULL ORDER BY r.id`, []any{ex.re}, func(r pgx.Rows) error {
 		var rt tRoute
 		var fetchID int64
 		if err := r.Scan(&rt.Org, &rt.Kind, &rt.Value, &fetchID, &rt.MXOK, &rt.DerivedBy, &rt.FoundAt); err != nil {

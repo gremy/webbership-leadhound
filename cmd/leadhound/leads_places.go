@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,11 +14,15 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/campaign"
+	"github.com/gremy/webbership-leadhound/internal/contacts"
+	"github.com/gremy/webbership-leadhound/internal/enrich"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
+	"github.com/gremy/webbership-leadhound/internal/phones"
 	"github.com/gremy/webbership-leadhound/internal/places"
 	"github.com/gremy/webbership-leadhound/internal/probe"
+	"github.com/gremy/webbership-leadhound/internal/sitelist"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -45,8 +50,9 @@ func runLeadsPlaces(ctx context.Context, args []string) error {
 // with the places already stored for the release (another file of it) into one chain index
 // (cafe.NewChainIndex with the spec's chains), checks each kept place against it, and stores
 // the import in one transaction: an independent café gets its site (probed by cafe@1) and
-// its org with its region, a chain only its place row, and a place whose website's domain is
-// suppressed nothing. It prints the counts; malformed lines are named by number only. The
+// its org with its region, a chain only its place row, and a place whose org is suppressed
+// (its website's domain, or with no website its own overture:<id> org after leads forget)
+// nothing. It prints the counts; malformed lines are named by number only. The
 // campaign's spec must be its own file, registered as it is now, with source kind overture.
 func runPlacesImport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads places import overture", flag.ContinueOnError)
@@ -85,6 +91,14 @@ func runPlacesImport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The mail-server lookups of the places' own addresses happen before the transaction.
+	// Places a suppression covers are not stored, so their domains are never looked up.
+	rules := placeContactRules{roles: setup.leads.RoleLocalParts, publicSuffixes: setup.leads.PublicBodySuffixes}
+	gone, err := lq.SuppressedPlaces(ctx, kept)
+	if err != nil {
+		return err
+	}
+	mx := rules.lookupMX(ctx, contactsResolver, kept, gone)
 
 	q := s.Q()
 	runID, err := q.StartRun(ctx, commandLeadsPlacesImport, sourcePlaces)
@@ -92,6 +106,7 @@ func runPlacesImport(ctx context.Context, args []string) error {
 		return err
 	}
 	var res leadstore.PlaceImported
+	var added placeContactCounts
 	runErr := leadsInTx(ctx, s.Pool(), func(tq leadstore.Queries) error {
 		stored, err := tq.ReleasePlaces(ctx, *release)
 		if err != nil {
@@ -101,6 +116,10 @@ func runPlacesImport(ctx context.Context, args []string) error {
 		res, err = tq.ImportPlaces(ctx, leadstore.PlaceImport{
 			CampaignID: c.ID, Release: *release, FileName: filepath.Base(pos[0]), Stats: st, Actor: leadstore.ActorGremy,
 		}, rows)
+		if err != nil {
+			return err
+		}
+		added, err = rules.store(ctx, tq, res.ImportID, mx)
 		return err
 	})
 	switch {
@@ -109,7 +128,8 @@ func runPlacesImport(ctx context.Context, args []string) error {
 	case errors.Is(runErr, leadstore.ErrBadPlaceFile):
 		runErr = usageError("%s: %v", pos[0], runErr)
 	}
-	result := store.RunResult{Note: fmt.Sprintf("%d lines, %d kept, %d stored, %d chains, %d suppressed", st.Lines, st.Kept, res.Stored, res.Chains, res.Suppressed)}
+	result := store.RunResult{Note: fmt.Sprintf("%d lines, %d kept, %d stored, %d chains, %d suppressed, %d email routes, %d phones",
+		st.Lines, st.Kept, res.Stored, res.Chains, res.Suppressed, added.Emails, added.Phones)}
 	if runErr != nil {
 		result.Note = runErr.Error()
 	}
@@ -119,8 +139,132 @@ func runPlacesImport(ctx context.Context, args []string) error {
 	if runErr != nil {
 		return runErr
 	}
-	printPlacesImport(stdout, c.Slug, *release, st, res)
+	printPlacesImport(stdout, c.Slug, *release, st, res, added)
 	return nil
+}
+
+// placeContactRules are the contact search's own rules (leads.yaml role_local_parts and
+// public_body_suffixes) as a place's map-listing emails and phones go through them.
+type placeContactRules struct {
+	roles, publicSuffixes []string
+}
+
+// placeEmail is one address a place's listing gave that the rules keep, and the domain whose
+// mail server decides MXOK (as the contact search: the org's registrable domain).
+type placeEmail struct {
+	addr, mxDomain string
+}
+
+// emails keeps the addresses the contact search would keep had it read them on the org's
+// own page: contacts.Extract, the search's own classification (a role local part on the
+// org's registrable domain; a person-like or foreign address dropped), and never one on a
+// public body's domain (isPublicBody, as the search skips such an org). orgDomain is the
+// org's registrable domain, "" for a café with no website of its own: there is no domain to
+// hold an address to, so each address is held to its own, except on a personal mailbox
+// provider's domain (contacts.MailboxProvider: never kept, even with a role local part).
+func (r placeContactRules) emails(listed []string, orgDomain string) []placeEmail {
+	var out []placeEmail
+	for _, e := range listed {
+		own := orgDomain
+		if own == "" {
+			_, own, _ = strings.Cut(strings.ToLower(strings.TrimSpace(e)), "@")
+			if contacts.MailboxProvider(own) {
+				continue // a personal mailbox, whatever its local part (a role local part on a mailbox provider too)
+			}
+		}
+		if d, err := sitelist.Registrable(own); err == nil {
+			own = d
+		}
+		page := []byte(`<a href="mailto:` + html.EscapeString(strings.TrimSpace(e)) + `">`)
+		for _, a := range contacts.Extract("", page, own, r.roles).Emails {
+			_, d, _ := strings.Cut(a, "@")
+			if isPublicBody(d, r.publicSuffixes) || slices.ContainsFunc(out, func(x placeEmail) bool { return x.addr == a }) {
+				continue
+			}
+			out = append(out, placeEmail{addr: a, mxDomain: own})
+		}
+	}
+	return out
+}
+
+// phone is raw, a number a place's listing gave, as the phone fact stores it: the number as
+// shown (enrich.NormalizePhone) and its E.164 form (phones.E164, with country's calling code
+// for a national number); ok false when it is not a phone or cannot be put in E.164 safely.
+func placePhone(raw, country string) (value, normalized string, ok bool) {
+	v, _, ok := enrich.NormalizePhone(raw)
+	if !ok {
+		return "", "", false
+	}
+	n := phones.E164(raw, country)
+	return v, n, n != ""
+}
+
+// lookupMX looks up, once per domain, the mail server of every domain an address of kept
+// would be held to (the org's own website's registrable domain, else the address's own),
+// leaving out the places in skip (suppressed: SuppressedPlaces).
+func (r placeContactRules) lookupMX(ctx context.Context, res contacts.Resolver, kept []places.Place, skip map[string]bool) map[string]bool {
+	mx := map[string]bool{}
+	for _, p := range kept {
+		if skip[p.SourceID] {
+			continue
+		}
+		for _, e := range r.emails(p.Emails, places.DomainKey(p.OwnWebsite())) {
+			if _, ok := mx[e.mxDomain]; !ok {
+				mx[e.mxDomain] = contacts.MX(ctx, res, e.mxDomain)
+			}
+		}
+	}
+	return mx
+}
+
+// placeContactCounts is what one import's map-listing contacts added.
+type placeContactCounts struct {
+	Emails int // email routes added
+	Phones int // phone facts added
+}
+
+// store adds the emails and phones of the places import importID stored as routes and phone
+// facts of their orgs (InsertPlaceRoute, InsertPlacePhone: marked overture@1, a route or
+// number the org already has kept as it was, nothing suppressed written). An org on a public
+// body's domain gets none. A place already in its release is not stored again, so a re-run
+// adds nothing; a later release of the same place adds only what is new.
+func (r placeContactRules) store(ctx context.Context, lq leadstore.Queries, importID int64, mx map[string]bool) (placeContactCounts, error) {
+	var n placeContactCounts
+	rows, err := lq.ImportedPlaceContacts(ctx, importID)
+	if err != nil {
+		return n, err
+	}
+	for _, p := range rows {
+		orgDomain := p.OrgDomain
+		if !p.HasSite {
+			orgDomain = ""
+		} else if isPublicBody(orgDomain, r.publicSuffixes) {
+			continue
+		}
+		for _, e := range r.emails(p.Emails, orgDomain) {
+			added, err := lq.InsertPlaceRoute(ctx, p.OrgID, p.PlaceID, e.addr, mx[e.mxDomain])
+			if err != nil {
+				return n, err
+			}
+			if added {
+				n.Emails++
+			}
+		}
+		for _, raw := range p.Phones {
+			v, norm, ok := placePhone(raw, p.Country)
+			if !ok {
+				continue
+			}
+			added, err := lq.InsertPlacePhone(ctx, p.OrgID, p.PlaceID, v, norm)
+			if err != nil {
+				return n, err
+			}
+			if added {
+				n.Phones++
+			}
+		}
+	}
+	return n, nil
 }
 
 // registeredSpec is campaign c's spec from its own file in dataDir, checked, and still what
@@ -231,7 +375,7 @@ func (b *buildChains) rule(ctx context.Context, o leadstore.CafeBuildOrg) (strin
 	return ix.Check(e).Rule, nil
 }
 
-func printPlacesImport(w io.Writer, slug, release string, st places.Stats, res leadstore.PlaceImported) {
+func printPlacesImport(w io.Writer, slug, release string, st places.Stats, res leadstore.PlaceImported, added placeContactCounts) {
 	_, _ = fmt.Fprintf(w, "leads places import: campaign %s, release %s, import %d\n", slug, release, res.ImportID)
 	_, _ = fmt.Fprintf(w, "  read %s: %d kept · skipped %d (blank %d · malformed %d · not a café %d · low confidence %d · other country %d · no name %d)\n",
 		plural(st.Lines, "line", "lines"), st.Kept, st.Skipped(), st.Blank, st.Malformed, st.NotCafe, st.LowConfidence, st.OtherCountry, st.NoName)
@@ -248,8 +392,17 @@ func printPlacesImport(w io.Writer, slug, release string, st places.Stats, res l
 	}
 	_, _ = fmt.Fprintf(w, "  stored %d places (%d already in this release) · %d chains skipped (no lead) · %d orgs and %d sites made\n",
 		res.Stored, res.Already, res.Chains, res.Orgs, res.Sites)
+	if added.Emails > 0 || added.Phones > 0 {
+		_, _ = fmt.Fprintf(w, "  from the map listings: %s and %s added (role addresses on the café's own domain only)\n",
+			plural(added.Emails, "email route", "email routes"), plural(added.Phones, "phone number", "phone numbers"))
+	}
 	if res.Suppressed > 0 {
-		_, _ = fmt.Fprintf(w, "  not stored: %s whose website's domain is suppressed (forgotten or opted out)\n", plural(res.Suppressed, "place", "places"))
+		noSite := ""
+		if res.SuppressedNoSite > 0 {
+			noSite = fmt.Sprintf(", %d of them with no website of their own", res.SuppressedNoSite)
+		}
+		_, _ = fmt.Fprintf(w, "  not stored: %s whose café is suppressed, by its website's domain or an earlier listing (forgotten or opted out)%s\n",
+			plural(res.Suppressed, "place", "places"), noSite)
 	}
 	if res.Sites > 0 {
 		_, _ = fmt.Fprintln(w, "  next: leadhound leads sites probe reads each new café's homepage (cafe@1), then leads contacts, then leads build --campaign "+slug)

@@ -264,11 +264,11 @@ func (d draftCtx) writeInput(ctx context.Context, rs reportStore, plan batchPlan
 	}
 	rules.ConfigBanned = slices.Clone(d.cfg.Copy.BannedWords)
 	rules.CallStep = len(calls) > 0
-	slots, err := leadSlots(c, ev, d.cfg)
+	slots, err := leadSlots(c, ev, d.cfg, spec)
 	if err != nil {
 		return outreach.WriteInput{}, err
 	}
-	footer := d.cfg.Templates.Footers[policy.Footer]
+	footer := plan.footerFor(c.Country, d.cfg)
 	if footer == nil {
 		return outreach.WriteInput{}, fmt.Errorf("no footer for country %q", c.Country)
 	}

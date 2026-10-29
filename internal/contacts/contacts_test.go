@@ -480,3 +480,16 @@ func TestFindComplete(t *testing.T) {
 		}
 	})
 }
+
+func TestMailboxProvider(t *testing.T) {
+	for d, want := range map[string]bool{
+		"gmail.com": true, "GoogleMail.com": true, "mail.yahoo.com": true, "yahoo.ro": true, "hotmail.co.uk": true,
+		"outlook.com": true, "live.com": true, "icloud.com": true, "me.com": true, "aol.com": true, "gmx.de": true,
+		"mail.ru": true, "yandex.ru": true, "proton.me": true, "protonmail.com": true,
+		"cafe-luna.example": false, "gmail.example.com": false, "mail.cafe.example": false, "": false,
+	} {
+		if got := MailboxProvider(d); got != want {
+			t.Errorf("MailboxProvider(%q) = %v, want %v", d, got, want)
+		}
+	}
+}

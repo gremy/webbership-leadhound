@@ -1,0 +1,15 @@
+Subject: A stamp card for {{.OrgName}}, no website needed
+
+Hello,
+
+I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café.
+
+It is a stamp card in Apple Wallet or Google Wallet, with the name and colours of {{.OrgName}} on it. You need no website and your regulars need no app: they sign up from a QR code at the counter, on a cup or on Instagram.
+
+It is free for 30 days with no card needed, then €19 a month with every feature.
+
+Reply and I will send you the demo, so you see the card as your regulars would.
+
+Worth 10 minutes to see it on your phone?
+
+{{.Footer}}

@@ -13,6 +13,12 @@
 vendors:
   # Digital loyalty: wallet passes and loyalty apps.
   - {id: stampme, name: Stamp Me, kind: loyalty, match: [stampme.com]}
+  - {id: stampino, name: Stampino, kind: loyalty, match: [stampino.ro, instagram.com/stampino.app]}
+  - {id: loyalzoo, name: Loyalzoo, kind: loyalty, match: [loyalzoo.com, mylty.co]}
+  - {id: rewardly, name: Rewardly, kind: loyalty, match: [rewardly.me, rewardly.app]}
+  - {id: cardora, name: Cardora, kind: loyalty, match: [cardora.ro]}
+  - {id: tap2, name: Tap2, kind: loyalty, match: [tap2.ai, tap2.ch, tap2.es, tap2pay.ai]}
+  - {id: pick-coupons, name: Pick Coupons, kind: loyalty, match: [pick.coupons, instagram.com/pick.coupons]}
   - {id: loopy, name: Loopy Loyalty, kind: loyalty, match: [loopyloyalty.com]}
   - {id: boomerangme, name: Boomerangme, kind: loyalty, match: [boomerangme.cards, boomerangme.com]}
   - {id: passkit, name: PassKit, kind: loyalty, match: [passkit.com, passkit.io, pskt.io]}

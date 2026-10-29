@@ -1,0 +1,13 @@
+Subject: Re: A stamp card for {{.OrgName}}, no website needed
+
+Hello again,
+
+A short follow-up in case my note got buried. Here is the demo, so you can try it without writing back: https://demo.example/
+
+Open it on your phone and a real stamp card lands in your Wallet. A QR code at your counter is all {{.OrgName}} would need.
+
+If you would rather not set it up yourself, I'll do it with you in 15 minutes.
+
+Worth 10 minutes to see it on your phone?
+
+{{.Footer}}

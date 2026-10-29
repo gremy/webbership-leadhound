@@ -377,7 +377,7 @@ func (q Queries) UsableOrgFacts(ctx context.Context, orgIDs []int64) ([]Fact, er
 		return nil, nil
 	}
 	facts, err := collect(ctx, q.db, pgx.RowToStructByName[Fact],
-		`SELECT f.id, f.org_id, f.kind, f.value, f.normalized, f.fetch_id, f.derived_by, f.found_at
+		`SELECT f.id, f.org_id, f.kind, f.value, f.normalized, coalesce(f.fetch_id, 0) AS fetch_id, f.derived_by, f.found_at
 		 FROM org_fact f WHERE f.org_id = ANY($1) AND (f.kind <> 'phone' OR NOT `+phoneBadSQL("f.id")+`)
 		 ORDER BY f.org_id, f.kind, f.id`, orgIDs)
 	if err != nil {

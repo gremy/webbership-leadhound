@@ -155,21 +155,23 @@ type DetailSignal struct {
 
 // DetailRoute is one contact route of the lead's org and the page it was read from.
 type DetailRoute struct {
-	Kind     string // email | form
-	Value    string
-	MXOK     bool
-	FetchID  int64
-	FinalURL string // the page's address after redirects, else the URL asked for
-	FoundAt  time.Time
+	Kind      string // email | form
+	Value     string
+	MXOK      bool
+	FetchID   int64  // 0 for a route read from a place's map listing (DerivedBy overture@1)
+	FinalURL  string // the page's address after redirects, else the URL asked for; "" without a page
+	FoundAt   time.Time
+	DerivedBy string
 }
 
 // DetailFact is one fact of the lead's org (enrichment) and the page it was read from.
 type DetailFact struct {
-	Kind     string // phone | description | social
-	Value    string
-	FetchID  int64
-	FinalURL string // the page's address after redirects, else the URL asked for
-	FoundAt  time.Time
+	Kind      string // phone | description | social
+	Value     string
+	FetchID   int64  // 0 for a phone read from a place's map listing (DerivedBy overture@1)
+	FinalURL  string // the page's address after redirects, else the URL asked for; "" without a page
+	FoundAt   time.Time
+	DerivedBy string
 }
 
 // DetailAgency is an agency lead's finding page.
@@ -489,14 +491,16 @@ func (q Queries) LeadDetail(ctx context.Context, leadID int64) (Detail, error) {
 		return Detail{}, fmt.Errorf("leadstore: lead detail: signals: %w", err)
 	}
 	if d.Routes, err = collect(ctx, q.db, pgx.RowToStructByPos[DetailRoute],
-		`SELECT r.kind, r.value, r.mx_ok, r.fetch_id, coalesce(nullif(h.final_url, ''), h.url), r.found_at
-		 FROM contact_route r JOIN http_fetch h ON h.id = r.fetch_id
+		`SELECT r.kind, r.value, r.mx_ok, coalesce(r.fetch_id, 0), coalesce(nullif(h.final_url, ''), h.url, ''), r.found_at,
+		   r.derived_by
+		 FROM contact_route r LEFT JOIN http_fetch h ON h.id = r.fetch_id
 		 WHERE r.org_id = $1 ORDER BY r.kind, r.id`, r.OrgID); err != nil {
 		return Detail{}, fmt.Errorf("leadstore: lead detail: routes: %w", err)
 	}
 	if d.Facts, err = collect(ctx, q.db, pgx.RowToStructByPos[DetailFact],
-		`SELECT x.kind, x.value, x.fetch_id, coalesce(nullif(h.final_url, ''), h.url), x.found_at
-		 FROM org_fact x JOIN http_fetch h ON h.id = x.fetch_id
+		`SELECT x.kind, x.value, coalesce(x.fetch_id, 0), coalesce(nullif(h.final_url, ''), h.url, ''), x.found_at,
+		   x.derived_by
+		 FROM org_fact x LEFT JOIN http_fetch h ON h.id = x.fetch_id
 		 WHERE x.org_id = $1 ORDER BY x.kind, x.id`, r.OrgID); err != nil {
 		return Detail{}, fmt.Errorf("leadstore: lead detail: facts: %w", err)
 	}

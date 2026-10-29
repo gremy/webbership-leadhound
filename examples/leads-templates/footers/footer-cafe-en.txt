@@ -1,0 +1,3 @@
+{{.SenderName}}, Demo Loyalty for cafés
+{{.IdentityLine}}
+{{.OptOutLine}}

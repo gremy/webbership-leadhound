@@ -16,11 +16,12 @@ chains:
   names: [Demo Coffee Chain] # chains you know by name (also matched as a name's first words)
   keep_branded: false # a place Overture lists under a brand is a chain unless this is true
 detectors: [cafe@1]
-# Kinds on: a café with a website and no digital loyalty on it. Add cafe_has_loyalty (already on another
-# platform) or cafe_no_website (no site of its own; reached by phone only) to turn those on; each needs its templates.
-kinds: [cafe_no_digital_loyalty]
+# Kinds on, each with its own templates: a café with a website and no digital loyalty on it; a café already on
+# another loyalty platform (the email can name the vendor: the VendorName and VendorLink slots); a café with no site
+# of its own, reached on the email or phone its Overture place lists.
+kinds: [cafe_no_digital_loyalty, cafe_has_loyalty, cafe_no_website]
 countries: # country -> policy; a country missing here gets no email and no call
-  GB: {email: on, call: on, lang: en}
+  GB: {email: on, call: on, lang: en, footer: footer-cafe-en} # footer: this campaign's own footers/<name>.txt, from leads.yaml's templates dir; without it, leads.yaml's footer for the country
   IE: {email: on, call: off, lang: en}
   US: {email: on, call: on, lang: en} # calls need the café's state: the place import stores it
   # Every country runs the same email-first sequence below. Write it/ and es/ templates before writing to Italy and Spain in their language.
@@ -35,8 +36,16 @@ offer:
   pains:
     - {id: paper_cards, needs: [kind == cafe_no_digital_loyalty], text: "Paper stamp cards get lost or forgotten, and every print run costs money."}
     - {id: regulars_unknown, needs: [kind == cafe_no_digital_loyalty], text: "Rewards nobody tracks, so there is no telling whether regulars come back."}
-    # With cafe_has_loyalty on, add: {id: platform_brand, needs: [kind == cafe_has_loyalty], text: "Some platforms put their own brand on the card and keep features for the dearer plans."}
+    - {id: platform_brand, needs: [kind == cafe_has_loyalty], text: "Some platforms put their own brand on the card and keep features for the dearer plans."}
+    - {id: no_site_signup, needs: [kind == cafe_no_website], text: "Customers sign up from a QR code at the counter, so no website is needed."}
   call_to_action: "Worth 10 minutes to see it on your phone?" # the closing question, verbatim
+  links: ["https://demo.example/"] # URLs an email may carry beside product.site_url: absolute https, at most 10
+  # cafe@1 only: a café's loyalty vendor id (internal/cafe/signals.yaml) -> the page the VendorLink slot carries;
+  # default is used for a vendor with no entry of its own. Templates test the slots: {{if .VendorName}}…{{else}}…{{end}}.
+  vendor_links:
+    stampino: "https://compare.example/vs/stampino"
+    stampme: "https://compare.example/vs/stamp-me"
+    default: "https://compare.example/vs"
 copy:
   banned_words: [synergy, guarantee, revolutionary]
   max_words: {0: 125, 1: 80, 3: 60, 4: 60} # default sequence: step -> most words above the footer

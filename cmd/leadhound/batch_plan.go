@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"text/template"
 
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/compliance"
@@ -30,8 +31,9 @@ const defaultTemplatesDir = "templates"
 // The legacy plan is leads.yaml's flow: the three-step all-email sequence spaced by
 // schedule.followup_business_days, leads.yaml's templates and copy bounds. A campaign whose
 // registered version came from its own folder (<data dir>/campaigns/<slug>/campaign.yaml)
-// drafts from that folder's spec and templates instead; the footers, contact-form texts and
-// LinkedIn notes stay leads.yaml's.
+// drafts from that folder's spec and templates instead; the contact-form texts and LinkedIn
+// notes stay leads.yaml's, and so does the footer, unless the spec's country names its own
+// (countries.<code>.footer, read from leads.yaml's footers dir: footerFor).
 type batchPlan struct {
 	legacy    bool
 	sequences leadstore.BatchSequences // frozen on the batch; never nil for a new batch
@@ -175,10 +177,11 @@ func campaignFile(dataDir, slug string) (string, bool, error) {
 // campaignTemplates loads spec's templates from its folder in dataDir: for every kind of the
 // spec and every language a country of the spec has email or calls on in, each email step of
 // its default sequence (<kind>/<lang>/<step>.txt), each email step of every named sequence
-// (<kind>/<lang>/<name>/<step>.txt) and, when one has a call step, call.txt. A spec with no
+// (<kind>/<lang>/<name>/<step>.txt) and, when one has a call step, call.txt. The footers its
+// countries name (countries.<code>.footer) are read from lc's footers dir into Footers. A spec with no
 // call_first of its own whose plan moves leads onto campaign.DefaultCallFirst (callFirstSeq)
 // needs that sequence's email steps too, so a missing one is named, never a silent drop.
-func campaignTemplates(dataDir string, spec campaign.Spec) (leadconfig.Templates, error) {
+func campaignTemplates(dataDir string, spec campaign.Spec, lc leadconfig.Config) (leadconfig.Templates, error) {
 	req := leadconfig.CampaignTemplates{Kinds: spec.Kinds}
 	for _, c := range spec.Countries {
 		if (c.Email || c.Call) && c.Lang != "" && !slices.Contains(req.Langs, c.Lang) {
@@ -217,7 +220,36 @@ func campaignTemplates(dataDir string, spec campaign.Spec) (leadconfig.Templates
 		}
 	}
 	dir := filepath.Join(dataDir, campaign.Dir, spec.Slug, cmp.Or(spec.TemplatesDir, defaultTemplatesDir))
-	return leadconfig.LoadCampaignTemplates(dir, req)
+	t, err := leadconfig.LoadCampaignTemplates(dir, req)
+	if err != nil {
+		return leadconfig.Templates{}, err
+	}
+	var footers []string
+	for _, code := range slices.Sorted(maps.Keys(spec.Countries)) {
+		if f := spec.Countries[code].Footer; f != "" && !slices.Contains(footers, f) {
+			footers = append(footers, f)
+		}
+	}
+	if len(footers) > 0 {
+		if t.Footers, err = lc.LoadFooters(footers); err != nil {
+			return leadconfig.Templates{}, err
+		}
+	}
+	return t, nil
+}
+
+// footerFor is the footer an email to a lead in country ends with: the plan's campaign's own
+// (countries.<code>.footer) when the spec's country names one, else leads.yaml's for the
+// country (cfg.Policy(country).Footer). nil when the one it names is not loaded.
+func (p batchPlan) footerFor(country string, cfg leadconfig.Config) *template.Template {
+	if !p.legacy {
+		for code, c := range p.spec.Countries {
+			if c.Footer != "" && countryCode(code) == countryCode(country) {
+				return p.templates.Footers[c.Footer]
+			}
+		}
+	}
+	return cfg.Templates.Footers[cfg.Policy(country).Footer]
 }
 
 // specHasCallFirstLeads reports whether spec's plan sends some of its leads down
@@ -239,8 +271,8 @@ func specHasCallFirstLeads(spec campaign.Spec) bool {
 }
 
 // filePlan is the plan of spec, read from its folder in dataDir.
-func filePlan(dataDir string, spec campaign.Spec) (batchPlan, error) {
-	t, err := campaignTemplates(dataDir, spec)
+func filePlan(dataDir string, spec campaign.Spec, lc leadconfig.Config) (batchPlan, error) {
+	t, err := campaignTemplates(dataDir, spec, lc)
 	if err != nil {
 		return batchPlan{}, err
 	}
@@ -264,6 +296,10 @@ func filePlan(dataDir string, spec campaign.Spec) (batchPlan, error) {
 	p.rules.BannedWords = spec.Copy.BannedWords
 	p.rules.NoLinksInStep0 = !spec.Copy.LinksInStep0
 	p.rules.NoExclamation = !spec.Copy.Exclamation
+	if spec.Product.SiteURL != "" {
+		p.rules.Links = append(p.rules.Links, spec.Product.SiteURL)
+	}
+	p.rules.Links = append(p.rules.Links, spec.Offer.Links...)
 	for kind, pats := range spec.Copy.ForbidByKind {
 		for _, pat := range pats {
 			re, err := regexp.Compile(pat)
@@ -314,7 +350,7 @@ func resolveBatchPlan(ctx context.Context, lq leadstore.Queries, bs batchSetup, 
 	if sha != c.SpecSHA256 {
 		return batchPlan{}, refused("Campaign %s changed since it was registered: run leadhound leads campaigns register, then make the batch.", c.Slug)
 	}
-	p, err := filePlan(bs.dataDir, spec)
+	p, err := filePlan(bs.dataDir, spec, bs.leads)
 	if err != nil {
 		return batchPlan{}, refused("Campaign %s: %s", c.Slug, err.Error())
 	}

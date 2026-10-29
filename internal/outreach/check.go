@@ -30,7 +30,7 @@ const (
 	RuleNumber        = "number"         // a number traces to neither the template nor a slot
 	RuleSubjectLength = "subject-length" // the subject is over MaxSubjectRunes
 	RuleSubjectBang   = "subject-bang"   // the subject holds "!"
-	RuleURL           = "url"            // a URL other than the finding's or the sender's site
+	RuleURL           = "url"            // a URL other than the finding's, the sender's site or one the campaign allows
 	RuleForbidden     = "forbidden"      // a pattern the campaign forbids for the lead's kind matches
 	RuleExclamation   = "exclamation"    // the campaign allows no "!" and the email holds one
 )
@@ -99,6 +99,10 @@ type StepRules struct {
 	// off): the lowest of EmailSteps (step 2 on a call_first sequence), step 0 when EmailSteps
 	// is nil. NoExclamation refuses "!" anywhere in an email (copy.exclamation off).
 	NoLinksInStep0, NoExclamation bool
+	// Links are the URLs a file campaign's emails may carry beside the finding's URL, the
+	// sender's site and the lead's VendorLink: the spec's product.site_url and offer.links.
+	// Compared as Check compares every URL (case-insensitive, a trailing "/" ignored).
+	Links []string
 }
 
 // FirstEmail is the step of the lead's first email: the lowest of EmailSteps, 0 when nil.
@@ -136,6 +140,9 @@ func CheckIn(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Proble
 		if s == nil {
 			add(RuleSource, "the text uses %s, which is not a slot", name)
 			continue
+		}
+		if s.Value == "" && slices.Contains(leadconfig.OptionalSlots, name) {
+			continue // an optional slot the template tests; empty is no missing fact
 		}
 		if strings.TrimSpace(s.Value) == "" {
 			add(RuleEmptySlot, "%s is empty", name)
@@ -197,7 +204,7 @@ func CheckIn(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Proble
 	}
 
 	okURL := map[string]bool{}
-	for _, u := range []string{d.Slots.FindingURL.Value, cfg.Sender.SiteURL} {
+	for _, u := range append([]string{d.Slots.FindingURL.Value, cfg.Sender.SiteURL, d.Slots.VendorLink.Value}, rules.Links...) {
 		if u != "" {
 			okURL[checkURLKey(u)] = true
 		}
@@ -223,7 +230,7 @@ func CheckIn(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Proble
 		for _, u := range checkURLs(part.text) {
 			k := checkURLKey(u)
 			if !okURL[k] && (!part.footer || k != privacy) {
-				add(RuleURL, "%s is neither the finding's URL nor the sender's site (the privacy notice's URL goes in the footer only)", u)
+				add(RuleURL, "%s is neither the finding's URL, the sender's site nor a link the campaign allows (the privacy notice's URL goes in the footer only)", u)
 			}
 		}
 	}

@@ -1,0 +1,9 @@
+Subject: Re: Cardul de ștampile despre care am vorbit
+
+Bună,
+
+Revin pe scurt după discuția noastră. Uite demo-ul, ca să ai un card real în Wallet: https://demo.example/
+
+Merită 10 minute să-l vezi pe telefonul tău?
+
+{{.Footer}}

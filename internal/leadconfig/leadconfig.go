@@ -97,11 +97,17 @@ const (
 var BatchSources = []string{BatchesStarred, BatchesStarredThenRest}
 
 // SlotNames are the values a template may use, as {{.Name}}. Footer holds the rendered
-// footer, so a footer itself may use every slot but Footer.
+// footer, so a footer itself may use every slot but Footer. VendorName and VendorLink are
+// optional: a café lead's loyalty vendor and the campaign's page for it, empty for any other
+// lead, so a template tests them ({{if .VendorName}}…{{else}}…{{end}}).
 var SlotNames = []string{
 	"OrgName", "Domain", "Host", "Major", "Exact", "EvidenceLine", "FindingURL",
-	"EOLDate", "SenderName", "IdentityLine", "OptOutLine", "Footer",
+	"EOLDate", "SenderName", "IdentityLine", "OptOutLine", "Footer", "VendorName", "VendorLink",
 }
+
+// OptionalSlots are the slot names a template may use while empty: Render passes them
+// even when empty, and Check does not call them missing facts.
+var OptionalSlots = []string{"VendorName", "VendorLink"}
 
 // Steps is the number of email steps in a sequence: the first email and two follow-ups.
 const Steps = 3
@@ -498,8 +504,14 @@ var (
 	langCode    = regexp.MustCompile(`^[a-z]{2}$`)
 	dnsName     = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
 	localPart   = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]*$`)
-	fileName    = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	weekdays    = []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+)
+
+// FileNameRe is the plain file-name rule for a footer, kind, sequence or DKIM selector name:
+// lower-case letters, digits, "_" and "-", starting with a letter or digit. campaign mirrors
+// it for its countries' footers (a test compares the two).
+var (
+	FileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 )
 
 // checkProbe checks the fields LoadForProbe needs, compiling the pattern and the zones.
@@ -581,7 +593,7 @@ func (cfg *Config) checkRest() []string {
 	if strings.TrimSpace(s.IdentityLine) == "" {
 		p = append(p, "sender.identity_line is missing")
 	}
-	if !fileName.MatchString(s.DKIMSelector) {
+	if !FileNameRe.MatchString(s.DKIMSelector) {
 		p = append(p, fmt.Sprintf("sender.dkim_selector: %q is not a DNS label", s.DKIMSelector))
 	}
 	for i, a := range s.OperatorAddresses {
@@ -649,7 +661,7 @@ func (cfg *Config) checkRest() []string {
 		if c.Channel == ChannelEmail && c.Footer == "" {
 			p = append(p, "countries."+code+".footer is missing (an email country needs one)")
 		}
-		if c.Footer != "" && !fileName.MatchString(c.Footer) {
+		if c.Footer != "" && !FileNameRe.MatchString(c.Footer) {
 			p = append(p, fmt.Sprintf("countries.%s.footer: %q is not a plain file name", code, c.Footer))
 		}
 	}
@@ -856,7 +868,7 @@ func (cfg Config) requiredTemplates() required {
 				r.email[key] = true
 			}
 		}
-		if c.Channel == ChannelEmail && fileName.MatchString(c.Footer) && !slices.Contains(r.footers, c.Footer) {
+		if c.Channel == ChannelEmail && FileNameRe.MatchString(c.Footer) && !slices.Contains(r.footers, c.Footer) {
 			r.footers = append(r.footers, c.Footer)
 		}
 	}
@@ -951,6 +963,37 @@ func loadTemplates(dir string, req required) (Templates, []string) {
 	}
 	t.SHA256 = digest(files)
 	return t, nil
+}
+
+// LoadFooters reads, parses and test-renders footers/<name>.txt for each name from the
+// templates dir of a config Load read (leads.yaml's footers dir), as Load does for the
+// footers its countries name: a campaign country's own footer is loaded alongside them.
+// Every missing, unparsable or unrenderable file is reported at once.
+func (cfg Config) LoadFooters(names []string) (map[string]*template.Template, error) {
+	if len(names) == 0 {
+		return map[string]*template.Template{}, nil
+	}
+	if cfg.dataDir == "" || cfg.TemplatesDir == "" || !filepath.IsLocal(cfg.TemplatesDir) {
+		return nil, fmt.Errorf("leadconfig: footers %s: %w: the config has no templates dir to read them from", strings.Join(names, ", "), ErrInvalid)
+	}
+	var p []string
+	var req required
+	for _, n := range names {
+		switch {
+		case !FileNameRe.MatchString(n):
+			p = append(p, fmt.Sprintf("footer %q is not a plain file name", n))
+		case !slices.Contains(req.footers, n):
+			req.footers = append(req.footers, n)
+		}
+	}
+	if len(p) == 0 {
+		var t Templates
+		t, p = loadTemplates(filepath.Join(cfg.dataDir, cfg.TemplatesDir), req)
+		if len(p) == 0 {
+			return t.Footers, nil
+		}
+	}
+	return nil, fmt.Errorf("leadconfig: footers: %w: %s", ErrInvalid, strings.Join(p, "; "))
 }
 
 // splitEmail splits an email template into its subject (the first line, "Subject: …") and
@@ -1063,7 +1106,7 @@ func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error)
 	slices.Sort(kinds)
 	slices.Sort(langs)
 	for _, kind := range slices.Compact(kinds) {
-		if !fileName.MatchString(kind) {
+		if !FileNameRe.MatchString(kind) {
 			p = append(p, fmt.Sprintf("kind %q is not a folder name", kind))
 			continue
 		}
@@ -1091,7 +1134,7 @@ func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error)
 			}
 			readSteps(base, req.EmailSteps, set.Email)
 			for _, name := range slices.Sorted(maps.Keys(req.Named)) {
-				if !fileName.MatchString(name) {
+				if !FileNameRe.MatchString(name) {
 					p = append(p, fmt.Sprintf("sequence %q is not a folder name", name))
 					continue
 				}

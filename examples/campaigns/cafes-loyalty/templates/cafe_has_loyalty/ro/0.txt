@@ -1,0 +1,15 @@
+Subject: Cardul tău de ștampile, cu numele tău
+
+Bună,
+
+Sunt {{.SenderName}}. Am construit Demo Loyalty și îl folosesc la cafeneaua mea.
+
+{{if .VendorName}}La {{.OrgName}} aveți deja un card de fidelitate pe {{.VendorName}}, deci știi că clienților le place să fie numărați.{{else}}La {{.OrgName}} aveți deja un card de fidelitate digital, deci știi că clienților le place să fie numărați.{{end}} Demo Loyalty e aceeași idee, doar cu numele tău pe card: un card de ștampile în Apple Wallet sau Google Wallet, în culorile tale, cu toate funcțiile într-un singur plan.
+
+Primele 30 de zile sunt gratuite, fără card bancar. Apoi costă 19 € pe lună.
+
+Răspunde-mi și îți trimit demo-ul, ca să-l compari pe telefonul tău.
+
+Merită 10 minute să-l vezi pe telefonul tău?
+
+{{.Footer}}

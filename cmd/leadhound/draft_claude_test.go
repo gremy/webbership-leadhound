@@ -50,7 +50,7 @@ func newDraftWorld(t *testing.T, kind string, major int) draftWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := filePlan(examplesDir, spec)
+	plan, err := filePlan(examplesDir, spec, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

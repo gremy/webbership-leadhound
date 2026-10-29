@@ -24,6 +24,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadview"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
+	"github.com/gremy/webbership-leadhound/internal/places"
 	"github.com/gremy/webbership-leadhound/internal/probe"
 )
 
@@ -603,6 +604,9 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		lf := console.LeadFact{Value: f.Value, PageURL: f.FinalURL, FoundAt: new(f.FoundAt)}
 		switch f.Kind {
 		case leadstore.FactPhone:
+			if f.DerivedBy == places.DerivedBy {
+				lf.Label = placeSourceWords
+			}
 			p.Phones = append(p.Phones, lf)
 		case leadstore.FactDescription:
 			p.Descriptions = append(p.Descriptions, lf)
@@ -688,11 +692,19 @@ func routeNote(r leadstore.DetailRoute) string {
 	if r.Kind != leadstore.RouteEmail {
 		return ""
 	}
+	note := "no mail server found"
 	if r.MXOK {
-		return "mail server found"
+		note = "mail server found"
 	}
-	return "no mail server found"
+	if r.DerivedBy == places.DerivedBy {
+		note += " · " + placeSourceWords
+	}
+	return note
 }
+
+// placeSourceWords says a route or phone came from the café's map listing (Overture), not
+// from a page of its own.
+const placeSourceWords = "from its map listing (Overture)"
 
 // channelWords is a channel in words.
 func channelWords(ch string) string {

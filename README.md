@@ -218,8 +218,20 @@ COPY (
 - **The loop**: `leads sites probe` reads each café's homepage with the `cafe@1` detector (digital loyalty, online ordering, Instagram, language), then `leads contacts`, then `leads build --campaign cafes-loyalty` and `leads batch new --campaign cafes-loyalty`.
   The timers build and batch `drupal-eol` only, so the café campaign's build and batch run by hand.
   A café whose homepage links your own loyalty product is a customer and gets no lead: list your product's hosts in `leads.yaml` as `probe.cafe_own_vendor_hosts` (private; never in the repository).
-  A kind the spec's `kinds` does not list (`cafe_has_loyalty`, `cafe_no_website` in the example) makes no lead.
-- **Countries**: every country in the example runs the same email-first sequence; every email country also needs its `leads.yaml` policy, footer and opt-out line, and the `leads.yaml` templates in that language.
+- **Kinds**: `cafe@1` sorts each café into one of three kinds, and a kind the spec's `kinds` does not list makes no lead.
+  `cafe_no_digital_loyalty` is a café with a website and no digital loyalty on it.
+  `cafe_has_loyalty` is a café already on another loyalty platform; the email can name that platform.
+  `cafe_no_website` is a café with no site of its own, built from its place alone.
+  The example turns all three on, and each kind needs its own templates in every language its countries use.
+- **Overture contacts**: a place's own emails and phones become routes marked as coming from Overture, through the same filters the contacts crawl applies (role addresses, public bodies, phone screening).
+  A route the crawl or research found is never overwritten, and importing the same release again adds nothing twice.
+  That is how a café with no website can still be written to or called.
+- **Footer, links and the vendor slot**: `countries.<CC>.footer` names a footer (`footers/<name>.txt` in `leads.yaml`'s templates dir) that this campaign's emails to that country end with; a country without one keeps `leads.yaml`'s footer.
+  `offer.links` lists the URLs an email may carry beside `product.site_url` (absolute `https://`, at most 10); any other URL in a draft stops the lead.
+  `offer.vendor_links` maps a loyalty vendor id from `internal/cafe/signals.yaml` to a page, with `default` for a vendor that has no entry of its own.
+  A café lead's templates get two slots from it: `VendorName` (the first loyalty vendor its homepage links) and `VendorLink` (that vendor's page, else `default`).
+  Both may be empty, so a template tests them: `{{if .VendorName}}…{{else}}…{{end}}`, never a bare `{{.VendorName}}`.
+- **Countries**: every country in the example runs the same email-first sequence; every email country also needs its `leads.yaml` policy and opt-out line, and a footer: the campaign country's own or the one its `leads.yaml` policy names.
   A US, Canadian or Australian café is callable only with its state known, which the import stores from the place.
 - **Attribution**: the place data comes from Overture Maps Foundation (overturemaps.org); Overture publishes the Places theme under CDLA Permissive 2.0, and a lead from a place says so on its page.
   Check Overture's attribution page for the release you export: themes that include OpenStreetMap data are under ODbL and need "© OpenStreetMap contributors" as well.

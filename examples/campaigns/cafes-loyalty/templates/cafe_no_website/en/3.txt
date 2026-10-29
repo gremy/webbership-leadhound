@@ -1,0 +1,11 @@
+Subject: Re: A stamp card for {{.OrgName}}, no website needed
+
+Hello,
+
+I tried to call you this week but did not get through, so a short note instead.
+
+The demo puts a real stamp card for a café like {{.OrgName}} in your Wallet: https://demo.example/
+
+It is free for 30 days, and I can set it up with you in 15 minutes.
+
+{{.Footer}}

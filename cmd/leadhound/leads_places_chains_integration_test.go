@@ -123,7 +123,7 @@ func TestPlacesSkipForgottenDomain(t *testing.T) {
 	)
 	wantLines(t, "next release", importPlaces(t, "2026-11-18.0", next),
 		"  stored 1 places (0 already in this release) · 0 chains skipped (no lead) · 1 orgs and 1 sites made",
-		"  not stored: 2 places whose website's domain is suppressed (forgotten or opted out)")
+		"  not stored: 2 places whose café is suppressed, by its website's domain or an earlier listing (forgotten or opted out)\n")
 	if n := dbCount(t, `SELECT count(*) FROM place WHERE release = '2026-11-18.0' AND source_id LIKE 'gone-%'`); n != 0 {
 		t.Errorf("%d places of the forgotten café stored in the new release, want 0", n)
 	}

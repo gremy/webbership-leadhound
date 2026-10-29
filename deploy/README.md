@@ -347,6 +347,39 @@ Without a folder, `drupal-eol` drafts from `leads.yaml` and its templates as bef
 A data directory whose campaign lists a call-first country (none in the table since 29 Oct 2026) needs that campaign's `call_first/` templates for each kind and language, or `register` and the batch refuse and name the missing files.
 `make remote HOST=<ssh host> ARGS='leads campaigns list' CONFIRM=1` shows what is registered.
 
+#### A places campaign by hand
+
+A campaign whose `source` is `overture` (the café example) reads places from a file you export locally with DuckDB, as the main README's "Café places" says.
+The timers build and batch `drupal-eol` only, so a places campaign runs by hand, in the order below.
+`HOST` is your ssh host, and `<data dir>` is the server's `LEADHOUND_DATA_DIR` from the table above, typed out: `make remote` passes each word as written, so a variable there is not expanded.
+
+Copy the export (`places-ro.json` below; the name is yours) to the server and put it where the leadhound user can read it, outside the `campaigns/` and `leads-templates/` trees that `make deploy-data` replaces:
+
+```sh
+scp places-ro.json HOST:/tmp/
+ssh HOST 'sudo install -D -o root -g leadhound -m 0640 /tmp/places-ro.json <data dir>/places/places-ro.json && rm /tmp/places-ro.json'
+```
+
+Then import it, naming the Overture release it came from; a release already imported stores nothing twice:
+
+```sh
+make remote HOST=HOST CONFIRM=1 ARGS='leads places import overture --campaign cafes-loyalty --release <release> <data dir>/places/places-ro.json'
+```
+
+A place's own emails and phones become routes through the contacts crawl's filters, so a café with no website can be reached too.
+Then run the loop, one step at a time, checking the counts each prints:
+
+```sh
+make remote HOST=HOST CONFIRM=1 ARGS='leads sites probe'
+make remote HOST=HOST CONFIRM=1 ARGS='leads contacts'
+make remote HOST=HOST CONFIRM=1 ARGS='leads build --campaign cafes-loyalty'
+make remote HOST=HOST CONFIRM=1 ARGS='leads batch new --campaign cafes-loyalty'
+```
+
+`leads sites probe` and `leads contacts` take no campaign: they work on every site and organisation, the places' homepages among them, and the timers run them too, so a step a timer is running exits 75 and you try again later.
+`build` and `batch new` refuse a campaign that is not registered, so register it first.
+Before the batch, `leads.yaml` must list your own product's hosts as `probe.cafe_own_vendor_hosts`, or a café already on your product becomes a lead.
+
 ### Turning the leads on in production
 
 Production has never built a lead, so take these steps in order:

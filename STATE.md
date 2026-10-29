@@ -1,6 +1,13 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Café campaign (2026-10-29, on local main, not pushed or deployed; plan `leadhound-cafe-campaign-live`, Checkpoint 1):
+- A campaign country can name its own footer (`countries.<CC>.footer`), read from `leads.yaml`'s footers dir; a country without one keeps `leads.yaml`'s.
+- `offer.links` lists the extra URLs an email may carry, and any other URL in a draft stops the lead.
+- `offer.vendor_links` maps a café's loyalty vendor to a comparison page; templates get the optional `VendorName` and `VendorLink` slots.
+- The café detector knows six more loyalty vendors, and an Overture place's own emails and phones become routes through the contacts crawl's filters.
+- The example `cafes-loyalty` turns on all three café kinds with fictional templates; `deploy/README.md` gives the hand steps to import places and run a places campaign on the server.
+
 Campaigns, Claude-written outreach and a 5-step mixed sequence (2026-10-28, on local main, not pushed or deployed; plan `leadhound-campaigns-claude-outreach`, in CP9: docs done, the two reviews and `make prepush` next):
 - Committed: CP1 accounts and campaigns, Drupal as campaign `drupal-eol` with no change in behaviour (`0023baa`); CP2 the Claude client, the spend ledger and caps, the key as a systemd credential (`408be44`); CP3 the sequence, call outcomes, Today and the call card (`d3472d9`, walk fixes `6c92a9a` and `d9b31ef`, the theme switch `3133223`, polish `73b377d`); CP3b contact research on star, CP4 Claude drafts with the grounding check and the trust gate, CP5 calling rules, screening, phone research and erasure, and CP6 the upgrade-risk report, in one commit because they share files (`f4e819e`); CP7 the café campaign from Overture places, with the walk fixes (`9c5cbc7`).
 - What exists: campaigns as versioned specs (`leads campaigns check|register|list|show`); the 5-step sequence with a call step and the call-first sequence for consent countries; Today, the call card and `leads calls list|outcome`; one call rule over the country table (`internal/compliance`); screening by file (`leads phones screen export|import`); contact research on star (`leads research request|list|run`) and phone research (`leads phones research`), each number or address verified on the page it was cited from; Claude drafts (`leads drafts sample|eval|golden-export`, the Drafts tab, the gate on the Campaigns tab); `leads report`; `leads forget org`; `leads places import overture`.
@@ -8,7 +15,8 @@ Campaigns, Claude-written outreach and a 5-step mixed sequence (2026-10-28, on l
 - Deploy pieces: `/etc/leadhound/anthropic.key` (root 0600) reaches only `leadhound-leads-batch` and `leadhound-leads-research` through `LoadCredential=`; the console refuses to start if it can see a key; `leadhound-leads-research.path` starts research when a star asks.
 - Live on dev (28 Oct, nothing sent, $0.16 in all): research `--max 3` found nothing, correctly, so the found path is unproven live; two drafts samples showed caching working and led to the writer fixes in `9c5cbc7`; the 3-lead re-check found the drafting per-lead cap too small for a retry, which another builder is fixing (the writer's output ceiling and the per-lead cap).
 - Docs: README "Campaigns and leads" (with "Café places"), `deploy/README.md` "Campaigns on the server", "The Anthropic key", "Calls, screening and phone research", "Erasure".
-- Found while writing the docs: `make deploy-data` does not copy `campaigns/`, `make remote` hands the Anthropic key to no command, and `leads forget` needs the owner's `migrate.env`, so the docs give the hand steps; a campaign spec has no caps key although `deploy/env.example` says a campaign may set its own.
+- Found while writing the docs: `leads forget` needs the owner's `migrate.env`, so the docs give the hand step; a campaign spec has no caps key although `deploy/env.example` says a campaign may set its own.
+  Since then `make deploy-data` checks and copies `campaigns/` whenever `$LEADHOUND_PRIVATE_DIR/campaigns` exists, and `make remote REMOTE_CLAUDE=1 CONFIRM=1` hands the Anthropic key to a command that calls Claude.
 
 The Leads console (2026-10-27, pushed and deployed to production; plan `leadhound-leads-console`, archived):
 - Committed: CP1 the data model (`ed6e42e`: findings, kinds and channels as rows, Jev usage counted per purpose), CP2 the list and the lead page with Outreach moved (`fc24933`), CP4 enrichment (`55afa3e`: phones, descriptions and social links from the org's own pages), CP3 stars and the outreach order (`2f48058`), CP5 Settings in the console with the priorities page retired (`cafca15`), CP6 Jev relevance with a golden set and an eval (`8efa0f7`).

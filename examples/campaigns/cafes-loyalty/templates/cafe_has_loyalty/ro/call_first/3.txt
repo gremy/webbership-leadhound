@@ -1,0 +1,11 @@
+Subject: Re: Cardul de ștampile despre care am vorbit
+
+Bună,
+
+Revin pe scurt după discuția noastră. Uite demo-ul, ca să ai un card real în Wallet: https://demo.example/
+
+{{if .VendorLink}}{{if .VendorName}}Cum se compară cu {{.VendorName}}: {{.VendorLink}}{{else}}Cum se compară: {{.VendorLink}}{{end}}{{end}}
+
+Merită 10 minute să-l vezi pe telefonul tău?
+
+{{.Footer}}

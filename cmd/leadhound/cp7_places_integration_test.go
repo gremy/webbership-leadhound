@@ -130,7 +130,7 @@ func cafeRoute(t *testing.T, domain string) {
 // places and one branded place are skipped as chains with their rule stored and no org;
 // the independent cafés get orgs (the US one with its state), sites probed by cafe@1, and
 // the build turns each probe into a lead or a reason: the own vendor's customer is
-// skipped, the café with no website is a kind the campaign leaves off. A second import of
+// skipped, the café with no website is a cafe_no_website lead. A second import of
 // the same release stores nothing; the next release stores the places again over the same
 // orgs (the cold-start twin).
 func TestPlacesImportBuildEndToEnd(t *testing.T) {
@@ -187,11 +187,24 @@ func TestPlacesImportBuildEndToEnd(t *testing.T) {
 	}
 
 	build := mustRun(t, "leads", "build", "--campaign", "cafes-loyalty")
+	// The example lists all three café kinds: the three cafés showing no loyalty are
+	// cafe_no_digital_loyalty, the Facebook-only café (no website of its own) is
+	// cafe_no_website, none shows another platform, and the own vendor's customer is skipped.
+	// No café has an email route, so every lead is on no channel for now.
 	wantLines(t, "café build", build,
-		"leads build: 3 leads (3 new · 0 refreshed · 0 past new, kept) from 5 orgs · fixture leads (reserved names, never in a real batch) 3",
+		"leads build: 4 leads (4 new · 0 refreshed · 0 past new, kept) from 5 orgs · fixture leads (reserved names, never in a real batch) 3",
 		"  cafe_no_digital_loyalty: none 3",
-		"no lead: already on Webbership Loyalty 1 · kind off: cafe_no_website 1",
+		"  cafe_no_website: none 1",
+		"no lead: already on Webbership Loyalty 1\n",
 	)
+	if strings.Contains(build, "cafe_has_loyalty") || strings.Contains(build, "kind off") {
+		t.Errorf("café build names a kind it should not:\n%s", build)
+	}
+	var fbKind string
+	if err := owner.QueryRow(ctx, `SELECT l.kind FROM lead l JOIN org o ON o.id = l.org_id
+		WHERE o.domain = 'overture:demo-place-0005'`).Scan(&fbKind); err != nil || fbKind != "cafe_no_website" {
+		t.Errorf("Facebook-only café lead kind %q (%v), want cafe_no_website", fbKind, err)
+	}
 	var reason, lang string
 	if err := owner.QueryRow(ctx, `SELECT f.subject->>'reason', f.subject->>'language' FROM lead l JOIN finding f ON f.id = l.finding_id
 		JOIN org o ON o.id = l.org_id WHERE o.domain = 'cafeneaua-exemplu.example'`).Scan(&reason, &lang); err != nil ||
@@ -200,7 +213,7 @@ func TestPlacesImportBuildEndToEnd(t *testing.T) {
 	}
 	// The cold-start twin of the build: nothing changes on a second run.
 	wantLines(t, "café build again", mustRun(t, "leads", "build", "--campaign", "cafes-loyalty"),
-		"leads build: 3 leads (0 new · 0 refreshed · 0 past new, kept) from 5 orgs · fixture leads (reserved names, never in a real batch) 3")
+		"leads build: 4 leads (0 new · 0 refreshed · 0 past new, kept) from 5 orgs · fixture leads (reserved names, never in a real batch) 3")
 }
 
 // TestPlacesLeaveDrupalBuildAlone is the contract drift test: the Drupal campaign's build

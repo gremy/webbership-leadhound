@@ -32,6 +32,10 @@ import (
 // Source is the place source name stored on each row.
 const Source = "overture"
 
+// DerivedBy names the routes and phone facts read from a place's own emails and phones
+// (contact_route and org_fact rows that point at the place instead of a fetch).
+const DerivedBy = "overture@1"
+
 // Default categories: Overture's primary categories for cafés.
 var DefaultCategories = []string{"coffee_shop", "cafe"}
 

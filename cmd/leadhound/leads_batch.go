@@ -21,6 +21,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/mailbox"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
+	"github.com/gremy/webbership-leadhound/internal/probe"
 )
 
 func init() {
@@ -230,7 +231,7 @@ func plural(n int, one, many string) string {
 
 // leadSlots fills every slot one lead's drafts may use from its stored rows, each with the
 // row it came from.
-func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config) (outreach.Slots, error) {
+func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config, spec campaign.Spec) (outreach.Slots, error) {
 	org := outreach.Provenance{Table: slotOrg, ID: c.OrgID}
 	s := outreach.Slots{
 		Domain:       outreach.Slot{Value: c.Domain, Source: org},
@@ -252,6 +253,7 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 		if ev.ProbeID != nil && ev.FinalHost != "" {
 			s.Host = outreach.Slot{Value: ev.FinalHost, Source: outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}}
 		}
+		s.VendorName, s.VendorLink = cafeVendorSlots(ev, spec.Offer.VendorLinks)
 	case ev.ProbeID != nil:
 		probe := outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}
 		var (
@@ -299,6 +301,36 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 	return s, nil
 }
 
+// cafeVendorSlots are a café lead's VendorName and VendorLink: its loyalty vendor is the
+// first vendor of signals.yaml (cafe.DefaultConfig's order) its stored probe signals name
+// (probe.CafeResult; phrase matches and the own vendor never count), named as signals.yaml
+// names it; its link is the campaign's vendor_links entry for that vendor, else the
+// "default" entry, else none. A café on no known vendor gets no VendorName and the default
+// link. VendorName's source is the probe row; VendorLink's is the config (the spec).
+func cafeVendorSlots(ev leadstore.Evidence, links map[string]string) (name, link outreach.Slot) {
+	sigs := make([]leadstore.Signal, len(ev.Signals))
+	for i, sg := range ev.Signals {
+		sigs[i] = sg.Signal
+	}
+	found := probe.CafeResult(sigs).Vendors
+	id := ""
+	if ev.ProbeID != nil {
+		for _, v := range cafe.DefaultConfig().Vendors {
+			if v.ID != cafe.OwnVendorID && v.Kind == cafe.SigLoyalty && slices.Contains(found, v.ID) {
+				id = v.ID
+				name = outreach.Slot{Value: v.Name, Source: outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}}
+				break
+			}
+		}
+	}
+	if l, ok := links[id]; ok && id != "" {
+		link = outreach.ConfigSlot(l)
+	} else if l := links[campaign.VendorLinkDefault]; l != "" {
+		link = outreach.ConfigSlot(l)
+	}
+	return name, link
+}
+
 // isCafeKind reports whether kind is one of the café kinds (cafe@1).
 func isCafeKind(kind string) bool {
 	return slices.ContainsFunc(cafe.Kinds, func(k cafe.KindInfo) bool { return k.Kind == kind })
@@ -339,10 +371,10 @@ func cmpOr(a, b string) string {
 // (emailRecipient): the address given on the call. A lead with no route (channel none) is
 // drafted only on a call-first plan with phone, every one of its email steps email_consent. A form lead gets the contact-form text
 // (step 0) and the LinkedIn note (step 1) from leads.yaml's templates, whatever the plan.
-// The footer is leads.yaml's. Any render or Check problem drops the lead.
+// The footer is plan.footerFor's: the campaign country's own, else leads.yaml's. Any render or Check problem drops the lead.
 func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config,
 	phone *leadstore.Fact, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
-	slots, err := leadSlots(c, ev, cfg)
+	slots, err := leadSlots(c, ev, cfg, plan.spec)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +398,7 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		if !ok {
 			return nil, fmt.Errorf("no %s templates in language %q", c.Kind, policy.Lang)
 		}
-		footer := cfg.Templates.Footers[policy.Footer]
+		footer := plan.footerFor(c.Country, cfg)
 		if footer == nil || (plan.legacy && len(set.Steps) != leadconfig.Steps) {
 			return nil, fmt.Errorf("no email templates or footer for country %q", c.Country)
 		}
@@ -498,6 +530,7 @@ func slotsJSON(s outreach.Slots) (json.RawMessage, error) {
 		{"OrgName", s.OrgName}, {"Domain", s.Domain}, {"Host", s.Host}, {"Major", s.Major}, {"Exact", s.Exact},
 		{"EvidenceLine", s.EvidenceLine}, {"FindingURL", s.FindingURL}, {"EOLDate", s.EOLDate},
 		{"SenderName", s.SenderName}, {"IdentityLine", s.IdentityLine}, {"OptOutLine", s.OptOutLine}, {"Footer", s.Footer},
+		{"VendorName", s.VendorName}, {"VendorLink", s.VendorLink},
 	} {
 		if ns.slot.Value != "" {
 			m[ns.name] = slotJSON{Value: ns.slot.Value, Table: ns.slot.Source.Table, ID: ns.slot.Source.ID}

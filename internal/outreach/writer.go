@@ -365,7 +365,7 @@ func renderWritten(d WrittenDraft, in WriteInput) ([]StepDraft, *Draft, []Failur
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("render call card: %w", err)
 			}
-			for _, f := range CheckRendered(dr, 0, in.Render.Cfg, StepRules{Forbid: in.Rules.Forbid, BannedWords: in.Rules.BannedWords}) {
+			for _, f := range CheckRendered(dr, 0, in.Render.Cfg, StepRules{Forbid: in.Rules.Forbid, BannedWords: in.Rules.BannedWords, Links: in.Rules.Links}) {
 				f.Step = StepTalkingPoints
 				fails = append(fails, f)
 			}

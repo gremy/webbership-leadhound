@@ -1,0 +1,9 @@
+Subject: Re: Your stamp card, under your own name
+
+Hello,
+
+This is my last note, and I will leave it there. If you ever want the card at {{.OrgName}} to carry only your name, reply to this address at any time and I will send the demo then.
+
+Thank you for reading, and good luck with the café.
+
+{{.Footer}}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -66,6 +65,9 @@ type PlaceImported struct {
 	// gathered about such an org again, its place's phones and emails included. place_import
 	// has no column for it: the run's note and the command's output carry it.
 	Suppressed int
+	// SuppressedNoSite are those of Suppressed with no website of their own: their org
+	// ("overture:<source_id>") was suppressed, by `leads forget`.
+	SuppressedNoSite int
 }
 
 // ImportPlaces stores one import of rows for im.CampaignID: for each place the release does
@@ -109,7 +111,7 @@ func (q Queries) ImportPlaces(ctx context.Context, im PlaceImport, rows []PlaceR
 	for _, id := range held {
 		have[id] = true
 	}
-	suppressed, err := q.suppressedPlaceDomains(ctx, rows)
+	suppressed, err := q.SuppressedPlaces(ctx, placesOf(rows))
 	if err != nil {
 		return res, fmt.Errorf("leadstore: import places: %w", err)
 	}
@@ -121,8 +123,11 @@ func (q Queries) ImportPlaces(ctx context.Context, im PlaceImport, rows []PlaceR
 			continue
 		}
 		have[r.Place.SourceID] = true // a repeat in the file counts once
-		if suppressed[places.DomainKey(r.Place.OwnWebsite())] {
+		if suppressed[r.Place.SourceID] {
 			res.Suppressed++
+			if strings.HasPrefix(placeOrgDomain(r.Place), PlaceOrgPrefix) {
+				res.SuppressedNoSite++
+			}
 			continue
 		}
 		todo[i] = true
@@ -173,28 +178,43 @@ func (q Queries) ImportPlaces(ctx context.Context, im PlaceImport, rows []PlaceR
 	return res, nil
 }
 
-// suppressedPlaceDomains are the own-website registrable domains of rows that an active domain
-// suppression covers.
-func (q Queries) suppressedPlaceDomains(ctx context.Context, rows []PlaceRow) (map[string]bool, error) {
-	var domains []string
-	for _, r := range rows {
-		if d := places.DomainKey(r.Place.OwnWebsite()); d != "" && !slices.Contains(domains, d) {
-			domains = append(domains, d)
-		}
+// SuppressedPlaces returns the source ids of ps that an active domain suppression of any
+// account covers (orgDomainSuppressedSQL): their org's domain now (placeOrgDomain: an own
+// website's registrable domain, or the "overture:<source_id>" org of a café with no website
+// that `leads forget` suppresses), or the org any stored place with the same source id points
+// at. So a café forgotten with no website stays forgotten when a later release lists a
+// website for it, and the other way round. Nothing is gathered about such a place again.
+func (q Queries) SuppressedPlaces(ctx context.Context, ps []places.Place) (map[string]bool, error) {
+	ids, domains := make([]string, 0, len(ps)), make([]string, 0, len(ps))
+	for _, p := range ps {
+		ids, domains = append(ids, p.SourceID), append(domains, placeOrgDomain(p))
 	}
 	out := map[string]bool{}
-	if len(domains) == 0 {
+	if len(ids) == 0 {
 		return out, nil
 	}
 	hit, err := collect(ctx, q.db, pgx.RowTo[string],
-		`SELECT x.domain FROM unnest($1::text[]) AS x(domain) WHERE `+orgDomainSuppressedSQL("x"), domains)
+		`SELECT DISTINCT x.source_id FROM unnest($1::text[], $2::text[]) AS x(source_id, domain)
+		 WHERE `+orgDomainSuppressedSQL("x")+`
+		    OR EXISTS (SELECT 1 FROM place sp JOIN org o ON o.id = sp.org_id
+		      WHERE sp.source = $3 AND sp.source_id = x.source_id AND `+orgDomainSuppressedSQL("o")+`)`,
+		ids, domains, places.Source)
 	if err != nil {
-		return nil, fmt.Errorf("suppressed domains: %w", err)
+		return nil, fmt.Errorf("leadstore: suppressed places: %w", err)
 	}
-	for _, d := range hit {
-		out[d] = true
+	for _, id := range hit {
+		out[id] = true
 	}
 	return out, nil
+}
+
+// placesOf is the places of rows.
+func placesOf(rows []PlaceRow) []places.Place {
+	out := make([]places.Place, len(rows))
+	for i, r := range rows {
+		out[i] = r.Place
+	}
+	return out
 }
 
 // ReleasePlaces returns every place stored for release (any campaign's import, chains
@@ -229,9 +249,9 @@ func (q Queries) placeOrg(ctx context.Context, p places.Place) (orgID int64, org
 	if !regionISORe.MatchString(region) {
 		region = ""
 	}
-	domain := places.DomainKey(p.OwnWebsite())
+	domain := placeOrgDomain(p)
 	var siteID *int64
-	if domain != "" {
+	if !strings.HasPrefix(domain, PlaceOrgPrefix) {
 		var id int64
 		err = q.db.QueryRow(ctx,
 			`INSERT INTO site (domain, country, origin) VALUES ($1, $2, 'place')
@@ -247,8 +267,6 @@ func (q Queries) placeOrg(ctx context.Context, p places.Place) (orgID int64, org
 			return 0, false, false, err
 		}
 		siteID = &id
-	} else {
-		domain = PlaceOrgPrefix + strings.ToLower(p.SourceID)
 	}
 	err = q.db.QueryRow(ctx,
 		`INSERT INTO org (kind, domain, name, country, region, site_id, source)
@@ -264,6 +282,15 @@ func (q Queries) placeOrg(ctx context.Context, p places.Place) (orgID int64, org
 		return 0, false, false, err
 	}
 	return orgID, false, siteMade, nil
+}
+
+// placeOrgDomain is the domain of p's org: its own website's registrable domain, or, with no
+// website of its own, PlaceOrgPrefix and its source id.
+func placeOrgDomain(p places.Place) string {
+	if d := places.DomainKey(p.OwnWebsite()); d != "" {
+		return d
+	}
+	return PlaceOrgPrefix + strings.ToLower(p.SourceID)
 }
 
 func (q Queries) insertPlace(ctx context.Context, importID int64, release string, r PlaceRow, orgID *int64) error {

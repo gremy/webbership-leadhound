@@ -120,7 +120,10 @@ func (q Queries) Suppress(ctx context.Context, accountID int64, kind, value, rea
 	case kind == SuppressPhone && !phoneValueRE.MatchString(v):
 		return Suppressed{}, fmt.Errorf("leadstore: suppress: %w: a phone suppression holds sha256:<hex>", ErrBadSuppressValue)
 	}
-	if kind == SuppressDomain {
+	// The org of a café with no website ("overture:<source_id>", `leads forget`) is kept as it
+	// is, so a later release of its place is not stored again (ImportPlaces).
+	placeOrg := strings.HasPrefix(v, PlaceOrgPrefix) && len(v) > len(PlaceOrgPrefix)
+	if kind == SuppressDomain && !placeOrg {
 		// A domain suppression covers the whole registrable domain: mail.acme.de → acme.de.
 		r, err := sitelist.Registrable(v)
 		if err != nil {

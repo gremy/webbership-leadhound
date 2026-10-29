@@ -1,0 +1,11 @@
+Subject: Re: Un card de ștampile pentru {{.OrgName}}, fără site
+
+Bună,
+
+Am încercat să te sun săptămâna asta, dar nu am reușit. Îți las un mesaj scurt.
+
+Demo-ul îți pune în Wallet un card real pentru o cafenea ca {{.OrgName}}: https://demo.example/
+
+Primele 30 de zile sunt gratuite. Îl putem configura împreună în 15 minute.
+
+{{.Footer}}
