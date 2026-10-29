@@ -24,6 +24,7 @@ import (
 // dial gets nothing; a GB lead with an email gets nothing; a German contact-form lead looks
 // for a phone because this campaign calls Germany with the written reason the law asks for.
 func TestResearchCallFirstPhone(t *testing.T) {
+	callFirstTable(t)
 	ctx := context.Background()
 	dir := leadsDB(t)
 	t.Setenv("LEADHOUND_OUTREACH", "")

@@ -337,11 +337,12 @@ func TestCafeShadowBatchAndRegion(t *testing.T) {
 	for _, m := range ro {
 		shape += m.channel + ":" + m.seq + " "
 	}
-	if shape != "phone:call_first phone:call_first email:call_first email:call_first " {
+	// Every country is email first since 29 Oct 2026: a Romanian café gets the default sequence.
+	if shape != "email: email: phone: email: email: " {
 		t.Fatalf("RO café rows %q\nbatch new said:\n%s", shape, out)
 	}
-	if !strings.Contains(ro[2].body, "Mulțumesc pentru discuție") || strings.Contains(ro[2].body, "https://") || strings.Contains(ro[2].body, "!") {
-		t.Errorf("RO first email:\n%s", ro[2].body)
+	if ro[0].body == "" || strings.Contains(ro[0].body, "https://") || strings.Contains(ro[0].body, "!") {
+		t.Errorf("RO first email:\n%s", ro[0].body)
 	}
 	usCall := false
 	for _, m := range rows("bean-house.example") {

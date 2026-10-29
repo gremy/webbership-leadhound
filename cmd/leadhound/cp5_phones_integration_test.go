@@ -250,6 +250,7 @@ func TestPhonesScreeningGrid(t *testing.T) {
 // of a phone research of the org (found or not). With live calls off the command does
 // nothing and writes no research row.
 func TestPhonesResearchSelection(t *testing.T) {
+	callFirstTable(t)
 	ctx := context.Background()
 	w := newCP5World(t)
 	owner := storetest.OwnerConn(t)

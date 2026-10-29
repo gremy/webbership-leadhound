@@ -190,6 +190,7 @@ func (w *cp5World) surfaces(t *testing.T) surfaces {
 // surface (warn and choose); a GB call screened clean yesterday in hours is callable
 // everywhere, so the sweep is not vacuous.
 func TestCallableInvariantSweep(t *testing.T) {
+	callFirstTable(t)
 	ctx := context.Background()
 	w := newCP5World(t)
 	owner := storetest.OwnerConn(t)

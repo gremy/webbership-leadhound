@@ -22,6 +22,7 @@ import (
 // a GB lead in the same batch keeps the default one. Connected with their yes, the first
 // email falls due; an opt-out then cancels the emails still to go.
 func TestCallFirstBatchSequence(t *testing.T) {
+	callFirstTable(t)
 	ctx := context.Background()
 	dir := leadsDB(t)
 	drawFromAll(t, dir)

@@ -142,6 +142,7 @@ func (r *systemRecorder) Write(ctx context.Context, req claude.WriteRequest) (cl
 // steps (2 and 3), told the first email follows their yes on a call, and its rows are
 // Claude's on the call_first sequence; the GB lead keeps the default sequence.
 func TestCallFirstDefaultSequenceTemplatesAndClaude(t *testing.T) {
+	callFirstTable(t)
 	dir := roWorld(t)
 	if out := mustRun(t, "leads", "campaigns", "check"); !strings.Contains(out, "drupal-eol: warning: "+privacyMissing) {
 		t.Fatalf("check does not warn about the missing privacy notice:\n%s", out)
@@ -256,6 +257,7 @@ func TestDraftsSampleNeverUsesWrongNumber(t *testing.T) {
 // templates, is refused by `campaigns check` naming each missing file, never drafted with
 // its call-first leads silently dropped.
 func TestCampaignsCheckNamesMissingCallFirstTemplates(t *testing.T) {
+	callFirstTable(t)
 	dir := roWorld(t)
 	if err := os.RemoveAll(filepath.Join(dir, campaign.Dir, "drupal-eol", "templates", "d10", "en", "call_first")); err != nil {
 		t.Fatal(err)
