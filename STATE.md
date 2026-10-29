@@ -1,7 +1,14 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
-Café campaign (2026-10-29, on local main, not pushed or deployed; plan `leadhound-cafe-campaign-live`, Checkpoint 1):
+Café campaign live in production (2026-10-29, `cccbc69`; plan `leadhound-cafe-campaign-live`, Checkpoints 1-4):
+- Registered `cafes-loyalty` (Romania); `drupal-eol` unchanged. Overture release 2026-10-21.0 imported: 3,268 cafés kept, 623 chains skipped (15 on a shared or brand website), 2,293 leads (no website 1,851, no digital loyalty 442; no competitor seen in Romania yet).
+- The café mailbox is assigned to `cafes-loyalty` only; the first café batch (3 leads, the new mailbox's warm-up room) waits for approval in the console; nothing café was sent.
+- Café build and batch run by hand (`deploy/README.md`, "A places campaign by hand"); the timers batch `drupal-eol` only.
+- Known: café leads show "Drupal 0" as their finding in `leads batch show` (display only, not in the emails); café contact-form leads came out 0 on the first production run (89 on dev), to check after the next contacts run; two no-website places sharing one address get two first emails.
+- 3b fixes (`cccbc69`): a number inside a café's name counts as sourced; `batches_from` and `countries.<CC>.identity_line|opt_out_line` per campaign; reply sync strips campaign opt-out lines; café form and LinkedIn texts live in the campaign folder; platform websites count as no website and brand or shared domains are skipped like chains.
+
+Checkpoint 1 of the same plan:
 - A campaign country can name its own footer (`countries.<CC>.footer`), read from `leads.yaml`'s footers dir; a country without one keeps `leads.yaml`'s.
 - `offer.links` lists the extra URLs an email may carry, and any other URL in a draft stops the lead.
 - `offer.vendor_links` maps a café's loyalty vendor to a comparison page; templates get the optional `VendorName` and `VendorLink` slots.
