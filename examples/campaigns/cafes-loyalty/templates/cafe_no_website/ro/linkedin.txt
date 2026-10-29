@@ -1,0 +1,1 @@
+Bună, sunt {{.SenderName}}. Am construit Demo Loyalty, un card de ștampile în Wallet pentru cafenele ca {{.OrgName}}, fără să ai nevoie de site. Mă bucur să ne conectăm.

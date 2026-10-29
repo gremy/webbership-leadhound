@@ -27,6 +27,22 @@ func TestFooterAndLinksAccepted(t *testing.T) {
 	}
 }
 
+// The country footer lines and batches_from pass on the café example (which sets them) and
+// with every batches_from value.
+func TestCountryLinesAndBatchesFromAccepted(t *testing.T) {
+	s := cafeSpec(t)
+	ro := s.Countries["RO"]
+	if ro.IdentityLine == "" || ro.OptOutLine == "" || s.BatchesFrom != leadconfig.BatchesStarredThenRest {
+		t.Fatalf("the café example no longer sets RO's lines and batches_from: %+v %q", ro, s.BatchesFrom)
+	}
+	for _, v := range append([]string{""}, leadconfig.BatchSources...) {
+		s.BatchesFrom = v
+		if err := s.Check(CheckOptions{KnownKinds: KnownKinds()}); err != nil {
+			t.Errorf("batches_from %q: %v", v, err)
+		}
+	}
+}
+
 func TestFooterAndLinksRefused(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -43,6 +59,22 @@ func TestFooterAndLinksRefused(t *testing.T) {
 		{"footer without email", false, func(s *Spec) {
 			s.Countries["GB"] = Country{Call: true, Lang: "en", Footer: "footer-en"}
 		}, []string{"countries.GB.footer is only for a country with email on"}},
+		{"identity line on two lines", false, func(s *Spec) {
+			s.Countries["GB"] = Country{Email: true, Lang: "en", IdentityLine: "Demo Ltd\nExample Street"}
+		}, []string{"countries.GB.identity_line must be one non-blank line"}},
+		{"opt-out line blank", false, func(s *Spec) {
+			s.Countries["GB"] = Country{Email: true, Lang: "en", OptOutLine: "   "}
+		}, []string{"countries.GB.opt_out_line must be one non-blank line"}},
+		{"opt-out line too long", false, func(s *Spec) {
+			s.Countries["GB"] = Country{Email: true, Lang: "en", OptOutLine: "Reply unsubscribe " + strings.Repeat("x", MaxFooterLine)}
+		}, []string{"countries.GB.opt_out_line must be one non-blank line of at most 300"}},
+		{"opt-out line without email", false, func(s *Spec) {
+			s.Countries["GB"] = Country{Call: true, Lang: "en", OptOutLine: "Reply unsubscribe to stop."}
+		}, []string{"countries.GB.opt_out_line is only for a country with email on"}},
+		{"opt-out line without an opt-out word", false, func(s *Spec) {
+			s.Countries["GB"] = Country{Email: true, Lang: "en", OptOutLine: "Reply stop and I will not write again."}
+		}, []string{"countries.GB.opt_out_line must hold an opt-out word"}},
+		{"batches_from unknown", false, func(s *Spec) { s.BatchesFrom = "everyone" }, []string{`batches_from: "everyone" is not one of starred, starred_then_rest`}},
 		{"link http", false, func(s *Spec) { s.Offer.Links = []string{"http://example.test"} }, []string{"not an absolute https:// URL"}},
 		{"link relative", false, func(s *Spec) { s.Offer.Links = []string{"/vs/stamp-me"} }, []string{"not an absolute https:// URL"}},
 		{"link without host", false, func(s *Spec) { s.Offer.Links = []string{"https:///vs"} }, []string{"not an absolute https:// URL"}},
@@ -119,7 +151,7 @@ func TestDrupalExampleHashUnchanged(t *testing.T) {
 	if h != want {
 		t.Errorf("drupal-eol hash = %s; want %s\n%s", h, want, j)
 	}
-	for _, key := range []string{`"footer"`, `"links"`, `"vendor_links"`} {
+	for _, key := range []string{`"footer"`, `"links"`, `"vendor_links"`, `"batches_from"`, `"identity_line"`, `"opt_out_line"`} {
 		if strings.Contains(string(j), key) {
 			t.Errorf("canonical JSON carries %s though the spec leaves it out", key)
 		}

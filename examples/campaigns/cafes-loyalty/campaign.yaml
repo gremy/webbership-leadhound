@@ -25,9 +25,13 @@ countries: # country -> policy; a country missing here gets no email and no call
   IE: {email: on, call: off, lang: en}
   US: {email: on, call: on, lang: en} # calls need the café's state: the place import stores it
   # Every country runs the same email-first sequence below. Write it/ and es/ templates before writing to Italy and Spain in their language.
-  RO: {email: on, call: on, lang: ro}
+  # identity_line and opt_out_line: this campaign's own wording of leads.yaml's sender.identity_line and
+  # sender.opt_out_lines.<lang> for the country (here the informal "tu"); one line each, email on only, and the
+  # opt-out line must hold an opt-out word (dezabonare, unsubscribe…). Every email must still carry both.
+  RO: {email: on, call: on, lang: ro, identity_line: "Demo SRL, Strada Exemplu 1, Orașul Exemplu", opt_out_line: "Nu e momentul potrivit? Răspunde cu „dezabonare” și nu îți mai scriu."}
   IT: {email: on, call: on, lang: en}
   ES: {email: on, call: on, lang: en}
+batches_from: starred_then_rest # optional: starred | starred_then_rest; wins over leads.yaml's batches_from and the console's setting for this campaign's batches
 writer: template # template | claude (claude is refused until the draft gate passes)
 offer:
   proof_line: "I built Demo Loyalty and run it at my own café." # one true line, used verbatim; yours goes in your data dir
@@ -63,4 +67,5 @@ sequence:
   - {step: 2, type: call, after_business_days: 2, when: has_callable_phone}
   - {step: 3, type: email, after_business_days: 1, when: call_not_connected}
   - {step: 4, type: email, after_business_days: 5}
-templates_dir: templates # <kind>/<lang>/{0,1,3,4}.txt and call.txt; call-first leads get <kind>/<lang>/call_first/{2,3}.txt
+templates_dir: templates # <kind>/<lang>/{0,1,3,4}.txt and call.txt; call-first leads get <kind>/<lang>/call_first/{2,3}.txt;
+# a form lead (a contact form, no address) gets <kind>/<lang>/form.txt and linkedin.txt, both required for a café kind

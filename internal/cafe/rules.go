@@ -100,6 +100,13 @@ func loyaltyWhat(r Result) string {
 // DefaultMaxLocations is the place count above which one name or one website is a chain.
 const DefaultMaxLocations = 5
 
+// SharedDomainNames is how many differently named places, none carrying the domain's own
+// name, make one website domain shared rather than one café's: a brand's, a supplier's or
+// a platform's that is not on places' shared list. Read from the Romania export of
+// 2026-10-21.0 (3,268 cafés): every domain with 3 or more such names was a menu, directory,
+// delivery or Google link; the real multi-location cafés stayed at 2 or fewer.
+const SharedDomainNames = 3
+
 // ChainConfig is how chains are told apart from independent cafés.
 type ChainConfig struct {
 	// MaxLocations: a name or a website domain on more places than this, in one import,
@@ -138,6 +145,10 @@ type ChainVerdict struct {
 	Chain  bool
 	Rule   string
 	Detail string // plain words: which name, brand or domain, and how many places
+	// SharedDomain: the place is skipped (Rule ChainByDomain) because its website is not one
+	// café's: a brand's or supplier's (places.IsBrandSite), or listed by SharedDomainNames or
+	// more differently named places that do not carry its name.
+	SharedDomain bool
 }
 
 // ChainIndex counts names and domains over one import.
@@ -147,12 +158,13 @@ type ChainIndex struct {
 	branded bool // skip branded
 	names   map[string]int
 	domains map[string]int
+	foreign map[string]map[string]bool // domain → normalised names on it not carrying its name
 }
 
 // NewChainIndex counts entries (every place in the import, chains included).
 func NewChainIndex(cfg ChainConfig, entries []ChainEntry) *ChainIndex {
 	ix := &ChainIndex{max: cfg.MaxLocations, branded: !cfg.KeepBranded,
-		names: map[string]int{}, domains: map[string]int{}}
+		names: map[string]int{}, domains: map[string]int{}, foreign: map[string]map[string]bool{}}
 	if ix.max <= 0 {
 		ix.max = DefaultMaxLocations
 	}
@@ -167,12 +179,21 @@ func NewChainIndex(cfg ChainConfig, entries []ChainEntry) *ChainIndex {
 		}
 		if d := places.DomainKey(e.Website); d != "" {
 			ix.domains[d]++
+			if k := NormalizeName(e.Name); k != "" && !carriesDomain(k, d) {
+				if ix.foreign[d] == nil {
+					ix.foreign[d] = map[string]bool{}
+				}
+				ix.foreign[d][k] = true
+			}
 		}
 	}
 	return ix
 }
 
-// Check judges one entry. Rules run in order: list, brand, name count, domain count.
+// Check judges one entry. Rules run in order: list, brand, name count, domain count, shared
+// domain. A shared domain skips a brand's site whoever lists it, and on any other domain
+// only the places whose name does not carry the domain's: a café whose own site others
+// also list keeps it.
 func (ix *ChainIndex) Check(e ChainEntry) ChainVerdict {
 	name, brand := NormalizeName(e.Name), NormalizeName(e.Brand)
 	for _, c := range ix.list {
@@ -195,7 +216,46 @@ func (ix *ChainIndex) Check(e ChainEntry) ChainVerdict {
 	if d := places.DomainKey(e.Website); d != "" && ix.domains[d] > ix.max {
 		return ChainVerdict{Chain: true, Rule: ChainByDomain, Detail: fmt.Sprintf("the website %s is on %d places (more than %d)", d, ix.domains[d], ix.max)}
 	}
+	if d := places.DomainKey(e.Website); d != "" {
+		if places.IsBrandSite(d) {
+			return ChainVerdict{Chain: true, Rule: ChainByDomain, SharedDomain: true,
+				Detail: fmt.Sprintf("the website %s is a brand's or supplier's, not the café's own", d)}
+		}
+		if n := len(ix.foreign[d]); n >= SharedDomainNames && !carriesDomain(name, d) {
+			return ChainVerdict{Chain: true, Rule: ChainByDomain, SharedDomain: true,
+				Detail: fmt.Sprintf("the website %s is shared: %d differently named places list it (%d or more)", d, n, SharedDomainNames)}
+		}
+	}
 	return ChainVerdict{}
+}
+
+// genericWords are the words in many café names that say nothing about whose a domain is.
+var genericWords = []string{
+	"cafe", "caffe", "coffee", "cafea", "cafenea", "cafeneaua", "kaffee", "kafe", "shop", "house",
+	"specialty", "roastery", "roasters", "roaster", "bistro", "lounge", "restaurant", "bakery",
+	"club", "lab", "pub", "bar",
+}
+
+// carriesDomain reports whether a normalised place name carries domain's own name: the
+// name, spaces dropped, holds the domain's label ("zorbix cafe mall" on zorbixcafe.example)
+// unless the label is itself a generic word (a directory on coffee.example is carried by no
+// café merely named "coffee"), or the label holds one of the name's words of four letters or
+// more that is not a generic one ("quillon cafe" on laquillon.example). A label under four
+// letters (g.co) is carried by no name.
+func carriesDomain(name, domain string) bool {
+	l := strings.ReplaceAll(places.Label(domain), "-", "")
+	if len([]rune(l)) < 4 || name == "" {
+		return false
+	}
+	if !slices.Contains(genericWords, l) && strings.Contains(strings.ReplaceAll(name, " ", ""), l) {
+		return true
+	}
+	for _, w := range strings.Fields(name) {
+		if len([]rune(w)) >= 4 && !slices.Contains(genericWords, w) && strings.Contains(l, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // foldMarks drops combining marks after decomposition ("Cafeneaua Şoim" → "Cafeneaua Soim").

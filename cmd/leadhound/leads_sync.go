@@ -3,9 +3,11 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/mail"
 	"os"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -117,16 +120,65 @@ func newMatcher(refs []leadstore.SentRef) matcher {
 }
 
 // optOutLinesOf (FO3) is every line of ours a reply may quote: the opt-out line of each
-// language (sorted by language, so the order is fixed), then the selftest sentence and the
-// one sent before it (replies to old selftests still quote it).
-func optOutLinesOf(cfg leadconfig.Config) []string {
+// language (sorted by language, so the order is fixed), then each campaign spec's country
+// opt_out_line (specs in the order given, countries sorted by code), then the selftest
+// sentence and the one sent before it (replies to old selftests still quote it). A line
+// given twice is listed once.
+func optOutLinesOf(cfg leadconfig.Config, specs ...campaign.Spec) []string {
 	var lines []string
-	for _, lang := range slices.Sorted(maps.Keys(cfg.Sender.OptOutLines)) {
-		if line, ok := cfg.Sender.OptOutLine(lang); ok {
+	add := func(line string) {
+		if strings.TrimSpace(line) != "" && !slices.Contains(lines, line) {
 			lines = append(lines, line)
 		}
 	}
-	return append(lines, mailbox.SelftestLine, mailbox.OldSelftestLine)
+	for _, lang := range slices.Sorted(maps.Keys(cfg.Sender.OptOutLines)) {
+		if line, ok := cfg.Sender.OptOutLine(lang); ok {
+			add(line)
+		}
+	}
+	for _, spec := range specs {
+		for _, code := range slices.Sorted(maps.Keys(spec.Countries)) {
+			add(spec.Countries[code].OptOutLine)
+		}
+	}
+	add(mailbox.SelftestLine)
+	add(mailbox.OldSelftestLine)
+	return lines
+}
+
+// ownOptOutLines is optOutLinesOf over cfg and the latest registered spec version of every
+// campaign of the default account, retired ones included (their leads still reply): the
+// registered version is what the emails were drafted from, which the file on disk may no
+// longer be. A campaign whose spec cannot be read, or a store that cannot list campaigns,
+// is logged and skipped, never an error: a line left in a reply only errs toward reading
+// it as an opt-out.
+func ownOptOutLines(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config) []string {
+	cs, err := lq.Campaigns(ctx, leadstore.DefaultAccountID)
+	if err != nil {
+		slog.Warn("leads sync: campaign opt-out lines not read; using leads.yaml's alone", "err", err.Error())
+		return optOutLinesOf(cfg)
+	}
+	return optOutLinesOf(cfg, registeredSpecs(cs)...)
+}
+
+// registeredSpecs decodes each campaign's latest registered spec (canonical JSON), in the
+// order given; one without a version is skipped, one that does not decode is logged and
+// skipped.
+func registeredSpecs(cs []leadstore.Campaign) []campaign.Spec {
+	var specs []campaign.Spec
+	for _, c := range cs {
+		if len(c.Spec) == 0 {
+			continue
+		}
+		var spec campaign.Spec
+		if err := json.Unmarshal(c.Spec, &spec); err != nil {
+			slog.Warn("leads sync: campaign spec unreadable; its opt-out lines are not stripped from replies",
+				"campaign", c.Slug, "err", err.Error())
+			continue
+		}
+		specs = append(specs, spec)
+	}
+	return specs
 }
 
 func (m matcher) ourID(id string) bool         { _, ok := m.byID[id]; return ok }
@@ -272,7 +324,7 @@ func syncAll(ctx context.Context, pool *pgxpool.Pool, key secretbox.PrivateKey, 
 		return nil, fmt.Errorf("leads sync: %w", err)
 	}
 	match := newMatcher(refs)
-	match.ownLines = optOutLinesOf(cfg)
+	match.ownLines = ownOptOutLines(ctx, lq, cfg)
 	out := map[int64]mailboxSync{}
 	for _, mb := range boxes {
 		if mb.State == leadstore.MailboxRetired {

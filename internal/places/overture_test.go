@@ -160,6 +160,42 @@ func TestMalformedLinesCapped(t *testing.T) {
 	}
 }
 
+func TestIsBrandSite(t *testing.T) {
+	for _, c := range []struct {
+		link string
+		want bool
+	}{
+		{"https://www.lavazza.example/it", true},
+		{"https://shop.lavazza.co.uk/", true},
+		{"lavazza.ro", true},
+		{"https://www3.hilton.com/hotel", true},
+		{"https://lavazzacafe.example/", false},
+		{"https://cafe.example/lavazza", false},
+		{"", false},
+	} {
+		if got := IsBrandSite(c.link); got != c.want {
+			t.Errorf("IsBrandSite(%q) = %v, want %v", c.link, got, c.want)
+		}
+	}
+}
+
+// TestPlatformWebsiteIsNoWebsite: a place whose only website is a platform's page has none of
+// its own; a real site listed after the platform's is still found.
+func TestPlatformWebsiteIsNoWebsite(t *testing.T) {
+	for _, c := range []struct {
+		sites []string
+		want  string
+	}{
+		{[]string{"https://bit.ly/x"}, ""},
+		{[]string{"https://demo.wixsite.com/cafe", "https://share.google/y"}, ""},
+		{[]string{"https://tinyurl.com/z", "https://cafe-demo.example/"}, "https://cafe-demo.example/"},
+	} {
+		if got := (Place{Websites: c.sites}).OwnWebsite(); got != c.want {
+			t.Errorf("OwnWebsite(%v) = %q, want %q", c.sites, got, c.want)
+		}
+	}
+}
+
 func TestLinks(t *testing.T) {
 	cases := []struct {
 		link, host, key string
@@ -172,6 +208,26 @@ func TestLinks(t *testing.T) {
 		{"https://m.facebook.com/x", "m.facebook.com", "", true, true},
 		{"https://cafe.wixsite.com/home", "cafe.wixsite.com", "", true, false},
 		{"https://www.ubereats.com/store/x", "ubereats.com", "", true, false},
+		// Shorteners, maps and search on any Google suffix, builders on their own domain or a
+		// café's subdomain, encyclopedias, messaging, menu platforms: never a café's own site.
+		{"https://bit.ly/cafe-demo", "bit.ly", "", true, false},
+		{"https://share.google/abc", "share.google", "", true, false},
+		{"https://maps.app.goo.gl/x", "maps.app.goo.gl", "", true, false},
+		{"https://www.google.ro/maps/place/x", "google.ro", "", true, false},
+		{"https://sites.google.com/view/cafe", "sites.google.com", "", true, false},
+		{"https://maps.google.co.uk/?cid=1", "maps.google.co.uk", "", true, false},
+		{"https://ro.wikipedia.org/wiki/Cafe", "ro.wikipedia.org", "", true, false},
+		{"https://www.wix.com/demo", "wix.com", "", true, false},
+		{"https://demo.wix.com/cafe", "demo.wix.com", "", true, false},
+		{"https://demo-cafe.metro.bar/", "demo-cafe.metro.bar", "", true, false},
+		{"https://chat.whatsapp.com/x", "chat.whatsapp.com", "", true, false},
+		{"https://meniudigital.ro/demo", "meniudigital.ro", "", true, false},
+		{"meniudigital.ro", "meniudigital.ro", "", true, false},
+		// Not platforms: a name merely holding a platform's word, and a brand's site (skipped
+		// as a chain by the chain check, not "no website").
+		{"https://googlecafe.example/", "googlecafe.example", "googlecafe.example", false, false},
+		{"https://cafe-bit.ly.example/", "cafe-bit.ly.example", "ly.example", false, false},
+		{"https://www.lavazza.example/", "lavazza.example", "lavazza.example", false, false},
 		{"", "", "", false, false},
 	}
 	for _, c := range cases {

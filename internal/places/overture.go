@@ -415,14 +415,45 @@ func clean(in []string) []string {
 }
 
 // sharedHosts are platforms many unrelated places list as their "website": a page there is
-// not the café's own site, and its domain says nothing about a chain.
+// not the café's own site, and its domain says nothing about a chain. A place whose only
+// websites are here has no website of its own (a cafe_no_website lead, its listing's own
+// email and phone kept). Every subdomain counts too, on purpose: a café's page on a site
+// builder (mycafe.wixsite.com, mycafe.metro.bar) is one of thousands on a domain the café
+// does not own, and taking its registrable domain as the org would merge unrelated cafés.
+// Groups: social and messaging; maps, search and link shorteners; site builders and free
+// hosting; menu, booking, directory and delivery platforms; forms, files and payment links.
 var sharedHosts = []string{
+	// social and messaging
 	"facebook.com", "fb.com", "fb.me", "instagram.com", "instagr.am", "tiktok.com", "x.com",
-	"twitter.com", "linktr.ee", "linkin.bio", "google.com", "goo.gl", "g.page", "business.site",
-	"maps.app.goo.gl", "tripadvisor.com", "yelp.com", "foursquare.com", "wixsite.com",
-	"squarespace.com", "square.site", "wordpress.com", "blogspot.com", "carrd.co", "ubereats.com",
-	"glovoapp.com", "wolt.com", "deliveroo.co.uk", "just-eat.co.uk", "tazz.ro", "bolt.eu",
-	"doordash.com", "grubhub.com", "foodpanda.com", "linkedin.com", "youtube.com",
+	"twitter.com", "linktr.ee", "linkin.bio", "linkedin.com", "youtube.com", "whatsapp.com",
+	"wa.me", "t.me", "tumblr.com", "pinterest.com",
+	// maps, search, encyclopedias and link shorteners (Google on any suffix: shared)
+	"goo.gl", "g.page", "g.co", "share.google", "business.site", "maps.app.goo.gl",
+	"wikipedia.org", "wikimedia.org", "bit.ly", "tinyurl.com", "t.ly", "ow.ly", "is.gd",
+	"cutt.ly", "rebrand.ly", "app.link", "tripadvisor.com", "yelp.com", "foursquare.com",
+	// site builders and free hosting
+	"wix.com", "wixsite.com", "squarespace.com", "square.site", "wordpress.com", "blogspot.com",
+	"carrd.co", "weebly.com", "site123.me", "webnode.com", "jimdosite.com", "godaddysites.com",
+	"placeweb.site", "infinityfreeapp.com", "metro.bar", "metro.rest", "metro.cafe",
+	// menu, booking, directory and delivery platforms
+	"ubereats.com", "glovoapp.com", "wolt.com", "deliveroo.co.uk", "just-eat.co.uk", "tazz.ro",
+	"bolt.eu", "doordash.com", "grubhub.com", "foodpanda.com", "takeaway.com", "beefood.ro",
+	"meniudigital.ro", "meniu-digital.com", "smart-menu.ro", "menubox.ro", "qubmenu.com",
+	"eplus.menu", "digital-menu.app", "ialoc.ro", "turistinfo.ro", "tourismguide.ro",
+	"findglocal.com",
+	// forms, files and payment links
+	"forms.gle", "jotform.com", "postimage.org", "pdfhost.io", "revolut.me",
+}
+
+// brandHosts are the registrable-domain labels (the part before the public suffix, any
+// suffix: lavazza.com, lavazza.ro) of coffee suppliers, machine makers and hotel groups
+// whose website a place lists instead of its own. A place on one is skipped like a chain
+// (cafe.ChainIndex): its listing is the brand's (a hotel's bar, a supplier's corner) or its
+// address book would point at the brand, so it is not an independent café to write to.
+var brandHosts = []string{
+	"lavazza", "illy", "segafredo", "dallmayr", "hausbrandt", "nespresso", "tchibo", "kimbo",
+	"delonghi", "wega", "strauss-group", "hilton", "doubletree", "intercontinental", "ihg",
+	"marriott", "accor",
 }
 
 // socialHosts are the hosts that make a link Instagram, or another social profile.
@@ -462,9 +493,29 @@ func hostIn(host string, list []string) bool {
 	return false
 }
 
-// IsShared reports whether a link sits on a shared platform (social, a map listing, a site
-// builder's subdomain, a delivery app) rather than on the café's own domain.
-func IsShared(link string) bool { return hostIn(Host(link), sharedHosts) }
+// shared reports whether host is on a shared platform: sharedHosts, or Google on any of its
+// country domains (google.ro, maps.google.de, sites.google.com).
+func shared(host string) bool { return hostIn(host, sharedHosts) || Label(host) == "google" }
+
+// Label is the registrable domain of host without its public suffix ("lavazza" for
+// shop.lavazza.co.uk); empty when host has no registrable domain.
+func Label(host string) string {
+	d, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return ""
+	}
+	suffix, _ := publicsuffix.PublicSuffix(d)
+	return strings.TrimSuffix(d, "."+suffix)
+}
+
+// IsShared reports whether a link sits on a shared platform (social, a map listing or link
+// shortener, a site builder's subdomain, a menu or delivery app) rather than on the café's
+// own domain. A bare domain ("meniudigital.ro", an email's domain) is read as a link.
+func IsShared(link string) bool { return shared(Host(link)) }
+
+// IsBrandSite reports whether a link is a coffee supplier's, machine maker's or hotel
+// group's own website (brandHosts), on any public suffix.
+func IsBrandSite(link string) bool { return slices.Contains(brandHosts, Label(Host(link))) }
 
 // IsSocial reports whether a link is a social profile.
 func IsSocial(link string) bool { return hostIn(Host(link), socialHosts) }
@@ -485,7 +536,7 @@ func (p Place) OwnWebsite() string {
 // that does not parse.
 func DomainKey(link string) string {
 	h := Host(link)
-	if h == "" || hostIn(h, sharedHosts) {
+	if h == "" || shared(h) {
 		return ""
 	}
 	d, err := publicsuffix.EffectiveTLDPlusOne(h)

@@ -1,0 +1,5 @@
+Bună,
+
+Sunt {{.SenderName}}. Am construit Demo Loyalty și îl folosesc la cafeneaua mea. {{if .VendorName}}Văd că {{.OrgName}} are cardul de fidelitate pe {{.VendorName}}.{{else}}Văd că {{.OrgName}} are deja un card de fidelitate.{{end}} Demo Loyalty pune numele și culorile tale pe card, în Apple Wallet sau Google Wallet, cu toate funcțiile într-un singur plan. Răspunde-mi aici și îți trimit cardul demo.
+
+{{.SenderName}}, {{.IdentityLine}}

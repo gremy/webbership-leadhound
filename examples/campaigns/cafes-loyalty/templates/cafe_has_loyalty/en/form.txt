@@ -1,0 +1,5 @@
+Hello,
+
+I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café. {{if .VendorName}}I see {{.OrgName}} runs its stamp card on {{.VendorName}}.{{else}}I see {{.OrgName}} already runs a stamp card.{{end}} Demo Loyalty puts your own name and colours on the card in Apple Wallet or Google Wallet, with every feature in one plan. A reply to this message reaches me, and I will send you the demo card.
+
+{{.SenderName}}, {{.IdentityLine}}

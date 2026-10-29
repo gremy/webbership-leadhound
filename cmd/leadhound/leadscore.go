@@ -418,6 +418,7 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if err != nil {
 		return out, err
 	}
+	opts.StarredOnly = plan.batchesFrom(bs.leads) == leadconfig.BatchesStarred
 	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
 	opts.PhoneOnlyCountries = plan.phoneOnlyCountries()
 	cands, err := lq.CandidateLeads(ctx, opts)
@@ -616,7 +617,8 @@ func crossCampaignSkips(ctx context.Context, lq leadstore.Queries, campaignID in
 }
 
 // batchCandidateOptions is the queue a batch drafts from (D6, D11): starred leads only
-// unless batches_from is starred_then_rest, without the kinds turned off or the site leads
+// unless batches_from is starred_then_rest (a campaign spec's own batches_from wins for its
+// batches: newBatch and starredOut set StarredOnly from batchPlan.batchesFrom), without the kinds turned off or the site leads
 // skip_rank_over leaves out, and the unstarred by relevance only once relevance passed its
 // trust gate (D9), as the Leads list sorts them. bs.leads is the effective config (leadsOpen
 // and backend.leadsSetup apply the console's saved settings), so batches_from, kinds_off,
@@ -648,6 +650,7 @@ func starredOut(ctx context.Context, lq leadstore.Queries, bs batchSetup, now ti
 	if err != nil {
 		return nil, err
 	}
+	opts.StarredOnly = plan.batchesFrom(bs.leads) == leadconfig.BatchesStarred
 	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
 	skipped, elsewhere, err := crossCampaignSkips(ctx, lq, campaignID)
 	if err != nil {

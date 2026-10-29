@@ -70,6 +70,23 @@ func TestPlaceEmailsNoWebsite(t *testing.T) {
 	}
 }
 
+// TestPlaceEmailsNoWebsitePlatform: a café whose listed website was a platform's has no
+// domain of its own, so an address on a platform's or brand's domain is the platform's,
+// never kept; the café's own address is.
+func TestPlaceEmailsNoWebsitePlatform(t *testing.T) {
+	r := placeContactRules{roles: placeTestRoles}
+	var got []string
+	for _, e := range r.emails([]string{
+		mailAt("office", "meniudigital.ro"), mailAt("info", "demo.wixsite.com"), mailAt("contact", "lavazza.example"),
+		mailAt("hello", "google.ro"), "contact@cafe-mira.example",
+	}, "") {
+		got = append(got, e.addr)
+	}
+	if want := []string{"contact@cafe-mira.example"}; !slices.Equal(got, want) {
+		t.Errorf("no-website emails %v, want %v", got, want)
+	}
+}
+
 // TestPlacePhone: a listed number is stored as the research and the screening registers
 // read it (phones.E164): a national number gets the country's code, junk is no phone.
 func TestPlacePhone(t *testing.T) {

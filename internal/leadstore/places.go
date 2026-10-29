@@ -50,6 +50,10 @@ type PlaceRow struct {
 	Place       places.Place
 	ChainRule   string // cafe.ChainBy*; "" when not a chain
 	ChainDetail string
+	// SharedDomain marks a chain row skipped because its website is shared (a brand's, a
+	// supplier's, or one many unrelated places list: cafe.ChainVerdict.SharedDomain). It is
+	// stored as its rule and detail; the flag only counts it in PlaceImported.
+	SharedDomain bool
 }
 
 // PlaceImported is what ImportPlaces did.
@@ -58,8 +62,11 @@ type PlaceImported struct {
 	Stored   int // place rows written
 	Already  int // places this release already held (left as they were)
 	Chains   int // of the stored, chain places (no org, no lead)
-	Orgs     int // orgs made
-	Sites    int // sites made (origin place), probed by cafe@1
+	// SharedDomains are those of Chains skipped for a shared website (PlaceRow.SharedDomain).
+	// place_import has no column for it: the run's note and the command's output carry it.
+	SharedDomains int
+	Orgs          int // orgs made
+	Sites         int // sites made (origin place), probed by cafe@1
 	// Suppressed are the places not stored at all because an active domain suppression
 	// covers their own website's registrable domain (`leads forget`, an opt-out): nothing is
 	// gathered about such an org again, its place's phones and emails included. place_import
@@ -133,6 +140,9 @@ func (q Queries) ImportPlaces(ctx context.Context, im PlaceImport, rows []PlaceR
 		todo[i] = true
 		if r.ChainRule != "" {
 			res.Chains++
+			if r.SharedDomain {
+				res.SharedDomains++
+			}
 			continue
 		}
 		id, orgMade, siteMade, err := q.placeOrg(ctx, r.Place)

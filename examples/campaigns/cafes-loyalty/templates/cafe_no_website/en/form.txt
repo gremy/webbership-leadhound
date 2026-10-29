@@ -1,0 +1,5 @@
+Hello,
+
+I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café. It is a stamp card in Apple Wallet or Google Wallet with the name of {{.OrgName}} on it. You need no website: your regulars sign up from a QR code at the counter. A reply to this message reaches me, and I will send you the demo card.
+
+{{.SenderName}}, {{.IdentityLine}}

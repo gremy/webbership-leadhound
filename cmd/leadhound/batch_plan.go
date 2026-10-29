@@ -32,7 +32,8 @@ const defaultTemplatesDir = "templates"
 // schedule.followup_business_days, leads.yaml's templates and copy bounds. A campaign whose
 // registered version came from its own folder (<data dir>/campaigns/<slug>/campaign.yaml)
 // drafts from that folder's spec and templates instead; the contact-form texts and LinkedIn
-// notes stay leads.yaml's, and so does the footer, unless the spec's country names its own
+// notes come from the folder when it holds them (a café kind's must), else leads.yaml's;
+// the footer stays leads.yaml's unless the spec's country names its own
 // (countries.<code>.footer, read from leads.yaml's footers dir: footerFor).
 type batchPlan struct {
 	legacy    bool
@@ -122,6 +123,25 @@ func (p batchPlan) phoneOnlyCountries() []string {
 // countryCode is country as the specs key it: trimmed, upper case.
 func countryCode(country string) string { return strings.ToUpper(strings.TrimSpace(country)) }
 
+// specCountry is spec's policy for country, matched as countryCode keys it.
+func specCountry(spec campaign.Spec, country string) (campaign.Country, bool) {
+	for code, c := range spec.Countries {
+		if countryCode(code) == countryCode(country) {
+			return c, true
+		}
+	}
+	return campaign.Country{}, false
+}
+
+// batchesFrom is where the plan's batches draw leads from: the campaign spec's own
+// batches_from when it sets one, else cfg's in force (leads.yaml, the console's setting).
+func (p batchPlan) batchesFrom(cfg leadconfig.Config) string {
+	if !p.legacy && p.spec.BatchesFrom != "" {
+		return p.spec.BatchesFrom
+	}
+	return cfg.BatchesFrom()
+}
+
 // emailSteps is how many email steps a lead's sequence has at most: what the mailbox ramp
 // counts per lead.
 func (p batchPlan) emailSteps() int {
@@ -177,7 +197,8 @@ func campaignFile(dataDir, slug string) (string, bool, error) {
 // campaignTemplates loads spec's templates from its folder in dataDir: for every kind of the
 // spec and every language a country of the spec has email or calls on in, each email step of
 // its default sequence (<kind>/<lang>/<step>.txt), each email step of every named sequence
-// (<kind>/<lang>/<name>/<step>.txt) and, when one has a call step, call.txt. The footers its
+// (<kind>/<lang>/<name>/<step>.txt), form.txt and linkedin.txt (leadconfig.CampaignTemplates
+// says when they are required) and, when one has a call step, call.txt. The footers its
 // countries name (countries.<code>.footer) are read from lc's footers dir into Footers. A spec with no
 // call_first of its own whose plan moves leads onto campaign.DefaultCallFirst (callFirstSeq)
 // needs that sequence's email steps too, so a missing one is named, never a silent drop.
@@ -242,12 +263,8 @@ func campaignTemplates(dataDir string, spec campaign.Spec, lc leadconfig.Config)
 // (countries.<code>.footer) when the spec's country names one, else leads.yaml's for the
 // country (cfg.Policy(country).Footer). nil when the one it names is not loaded.
 func (p batchPlan) footerFor(country string, cfg leadconfig.Config) *template.Template {
-	if !p.legacy {
-		for code, c := range p.spec.Countries {
-			if c.Footer != "" && countryCode(code) == countryCode(country) {
-				return p.templates.Footers[c.Footer]
-			}
-		}
+	if c, ok := specCountry(p.spec, country); ok && !p.legacy && c.Footer != "" {
+		return p.templates.Footers[c.Footer]
 	}
 	return cfg.Templates.Footers[cfg.Policy(country).Footer]
 }

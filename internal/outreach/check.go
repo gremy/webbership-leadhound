@@ -65,7 +65,8 @@ func (p Problem) String() string { return p.Rule + ": " + p.Detail }
 // letter, digit or "_" on either side (so web2 or h2o is a name, not a number); URLs are
 // taken out first, as the URL rule owns them. Each number in the subject and body must
 // be a number of the template's own text (FixedText), or the whole value of a slot (so
-// Major "10" allows 10, while a name such as "Example, since 1998" allows nothing), or a
+// Major "10" allows 10, while a name such as "Example, since 1998" allows no bare 1998), or
+// part of a name slot quoted whole (checkMaskNames: "Cafe 25" written as the name), or a
 // number inside a slot leads.yaml writes (SenderName, IdentityLine, OptOutLine, EOLDate),
 // which is the operator's own text like the template's, or a number inside EvidenceLine
 // that equals the value of the stored signal it was built from (Slots.EvidenceSignal), so
@@ -196,7 +197,7 @@ func CheckIn(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Proble
 			}
 		}
 	}
-	for _, n := range checkNumbers(text) {
+	for _, n := range checkNumbers(checkMaskNames(text, d.Slots)) {
 		if !allowed[n] {
 			add(RuleNumber, "%s is in neither the template's text nor a slot", n)
 			allowed[n] = true // report each number once
@@ -297,6 +298,28 @@ func checkEmail(d Draft, step int, cfg leadconfig.Config, rules StepRules) []Pro
 		}
 	}
 	return p
+}
+
+// checkMaskNames blanks out of text every place a name slot (OrgName, Domain, Host,
+// VendorName) appears whole, so the digits of a name quoted verbatim ("Cafe 25") are not
+// read as numbers. These slots come from stored data, not the operator's config, so their
+// digits are never allowed on their own: "25" written anywhere else in the text still has
+// to trace to the template or a slot's whole value (the "smuggled number" rule). Only the
+// name's own text, character for character, is taken out; EvidenceLine keeps its stricter
+// rule (a number must equal the stored signal), so it is never masked. Longest value first,
+// so a name holding another (Domain inside Host) is masked whole.
+func checkMaskNames(text string, s Slots) string {
+	// URLs first, as checkNumbers does: a name masked inside a URL (a Host "studio5.example")
+	// would break the URL apart and leave its path's digits to be counted.
+	text = checkURLRe.ReplaceAllStringFunc(text, func(u string) string { return strings.Repeat(" ", len(u)) })
+	names := []string{s.OrgName.Value, s.Domain.Value, s.Host.Value, s.VendorName.Value}
+	slices.SortFunc(names, func(a, b string) int { return len(b) - len(a) })
+	for _, n := range names {
+		if strings.TrimSpace(n) != "" && strings.ContainsFunc(n, unicode.IsDigit) {
+			text = strings.ReplaceAll(text, n, strings.Repeat(" ", len(n)))
+		}
+	}
+	return text
 }
 
 // checkWordRe matches w as a whole word, any case.

@@ -43,3 +43,29 @@ func TestNoLinkInFirstEmailOfSequence(t *testing.T) {
 		t.Errorf("FirstEmail = %d, want 2", got)
 	}
 }
+
+// G5: the footer is the signature, so the sender's site in it is allowed on the first email
+// too; copy.links_in_step0 off holds the copy above the footer only.
+func TestFirstEmailFooterLinkAllowed(t *testing.T) {
+	d, cfg := checkDraft(t)
+	if !strings.HasPrefix(d.Body, d.BodyAboveFooter) {
+		t.Fatal("the base draft's body does not open with its copy")
+	}
+	for _, u := range checkURLs(d.BodyAboveFooter) { // the demo copy cites its finding's page
+		d.Body = strings.ReplaceAll(d.Body, u, "the page")
+		d.BodyAboveFooter = strings.ReplaceAll(d.BodyAboveFooter, u, "the page")
+	}
+	d.Body += "\n" + cfg.Sender.SiteURL
+	rules := StepRules{NoLinksInStep0: true}
+	if p := CheckIn(d, 0, cfg, rules); len(p) > 0 {
+		t.Errorf("a site URL in the first email's footer: %v", p)
+	}
+	above := checkInsert(d, " "+cfg.Sender.SiteURL)
+	if got := checkRules(CheckIn(above, 0, cfg, rules)); !slices.Contains(got, RuleURL) {
+		t.Errorf("a site URL above the first email's footer passed: %v", got)
+	}
+	d.Body += "\nhttps://other.example/"
+	if got := checkRules(CheckIn(d, 0, cfg, rules)); !slices.Contains(got, RuleURL) {
+		t.Errorf("an unlisted URL in the footer passed: %v", got)
+	}
+}

@@ -25,6 +25,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/gremy/webbership-leadhound/internal/cafe"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/mailbox"
 )
 
 // ErrInvalid wraps every problem with a spec.
@@ -80,6 +82,10 @@ type Spec struct {
 	// Chains is how a places campaign tells chains from independent places (nil: the
 	// defaults, cafe.DefaultMaxLocations and no names); omitempty keeps older hashes.
 	Chains *Chains `yaml:"chains" json:"chains,omitempty"`
+	// BatchesFrom is where this campaign's batches draw their leads from, one of
+	// leadconfig.BatchSources; it wins over leads.yaml's batches_from and the console's
+	// setting for this campaign only. Empty: theirs. omitempty keeps older hashes.
+	BatchesFrom string `yaml:"batches_from" json:"batches_from,omitempty"`
 }
 
 // Chains is a places campaign's chain rule (internal/cafe ChainConfig).
@@ -137,7 +143,17 @@ type Country struct {
 	// end with, instead of leads.yaml's; a plain file name, only with email on. omitempty
 	// keeps older hashes.
 	Footer string `yaml:"footer" json:"footer,omitempty"`
+	// IdentityLine and OptOutLine replace leads.yaml's sender.identity_line and
+	// sender.opt_out_lines.<lang> in this campaign's emails to the country (the IdentityLine
+	// and OptOutLine slots), so its footer can speak in its own register. Each one line, only
+	// with email on; the opt-out line must hold an opt-out word a reply can be matched on.
+	// Check still demands both lines in every email. omitempty keeps older hashes.
+	IdentityLine string `yaml:"identity_line" json:"identity_line,omitempty"`
+	OptOutLine   string `yaml:"opt_out_line" json:"opt_out_line,omitempty"`
 }
+
+// MaxFooterLine is the longest country identity_line or opt_out_line, in characters.
+const MaxFooterLine = 300
 
 // footerNameRe is leadconfig's plain file-name rule for footers (mirrored; a test pins it).
 var footerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -314,6 +330,22 @@ func (s Spec) Check(opts CheckOptions) error {
 				add("countries.%s.footer is only for a country with email on", code)
 			}
 		}
+		for _, l := range []struct{ key, value string }{{"identity_line", c.IdentityLine}, {"opt_out_line", c.OptOutLine}} {
+			switch {
+			case l.value == "":
+			case !oneLine(l.value, MaxFooterLine):
+				add("countries.%s.%s must be one non-blank line of at most %d characters", code, l.key, MaxFooterLine)
+			case !c.Email:
+				add("countries.%s.%s is only for a country with email on", code, l.key)
+			}
+		}
+		if c.OptOutLine != "" && !mailbox.HasOptOutWord(c.OptOutLine) {
+			add("countries.%s.opt_out_line must hold an opt-out word (unsubscribe, dezabonare, abmelden…) so a reply with it is read as an opt-out", code)
+		}
+	}
+
+	if s.BatchesFrom != "" && !slices.Contains(leadconfig.BatchSources, s.BatchesFrom) {
+		add("batches_from: %q is not one of %s", s.BatchesFrom, strings.Join(leadconfig.BatchSources, ", "))
 	}
 
 	switch s.Writer {

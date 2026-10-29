@@ -247,6 +247,16 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 	if line, ok := cfg.Sender.OptOutLine(lang); ok {
 		s.OptOutLine = outreach.ConfigSlot(line)
 	}
+	// The campaign's country may word both lines itself (countries.<code>.identity_line,
+	// opt_out_line: its own register); Check still demands both in every email.
+	if sc, ok := specCountry(spec, c.Country); ok {
+		if sc.IdentityLine != "" {
+			s.IdentityLine = outreach.ConfigSlot(sc.IdentityLine)
+		}
+		if sc.OptOutLine != "" {
+			s.OptOutLine = outreach.ConfigSlot(sc.OptOutLine)
+		}
+	}
 	s.OrgName = outreach.OrgNameSlot(outreach.Slot{Value: orgNameValue(c.OrgName), Source: org}, s.Domain)
 	switch {
 	case isCafeKind(c.Kind):
@@ -373,7 +383,8 @@ func cmpOr(a, b string) string {
 // call_not_connected, email_consent) get no row. An email_consent step's recipient is ""
 // (emailRecipient): the address given on the call. A lead with no route (channel none) is
 // drafted only on a call-first plan with phone, every one of its email steps email_consent. A form lead gets the contact-form text
-// (step 0) and the LinkedIn note (step 1) from leads.yaml's templates, whatever the plan.
+// (step 0) and the LinkedIn note (step 1) from the campaign folder's form.txt and linkedin.txt
+// when it holds them, else from leads.yaml's templates.
 // The footer is plan.footerFor's: the campaign country's own, else leads.yaml's. Any render or Check problem drops the lead.
 func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config,
 	phone *leadstore.Fact, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
@@ -440,7 +451,12 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 			}
 		}
 	case leadconfig.ChannelForm:
-		set, ok := cfg.Templates.Set(c.Kind, policy.Lang)
+		// The campaign folder's own form.txt and linkedin.txt when it holds them (a café
+		// kind's must), else leads.yaml's.
+		set, ok := plan.templates.Set(c.Kind, policy.Lang)
+		if !ok || set.Form == nil || set.LinkedIn == nil {
+			set, ok = cfg.Templates.Set(c.Kind, policy.Lang)
+		}
 		if !ok {
 			return nil, fmt.Errorf("no %s templates in language %q", c.Kind, policy.Lang)
 		}

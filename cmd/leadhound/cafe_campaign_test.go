@@ -64,7 +64,7 @@ func cafeWorld(t *testing.T, campaignFooter bool) (string, campaign.Spec, leadco
 		spec = strings.Replace(spec, old, new, 1)
 	}
 	if campaignFooter {
-		replace("RO: {email: on, call: on, lang: ro}", "RO: {email: on, call: on, lang: ro, footer: footer-cafe-ro}")
+		replace("RO: {email: on, call: on, lang: ro,", "RO: {email: on, call: on, lang: ro, footer: footer-cafe-ro,")
 	}
 	// The example spec carries the offer link and vendor links these tests rely on.
 	for _, want := range []string{`links: ["` + cafeTestDemo + `"]`, `stampino: "` + cafeTestVsStampino + `"`, `default: "` + cafeTestVsDefault + `"`} {
@@ -131,12 +131,14 @@ func draftCafe(t *testing.T, dir string, spec campaign.Spec, cfg leadconfig.Conf
 	return rows
 }
 
-// legacyFooterText is leads.yaml's RO footer rendered with the lead's own slots.
-func legacyFooterText(t *testing.T, cfg leadconfig.Config) string {
+// legacyFooterText is leads.yaml's RO footer rendered with the lead's own slots (the
+// campaign's RO identity and opt-out lines).
+func legacyFooterText(t *testing.T, cfg leadconfig.Config, spec campaign.Spec) string {
 	t.Helper()
 	var b bytes.Buffer
+	ro := spec.Countries["RO"]
 	if err := cfg.Templates.Footers[cafeTestLegacyLabel].Execute(&b, map[string]string{
-		"SenderName": cfg.Sender.Name, "IdentityLine": cfg.Sender.IdentityLine, "OptOutLine": cafeTestOptOutRO,
+		"SenderName": cfg.Sender.Name, "IdentityLine": ro.IdentityLine, "OptOutLine": ro.OptOutLine,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +150,7 @@ func legacyFooterText(t *testing.T, cfg leadconfig.Config) string {
 // leads.yaml's.
 func TestCafeCampaignFooter(t *testing.T) {
 	dir, spec, cfg := cafeWorld(t, true)
-	legacy := legacyFooterText(t, cfg)
+	legacy := legacyFooterText(t, cfg, spec)
 	c, ev := cafeLead()
 	for _, r := range draftCafe(t, dir, spec, cfg, c, ev) {
 		if r.Channel != "email" {
@@ -254,5 +256,116 @@ func TestCafeVendorSlotsOnlyForCafes(t *testing.T) {
 	}
 	if s.VendorName.Value != "" || s.VendorLink.Value != "" {
 		t.Errorf("a d10 lead got vendor slots %q %q", s.VendorName.Value, s.VendorLink.Value)
+	}
+}
+
+// TestCafeCountryFooterLines (G4): the campaign's RO identity_line and opt_out_line replace
+// leads.yaml's in every café email, and Check still demands both; a lead on the legacy
+// (Drupal) spec keeps leads.yaml's lines.
+func TestCafeCountryFooterLines(t *testing.T) {
+	dir, spec, cfg := cafeWorld(t, true)
+	ro := spec.Countries["RO"]
+	if ro.IdentityLine == "" || ro.OptOutLine == "" {
+		t.Fatal("the example spec's RO country no longer words its own footer lines")
+	}
+	c, ev := cafeLead()
+	for _, r := range draftCafe(t, dir, spec, cfg, c, ev) {
+		if r.Channel != "email" {
+			continue
+		}
+		if !strings.Contains(r.Body, ro.IdentityLine) || !strings.Contains(r.Body, ro.OptOutLine) {
+			t.Errorf("step %d lacks the campaign's lines:\n%s", r.Step, r.Body)
+		}
+		if strings.Contains(r.Body, cfg.Sender.IdentityLine) || strings.Contains(r.Body, cafeTestOptOutRO) {
+			t.Errorf("step %d carries leads.yaml's lines:\n%s", r.Step, r.Body)
+		}
+	}
+
+	// The opt-out guarantee holds for the override: a footer that drops it stops the lead.
+	if err := os.WriteFile(filepath.Join(dir, "leads-templates", "footers", "footer-cafe-ro.txt"),
+		[]byte("{{.SenderName}}\n{{.IdentityLine}}\n"), 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+	plan, err := filePlan(dir, spec, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := draftSequence(plan, c, ev, cfg, nil, "sender.example", zeroReader{}); err == nil || !strings.Contains(err.Error(), "opt-out: the opt-out line is not in the email") {
+		t.Errorf("draftSequence: %v; want the missing opt-out line refused", err)
+	}
+
+	// drupal-eol: leads.yaml's lines, whatever a café spec says.
+	probeID := int64(9)
+	d := leadstore.Candidate{LeadID: 1, OrgID: 1, Domain: "site.example", Country: "GB", Kind: leadconfig.KindD10}
+	dev := leadstore.Evidence{ProbeID: &probeID, FinalHost: "site.example", Major: 10,
+		Signals: []leadstore.EvidenceSignal{{Signal: leadstore.Signal{Signal: "meta-generator", Value: "10"}, Fetch: leadstore.EvidenceFetch{ID: 5, URL: "https://site.example/"}}}}
+	s, err := leadSlots(d, dev, cfg, campaign.Legacy(&cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := cfg.Sender.OptOutLine("en")
+	if s.IdentityLine.Value != cfg.Sender.IdentityLine || s.OptOutLine.Value != want {
+		t.Errorf("legacy lead lines %q / %q, want leads.yaml's", s.IdentityLine.Value, s.OptOutLine.Value)
+	}
+}
+
+// TestCafeFormLead (F): a café form lead gets the campaign folder's form.txt and
+// linkedin.txt; a café kind's folder without them is refused when the plan loads.
+func TestCafeFormLead(t *testing.T) {
+	dir, spec, cfg := cafeWorld(t, true)
+	c, ev := cafeLead()
+	c.Channel, c.RouteKind, c.Route = leadconfig.ChannelForm, "", ""
+	rows := draftCafe(t, dir, spec, cfg, c, ev)
+	if len(rows) != 2 || rows[0].Channel != "form" || rows[1].Channel != "linkedin" {
+		t.Fatalf("form lead rows %+v, want a form text and a LinkedIn note", rows)
+	}
+	if !strings.Contains(rows[0].Body, "Cafeneaua Exemplu") || rows[0].Subject != "" {
+		t.Errorf("form text:\n%s", rows[0].Body)
+	}
+
+	rel := filepath.Join(dir, campaign.Dir, "cafes-loyalty", "templates", "cafe_no_website", "ro", leadconfig.LinkedInFile)
+	if err := os.Remove(rel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filePlan(dir, spec, cfg); err == nil || !strings.Contains(err.Error(), "cafe_no_website/ro/linkedin.txt is missing") {
+		t.Errorf("filePlan: %v; want the missing LinkedIn note named", err)
+	}
+}
+
+// TestCampaignBatchesFrom (G3): a spec's batches_from wins for its own batches; a spec
+// without one, and the legacy plan, keep leads.yaml's (the console's) value in force.
+func TestCampaignBatchesFrom(t *testing.T) {
+	_, spec, cfg := cafeWorld(t, true)
+	cfg.BatchSource = leadconfig.BatchesStarred
+	if got := (batchPlan{spec: spec}).batchesFrom(cfg); got != leadconfig.BatchesStarredThenRest {
+		t.Errorf("café plan draws from %q, want the spec's %q", got, leadconfig.BatchesStarredThenRest)
+	}
+	spec.BatchesFrom = ""
+	if got := (batchPlan{spec: spec}).batchesFrom(cfg); got != leadconfig.BatchesStarred {
+		t.Errorf("a spec without batches_from draws from %q, want leads.yaml's", got)
+	}
+	cfg.BatchSource = leadconfig.BatchesStarredThenRest
+	legacy := legacyPlan(cfg)
+	legacy.spec.BatchesFrom = leadconfig.BatchesStarred // never read for the legacy plan
+	if got := legacy.batchesFrom(cfg); got != leadconfig.BatchesStarredThenRest {
+		t.Errorf("legacy plan draws from %q, want leads.yaml's", got)
+	}
+}
+
+// TestCafeFooterLinkInStep0 (G5): a campaign footer carrying an allowed link (the
+// signature) passes on step 0 under links_in_step0: false; the copy above it stays link-free.
+func TestCafeFooterLinkInStep0(t *testing.T) {
+	dir, spec, cfg := cafeWorld(t, true)
+	if spec.Copy.LinksInStep0 {
+		t.Fatal("the example spec allows links in step 0")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leads-templates", "footers", "footer-cafe-ro.txt"),
+		[]byte("{{.SenderName}}, "+cafeTestFooterMark+" · "+cafeTestDemo+"\n{{.IdentityLine}}\n{{.OptOutLine}}\n"), 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+	c, ev := cafeLead()
+	rows := draftCafe(t, dir, spec, cfg, c, ev)
+	if rows[0].Step != 0 || !strings.Contains(rows[0].Body, cafeTestDemo) {
+		t.Errorf("step 0 lacks the footer link:\n%s", rows[0].Body)
 	}
 }

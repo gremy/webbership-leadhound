@@ -70,7 +70,7 @@ func runSuppressReview(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	revs := reviewEvents(ctx, events, refs, boxes, key, optOutLinesOf(setup.leads))
+	revs := reviewEvents(ctx, events, refs, boxes, key, ownOptOutLines(ctx, lq, setup.leads))
 	printReview(revs)
 	return nil
 }

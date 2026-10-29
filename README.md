@@ -201,18 +201,27 @@ A draft is either a template filled with stored facts or, once a campaign has ea
 
 The café campaign (`examples/campaigns/cafes-loyalty/`) finds independent cafés from Overture Maps Places instead of a site list.
 LeadHound reads no parquet: you export one country, or a few, to NDJSON with [DuckDB](https://duckdb.org/) and import the file.
+Save this as `export.sql`, with your release and country codes in place of `2026-10-21.0` and `'RO'`:
 
 ```sql
 INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs; SET s3_region = 'us-west-2';
 COPY (
-  SELECT id, names, categories, confidence, websites, socials, emails, phones, brand, addresses, sources,
+  SELECT id, names, basic_category, taxonomy, confidence, websites, socials, emails, phones, brand, addresses, sources,
          ST_AsGeoJSON(geometry)::JSON AS geometry
   FROM read_parquet('s3://overturemaps-us-west-2/release/2026-10-21.0/theme=places/type=place/*', hive_partitioning = 1)
-  WHERE categories.primary IN ('coffee_shop', 'cafe') AND addresses[1].country = 'GB'
-) TO 'places-gb.ndjson' (FORMAT json);
+  WHERE (taxonomy.primary IN ('coffee_shop', 'cafe')
+         OR (taxonomy.primary IS NULL AND basic_category IN ('coffee_shop', 'cafe')))
+    AND addresses[1].country = 'RO'
+) TO 'places-ro.ndjson' (FORMAT json);
 ```
 
-- **Import**: `leads places import overture --campaign cafes-loyalty --release 2026-10-21.0 places-gb.ndjson` keeps the places the spec's `source` allows (categories, countries, `min_confidence`), skips chains (`chains`: a name or website on more than `max_locations` places, a listed name, or an Overture brand unless `keep_branded`), and makes a site and an organisation for each independent café with its state or region.
+- **Running it**: `uv run --with duckdb python -c "import duckdb; duckdb.connect().execute(open('export.sql').read())"` runs it without installing DuckDB; the `duckdb` command line does the same with `duckdb < export.sql`.
+  It reads the Places theme straight from Overture's public bucket, with no account or key.
+- **The release**: each release is a folder under `s3://overturemaps-us-west-2/release/`, and the newest is the last one listed by `curl -s 'https://overturemaps-us-west-2.s3.amazonaws.com/?list-type=2&prefix=release/&delimiter=/'` (or `aws s3 ls --no-sign-request s3://overturemaps-us-west-2/release/`).
+  Pass the same release to the import.
+- **Categories**: since release 2026-10-21.0 a place has no `categories` column; its category is `taxonomy.primary`, with `basic_category` for a place that has no taxonomy.
+  The import reads all three, so an export from an older release that still selects `categories` imports too.
+- **Import**: `leads places import overture --campaign cafes-loyalty --release 2026-10-21.0 places-ro.ndjson` keeps the places the spec's `source` allows (categories, countries, `min_confidence`), skips chains (`chains`: a name or website on more than `max_locations` places, a listed name, or an Overture brand unless `keep_branded`), and makes a site and an organisation for each independent café with its state or region.
   It prints counts only; a malformed line is named by its number, never its text, and a release is imported once (run it again and nothing is stored twice).
   `examples/places.demo.ndjson` is a fictional export with reserved names only.
 - **The loop**: `leads sites probe` reads each café's homepage with the `cafe@1` detector (digital loyalty, online ordering, Instagram, language), then `leads contacts`, then `leads build --campaign cafes-loyalty` and `leads batch new --campaign cafes-loyalty`.

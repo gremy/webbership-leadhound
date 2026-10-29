@@ -1,0 +1,1 @@
+Bună, sunt {{.SenderName}}. Am construit Demo Loyalty, un card de fidelitate în Wallet cu brandul tău, și îl folosesc la cafeneaua mea. Mă bucur să ne conectăm.

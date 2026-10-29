@@ -1042,6 +1042,13 @@ func digest(files map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// FormFile and LinkedInFile are a form lead's contact-form text and LinkedIn note, in a
+// kind's language folder (leads.yaml's, or a campaign's: CampaignTemplates).
+const (
+	FormFile     = "form.txt"
+	LinkedInFile = "linkedin.txt"
+)
+
 // CallFile is a campaign's call card template; CallPoints is how many lines it holds: one
 // talking point each.
 const (
@@ -1051,8 +1058,14 @@ const (
 
 // CampaignTemplates names what a campaign's template folder must hold: for every kind and
 // language, <kind>/<lang>/<step>.txt for each email step of its sequence and, when the
-// sequence has a call step, call.txt. The footers, contact-form and LinkedIn texts stay
-// leads.yaml's.
+// sequence has a call step, call.txt. The footers stay leads.yaml's (a campaign country may
+// name its own from leads.yaml's footers dir).
+//
+// A form lead's contact-form text and LinkedIn note are <kind>/<lang>/form.txt and
+// linkedin.txt (FormFile, LinkedInFile), both or neither. For a kind leads.yaml has
+// templates for (Kinds) they are optional: present, they replace leads.yaml's for the
+// campaign; absent, leads.yaml's are used. For any other kind (a café kind) leads.yaml can
+// hold none, so the campaign folder must hold both.
 type CampaignTemplates struct {
 	Kinds      []string
 	Langs      []string
@@ -1066,8 +1079,12 @@ type CampaignTemplates struct {
 // LoadCampaignTemplates reads, parses and test-renders a campaign's templates from dir, as
 // req names them, reporting every missing, unparsable or unrenderable file at once. call.txt
 // must hold exactly CallPoints non-blank lines. Each Set has Email (by step number) and Call
-// filled; Footers is empty. SHA256 is the digest over every file read.
+// filled, and Form and LinkedIn when the folder holds them; Footers is empty. SHA256 is the digest over every file read.
 func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error) {
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+		return err == nil
+	}
 	var p []string
 	files := map[string][]byte{}
 	readT := func(rel string) (string, bool) {
@@ -1143,6 +1160,15 @@ func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error)
 				}
 				set.Named[name] = map[int]Email{}
 				readSteps(base+name+"/", req.Named[name], set.Named[name])
+			}
+			formRel, linkedInRel := base+FormFile, base+LinkedInFile
+			if !slices.Contains(Kinds, kind) || exists(formRel) || exists(linkedInRel) {
+				if text, ok := readT(formRel); ok {
+					set.Form = parse(formRel, text)
+				}
+				if text, ok := readT(linkedInRel); ok {
+					set.LinkedIn = parse(linkedInRel, text)
+				}
 			}
 			if req.Call {
 				rel := base + CallFile

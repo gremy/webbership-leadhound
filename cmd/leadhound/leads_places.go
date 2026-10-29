@@ -128,8 +128,8 @@ func runPlacesImport(ctx context.Context, args []string) error {
 	case errors.Is(runErr, leadstore.ErrBadPlaceFile):
 		runErr = usageError("%s: %v", pos[0], runErr)
 	}
-	result := store.RunResult{Note: fmt.Sprintf("%d lines, %d kept, %d stored, %d chains, %d suppressed, %d email routes, %d phones",
-		st.Lines, st.Kept, res.Stored, res.Chains, res.Suppressed, added.Emails, added.Phones)}
+	result := store.RunResult{Note: fmt.Sprintf("%d lines, %d kept, %d stored, %d chains (%d shared websites), %d suppressed, %d email routes, %d phones",
+		st.Lines, st.Kept, res.Stored, res.Chains, res.SharedDomains, res.Suppressed, added.Emails, added.Phones)}
 	if runErr != nil {
 		result.Note = runErr.Error()
 	}
@@ -161,7 +161,9 @@ type placeEmail struct {
 // public body's domain (isPublicBody, as the search skips such an org). orgDomain is the
 // org's registrable domain, "" for a café with no website of its own: there is no domain to
 // hold an address to, so each address is held to its own, except on a personal mailbox
-// provider's domain (contacts.MailboxProvider: never kept, even with a role local part).
+// provider's domain (contacts.MailboxProvider: never kept, even with a role local part) or
+// on a shared platform's or brand's (places.IsShared, places.IsBrandSite: the café listed
+// that site as its own, so an address there is the platform's, never the café's).
 func (r placeContactRules) emails(listed []string, orgDomain string) []placeEmail {
 	var out []placeEmail
 	for _, e := range listed {
@@ -170,6 +172,9 @@ func (r placeContactRules) emails(listed []string, orgDomain string) []placeEmai
 			_, own, _ = strings.Cut(strings.ToLower(strings.TrimSpace(e)), "@")
 			if contacts.MailboxProvider(own) {
 				continue // a personal mailbox, whatever its local part (a role local part on a mailbox provider too)
+			}
+			if places.IsShared(own) || places.IsBrandSite(own) {
+				continue // the platform's or brand's own address (a menu app's office@), not the café's
 			}
 		}
 		if d, err := sitelist.Registrable(own); err == nil {
@@ -334,7 +339,7 @@ func chainRows(spec campaign.Spec, stored, kept []places.Place) []leadstore.Plac
 	rows := make([]leadstore.PlaceRow, len(kept))
 	for i, p := range kept {
 		v := ix.Check(cafe.EntryOf(p))
-		rows[i] = leadstore.PlaceRow{Place: p, ChainRule: v.Rule, ChainDetail: v.Detail}
+		rows[i] = leadstore.PlaceRow{Place: p, ChainRule: v.Rule, ChainDetail: v.Detail, SharedDomain: v.SharedDomain}
 	}
 	return rows
 }
@@ -392,6 +397,10 @@ func printPlacesImport(w io.Writer, slug, release string, st places.Stats, res l
 	}
 	_, _ = fmt.Fprintf(w, "  stored %d places (%d already in this release) · %d chains skipped (no lead) · %d orgs and %d sites made\n",
 		res.Stored, res.Already, res.Chains, res.Orgs, res.Sites)
+	if res.SharedDomains > 0 {
+		_, _ = fmt.Fprintf(w, "  of the chains, %s on a shared website: a brand's or supplier's, or one %d or more differently named places list\n",
+			plural(res.SharedDomains, "place", "places"), cafe.SharedDomainNames)
+	}
 	if added.Emails > 0 || added.Phones > 0 {
 		_, _ = fmt.Fprintf(w, "  from the map listings: %s and %s added (role addresses on the café's own domain only)\n",
 			plural(added.Emails, "email route", "email routes"), plural(added.Phones, "phone number", "phone numbers"))

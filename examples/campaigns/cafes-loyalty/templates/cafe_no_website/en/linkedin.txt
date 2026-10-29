@@ -1,0 +1,1 @@
+Hello, I'm {{.SenderName}}. I built Demo Loyalty, a Wallet stamp card for cafés like {{.OrgName}} that needs no website. Happy to connect.

@@ -104,10 +104,23 @@ func TestCheckEachRuleFails(t *testing.T) {
 		{"a number from nowhere", func(d Draft, _ *leadconfig.Config) (Draft, int) {
 			return checkInsert(d, " It has 40 modules."), 0
 		}, RuleNumber},
+		// A number inside a name counts only where the whole name is quoted: written on its
+		// own, it traces to nothing.
 		{"a slot smuggles a second number", func(d Draft, _ *leadconfig.Config) (Draft, int) {
 			d.Slots.OrgName.Value = "Example Trust, since 1998"
 			d.Body = strings.ReplaceAll(d.Body, "Example Trust", d.Slots.OrgName.Value)
-			return d, 0
+			d.BodyAboveFooter = strings.ReplaceAll(d.BodyAboveFooter, "Example Trust", d.Slots.OrgName.Value)
+			return checkInsert(d, " Running since 1998."), 0
+		}, RuleNumber},
+		{"a name's number outside the name", func(d Draft, _ *leadconfig.Config) (Draft, int) {
+			d.Slots.OrgName.Value = "Cafe 25"
+			d.Body = strings.ReplaceAll(d.Body, "Example Trust", d.Slots.OrgName.Value)
+			d.BodyAboveFooter = strings.ReplaceAll(d.BodyAboveFooter, "Example Trust", d.Slots.OrgName.Value)
+			return checkInsert(d, " Open 25 hours."), 0
+		}, RuleNumber},
+		{"half a name holding a number", func(d Draft, _ *leadconfig.Config) (Draft, int) {
+			d.Slots.OrgName.Value = "Cafe 25 Corner"
+			return checkInsert(d, " Cafe 25 is near."), 0
 		}, RuleNumber},
 		{"subject too long", func(d Draft, _ *leadconfig.Config) (Draft, int) {
 			d.Subject = strings.Repeat("x", 71)
@@ -157,6 +170,26 @@ func TestCheckEachRulePasses(t *testing.T) {
 		{"a fixed-text number and a slot number", func(d Draft) (Draft, int) {
 			d.FixedText += " 30 days"
 			return checkInsert(d, " Within 30 days, Drupal 10.6.14."), 0
+		}},
+		{"a name holding a number, quoted whole", func(d Draft) (Draft, int) {
+			d.Slots.OrgName.Value = "Cafe 25"
+			d.Body = strings.ReplaceAll(d.Body, "Example Trust", d.Slots.OrgName.Value)
+			d.BodyAboveFooter = strings.ReplaceAll(d.BodyAboveFooter, "Example Trust", d.Slots.OrgName.Value)
+			d.Subject = strings.ReplaceAll(d.Subject, "Example Trust", d.Slots.OrgName.Value)
+			if !strings.Contains(d.Body, "Cafe 25") {
+				panic("the base draft no longer names Example Trust")
+			}
+			return checkInsert(d, " Hello Cafe 25."), 0
+		}},
+		// A digit in the domain must not break the finding's URL apart before URLs are taken
+		// out, or the path's 2024 would be counted as a number.
+		{"a domain with a digit and a dated finding URL", func(d Draft) (Draft, int) {
+			const u = "https://www.studio5.example/blog/2024/drupal"
+			d.Body = strings.ReplaceAll(d.Body, d.Slots.FindingURL.Value, u)
+			d.BodyAboveFooter = strings.ReplaceAll(d.BodyAboveFooter, d.Slots.FindingURL.Value, u)
+			d.Slots.FindingURL.Value = u
+			d.Slots.Domain.Value = "studio5.example"
+			return checkInsert(d, " ("+u+")."), 0
 		}},
 		{"a name with digits glued to letters", func(d Draft) (Draft, int) {
 			return checkInsert(d, " web2 h2o"), 0

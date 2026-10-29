@@ -96,11 +96,54 @@ func TestChains(t *testing.T) {
 	}
 
 	keep := NewChainIndex(ChainConfig{KeepBranded: true, MaxLocations: 10}, all)
+	if v := ix.Check(entry("Roast Example Z", "https://www.roast-chain.example/menu")); v.SharedDomain {
+		t.Errorf("a domain count chain is not a shared website: %+v", v)
+	}
 	if v := keep.Check(branded); v.Chain {
 		t.Errorf("KeepBranded: %+v", v)
 	}
 	if v := keep.Check(entry("Bean Example House", "")); v.Chain {
 		t.Errorf("MaxLocations 10: six is not a chain: %+v", v)
+	}
+}
+
+// TestSharedDomains: a brand's website is skipped whoever lists it; a domain three or more
+// differently named places list without carrying its name is shared, and skips those places
+// but not the café named after it; two such names, or one café's several branch names,
+// are still one café.
+func TestSharedDomains(t *testing.T) {
+	all := []ChainEntry{
+		entry("Cafe Alfa", "https://menuhub.example/a"), entry("Bistro Beta", "https://menuhub.example/b"),
+		entry("Gama Coffee", "https://www.menuhub.example/g"), entry("Menuhub Cafe", "https://menuhub.example/"),
+		entry("Delta Cafe", "https://pair.example/"), entry("Epsilon Bistro", "https://pair.example/"),
+		entry("Zorbix Cafe Mall", "https://zorbixcafe.example/"), entry("Zorbix's Cafe Centru", "https://zorbixcafe.example/"),
+		entry("Zorbix Cafe Gara", "https://zorbixcafe.example/"), entry("Quillon Cafe Nord", "https://laquillon.example/"),
+		entry("Quillon Cafe", "https://laquillon.example/"), entry("Quillon Cafe Sud", "https://laquillon.example/x"),
+		entry("Coffee Plimo", "https://coffee.example/1"), entry("Cafe Vantrel", "https://coffee.example/2"),
+		entry("Coffee Oskalo", "https://www.coffee.example/3"),
+		entry("Plimo Coffee", "https://g.co/kgs/1"), entry("Vantrel Demo", "https://g.co/kgs/2"), entry("Oskalo", "https://g.co/kgs/3"),
+	}
+	ix := NewChainIndex(ChainConfig{}, all)
+	for _, c := range []struct {
+		name   string
+		e      ChainEntry
+		shared bool
+	}{
+		{"unrelated name on a shared domain", entry("Cafe Alfa", "https://menuhub.example/a"), true},
+		{"the domain's own café", entry("Menuhub Cafe", "https://menuhub.example/"), false},
+		{"two unrelated names", entry("Delta Cafe", "https://pair.example/"), false},
+		{"branches of one café", entry("Zorbix Cafe Gara", "https://zorbixcafe.example/"), false},
+		{"a word of the name in the domain", entry("Quillon Cafe Sud", "https://laquillon.example/x"), false},
+		{"a brand's site, alone", entry("Brivano Demo", "https://www.lavazza.example/"), true},
+		{"a brand's site, named after it", entry("Lavazza", "https://lavazza.example/"), true},
+		{"a directory on a generic label", entry("Coffee Plimo", "https://coffee.example/1"), true},
+		{"a platform: no website, not shared", entry("Vantrel Demo", "https://g.co/kgs/2"), false},
+		{"independent", entry("Cafeneaua Demo", "https://cafeneaua-demo.example/"), false},
+	} {
+		v := ix.Check(c.e)
+		if v.SharedDomain != c.shared || v.Chain != c.shared || (c.shared && (v.Rule != ChainByDomain || v.Detail == "")) {
+			t.Errorf("%s: got %+v, want shared %v", c.name, v, c.shared)
+		}
 	}
 }
 
