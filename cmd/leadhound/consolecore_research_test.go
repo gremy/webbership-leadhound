@@ -58,6 +58,7 @@ func researchTestRules() researchRules {
 // (a call step, DE's calls on, the law's written reason given), never under a campaign that
 // makes no calls there; a country the campaign does not list, or that is off, gets nothing.
 func TestResearchDecision(t *testing.T) {
+	callFirstTable(t)
 	rr := researchTestRules()
 	phone, email := []string{leadstore.WantPhone}, []string{leadstore.WantEmail}
 	for _, c := range []struct {
@@ -136,6 +137,7 @@ func TestResearchDecision(t *testing.T) {
 // makes a call-first plan with no call in the default; a spec listing no countries keeps no
 // campaign rules (calls stay the law table's alone).
 func TestResearchRulesFromSpec(t *testing.T) {
+	callFirstTable(t)
 	call := []campaign.Step{{Step: 0, Type: campaign.StepEmail}, {Step: 1, Type: campaign.StepCall}}
 	mail := []campaign.Step{{Step: 0, Type: campaign.StepEmail}}
 	if cr := campaignResearchOf(nil, call, nil); !cr.call || !cr.callFirst || cr.listed || cr.ov.Countries != nil {
@@ -159,6 +161,7 @@ func TestResearchRulesFromSpec(t *testing.T) {
 // began, finished), keeps the attempt's own want, and offers Look again only to a new lead
 // whose country gives something to look for.
 func TestResearchConsoleView(t *testing.T) {
+	callFirstTable(t)
 	rr := researchTestRules()
 	asked := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
 	began, done := asked.Add(time.Minute), asked.Add(2*time.Minute)

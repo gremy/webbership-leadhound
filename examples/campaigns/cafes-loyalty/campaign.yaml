@@ -23,8 +23,7 @@ countries: # country -> policy; a country missing here gets no email and no call
   GB: {email: on, call: on, lang: en}
   IE: {email: on, call: off, lang: en}
   US: {email: on, call: on, lang: en} # calls need the café's state: the place import stores it
-  # Romania, Italy and Spain need a yes on a call before any email (internal/compliance: call_first), so their
-  # leads follow the call-first sequence. Write it/ and es/ templates before calling Italy and Spain in their language.
+  # Every country runs the same email-first sequence below. Write it/ and es/ templates before writing to Italy and Spain in their language.
   RO: {email: on, call: on, lang: ro}
   IT: {email: on, call: on, lang: en}
   ES: {email: on, call: on, lang: en}

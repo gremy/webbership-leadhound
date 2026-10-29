@@ -13,7 +13,7 @@ import (
 // which, and keeps a lasting refusal apart from one the hours or a screening fix; a
 // campaign's own calls-off is a warning on a callable call, never a refusal.
 func TestCallableVerdictRules(t *testing.T) {
-	tbl := compliance.Default()
+	tbl := callFirstTable(t)
 	now := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC) // Tue, 10:00 in London and Dublin
 	approved := now.Add(-2 * time.Hour)
 	gb := "+441632960002"

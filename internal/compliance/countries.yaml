@@ -279,108 +279,6 @@ countries:
     legal_forms: [Ltd, Limited, PLC]
     confidence: unverified
 
-  # Call first: email needs consent (a "yes, email me" on the call), calls allowed
-  RO:
-    name: Romania
-    group: call_first
-    tz: Europe/Bucharest
-    email:
-      verdict: consent
-      rules: ["Law 506/2004 art. 12(1): prior consent for commercial email; art. 12(4) applies it to legal persons too"]
-    call:
-      verdict: open
-      rules: ["live human calls are outside art. 12; GDPR applies; no do-not-call register found"]
-    individuals: {email: consent, call: same}
-    legal_forms: [SRL, S.R.L., SA, S.A., SNC, SCS]
-    confidence: verified
-    sources:
-      - {title: "Law 506/2004 on legislatie.just.ro, consolidation of 31.05.2019 (the 08.10.2024 consolidation was not read)"}
-  IT:
-    name: Italy
-    group: call_first
-    tz: Europe/Rome
-    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
-    call:
-      verdict: open
-      rules: ["screen the Registro pubblico delle opposizioni before each campaign"]
-    individuals: {email: consent, call: same}
-    registers: [rpo]
-    legal_forms: [S.r.l., Srl, SRL, S.p.A., SpA, S.a.s., S.n.c.]
-    confidence: unverified
-  ES:
-    name: Spain
-    group: call_first
-    tz: Europe/Madrid
-    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
-    call:
-      verdict: open
-      rules: ["screen against Lista Robinson", "legitimate interest"]
-    individuals: {email: consent, call: same}
-    registers: [robinson]
-    legal_forms: [S.L., SL, S.L.U., S.A., SA, SLU]
-    confidence: unverified
-  DE:
-    name: Germany
-    group: call_first
-    tz: Europe/Berlin
-    email: {verdict: consent, rules: ["§7 UWG: email needs consent"]}
-    call:
-      verdict: open
-      rules: ["§7 UWG: presumed consent only, so the campaign must record (acknowledge) why the offer is relevant to that business"]
-      acknowledge_required: true
-    individuals: {email: consent, call: same}
-    legal_forms: [GmbH, AG, UG, KG, OHG, GbR, e.K., mbH, SE]
-    confidence: verified
-    sources:
-      - {title: "§7 UWG", url: "https://www.gesetze-im-internet.de/uwg_2004/__7.html"}
-  DK:
-    name: Denmark
-    group: call_first
-    tz: Europe/Copenhagen
-    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
-    call: {verdict: open, rules: ["companies only, never a natural person"]}
-    individuals: {email: consent, call: off}
-    legal_forms: [ApS, A/S, IVS, P/S, K/S, I/S]
-    confidence: unverified
-
-  # Off: consent needed for both channels
-  AT:
-    name: Austria
-    group: off
-    tz: Europe/Vienna
-    email: {verdict: off}
-    call: {verdict: off}
-    individuals: {email: off, call: off}
-    legal_forms: [GmbH, AG, KG, OG, e.U.]
-    confidence: unverified
-  PL:
-    name: Poland
-    group: off
-    tz: Europe/Warsaw
-    email: {verdict: off}
-    call: {verdict: off}
-    individuals: {email: off, call: off}
-    legal_forms: [sp. z o.o., S.A., sp.k., sp.j.]
-    confidence: unverified
-  CZ:
-    name: Czechia
-    group: off
-    tz: Europe/Prague
-    email: {verdict: off}
-    call: {verdict: off}
-    individuals: {email: off, call: off}
-    legal_forms: [s.r.o., spol. s r.o., a.s.]
-    confidence: unverified
-  BG:
-    name: Bulgaria
-    group: off
-    tz: Europe/Sofia
-    email: {verdict: off}
-    call: {verdict: off}
-    individuals: {email: off, call: off}
-    legal_forms: [EOOD, OOD, AD, EAD, ЕООД, ООД, АД, ЕАД]
-    confidence: unverified
-
   # Opened by the operator, 27 Oct 2026: companies only, both channels
   PT:
     name: Portugal
@@ -484,24 +382,131 @@ countries:
     confidence: operator_decision
     acknowledge: "Opened by the operator on 28 Oct 2026: companies only, both calls and emails, on the same terms as the 27 Oct group (role addresses only, an opt-out in every email, suppress on the first objection, stop a call on objection)."
 
-  # Call first, calls opened by the operator (email consent covers companies)
+  # Opened by the operator, 29 Oct 2026: email first, the same sequence as every other country.
+  # The research below (consent for email; AT, PL, CZ, BG consent for both) is kept in each entry's
+  # acknowledge, and email runs on the 27 Oct terms: companies only, role addresses, an opt-out, suppress on objection.
+  RO:
+    name: Romania
+    group: operator_opened
+    tz: Europe/Bucharest
+    email: *opened_email
+    call:
+      verdict: open
+      rules: ["live human calls are outside art. 12; GDPR applies; no do-not-call register found"]
+    individuals: {email: consent, call: same}
+    legal_forms: [SRL, S.R.L., SA, S.A., SNC, SCS]
+    confidence: operator_decision
+    acknowledge: "Operator, 29 Oct 2026: email first, as everywhere. The research read Law 506/2004 art. 12(1) and 12(4) as prior consent for commercial email, legal persons included; the operator takes that risk."
+    sources:
+      - {title: "Law 506/2004 on legislatie.just.ro, consolidation of 31.05.2019 (the 08.10.2024 consolidation was not read)"}
+  IT:
+    name: Italy
+    group: operator_opened
+    tz: Europe/Rome
+    email: *opened_email
+    call:
+      verdict: open
+      rules: ["screen the Registro pubblico delle opposizioni before each campaign"]
+    individuals: {email: consent, call: same}
+    registers: [rpo]
+    legal_forms: [S.r.l., Srl, SRL, S.p.A., SpA, S.a.s., S.n.c.]
+    confidence: operator_decision
+    acknowledge: &opened29_ack "Operator, 29 Oct 2026: email first, as everywhere; the research said email needs consent, and the operator takes that risk."
+  ES:
+    name: Spain
+    group: operator_opened
+    tz: Europe/Madrid
+    email: *opened_email
+    call:
+      verdict: open
+      rules: ["screen against Lista Robinson", "legitimate interest"]
+    individuals: {email: consent, call: same}
+    registers: [robinson]
+    legal_forms: [S.L., SL, S.L.U., S.A., SA, SLU]
+    confidence: operator_decision
+    acknowledge: *opened29_ack
+  DE:
+    name: Germany
+    group: operator_opened
+    tz: Europe/Berlin
+    email: *opened_email
+    call:
+      verdict: open
+      rules: ["§7 UWG: presumed consent only, so the campaign must record (acknowledge) why the offer is relevant to that business"]
+      acknowledge_required: true
+    individuals: {email: consent, call: same}
+    legal_forms: [GmbH, AG, UG, KG, OHG, GbR, e.K., mbH, SE]
+    confidence: operator_decision
+    acknowledge: "Operator, 29 Oct 2026: email first, as everywhere; §7 UWG says email needs consent, and the operator takes that risk."
+    sources:
+      - {title: "§7 UWG", url: "https://www.gesetze-im-internet.de/uwg_2004/__7.html"}
+  DK:
+    name: Denmark
+    group: operator_opened
+    tz: Europe/Copenhagen
+    email: *opened_email
+    call: {verdict: open, rules: ["companies only, never a natural person"]}
+    individuals: {email: consent, call: off}
+    legal_forms: [ApS, A/S, IVS, P/S, K/S, I/S]
+    confidence: operator_decision
+    acknowledge: *opened29_ack
   NL:
     name: Netherlands
-    group: call_first_operator
+    group: operator_opened
     tz: Europe/Amsterdam
-    email: {verdict: consent, rules: ["opt-in including legal persons since 2009; unlocked by a 'yes, email me' on the call"]}
+    email: *opened_email
     call: {verdict: open, rules: ["companies only (consumers and small entrepreneurs need consent since 2021)"]}
     individuals: {email: consent, call: off}
     legal_forms: [BV, B.V., NV, N.V., VOF, V.O.F., C.V.]
     confidence: operator_decision
-    acknowledge: "Operator, 27 Oct 2026: calls to companies opened; email stays call-first (consent)."
+    acknowledge: "Operator, 27 Oct 2026: calls to companies opened. Operator, 29 Oct 2026: email first too; the research said opt-in covers legal persons since 2009, and the operator takes that risk."
   LV:
     name: Latvia
-    group: call_first_operator
+    group: operator_opened
     tz: Europe/Riga
-    email: {verdict: consent, rules: ["the regulator says consent, with no B2B exception; unlocked by a 'yes, email me' on the call"]}
+    email: *opened_email
     call: {verdict: open, rules: ["companies only"]}
     individuals: {email: consent, call: off}
     legal_forms: [SIA, AS]
     confidence: operator_decision
-    acknowledge: "Operator, 27 Oct 2026: calls to companies opened; email stays call-first (consent)."
+    acknowledge: "Operator, 27 Oct 2026: calls to companies opened. Operator, 29 Oct 2026: email first too; the regulator says consent with no B2B exception, and the operator takes that risk."
+  AT:
+    name: Austria
+    group: operator_opened
+    tz: Europe/Vienna
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [GmbH, AG, KG, OG, e.U.]
+    confidence: operator_decision
+    acknowledge: &opened29_off_ack "Operator, 29 Oct 2026: both channels opened to companies; the research said both need consent, and the operator takes that risk."
+  PL:
+    name: Poland
+    group: operator_opened
+    tz: Europe/Warsaw
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [sp. z o.o., S.A., sp.k., sp.j.]
+    confidence: operator_decision
+    acknowledge: *opened29_off_ack
+  CZ:
+    name: Czechia
+    group: operator_opened
+    tz: Europe/Prague
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [s.r.o., spol. s r.o., a.s.]
+    confidence: operator_decision
+    acknowledge: *opened29_off_ack
+  BG:
+    name: Bulgaria
+    group: operator_opened
+    tz: Europe/Sofia
+    email: *opened_email
+    call: *opened_call
+    individuals: {email: off, call: off}
+    legal_forms: [EOOD, OOD, AD, EAD, ЕООД, ООД, АД, ЕАД]
+    confidence: operator_decision
+    acknowledge: *opened29_off_ack

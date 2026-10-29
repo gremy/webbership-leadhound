@@ -64,11 +64,8 @@ func TestDefaultTableLoads(t *testing.T) {
 		t.Fatalf("research date %s", got)
 	}
 	want := map[string][]string{
-		"both_open":           {"AU", "BE", "CA", "CY", "EE", "FI", "FR", "GB", "IE", "NZ", "SE", "SK", "US"},
-		"call_first":          {"DE", "DK", "ES", "IT", "RO"},
-		"off":                 {"AT", "BG", "CZ", "PL"},
-		"operator_opened":     {"CH", "GR", "HR", "HU", "LT", "LU", "MT", "PT", "SI"},
-		"call_first_operator": {"LV", "NL"},
+		"both_open":       {"AU", "BE", "CA", "CY", "EE", "FI", "FR", "GB", "IE", "NZ", "SE", "SK", "US"},
+		"operator_opened": {"AT", "BG", "CH", "CZ", "DE", "DK", "ES", "GR", "HR", "HU", "IT", "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SI"},
 	}
 	got := map[string][]string{}
 	for _, code := range tab.Codes() {
@@ -80,13 +77,17 @@ func TestDefaultTableLoads(t *testing.T) {
 		if c.Email.Verdict == VerdictHold || c.Call.Verdict == VerdictHold {
 			t.Errorf("%s: the starting table has no hold country left", code)
 		}
+		// The operator, 29 Oct 2026: every country is email first; none starts with a call, none is off.
+		if tab.CallFirst(code) || c.Email.Verdict == VerdictConsent || c.Email.Verdict == VerdictOff || c.Call.Verdict == VerdictOff {
+			t.Errorf("%s: email %s, call %s; every country is email first with both channels on", code, c.Email.Verdict, c.Call.Verdict)
+		}
 	}
 	for g, codes := range want {
 		if !slices.Equal(got[g], codes) {
 			t.Errorf("group %s = %v, want %v", g, got[g], codes)
 		}
 	}
-	for _, code := range []string{"PT", "SI", "LT", "HU", "LU", "MT", "HR", "GR", "CH", "NL", "LV"} {
+	for _, code := range []string{"PT", "SI", "LT", "HU", "LU", "MT", "HR", "GR", "CH", "NL", "LV", "RO", "IT", "ES", "DE", "DK", "AT", "PL", "CZ", "BG"} {
 		if c, _ := tab.Lookup(code); c.Confidence != ConfidenceOperatorDecision {
 			t.Errorf("%s confidence %s, want operator_decision", code, c.Confidence)
 		}
@@ -103,8 +104,8 @@ func TestDefaultTableLoads(t *testing.T) {
 
 func TestParseRejectsBadVocabulary(t *testing.T) {
 	cases := map[string][2]string{
-		"bad verdict":     {"verdict: consent, rules: [\"§7 UWG: email needs consent\"]", "verdict: maybe, rules: [\"x\"]"},
-		"bad confidence":  {"confidence: verified\n    sources:\n      - {title: \"§7 UWG\"", "confidence: certain\n    sources:\n      - {title: \"§7 UWG\""},
+		"bad verdict":     {"verdict: open\n      rules: [\"corporate bodies may be emailed", "verdict: maybe\n      rules: [\"corporate bodies may be emailed"},
+		"bad confidence":  {"confidence: verified\n    sources:\n      - {title: \"ICO", "confidence: certain\n    sources:\n      - {title: \"ICO"},
 		"bad individuals": {"individuals: {email: consent, call: off}\n    legal_forms: [ApS", "individuals: {email: consent, call: never}\n    legal_forms: [ApS"},
 		"unknown field":   {"low_confidence: true\n    email: {verdict: open", "low_confidence: true\n    mood: calm\n    email: {verdict: open"},
 		"bad register":    {"registers: [rpo]", "registers: [nope]"},
@@ -159,34 +160,95 @@ func TestVerdictBothOpen(t *testing.T) {
 	})
 }
 
+// consentOffYAML keeps the call-first and off mechanics under test now that no default country uses them.
+const consentOffYAML = `# test
+research_date: 2026-10-27
+default_call_windows:
+  - {days: [Mon, Tue, Wed, Thu, Fri], start: "09:30", end: "17:00"}
+registers: {}
+countries:
+  XC:
+    name: Callfirstland
+    group: call_first
+    tz: Europe/Bucharest
+    email: {verdict: consent, rules: ["unlocked by a 'yes, email me' on the call"]}
+    call: {verdict: open}
+    individuals: {email: consent, call: same}
+    confidence: unverified
+  XO:
+    name: Offland
+    group: off
+    tz: Europe/Vienna
+    email: {verdict: off}
+    call: {verdict: off}
+    individuals: {email: off, call: off}
+    confidence: unverified
+`
+
 func TestVerdictCallFirst(t *testing.T) {
+	tab, err := Parse([]byte(consentOffYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
 	wed := at(t, "Europe/Bucharest", 10, 28, 11, 0)
-	runCases(t, Default(), []vcase{
-		{"RO email consent refused", "RO", ChannelEmail, company, CampaignOverrides{}, wed, false, true, RuleConsent, "call first"},
-		{"RO email after consent", "RO", ChannelEmail, OrgFacts{EntityType: EntityCompany, EmailConsent: true}, CampaignOverrides{}, wed, true, false, RuleConsent, ""},
-		{"RO call open", "RO", ChannelCall, company, CampaignOverrides{}, wed, true, false, RuleOpen, ""},
-		{"RO sole trader call open", "RO", ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, wed, true, false, RuleOpen, ""},
-		{"DE call needs acknowledge", "DE", ChannelCall, company, allOn("DE"), at(t, "Europe/Berlin", 10, 28, 11, 0), false, true, RuleAcknowledge, "relevant"},
-		{"DE call with acknowledge", "DE", ChannelCall, company, CampaignOverrides{Countries: map[string]CampaignCountry{"DE": {Call: true, Acknowledge: "D7 sites past end of life"}}}, at(t, "Europe/Berlin", 10, 28, 11, 0), true, false, RuleOpen, ""},
-		{"DK call sole trader refused", "DK", ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, wed, false, true, RuleIndividual, "companies only"},
-		{"NL call company", "NL", ChannelCall, company, CampaignOverrides{}, at(t, "Europe/Amsterdam", 10, 28, 11, 0), true, false, RuleOpen, ""},
-		{"NL call unknown entity refused", "NL", ChannelCall, OrgFacts{}, CampaignOverrides{}, at(t, "Europe/Amsterdam", 10, 28, 11, 0), false, true, RuleIndividual, ""},
-		{"LV email consent", "LV", ChannelEmail, company, CampaignOverrides{}, wed, false, true, RuleConsent, ""},
+	runCases(t, tab, []vcase{
+		{"email consent refused", "XC", ChannelEmail, company, CampaignOverrides{}, wed, false, true, RuleConsent, "call first"},
+		{"email after consent", "XC", ChannelEmail, OrgFacts{EntityType: EntityCompany, EmailConsent: true}, CampaignOverrides{}, wed, true, false, RuleConsent, ""},
+		{"call open", "XC", ChannelCall, company, CampaignOverrides{}, wed, true, false, RuleOpen, ""},
+		{"sole trader call open", "XC", ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, wed, true, false, RuleOpen, ""},
 	})
-	for code, want := range map[string]bool{"RO": true, "IT": true, "ES": true, "DE": true, "DK": true, "NL": true, "LV": true, "GB": false, "AT": false, "PT": false, "CH": false, "NO": false} {
-		if got := Default().CallFirst(code); got != want {
+	for code, want := range map[string]bool{"XC": true, "XO": false, "NO": false} {
+		if got := tab.CallFirst(code); got != want {
 			t.Errorf("CallFirst(%s) = %v, want %v", code, got, want)
 		}
 	}
 }
 
 func TestVerdictOffCountries(t *testing.T) {
+	tab, err := Parse([]byte(consentOffYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := at(t, "Europe/Vienna", 10, 28, 11, 0)
+	runCases(t, tab, []vcase{
+		{"email off", "XO", ChannelEmail, company, CampaignOverrides{}, now, false, true, RuleOff, ""},
+		{"call off", "XO", ChannelCall, company, CampaignOverrides{}, now, false, true, RuleOff, ""},
+		{"campaign cannot enable", "XO", ChannelCall, company, CampaignOverrides{Countries: map[string]CampaignCountry{"XO": {Email: true, Call: true, Acknowledge: "please"}}}, now, false, true, RuleOff, "no campaign can turn it on"},
+	})
+	if got := tab.CheckCampaign(CampaignOverrides{Countries: map[string]CampaignCountry{"XO": {Call: true}}}); len(got) != 1 || !strings.HasPrefix(got[0], "countries.XO: call is off by law") {
+		t.Fatalf("CheckCampaign = %q", got)
+	}
+}
+
+// The operator opened these on 29 Oct 2026: email first, on the 27 Oct terms (companies, role addresses).
+func TestVerdictEmailFirstEverywhere(t *testing.T) {
+	wed := at(t, "Europe/Bucharest", 10, 28, 11, 0)
+	runCases(t, Default(), []vcase{
+		{"RO company email", "RO", ChannelEmail, company, CampaignOverrides{}, wed, true, false, RuleRoleAddressOnly, "29 Oct 2026"},
+		{"RO sole trader email needs consent", "RO", ChannelEmail, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, wed, false, true, RuleIndividual, ""},
+		{"RO call open", "RO", ChannelCall, company, CampaignOverrides{}, wed, true, false, RuleOpen, "Calls to Romania are allowed"},
+		{"RO sole trader call open", "RO", ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, wed, true, false, RuleOpen, ""},
+		{"DE call needs acknowledge", "DE", ChannelCall, company, allOn("DE"), at(t, "Europe/Berlin", 10, 28, 11, 0), false, true, RuleAcknowledge, "relevant"},
+		{"DE call with acknowledge", "DE", ChannelCall, company, CampaignOverrides{Countries: map[string]CampaignCountry{"DE": {Call: true, Acknowledge: "D7 sites past end of life"}}}, at(t, "Europe/Berlin", 10, 28, 11, 0), true, false, RuleOpen, ""},
+		{"DK call sole trader refused", "DK", ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, wed, false, true, RuleIndividual, "companies only"},
+		{"NL call company", "NL", ChannelCall, company, CampaignOverrides{}, at(t, "Europe/Amsterdam", 10, 28, 11, 0), true, false, RuleOpen, ""},
+		{"NL call unknown entity refused", "NL", ChannelCall, OrgFacts{}, CampaignOverrides{}, at(t, "Europe/Amsterdam", 10, 28, 11, 0), false, true, RuleIndividual, ""},
+		{"LV company email", "LV", ChannelEmail, company, CampaignOverrides{}, wed, true, false, RuleRoleAddressOnly, "29 Oct 2026"},
+	})
+	if _, _, _, reason := Default().Verdict("RO", ChannelEmail, company, CampaignOverrides{}, wed); strings.Contains(reason, "..") {
+		t.Errorf("reason %q ends in a double full stop", reason)
+	}
+	now := at(t, "Europe/Vienna", 10, 28, 11, 0)
+	for _, code := range []string{"IT", "ES", "DE", "DK", "NL", "LV", "AT", "PL", "CZ", "BG"} {
+		runCases(t, Default(), []vcase{
+			{code + " company email", code, ChannelEmail, company, CampaignOverrides{}, now, true, false, RuleRoleAddressOnly, "29 Oct 2026"},
+			{code + " unknown email", code, ChannelEmail, OrgFacts{}, CampaignOverrides{}, now, false, true, RuleIndividual, ""},
+		})
+	}
 	for _, code := range []string{"AT", "PL", "CZ", "BG"} {
 		runCases(t, Default(), []vcase{
-			{code + " email off", code, ChannelEmail, company, CampaignOverrides{}, now, false, true, RuleOff, ""},
-			{code + " call off", code, ChannelCall, company, CampaignOverrides{}, now, false, true, RuleOff, ""},
-			{code + " campaign cannot enable", code, ChannelCall, company, CampaignOverrides{Countries: map[string]CampaignCountry{code: {Email: true, Call: true, Acknowledge: "please"}}}, now, false, true, RuleOff, "no campaign can turn it on"},
+			{code + " company call", code, ChannelCall, company, CampaignOverrides{}, now, true, false, RuleOpen, ""},
+			{code + " sole trader call", code, ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, CampaignOverrides{}, now, false, true, RuleIndividual, ""},
 		})
 	}
 }
@@ -219,15 +281,15 @@ func TestVerdictSwitzerland(t *testing.T) {
 	}
 }
 
-// AT is off by law: hard. IE calls are legal, the campaign has them off: soft.
+// A DK sole trader is off by law: hard. IE calls are legal, the campaign has them off: soft.
 func TestHardLegalVersusSoftCampaign(t *testing.T) {
 	camp := CampaignOverrides{Countries: map[string]CampaignCountry{
 		"IE": {Email: true, Call: false},
-		"AT": {Email: false, Call: true},
+		"DK": {Email: false, Call: true},
 	}}
 	ie := OrgFacts{EntityType: EntityCompany, PhoneType: "landline"}
 	runCases(t, Default(), []vcase{
-		{"AT call blocked hard", "AT", ChannelCall, company, camp, at(t, "Europe/Vienna", 10, 28, 11, 0), false, true, RuleOff, ""},
+		{"DK sole trader call blocked hard", "DK", ChannelCall, OrgFacts{EntityType: EntitySoleTrader}, camp, at(t, "Europe/Copenhagen", 10, 28, 11, 0), false, true, RuleIndividual, ""},
 		{"IE campaign call off soft", "IE", ChannelCall, ie, camp, at(t, "Europe/Dublin", 10, 28, 11, 0), false, false, RuleCampaignOff, "your call"},
 		{"IE campaign email on", "IE", ChannelEmail, company, camp, at(t, "Europe/Dublin", 10, 28, 11, 0), true, false, RuleOpen, ""},
 		{"GB not in campaign soft", "GB", ChannelCall, company, camp, at(t, "Europe/London", 10, 28, 11, 0), false, false, RuleCampaignOff, ""},
@@ -271,13 +333,13 @@ func TestVerdictHoldNeedsAcknowledge(t *testing.T) {
 
 func TestCheckCampaign(t *testing.T) {
 	got := Default().CheckCampaign(CampaignOverrides{Countries: map[string]CampaignCountry{
-		"AT": {Call: true},
+		"AT": {Email: true, Call: true},
 		"GB": {Email: true, Call: true},
 		"NO": {Email: true},
 		"DE": {Call: true},
 		"IE": {Email: true, Call: false},
 	}})
-	want := []string{"countries.AT: call is off by law", "countries.DE: call in Germany needs a written acknowledge", "countries.NO: email is on"}
+	want := []string{"countries.DE: call in Germany needs a written acknowledge", "countries.NO: email is on"}
 	if len(got) != len(want) {
 		t.Fatalf("CheckCampaign = %q", got)
 	}
@@ -345,12 +407,12 @@ func TestVerdictIndividualsWording(t *testing.T) {
 
 // A call channel whose verdict is consent is refused in the call's own words, never as email.
 func TestVerdictCallConsentWording(t *testing.T) {
-	old := []byte("    call:\n      verdict: open\n      rules: [\"live human calls are outside art. 12")
+	old := []byte("    email: *opened_email\n    call:\n      verdict: open\n      rules: [\"live human calls are outside art. 12")
 	if !bytes.Contains(countriesYAML, old) {
-		t.Fatal("RO call block not found in countries.yaml")
+		t.Fatal("RO email and call block not found in countries.yaml")
 	}
 	yml := bytes.Replace(countriesYAML, old,
-		[]byte("    call:\n      verdict: consent\n      rules: [\"live human calls are outside art. 12"), 1)
+		[]byte("    email: {verdict: consent}\n    call:\n      verdict: consent\n      rules: [\"live human calls are outside art. 12"), 1)
 	tab, err := Parse(yml)
 	if err != nil {
 		t.Fatal(err)

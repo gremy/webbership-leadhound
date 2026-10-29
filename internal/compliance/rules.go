@@ -21,6 +21,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"slices"
@@ -254,6 +255,23 @@ var defaultTable = func() *Table {
 
 // Default is the embedded table.
 func Default() *Table { return defaultTable }
+
+// SetDefault makes t the table Default returns and returns the restore. It is for tests in
+// other packages: the embedded table has no call-first or off country since 29 Oct 2026, so
+// those paths are tested on a table that has one. Not safe alongside parallel tests.
+func SetDefault(t *Table) (restore func()) {
+	old := defaultTable
+	defaultTable = t
+	return func() { defaultTable = old }
+}
+
+// WithCountry is a copy of t with c in place of its entry for code, for tests.
+func (t *Table) WithCountry(code string, c Country) *Table {
+	cp := *t
+	cp.Countries = maps.Clone(t.Countries)
+	cp.Countries[code] = c
+	return &cp
+}
 
 // Parse loads a table, enforcing every closed vocabulary; any fault fails the whole load.
 func Parse(data []byte) (*Table, error) {
@@ -619,7 +637,11 @@ func (t *Table) Verdict(country string, ch Channel, org OrgFacts, camp CampaignO
 		return false, false, RuleCampaignOff, fmt.Sprintf("%s to %s is off in this campaign's rules: your call.", capital(words(ch)), c.Name)
 	}
 
-	reason = fmt.Sprintf("%s to %s is allowed", capital(words(ch)), c.Name)
+	verb := "is"
+	if ch == ChannelCall {
+		verb = "are" // "Calls to Austria are allowed"
+	}
+	reason = fmt.Sprintf("%s to %s %s allowed", capital(words(ch)), c.Name, verb)
 	if len(cr.Rules) > 0 {
 		reason += ": " + strings.Join(cr.Rules, "; ")
 	}
@@ -627,7 +649,7 @@ func (t *Table) Verdict(country string, ch Channel, org OrgFacts, camp CampaignO
 		reason += " (they agreed on the call)"
 	}
 	if c.Acknowledge != "" {
-		reason += ". " + c.Acknowledge
+		reason += ". " + strings.TrimSuffix(c.Acknowledge, ".")
 	}
 	return true, false, allowedRule, reason + "."
 }

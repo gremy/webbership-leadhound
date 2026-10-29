@@ -344,7 +344,7 @@ make remote HOST=<ssh host> CONFIRM=1 ARGS='leads campaigns register'
 A data directory that holds a campaign file with no registered version, or one changed since it was registered, refuses `leads batch new`, so the morning batch unit fails until you register.
 Run `register` after every change to a campaign file.
 Without a folder, `drupal-eol` drafts from `leads.yaml` and its templates as before, and the batch never asks for a registration.
-A data directory whose campaign lists a call-first country (Romania, say) needs that campaign's `call_first/` templates for each kind and language, or `register` and the batch refuse and name the missing files.
+A data directory whose campaign lists a call-first country (none in the table since 29 Oct 2026) needs that campaign's `call_first/` templates for each kind and language, or `register` and the batch refuse and name the missing files.
 `make remote HOST=<ssh host> ARGS='leads campaigns list' CONFIRM=1` shows what is registered.
 
 ### Turning the leads on in production
@@ -683,7 +683,7 @@ make remote HOST=<ssh host> CONFIRM=1 ARGS='leads calls outcome <message> no_ans
 
 **When a call is callable.**
 One rule decides it in every place that shows a call, in this order: there is a number to dial; it is not suppressed; it was not marked wrong on an earlier call; the country table (`internal/compliance/countries.yaml`) allows calling this organisation; the number's screening is clean and recent enough; and it is inside the calling hours in the callee's time.
-A country the table marks off (Austria, Poland, the Czech Republic, Bulgaria), or does not list, is never callable, and no campaign setting opens it.
+A country the table marks off (none since the operator opened Austria, Poland, the Czech Republic and Bulgaria to companies on 29 Oct 2026), or does not list, is never callable, and no campaign setting opens it.
 A campaign whose own countries say `call: off` still gets its calls drafted, with a warning beside each that it is your call whether to ring.
 A US, Canadian or Australian call needs the lead's state or region, which today only a café place gives; without it the card says "region unknown: not callable".
 The table was researched on 27 Oct 2026 and is not legal advice: entries marked `secondary`, `unverified` or `operator_decision` are leads for a lawyer, and `leads campaigns check` warns once the research is more than 180 days old.

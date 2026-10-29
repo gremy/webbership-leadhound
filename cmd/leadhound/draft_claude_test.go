@@ -240,6 +240,7 @@ func TestDraftsFallbackWords(t *testing.T) {
 // country's sequence (a call-first country writes other steps with other word limits); what
 // varies is the user turn's and the schema's.
 func TestDraftsSystemPromptOneCacheEntry(t *testing.T) {
+	callFirstTable(t)
 	var first string
 	turns := map[string]bool{}
 	for _, tc := range []struct {
