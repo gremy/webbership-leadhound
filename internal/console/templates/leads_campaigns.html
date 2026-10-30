@@ -4,7 +4,7 @@
   <h1>Campaigns</h1>
 </div>
 {{template "leads_tabs" (leadsTab "campaigns" true)}}
-<p class="lede">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server.</p>
+<p class="lede">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server. The mailboxes each campaign sends from are chosen here.</p>
 {{if $cs}}
 {{range $cs}}{{$c := .}}
 <section class="card settings-section campaign" id="campaign-{{.Slug}}" aria-labelledby="campaign-{{.Slug}}-title">
@@ -31,6 +31,30 @@
     {{range .Steps}}<li><span class="item-head">Step {{add .Step 1}}: {{if eq .Type "call"}}a phone call{{else if eq .Type "email"}}an email{{else}}{{.Type}}{{end}}</span> <span class="item-meta">{{if eq .Step 0}}first{{else if .AfterBusinessDays}}{{plural .AfterBusinessDays "business day" "business days"}} after the step before{{else}}straight after the step before{{end}}{{with stepWhen .When}} · {{.}}{{end}}</span></li>{{end}}
   </ol>
   {{else}}<p class="empty">No steps.</p>{{end}}
+
+  {{with .Mailboxes}}{{$m := .}}
+  <h3 id="campaign-{{$c.Slug}}-mailboxes">Mailboxes</h3>
+  {{if eq .Assigned 0}}<p class="notice notice-warn" role="status">No mailbox is assigned, so this campaign drafts no live batch.</p>{{end}}
+  {{if .Rows}}
+  <form method="post" action="/leads/campaigns/{{$c.Slug}}/mailboxes" class="settings-form">
+    <fieldset>
+      <legend>Mailboxes that send for this campaign</legend>
+      <div class="checks stacked">
+        {{range .Rows}}
+        <div>
+          <input type="hidden" name="shown" value="{{.MailboxID}}">
+          <label><input type="checkbox" name="assigned" value="{{.MailboxID}}" aria-describedby="campaign-{{$c.Slug}}-mb-{{.MailboxID}}"{{if .Assigned}} checked{{end}}> {{.Address}}</label>
+          <p id="campaign-{{$c.Slug}}-mb-{{.MailboxID}}" class="hint">{{.Domain}} · <span class="mb-state mb-{{.State}}">{{mailboxState .State .Reason}}</span> · {{.LandingWords}}</p>
+          {{with .OffSiteWords}}<p class="notice notice-warn" role="status">{{.}}</p>{{end}}
+        </div>
+        {{end}}
+      </div>
+      <p class="hint">Ticked mailboxes send this campaign's emails; an unticked one sends none of them. {{if $m.SiteHost}}Each domain is followed to where it sends a visitor, which should be {{$m.SiteHost}}.{{else}}This campaign names no site, so where each domain sends a visitor is not compared.{{end}}</p>
+    </fieldset>
+    <button type="submit">Save mailboxes</button>
+  </form>
+  {{else}}<p class="empty">No mailbox yet. <a href="/mailboxes">Add one on the Mailboxes page</a>.</p>{{end}}
+  {{end}}
 </section>
 {{end}}
 {{else}}

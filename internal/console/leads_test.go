@@ -997,7 +997,7 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		also       string // a second read the page makes
 	}{
 		{"/leads", "LeadList", http.StatusOK, ""},
-		{"/leads/outreach", "Leads", http.StatusOK, ""},
+		{"/leads/outreach", "Leads", http.StatusOK, "SendingWhy"},
 		{"/leads/settings", "LeadSettings", http.StatusOK, ""},
 		{"/leads/campaigns", "Campaigns", http.StatusOK, "DraftGates"},
 		{"/leads/drafts", "DraftSamples", http.StatusOK, ""},
@@ -1014,6 +1014,9 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		{"/leads/settings/who", "", http.StatusMethodNotAllowed, ""},
 		{"/leads/5/star", "", http.StatusMethodNotAllowed, ""},
 	}
+	// more is the reads a page makes beyond its two: Campaigns also reads each campaign's
+	// mailboxes.
+	more := map[string]int{"/leads/campaigns": 1}
 	for _, c := range cases {
 		b := richBackend("x")
 		h := newHarness(t, b, false)
@@ -1024,7 +1027,7 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		switch {
 		case c.read == "" && b.total() != 0:
 			t.Errorf("%s reached the backend %d times", c.path, b.total())
-		case c.read != "" && (b.n(c.read) != 1 || c.also != "" && b.n(c.also) != 1 || b.total() != 1+min(len(c.also), 1)):
+		case c.read != "" && (b.n(c.read) != 1 || c.also != "" && b.n(c.also) != 1 || b.total() != 1+min(len(c.also), 1)+more[c.path]):
 			t.Errorf("%s: %s called %d times, %d reads in all", c.path, c.read, b.n(c.read), b.total())
 		}
 	}

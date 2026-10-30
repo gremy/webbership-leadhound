@@ -6,6 +6,7 @@
 {{template "leads_tabs" (leadsTab "outreach" true)}}
 {{if $v.Message}}{{$n := noticeLines $v.Message}}{{if $n.Items}}<div class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}"><p>{{$n.Head}}</p><ol class="notice-list">{{range $n.Items}}<li>{{.}}</li>{{end}}</ol></div>{{else}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}{{end}}
 
+{{with $v.Why}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}} <a href="/controls">Controls</a></p>{{end}}
 <div class="grid two">
   <section class="card">
     <h2>Sending</h2>

@@ -255,6 +255,7 @@ type leadsView struct {
 	Data    any
 	Message string
 	Error   bool
+	Why     *SendingWhy // the sending sentence the Outreach page leads with; nil when not read
 }
 
 // pathID reads the {id} path segment as a positive id, or reports false.
@@ -304,7 +305,24 @@ func (s *server) renderLeads(w http.ResponseWriter, r *http.Request, code int, m
 		return
 	}
 	s.render(w, r, code, "leads_outreach", page{Title: "Outreach", Active: leadsPath, SignedIn: true,
-		Data: leadsView{Data: p, Message: msg, Error: isErr}})
+		Data: leadsView{Data: p, Message: msg, Error: isErr, Why: s.sendingWhy(r)}})
+}
+
+// sendingWhy reads the sending sentence a page shows above its own content. A failed read
+// is logged and gives nil, so the page shows without the sentence; leads not set up gives
+// nil without a log.
+func (s *server) sendingWhy(r *http.Request) *SendingWhy {
+	w, err := s.b.SendingWhy(r.Context())
+	switch {
+	case errors.Is(err, ErrLeadsNotSetUp):
+		return nil
+	case err != nil:
+		s.log.Error("console error", "route", r.Pattern, "read", "sending why", "err", err.Error())
+		return nil
+	case w.Sentence == "":
+		return nil
+	}
+	return &w
 }
 
 // leadBatch is GET /leads/batches/{id}: the whole batch, and the approve form when it can
@@ -511,10 +529,16 @@ func (s *server) contacted(w http.ResponseWriter, r *http.Request) {
 		leadsOutPath, s.backToLeads)
 }
 
-// sending is POST /leads/sending: do=pause (with a reason) or do=resume.
+// sending is POST /leads/sending: do=pause (with a reason) or do=resume. An optional back
+// of exactly "/controls" returns to the Controls page; any other value is ignored, so the
+// form can never send the browser elsewhere.
 func (s *server) sending(w http.ResponseWriter, r *http.Request) {
 	if !leadsForm(w, r) {
 		return
+	}
+	next, back := leadsOutPath, s.backToLeads
+	if r.PostForm.Get("back") == controlsPath {
+		next, back = controlsPath, s.renderControls
 	}
 	a := LeadAction{Do: LeadResume}
 	switch r.PostForm.Get("do") {
@@ -523,10 +547,10 @@ func (s *server) sending(w http.ResponseWriter, r *http.Request) {
 	case "resume":
 	default:
 		s.leadsLog("sending", "refused")
-		s.renderLeads(w, r, http.StatusUnprocessableEntity, "Choose pause or resume.", true)
+		back(w, r, http.StatusUnprocessableEntity, "Choose pause or resume.", true)
 		return
 	}
-	s.leadsAct(w, r, a, leadsOutPath, s.backToLeads)
+	s.leadsAct(w, r, a, next, back)
 }
 
 // priorityForm reads the fallback order's form: every points input by its key, and the

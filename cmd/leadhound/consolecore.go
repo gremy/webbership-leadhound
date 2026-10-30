@@ -382,19 +382,42 @@ func (h *hostChecks) of(ctx context.Context, m leadstore.MailboxStatus) (*consol
 }
 
 // mailboxRamp is mailbox m's ramp limit today (the operator's now, in loc) and its day of
-// the ramp: the calendar days since its first live send, from 1, as the ramp counts them;
-// 0 before its first live send. The ramp counts from that send only with caps.start_date
-// first-send (outreach.CapOn).
+// the ramp: the calendar days since the ramp's day 0, from 1, counted from the same day 0 as
+// outreach.CapOn: caps.start_date when it is a date, else (start_date first-send) the
+// mailbox's first live send. 0 before day 0: with first-send, before the first live send;
+// with a date, before that date or when none is set.
 func mailboxRamp(cfg leadconfig.Config, m leadstore.MailboxStatus, loc *time.Location, now time.Time) (capToday, rampDay int) {
 	ml := outreach.MailboxLoad{ID: m.ID, Domain: m.Domain}
 	local := now.In(loc)
+	date := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC) }
 	if m.FirstLiveSend != nil {
 		fs := m.FirstLiveSend.In(loc)
 		ml.FirstSend = &fs
-		date := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC) }
-		rampDay = max(1, int(date(local).Sub(date(fs))/(24*time.Hour))+1)
+	}
+	var start time.Time
+	switch {
+	case !cfg.Caps.StartDate.IsFirstSend():
+		start = cfg.Caps.StartDate.Time // zero when unset: no ramp
+	case ml.FirstSend != nil:
+		start = *ml.FirstSend
+	}
+	if !start.IsZero() && !date(local).Before(date(start)) {
+		rampDay = int(date(local).Sub(date(start))/(24*time.Hour)) + 1
 	}
 	return outreach.MailboxCap(cfg, ml, local), rampDay
+}
+
+// rampStart is caps.start_date when it is a date after the operator's today (in loc), nil
+// for first-send or a date already reached: the day every mailbox's warm-up starts.
+func rampStart(cfg leadconfig.Config, loc *time.Location, now time.Time) *time.Time {
+	sd := cfg.Caps.StartDate
+	local := now.In(loc)
+	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.UTC)
+	if sd.IsFirstSend() || sd.IsZero() || !today.Before(sd.Time) {
+		return nil
+	}
+	start := sd.Time
+	return &start
 }
 
 // consoleMailboxState is m's state as the console names it: retired, paused (with its
@@ -1150,6 +1173,7 @@ func (b *backend) mailboxRow(cfg leadconfig.Config, m leadstore.MailboxStatus, n
 	r.State, r.Reason = consoleMailboxState(m)
 	r.DomainPause = m.State == leadstore.MailboxPaused && m.Scope == leadstore.ScopeDomain
 	r.CapToday, r.RampDay = mailboxRamp(cfg, m, b.loc, now)
+	r.RampStart = rampStart(cfg, b.loc, now)
 	if m.LastCheck != nil && m.LastCheck.Outcome != leadstore.CheckRequested {
 		r.LastCheck = m.LastCheck.CheckedAt
 	}

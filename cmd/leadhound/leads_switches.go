@@ -45,21 +45,42 @@ func runLeadsSwitches(ctx context.Context, args []string) error {
 }
 
 // switchesOpen opens the database only: no leads.yaml is read, so install.sh can run the
-// conversion whatever state the data dir is in.
-func switchesOpen(ctx context.Context) (leadstore.Queries, *time.Location, func(), error) {
+// conversion whatever state the data dir is in. dataDir is LEADHOUND_DATA_DIR ("" when unset).
+func switchesOpen(ctx context.Context) (lq leadstore.Queries, loc *time.Location, dataDir string, done func(), err error) {
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
 	if err != nil {
-		return leadstore.Queries{}, nil, nil, err
+		return leadstore.Queries{}, nil, "", nil, err
 	}
-	loc, err := time.LoadLocation(cfg.TZ)
-	if err != nil {
-		return leadstore.Queries{}, nil, nil, usageError("LEADHOUND_TZ: %v", err)
+	if loc, err = time.LoadLocation(cfg.TZ); err != nil {
+		return leadstore.Queries{}, nil, "", nil, usageError("LEADHOUND_TZ: %v", err)
 	}
 	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
-		return leadstore.Queries{}, nil, nil, err
+		return leadstore.Queries{}, nil, "", nil, err
 	}
-	return leadstore.NewQueries(s.Pool()), loc, s.Close, nil
+	return leadstore.NewQueries(s.Pool()), loc, cfg.DataDir, s.Close, nil
+}
+
+// requestOnSwitchOn writes the request file of the unit that runs job, when job has one
+// (runRequestJobs), and reports whether it has. Research has no timer: its request watcher is
+// its only trigger, so without this the searches a star queued while it was off would wait
+// for the next star or Look again.
+func requestOnSwitchOn(dataDir, job string, at time.Time) (bool, error) {
+	for action, j := range runRequestJobs {
+		if j == job {
+			return true, writeRunRequest(dataDir, action, at)
+		}
+	}
+	return false, nil
+}
+
+// requestedWords ends a switch-on line for a job with a request file: the queued work starts
+// now, or (the file could not be written) with the job's next request.
+func requestedWords(job string, err error) string {
+	if err != nil {
+		return fmt.Sprintf(" What was queued while it was off could not be started now: it starts with %s's next request.", strings.ToLower(jobName(job)))
+	}
+	return " What was queued while it was off starts now."
 }
 
 // switchLine is one switch in plain words: "<Name>: on|off · since <time> · <reason>".
@@ -81,7 +102,7 @@ func switchLine(name string, on bool, at time.Time, reason string, loc *time.Loc
 }
 
 func switchesList(ctx context.Context) error {
-	lq, loc, done, err := switchesOpen(ctx)
+	lq, loc, _, done, err := switchesOpen(ctx)
 	if err != nil {
 		return err
 	}
@@ -115,7 +136,7 @@ func switchesSet(ctx context.Context, args []string) error {
 	if !slices.Contains(leadstore.Jobs, job) {
 		return usageError("unknown job %q; %s", job, switchesUsage)
 	}
-	lq, _, done, err := switchesOpen(ctx)
+	lq, _, dataDir, done, err := switchesOpen(ctx)
 	if err != nil {
 		return err
 	}
@@ -128,7 +149,11 @@ func switchesSet(ctx context.Context, args []string) error {
 	case !changed:
 		_, _ = fmt.Fprintf(stdout, "%s is already %s; nothing changed.\n", jobName(job), pos[1])
 	case on:
-		_, _ = fmt.Fprintf(stdout, "%s is switched on: its next run goes ahead.\n", jobName(job))
+		line := jobName(job) + " is switched on: its next run goes ahead."
+		if has, err := requestOnSwitchOn(dataDir, job, leadsNow()); has {
+			line += requestedWords(job, err)
+		}
+		_, _ = fmt.Fprintln(stdout, line)
 	default:
 		_, _ = fmt.Fprintf(stdout, "%s is switched off: its runs do nothing until you switch it on.\n", jobName(job))
 	}
@@ -160,7 +185,7 @@ func switchesConvertSendEnv(ctx context.Context, args []string) error {
 		_, _ = fmt.Fprintln(stdout, "Sending was on on the server: the send switch stays as it is.")
 		return nil
 	}
-	lq, _, done, err := switchesOpen(ctx)
+	lq, _, _, done, err := switchesOpen(ctx)
 	if err != nil {
 		return err
 	}

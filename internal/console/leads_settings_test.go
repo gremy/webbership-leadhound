@@ -440,8 +440,8 @@ func TestSettingsNeverShowsSecrets(t *testing.T) {
 			}
 		}
 	}
-	if len(EnvAllowlist) != 9 {
-		t.Errorf("EnvAllowlist holds %d names, want the 9 of plan D11", len(EnvAllowlist))
+	if len(EnvAllowlist) != 8 {
+		t.Errorf("EnvAllowlist holds %d names, want plan D11's 9 less the retired LEADHOUND_LEADS_SEND", len(EnvAllowlist))
 	}
 }
 

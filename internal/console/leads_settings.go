@@ -40,7 +40,6 @@ var batchSources = []FilterOption{
 var envHelp = map[string]string{
 	"LEADHOUND_OUTREACH":                 "Set to live, approved emails really go out. Anything else writes each email to a folder on the server and sends nothing.",
 	"LEADHOUND_LEADS_TIMERS":             "Set to on, the daily jobs that find sites and their contacts run.",
-	"LEADHOUND_LEADS_SEND":               "Set to on, with LEADHOUND_OUTREACH at live and LEADHOUND_LEADS_TIMERS at on, the daily jobs that make batches, send the batches you approved and read replies run.",
 	"LEADHOUND_PROBE_RATE":               "How many requests a second checking sites may make, across a run.",
 	"LEADHOUND_PROBE_CONCURRENCY":        "How many sites are checked at once.",
 	"LEADHOUND_TZ":                       "The time zone dates are shown in.",

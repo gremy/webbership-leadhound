@@ -112,11 +112,14 @@ type HostCheck struct {
 type MailboxRow struct {
 	ID                  int64
 	Address             string
-	State, Reason       string     // one of the Mailbox* states; Reason for a pause
-	DomainPause         bool       // paused with its whole domain
-	SentToday, CapToday int        // today's live sends, and today's ramp limit
-	RampDay             int        // days since its first live send, from 1, as the ramp counts them; 0 before it
-	LastCheck           *time.Time // when its latest check finished; nil when none has
+	State, Reason       string // one of the Mailbox* states; Reason for a pause
+	DomainPause         bool   // paused with its whole domain
+	SentToday, CapToday int    // today's live sends, and today's ramp limit
+	RampDay             int    // days since its first live send, from 1, as the ramp counts them; 0 before it
+	// RampStart is caps.start_date when it is a date still ahead (RampDay 0 then): the warm-up
+	// starts on that day, not with the mailbox's first email. Nil otherwise.
+	RampStart *time.Time
+	LastCheck *time.Time // when its latest check finished; nil when none has
 }
 
 // MailboxPreset is a mail provider's public servers and DKIM selector, which fill the add
@@ -196,11 +199,24 @@ type mailboxesView struct {
 	Error   bool
 }
 
-// mailboxView is one mailbox with the line from the last action.
+// mailboxView is one mailbox with the line from the last action, and its sending card (nil
+// when the backend has none for it).
 type mailboxView struct {
 	Page    MailboxPage
+	Sending *MailboxSendingView
 	Message string
 	Error   bool
+}
+
+// LandingWords is where a mailbox's domain sends a visitor, in words, for its card.
+func (v MailboxSendingView) LandingWords() string {
+	switch v.Landing.State {
+	case LandingFound:
+		return v.Landing.URL
+	case LandingNoAnswer:
+		return "the domain's website didn't answer"
+	}
+	return "not checked yet"
 }
 
 // mailboxFormView is the add or edit form. It has no password field: a password typed in
@@ -374,8 +390,15 @@ func (s *server) renderMailbox(w http.ResponseWriter, r *http.Request, code int,
 	if s.mailboxRead(w, r, code, err) {
 		return
 	}
-	s.render(w, r, code, "mailbox", page{Title: p.Row.Address, Active: mailboxesPath, SignedIn: true,
-		Data: mailboxView{Page: p, Message: msg, Error: isErr}})
+	v := mailboxView{Page: p, Message: msg, Error: isErr}
+	// A mailbox gone between the two reads keeps its page without the sending card.
+	switch snd, err := s.b.MailboxSending(r.Context(), id); {
+	case err == nil:
+		v.Sending = &snd
+	case !errors.Is(err, ErrNotFound) && s.mailboxRead(w, r, code, err):
+		return
+	}
+	s.render(w, r, code, "mailbox", page{Title: p.Row.Address, Active: mailboxesPath, SignedIn: true, Data: v})
 }
 
 // backToMailbox re-renders mailbox id with a refusal.

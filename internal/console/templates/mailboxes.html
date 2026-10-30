@@ -29,7 +29,7 @@
     <li class="split">
       <span>
         <span class="item-head"><a href="/mailboxes/{{.ID}}">{{.Address}}</a> <span class="mb-state mb-{{.State}}">{{mailboxState .State .Reason}}</span></span>
-        <span class="item-meta">sent {{.SentToday}} of {{.CapToday}} today · {{if .RampDay}}day {{.RampDay}} of the ramp{{else}}ramp not started{{end}}{{with .LastCheck}} · checked {{when .}}{{end}}</span>
+        <span class="item-meta">sent {{.SentToday}} of {{.CapToday}} today · {{if .RampDay}}day {{.RampDay}} of the ramp{{else}}{{with .RampStart}}warm-up starts on {{day .}}{{else}}warm-up starts with its first email{{end}}{{end}}{{with .LastCheck}} · checked {{when .}}{{end}}</span>
       </span>
     </li>
     {{end}}

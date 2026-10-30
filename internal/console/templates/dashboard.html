@@ -54,15 +54,16 @@
   </dl>
   {{else}}<p class="muted">Shown once the day's numbers are worked out.</p>{{end}}
   <h3>Scoring</h3>
-  <p class="cost">{{callsLine $d}}</p>
-  <p class="cost">{{costLine $d}}</p>
-  <p class="cost">{{claudeLine $d}}</p>
+  <p class="cost">{{callsLine $d.Dashboard}}</p>
+  <p class="cost">{{costLine $d.Dashboard}}</p>
+  <p class="cost">{{claudeLine $d.Dashboard}}</p>
 </section>
 
 {{with $d.Leads}}
 <section class="card">
   <h2>Leads</h2>
-  {{with .Paused}}<p class="notice notice-error" role="status">Sending is paused (since {{when .}}).</p>{{end}}
+  {{with $d.Why}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}} <a href="/controls">Controls</a></p>{{end}}
+  {{if not $d.Why}}{{with .Paused}}<p class="notice notice-error" role="status">Sending is paused (since {{when .}}).</p>{{end}}{{end}}
   {{with .Stopped}}<p class="notice notice-error" role="status">The last send run stopped sending: {{.}}.</p>{{end}}
   {{with .Batch}}<p><a href="/leads/batches/{{.ID}}">Batch {{.ID}} waits for your approval</a>{{if .Shadow}} (shadow){{end}}: {{plural .Emails "email" "emails"}}, {{plural .Forms "contact form" "contact forms"}}, {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}}.</p>{{end}}
   <dl class="stats">

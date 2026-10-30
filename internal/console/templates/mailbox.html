@@ -17,7 +17,12 @@
       <div><dt>DKIM selector</dt><dd>{{$p.Selector}}</dd></div>
       <div><dt>From name</dt><dd>{{$p.FromName}}</dd></div>
       <div><dt>Sent today</dt><dd>{{$m.SentToday}} of {{$m.CapToday}}</dd></div>
-      <div><dt>Warm-up</dt><dd>{{if $m.RampDay}}day {{$m.RampDay}} of the ramp{{else}}not started: it has sent nothing yet{{end}}</dd></div>
+      <div><dt>Warm-up</dt><dd>{{if $m.RampDay}}day {{$m.RampDay}} of the ramp{{else}}{{with $m.RampStart}}Warm-up starts on {{day .}}.{{else}}Warm-up starts with this mailbox's first email.{{end}}{{with $v.Sending}} Nothing has gone out yet because: {{.Why.Sentence}}{{end}}{{end}}</dd></div>
+      {{with $v.Sending}}
+      {{if $m.RampDay}}<div><dt>Sending</dt><dd>{{.Why.Sentence}}</dd></div>{{end}}
+      <div><dt>Campaigns</dt><dd>{{range $i, $c := .Campaigns}}{{if $i}}, {{end}}<a href="/leads/campaigns#campaign-{{$c.Value}}">{{or $c.Label $c.Value}}</a>{{else}}none, so it sends nothing. <a href="/leads/campaigns">Assign it on Campaigns</a>{{end}}</dd></div>
+      <div><dt>Its website goes to</dt><dd>{{.LandingWords}}</dd></div>
+      {{end}}
     </dl>
     {{if ne $m.State "retired"}}<p><a href="/mailboxes/{{$m.ID}}/edit">Edit its settings</a></p>{{end}}
   </section>

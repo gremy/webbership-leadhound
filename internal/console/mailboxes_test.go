@@ -578,3 +578,67 @@ func TestSaveMailboxPages(t *testing.T) {
 	b.mbCard = requestedCard()
 	save("check-card-requested.html", h.do(hx(get("/mailboxes/1/check", c))).Body.String())
 }
+
+// TestMailboxSendingCard: the card names its campaigns and where its domain lands; before its
+// first email the warm-up line says why nothing has gone out, never a bare "not started"; a
+// mailbox on the ramp says why nothing goes now on its own line; the list says when warm-up
+// starts.
+func TestMailboxSendingCard(t *testing.T) {
+	b := richBackend("x")
+	b.mailbox = richMailbox("x")
+	b.mailbox.Row.RampDay = 0
+	b.mbSending = MailboxSendingView{MailboxID: 1,
+		Campaigns: []FilterOption{{Value: "drupal-eol", Label: "Drupal end-of-life"}, {Value: "cafe", Label: "Cafés"}},
+		Landing:   LandingView{State: LandingFound, URL: "https://site.example/", Host: "site.example"},
+		Why:       SendingWhy{Blocked: true, Sentence: "No approved email uses this mailbox."}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/mailboxes/1", h.session(t))).Body.String()
+	for _, want := range []string{
+		"<dt>Warm-up</dt><dd>Warm-up starts with this mailbox's first email. Nothing has gone out yet because: No approved email uses this mailbox.</dd>",
+		`<dt>Campaigns</dt><dd><a href="/leads/campaigns#campaign-drupal-eol">Drupal end-of-life</a>, <a href="/leads/campaigns#campaign-cafe">Cafés</a></dd>`,
+		"<dt>Its website goes to</dt><dd>https://site.example/</dd>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the mailbox card lacks %q", want)
+		}
+	}
+	for _, not := range []string{"not started", "<dt>Sending</dt>"} {
+		if strings.Contains(body, not) {
+			t.Errorf("the mailbox card shows %q", not)
+		}
+	}
+
+	// On the ramp, no campaign, the website never answered.
+	b.mailbox.Row.RampDay = 4
+	b.mbSending.Campaigns, b.mbSending.Landing = nil, LandingView{State: LandingNoAnswer}
+	b.mbSending.Why = SendingWhy{Blocked: true, Sentence: "3 approved emails wait: ana@contoso.example is not assigned to Drupal EOL."}
+	body = h.do(get("/mailboxes/1", h.session(t))).Body.String()
+	for _, want := range []string{
+		"<dt>Warm-up</dt><dd>day 4 of the ramp</dd>",
+		"<dt>Sending</dt><dd>3 approved emails wait: ana@contoso.example is not assigned to Drupal EOL.</dd>",
+		`<dt>Campaigns</dt><dd>none, so it sends nothing. <a href="/leads/campaigns">Assign it on Campaigns</a></dd>`,
+		"<dt>Its website goes to</dt><dd>the domain&#39;s website didn&#39;t answer</dd>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("on the ramp: lacks %q", want)
+		}
+	}
+
+	// Never checked; and a mailbox the sending read no longer finds keeps its page.
+	b.mbSending.Landing = LandingView{State: LandingNotChecked}
+	if body = h.do(get("/mailboxes/1", h.session(t))).Body.String(); !strings.Contains(body, "<dt>Its website goes to</dt><dd>not checked yet</dd>") {
+		t.Errorf("not checked: %s", body)
+	}
+	b.mbSending.MailboxID = 99
+	w := h.do(get("/mailboxes/1", h.session(t)))
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "<dt>Campaigns</dt>") || !strings.Contains(w.Body.String(), "day 4 of the ramp") {
+		t.Errorf("no sending card: %d", w.Code)
+	}
+
+	// The list: no bare "not started".
+	b.mailboxes = richMailboxes("x")
+	body = h.do(get("/mailboxes", h.session(t))).Body.String()
+	if !strings.Contains(body, "warm-up starts with its first email") || strings.Contains(body, "not started") {
+		t.Errorf("the list's warm-up words: %s", body)
+	}
+}

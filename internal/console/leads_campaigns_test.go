@@ -2,7 +2,9 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -83,7 +85,7 @@ func TestCampaignsPage(t *testing.T) {
 }
 
 // TestCampaignsPageNeedsSession: without a session the page sends to sign-in and never
-// reaches the backend; with one, it reads Campaigns and DraftGates once each and writes
+// reaches the backend; with one, it reads Campaigns, DraftGates and CampaignMailboxes once each and writes
 // nothing.
 func TestCampaignsPageNeedsSession(t *testing.T) {
 	b := richBackend("x")
@@ -93,7 +95,7 @@ func TestCampaignsPageNeedsSession(t *testing.T) {
 		t.Errorf("no session: status %d, %d backend calls", w.Code, b.total())
 	}
 	h.do(get("/leads/campaigns?do=save", h.session(t)))
-	if b.n("Campaigns") != 1 || b.n("DraftGates") != 1 || b.total() != 2 {
+	if b.n("Campaigns") != 1 || b.n("DraftGates") != 1 || b.n("CampaignMailboxes") != 1 || b.total() != 3 {
 		t.Errorf("Campaigns called %d times, %d calls in all", b.n("Campaigns"), b.total())
 	}
 	if w := h.do(post("/leads/campaigns", nil, h.session(t))); w.Code != http.StatusMethodNotAllowed {
@@ -109,4 +111,181 @@ func TestCampaignsNotSetUp(t *testing.T) {
 	if body := h.do(get("/leads/campaigns", h.session(t))).Body.String(); !strings.Contains(body, leadsNotSetUp) {
 		t.Errorf("not set up: %s", body)
 	}
+}
+
+// campaignMbs is drupal-eol's mailboxes: 1 assigned and landing on the campaign's site, 2
+// assigned but landing elsewhere, 3 not assigned and never checked, 4 paused with a website
+// that didn't answer.
+func campaignMbs() []CampaignMailboxes {
+	at := testSent
+	return []CampaignMailboxes{{
+		Slug: "drupal-eol", Name: "Drupal end-of-life", SiteURL: "https://site.example/", SiteHost: "site.example",
+		Assigned: 2,
+		Rows: []CampaignMailboxRow{
+			{MailboxID: 1, Address: "ana@northwind.example", Host: "northwind.example", Domain: "northwind.example", State: MailboxReady, Assigned: true,
+				Landing: LandingView{State: LandingFound, URL: "https://site.example/", Host: "site.example", At: &at}},
+			{MailboxID: 2, Address: "ana@contoso.example", Host: "contoso.example", Domain: "contoso.example", State: MailboxReady, Assigned: true,
+				Landing: LandingView{State: LandingFound, URL: "https://other.example/cafe", Host: "other.example", At: &at, OffSite: true}},
+			{MailboxID: 3, Address: "hi@new.example", Host: "new.example", Domain: "new.example", State: MailboxNeedsCheck,
+				Landing: LandingView{State: LandingNotChecked}},
+			{MailboxID: 4, Address: "out@quiet.example", Host: "quiet.example", Domain: "quiet.example", State: MailboxPaused, Reason: "too many bounces",
+				Landing: LandingView{State: LandingNoAnswer, At: &at}},
+		},
+	}}
+}
+
+// TestCampaignMailboxesShown: each campaign lists its mailboxes as a tick list (ticked when
+// assigned) with domain, state and where the domain lands in words, warns when a domain lands
+// away from the campaign's site, and says when none is assigned.
+func TestCampaignMailboxesShown(t *testing.T) {
+	b := richBackend("Drupal end-of-life")
+	b.campaignMbs = campaignMbs()
+	h := newHarness(t, b, false)
+	w := h.do(get("/leads/campaigns", h.session(t)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`<form method="post" action="/leads/campaigns/drupal-eol/mailboxes" class="settings-form">`,
+		`<input type="hidden" name="shown" value="1">`,
+		`<input type="checkbox" name="assigned" value="1" aria-describedby="campaign-drupal-eol-mb-1" checked> ana@northwind.example</label>`,
+		`<input type="checkbox" name="assigned" value="3" aria-describedby="campaign-drupal-eol-mb-3"> hi@new.example</label>`,
+		`northwind.example · <span class="mb-state mb-ready">Ready</span> · northwind.example → https://site.example/`,
+		`new.example · <span class="mb-state mb-needs_check">Needs a check</span> · where its domain goes is not checked yet`,
+		`<span class="mb-state mb-paused">Paused: too many bounces</span> · the domain&#39;s website didn&#39;t answer`,
+		`<p class="notice notice-warn" role="status">contoso.example sends visitors to https://other.example/cafe, not to this campaign&#39;s site.</p>`,
+		"which should be site.example.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Campaigns page lacks %q", want)
+		}
+	}
+	for _, not := range []string{"No mailbox is assigned", "northwind.example sends visitors", LandingNotChecked, LandingNoAnswer, "not_checked"} {
+		if strings.Contains(body, not) {
+			t.Errorf("the Campaigns page shows %q", not)
+		}
+	}
+
+	// None assigned, no site named.
+	b.campaignMbs[0].Assigned, b.campaignMbs[0].SiteHost = 0, ""
+	for i := range b.campaignMbs[0].Rows {
+		b.campaignMbs[0].Rows[i].Assigned = false
+	}
+	body = h.do(get("/leads/campaigns", h.session(t))).Body.String()
+	for _, want := range []string{"No mailbox is assigned, so this campaign drafts no live batch.", "This campaign names no site"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("none assigned: lacks %q", want)
+		}
+	}
+	if strings.Contains(body, " checked> ") {
+		t.Errorf("none assigned, yet a box is ticked")
+	}
+
+	// No mailbox at all.
+	b.campaignMbs[0].Rows = nil
+	body = h.do(get("/leads/campaigns", h.session(t))).Body.String()
+	if !strings.Contains(body, `No mailbox yet. <a href="/mailboxes">Add one on the Mailboxes page</a>.`) || strings.Contains(body, `name="shown"`) {
+		t.Errorf("no mailboxes: %s", body)
+	}
+}
+
+// TestCampaignMailboxesSave: a save sends the whole tick set; only the mailboxes whose tick
+// differs from their assignment are assigned or unassigned, then the page comes back with the
+// outcome. A mailbox the form did not show is never touched, an unchanged form writes nothing,
+// a refusal shows the page again (422), and an unknown campaign or a bad id is refused.
+func TestCampaignMailboxesSave(t *testing.T) {
+	const path = "/leads/campaigns/drupal-eol/mailboxes"
+	shown := []string{"1", "2", "3", "4"}
+	cases := []struct {
+		name     string
+		form     url.Values
+		acts     int
+		last     ControlAction
+		flash    string
+		wantCode int
+	}{
+		{"assign one", url.Values{"shown": shown, "assigned": {"1", "2", "3"}}, 1,
+			ControlAction{Do: ControlAssign, Campaign: "drupal-eol", MailboxID: 3}, "done.", http.StatusSeeOther},
+		{"unassign one", url.Values{"shown": shown, "assigned": {"1"}}, 1,
+			ControlAction{Do: ControlUnassign, Campaign: "drupal-eol", MailboxID: 2}, "done.", http.StatusSeeOther},
+		{"swap two", url.Values{"shown": shown, "assigned": {"1", "4"}}, 2,
+			ControlAction{Do: ControlAssign, Campaign: "drupal-eol", MailboxID: 4}, "done. done.", http.StatusSeeOther},
+		{"nothing changed", url.Values{"shown": shown, "assigned": {"2", "1"}}, 0,
+			ControlAction{}, "Nothing changed", http.StatusSeeOther},
+		{"not shown is never touched", url.Values{"shown": {"1", "3"}, "assigned": {"1", "4"}}, 0,
+			ControlAction{}, "Nothing changed", http.StatusSeeOther},
+		{"untick all", url.Values{"shown": shown}, 2,
+			ControlAction{Do: ControlUnassign, Campaign: "drupal-eol", MailboxID: 2}, "done. done.", http.StatusSeeOther},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := richBackend("x")
+			b.campaignMbs = campaignMbs()
+			b.ctlOut = ControlOutcome{Message: "done."}
+			h := newHarness(t, b, false)
+			w := h.do(post(path, c.form, h.session(t)))
+			if w.Code != c.wantCode || w.Header().Get("Location") != "/leads/campaigns#campaign-drupal-eol" {
+				t.Fatalf("status %d, to %q", w.Code, w.Header().Get("Location"))
+			}
+			if b.n("ControlAct") != c.acts || b.lastControl != c.last {
+				t.Errorf("%d writes, last %+v; want %d, last %+v", b.n("ControlAct"), b.lastControl, c.acts, c.last)
+			}
+			fl := cookieNamed(w, "__Host-lh_flash")
+			if fl == nil {
+				t.Fatal("no flash")
+			}
+			r := get("/leads/campaigns", h.session(t))
+			r.AddCookie(fl)
+			if body := h.do(r).Body.String(); !strings.Contains(body, c.flash) {
+				t.Errorf("the page after lacks %q", c.flash)
+			}
+		})
+	}
+
+	t.Run("refused", func(t *testing.T) {
+		b := richBackend("x")
+		b.campaignMbs = campaignMbs()
+		b.ctlErr = fmt.Errorf("%w: that mailbox is retired", ErrUserFixable)
+		h := newHarness(t, b, false)
+		w := h.do(post(path, url.Values{"shown": shown, "assigned": {"1", "2", "3"}}, h.session(t)))
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "that mailbox is retired") {
+			t.Errorf("refused: %d %s", w.Code, w.Body.String())
+		}
+	})
+	for _, bad := range []struct {
+		name, path string
+		form       url.Values
+		code       int
+	}{
+		{"unknown campaign", "/leads/campaigns/nope/mailboxes", url.Values{"shown": {"1"}}, http.StatusNotFound},
+		{"bad id", path, url.Values{"shown": {"1"}, "assigned": {"x"}}, http.StatusBadRequest},
+		{"zero id", path, url.Values{"shown": {"0"}}, http.StatusBadRequest},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			b := richBackend("x")
+			b.campaignMbs = campaignMbs()
+			h := newHarness(t, b, false)
+			w := h.do(post(bad.path, bad.form, h.session(t)))
+			if w.Code != bad.code || b.n("ControlAct") != 0 {
+				t.Errorf("status %d, %d writes", w.Code, b.n("ControlAct"))
+			}
+		})
+	}
+	t.Run("not set up", func(t *testing.T) {
+		b := richBackend("x")
+		b.leadsErr = ErrLeadsNotSetUp
+		h := newHarness(t, b, false)
+		w := h.do(post(path, url.Values{"shown": shown}, h.session(t)))
+		if w.Code != http.StatusUnprocessableEntity || b.n("ControlAct") != 0 || !strings.Contains(w.Body.String(), leadsNotSetUp) {
+			t.Errorf("not set up: %d, %d writes", w.Code, b.n("ControlAct"))
+		}
+	})
+	t.Run("no session", func(t *testing.T) {
+		b := richBackend("x")
+		h := newHarness(t, b, false)
+		if w := h.do(post(path, url.Values{"shown": shown})); w.Code == http.StatusSeeOther && w.Header().Get("Location") != "/login" || b.total() != 0 {
+			t.Errorf("no session: %d, %d calls", w.Code, b.total())
+		}
+	})
 }

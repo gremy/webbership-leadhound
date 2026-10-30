@@ -88,6 +88,15 @@ type fakeBackend struct {
 	mbOut       MailboxOutcome
 	mbErr       error // returned by MailboxAct
 	lastMailbox MailboxAction
+
+	controls    ControlsPage
+	sendingWhy  SendingWhy
+	whyErr      error // returned by SendingWhy before any leads read error
+	ctlOut      ControlOutcome
+	ctlErr      error // returned by ControlAct
+	lastControl ControlAction
+	campaignMbs []CampaignMailboxes
+	mbSending   MailboxSendingView
 }
 
 func (f *fakeBackend) count(name string) {
@@ -197,6 +206,43 @@ func (f *fakeBackend) MailboxAct(_ context.Context, a MailboxAction) (MailboxOut
 	f.lastMailbox = a
 	f.mu.Unlock()
 	return f.mbOut, f.mbErr
+}
+
+func (f *fakeBackend) Controls(context.Context) (ControlsPage, error) {
+	f.count("Controls")
+	return f.controls, f.leadsRead()
+}
+
+func (f *fakeBackend) SendingWhy(context.Context) (SendingWhy, error) {
+	f.count("SendingWhy")
+	if f.whyErr != nil {
+		return SendingWhy{}, f.whyErr
+	}
+	return f.sendingWhy, f.leadsRead()
+}
+
+func (f *fakeBackend) ControlAct(_ context.Context, a ControlAction) (ControlOutcome, error) {
+	f.count("ControlAct")
+	f.mu.Lock()
+	f.lastControl = a
+	f.mu.Unlock()
+	return f.ctlOut, f.ctlErr
+}
+
+func (f *fakeBackend) CampaignMailboxes(context.Context) ([]CampaignMailboxes, error) {
+	f.count("CampaignMailboxes")
+	return f.campaignMbs, f.leadsRead()
+}
+
+func (f *fakeBackend) MailboxSending(_ context.Context, id int64) (MailboxSendingView, error) {
+	f.count("MailboxSending")
+	if err := f.leadsRead(); err != nil {
+		return MailboxSendingView{}, err
+	}
+	if id != f.mbSending.MailboxID {
+		return MailboxSendingView{}, ErrNotFound
+	}
+	return f.mbSending, nil
 }
 
 func (f *fakeBackend) Results(context.Context) (Results, error) {

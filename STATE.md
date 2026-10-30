@@ -1,6 +1,13 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Console controls and mailboxes per campaign (2026-10-30, built locally, not pushed or deployed; plan `leadhound-console-controls-mailbox-campaigns`):
+- Checkpoint 1 committed (`2c855ea`, local main): job switches in the database (leads migration 00023 `job_switch`, `leads switches list|set|convert-send-env`); every switched job exits 0 and records a "switched off" run; mailboxes assigned per campaign (00024 `campaign_mailbox`, seeded from each mailbox's live history; `leads mailboxes assign|unassign`); the batch drafts only onto assigned mailboxes and the send holds a message whose mailbox is not assigned; the mailbox check stores where `https://<host>/` lands.
+- `LEADHOUND_LEADS_SEND` is retired: `install.sh` enables the batch, send and sync timers on `LEADHOUND_LEADS_TIMERS=on` plus `LEADHOUND_OUTREACH=live`, after a one-time carry-over keyed on `/etc/leadhound/send-switch-converted` that pauses sending when the old line was not `on`.
+- Checkpoint 2 Tasks 2.1-2.5 built, in the working tree: the Controls page (`/controls`: why nothing is going out, Sending, a switch per job, timers from `systemctl show`, the three server-only lines read-only), the same sentence above the Outreach list and on the dashboard's Leads card, the mailbox picker and landing warning on the Campaigns tab, the mailbox card's campaigns, landing and warm-up cause; `LEADHOUND_LEADS_SEND` gone from the console's env list and `deploy/env.example`; docs in `deploy/README.md` ("Switches in the console", "Mailboxes per campaign") and this README.
+- Next: the Checkpoint 2 walk and commit, then Checkpoint 3 (the Reoon email check) and Checkpoint 4 (the sending window in the console, Send now, `deploy-data` checking against the live binary).
+- Shipping (push and deploy, which also ships every commit still on local main) waits on the operator's word.
+
 Café campaign live in production (2026-10-29, `cccbc69`; plan `leadhound-cafe-campaign-live`, Checkpoints 1-4):
 - Registered `cafes-loyalty` (Romania); `drupal-eol` unchanged. Overture release 2026-10-21.0 imported: 3,268 cafés kept, 623 chains skipped (15 on a shared or brand website), 2,293 leads (no website 1,851, no digital loyalty 442; no competitor seen in Romania yet).
 - The café mailbox is assigned to `cafes-loyalty` only; the first café batch (3 leads, the new mailbox's warm-up room) waits for approval in the console; nothing café was sent.

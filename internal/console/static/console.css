@@ -2009,3 +2009,13 @@ details.inline summary {
     min-width: 0;
   }
 }
+
+/* Controls: the sending sentence when nothing stops it, and room around each switch. */
+.notice-good {
+  background: var(--good-soft);
+  border-color: var(--good);
+}
+.control-list details,
+.control-list form {
+  margin-top: 0.4rem;
+}

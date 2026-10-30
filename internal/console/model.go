@@ -30,6 +30,7 @@ type Backend interface {
 	CallsBackend
 	DraftsBackend
 	MailboxesBackend
+	ControlsBackend
 }
 
 // The Run now actions. Each name is the request file, the .path unit and the
@@ -611,7 +612,7 @@ type EnvSetting struct{ Name, Value string }
 // EnvAllowlist are the only environment names the Settings page shows (plan D11); the page
 // drops any other the backend hands it.
 var EnvAllowlist = []string{
-	"LEADHOUND_OUTREACH", "LEADHOUND_LEADS_TIMERS", "LEADHOUND_LEADS_SEND", "LEADHOUND_PROBE_RATE",
+	"LEADHOUND_OUTREACH", "LEADHOUND_LEADS_TIMERS", "LEADHOUND_PROBE_RATE",
 	"LEADHOUND_PROBE_CONCURRENCY", "LEADHOUND_TZ", "LEADHOUND_JEV_MODEL", "LEADHOUND_JEV_DAILY_CALL_CAP",
 	"LEADHOUND_JEV_LEADS_DAILY_CALL_CAP",
 }
@@ -887,4 +888,198 @@ type DraftReview struct {
 type ClaudeWriting struct {
 	GenerationID int64
 	Paragraphs   []DraftParagraph
+}
+
+// ControlsBackend is what the Controls page, a campaign's mailboxes and a mailbox's sending
+// card read and write: every on/off that governs leads, read live (the timers from systemd),
+// and the mailboxes each campaign sends from. Like the leads backend, it returns
+// ErrLeadsNotSetUp when this server has no usable leads settings.
+type ControlsBackend interface {
+	// Controls is the Controls page: why nothing is going out (or when it next does), the
+	// sending switch and each job's switch with its schedule, timer and last run, and the
+	// guards set on the server. It never writes.
+	Controls(ctx context.Context) (ControlsPage, error)
+	// SendingWhy is the one sentence about sending the Controls page leads with, for the
+	// Leads page and the dashboard. It never writes.
+	SendingWhy(ctx context.Context) (SendingWhy, error)
+	// ControlAct runs one write: a job switch (ControlSwitchOn, ControlSwitchOff) or a
+	// campaign's mailbox (ControlAssign, ControlUnassign). The sending switch is not one: it
+	// stays LeadAct's LeadPause and LeadResume. A refusal the operator can fix wraps
+	// ErrUserFixable with the words to show.
+	ControlAct(ctx context.Context, a ControlAction) (ControlOutcome, error)
+	// CampaignMailboxes is every campaign of the operator's account, in the Campaigns tab's
+	// order, with the mailboxes it may be assigned and where each one's domain lands. It
+	// never writes.
+	CampaignMailboxes(ctx context.Context) ([]CampaignMailboxes, error)
+	// MailboxSending is mailbox id's campaigns, where its domain lands, and why nothing goes
+	// out from it now (or when it next does). ErrNotFound for no such mailbox. It never
+	// writes.
+	MailboxSending(ctx context.Context, id int64) (MailboxSendingView, error)
+}
+
+// The writes ControlAction.Do names.
+const (
+	ControlSwitchOn  = "on"       // Job, Reason
+	ControlSwitchOff = "off"      // Job, Reason
+	ControlAssign    = "assign"   // Campaign, MailboxID
+	ControlUnassign  = "unassign" // Campaign, MailboxID
+)
+
+// The jobs a switch turns on and off, as the store names them; the route segment of a
+// switch's form is the name.
+const (
+	JobBatch    = "batch"    // the morning batch
+	JobSync     = "sync"     // the inbox sync
+	JobProbe    = "probe"    // the site probe
+	JobContacts = "contacts" // contacts, enrich and rate
+	JobResearch = "research" // contact research
+	JobVerify   = "verify"   // the email check (Reoon)
+)
+
+// ControlJobs lists the switched jobs in the order the Controls page shows them.
+var ControlJobs = []string{JobBatch, JobSync, JobProbe, JobContacts, JobResearch, JobVerify}
+
+// ControlReasonMax is the longest reason a job switch keeps, on one line.
+const ControlReasonMax = 300
+
+// ControlAction is one write from the Controls page or a campaign's mailboxes.
+type ControlAction struct {
+	Do        string
+	Job       string // one of ControlJobs
+	Reason    string // why the job is switched; "" for none
+	Campaign  string // the campaign's slug
+	MailboxID int64
+}
+
+// ControlOutcome is what a write did: the line to show.
+type ControlOutcome struct {
+	Message string
+}
+
+// SendingWhy is why nothing is going out, in one plain sentence, or when the waiting emails
+// next go. Blocked is true while something stops them (the page shows it amber), false when
+// they go at the next run (green). Next is when the sentence says they next go; nil when it
+// names no time.
+type SendingWhy struct {
+	Blocked  bool
+	Sentence string
+	Next     *time.Time
+}
+
+// ControlsPage is the Controls page: the sending sentence, the sending switch, each job's
+// switch, the guards set on the server and where the rating setting is.
+type ControlsPage struct {
+	Why     SendingWhy
+	Sending ControlRow   // the sending switch (Job ""): it posts LeadPause or LeadResume
+	Jobs    []ControlRow // one per ControlJobs entry, in its order
+	// TimersRead is true when the timers' state was read from systemd. False: systemd could
+	// not be asked, so each timer shows what the server's settings make install.sh do, and
+	// TimersNote says so in a plain sentence ("" when read).
+	TimersRead bool
+	TimersNote string
+	// Guards are the switches set on the server only, read-only, each with the line that
+	// changes it; GuardsHow says where that line goes.
+	Guards    []ServerGuard
+	GuardsHow string
+	// RatingOn is whether the contacts run rates leads with Jev; RatingPath is the setting on
+	// the Settings page.
+	RatingOn   bool
+	RatingPath string
+}
+
+// RatingSettingsPath is the rating setting on the Settings page.
+const RatingSettingsPath = "/leads/settings#" + SettingsRelevance
+
+// ControlRow is one switch of the Controls page: sending or a job. On is the switch (for
+// sending: not paused); Since is when it was last switched, nil when never; Reason why;
+// BySystem is true when the server switched it itself (the one-time conversion of the old
+// sending line), not the operator. Schedule says in plain words when it runs; Timer is its
+// unit's state; LastRun is its latest run, nil when it never ran.
+type ControlRow struct {
+	Job      string // one of ControlJobs; "" for sending
+	Name     string // "Morning batch"
+	What     string // one plain line on what it does
+	On       bool
+	Since    *time.Time
+	Reason   string
+	BySystem bool
+	Schedule string
+	Timer    TimerState
+	LastRun  *ControlRun
+}
+
+// TimerState is a job's unit as systemd reports it (or, when systemd cannot be asked, as the
+// server's settings make install.sh leave it). Unit is "" for a job with no unit of its own
+// yet; Next is the timer's next run, nil when none is planned or for a request watcher.
+type TimerState struct {
+	Unit    string
+	Enabled bool
+	Next    *time.Time
+}
+
+// ControlRun is a job's latest run: when it started and finished (nil while running or when
+// it never finished), its result in plain words ("Finished", "Switched off", ...) and
+// whether it failed.
+type ControlRun struct {
+	StartedAt  time.Time
+	FinishedAt *time.Time
+	Result     string
+	Failed     bool
+}
+
+// ServerGuard is one switch set on the server only: its environment name, its value ("" for
+// unset), what that value means in words, and the line that changes it.
+type ServerGuard struct {
+	Name, Value, State, Line string
+}
+
+// CampaignMailboxes is one campaign's mailboxes for its page. SiteURL is the campaign's
+// product.site_url and SiteHost its host ("" when the spec names none); Rows is every mailbox
+// not retired, and any retired one still assigned, by id; Assigned counts the assigned rows.
+type CampaignMailboxes struct {
+	Slug, Name        string
+	SiteURL, SiteHost string
+	Rows              []CampaignMailboxRow
+	Assigned          int
+}
+
+// CampaignMailboxRow is one mailbox on a campaign's page: its address, the host after its @
+// and its registrable domain, its state (one of the Mailbox* states, Reason for a pause),
+// whether it is assigned to the campaign, and where its host's website lands.
+type CampaignMailboxRow struct {
+	MailboxID             int64
+	Address, Host, Domain string
+	State, Reason         string
+	Assigned              bool
+	Landing               LandingView
+}
+
+// The states LandingView.State takes.
+const (
+	LandingNotChecked = "not_checked" // no check has read it yet
+	LandingNoAnswer   = "no_answer"   // the latest check found the domain's website didn't answer
+	LandingFound      = "found"       // URL is where it lands
+)
+
+// LandingView is where https://<mailbox host>/ sent a visitor at the mailbox's latest finished
+// check: State one of the Landing* states, URL and Host the final page and its host (Found
+// only), At the check. OffSite is true, on a campaign's page, when Host is not the campaign's
+// SiteHost (a leading "www." is ignored on both).
+type LandingView struct {
+	State     string
+	URL, Host string
+	At        *time.Time
+	OffSite   bool
+}
+
+// MailboxSendingView is a mailbox's sending card: the campaigns it is assigned to (slug and
+// name), where its domain lands, how many approved live emails wait on it, and why none of
+// them goes out now (or when they next go). With Waiting 0, Why.Sentence says no approved
+// email uses it.
+type MailboxSendingView struct {
+	MailboxID int64
+	Campaigns []FilterOption
+	Landing   LandingView
+	Waiting   int
+	Why       SendingWhy
 }

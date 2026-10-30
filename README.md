@@ -32,8 +32,9 @@
   - The dashboard: the day's health, funnel, cost, boards and runs, built in the background and served from the last snapshot, so a page never waits for the ranking.
   - Jobs: the latest brief's jobs to mark applied, skip or maybe (the same writes as `track`), and a page per job (`/jobs/{id}`) with everything needed to apply and its own mark form; the tracked jobs, capped at 500 rows with the total shown; the runs.
   - Rules: the list, with forms to add a rule and to disable one.
+  - Controls (`/controls`): one sentence on why nothing is going out (or when the next email does), the Sending switch, a switch per leads job (morning batch, inbox sync, site probe, contacts, research, and the email check, which runs nothing yet: it comes with the email check) with its timer read from systemd and its last run, and the three server-only lines (`LEADHOUND_OUTREACH`, `LEADHOUND_LIVE`, `LEADHOUND_LEADS_TIMERS`) shown read-only; see "Switches in the console" in `deploy/README.md`.
   - Leads, in six tabs: Today (`/leads/today`), the List (`/leads`) with a page per lead, Outreach (`/leads/outreach`), Drafts (`/leads/drafts`), Campaigns (`/leads/campaigns`) and Settings (`/leads/settings`); see "The Leads console" and "Calls" under Campaigns and leads.
-    Outreach is the summary and the sending state with the pause switch; each batch waiting for approval read in full, with its approve form shown only while the messages still match their hash, and discard; replies with suppress, suppressions, manual items to mark done, mark contacted, and a message to check by hand as sent or not sent.
+    Outreach is the summary and the sending state with the pause switch, under the Controls sentence on why nothing is going out (also on the dashboard's Leads card); each batch waiting for approval read in full, with its approve form shown only while the messages still match their hash, and discard; replies with suppress, suppressions, manual items to mark done, mark contacted, and a message to check by hand as sent or not sent.
     The old queue and priorities pages are retired: `/leads/next` goes to the list in your order (`/leads?sort=order`), and `/leads/priorities` goes to the fallback order in Settings.
     The console never approves a batch on its own and never drafts a shadow batch.
   It signs in with an email and a bcrypt hash from the environment: `make console-password` writes the hash, and `make console-local` serves it locally in dev mode.
@@ -57,9 +58,9 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   `leads batch new` refuses a campaign whose file has no registered version or changed since it was registered, so run `register` after every change to a spec.
   A batch stores the sequence it was drafted with, so a later change to the spec never changes a batch already approved.
   The campaign's own country list decides which leads it drafts for; a country it does not list gets no email and no call.
-  Suppressions, mailboxes and Claude spend belong to the account, not the campaign, so an opt-out or a do-not-call in one campaign blocks every campaign.
+  Suppressions, mailboxes and Claude spend belong to the account, not the campaign, so an opt-out or a do-not-call in one campaign blocks every campaign; each campaign sends only from the mailboxes assigned to it.
   `leads build`, `leads rate` and `leads batch new` take `--campaign SLUG` (default `drupal-eol`, which the timers use).
-  The Campaigns tab shows each campaign with its countries and steps, whether its Claude drafts are trusted yet, and the account's Claude spend today.
+  The Campaigns tab shows each campaign with its countries and steps, whether its Claude drafts are trusted yet, and the account's Claude spend today, and is where its mailboxes are chosen.
 - **Finding sites**: `leads sites import majestic|tranco|httparchive FILE` or `leads sites import manual DOMAIN...` adds domains, keeping only the suffixes in `site_lists.tlds`.
   `leads sites probe [--max N] [--domain D]...` reads each due site's homepage and records its Drupal major and, when shown, its exact version; `leads sites eval --labels FILE` compares a run with a hand-checked CSV.
   `leads agencies import [FILE]` reads the agency list, and `leads contacts [--max N] [--org ID]...` looks for contact routes on each organisation's own site; `leads export routes [--limit N]` writes them to a file.
@@ -169,7 +170,8 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   Either way, starred leads come first in your order.
 - **Shadow and live**: without `LEADHOUND_OUTREACH=live`, `leads send` writes each complete message to `<data dir>/outreach-outbox/` and nothing leaves the machine.
   With `LEADHOUND_OUTREACH=live`, a message is sent only from a batch the operator approved, from the mailbox it was drafted for, after that mailbox's records passed today's DNS check (`leads senders check`) and its reply sync has just succeeded.
-  `leads send pause [--reason TEXT]` and `leads send resume`, or the pause switch in the console, stop and restart sending; the pause is checked before every message.
+  `leads send pause [--reason TEXT]` and `leads send resume`, or Sending on the console's Controls page, stop and restart sending; the pause is checked before every message.
+  The other leads jobs have switches too (`leads switches list`, `leads switches set JOB on|off [--reason R]`): a job switched off runs nothing, records its run as "switched off" and exits 0.
   `leads sync` reads replies, bounces and opt-outs from every mailbox and suppresses where they say so; it exits 1 when any mailbox could not be read.
   `leads selftest --to ADDRESS [--mailbox ID]` sends one real message from one mailbox to one of `sender.operator_addresses`.
 - **Mailboxes**: the sending mailboxes live in the database, not in the environment; add any number on the console's Mailboxes page, or with `leads mailboxes add`, and each is checked (both sign-ins, the Sent and Junk folders, its domain's SPF, DKIM and DMARC) without sending anything.
@@ -177,6 +179,9 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   Each mailbox has its own warm-up ramp (at most 40 a day), and each sending domain a daily limit over all its mailboxes (`caps.domain_per_day`, default 50) and a cap on its mailboxes (`caps.mailboxes_per_domain`, default 2), because the large providers judge reputation by the sending domain: see [Google's sender guidelines](https://support.google.com/mail/answer/81126), [their FAQ](https://support.google.com/a/answer/14229414) and [Microsoft's 550 5.7.515](https://support.microsoft.com/en-us/outlook/fix-ndr-error-550-5-7-515-in-outlook-com).
   A mailbox pauses itself on repeated hard bounces or a refused login, and a policy block pauses its whole domain; only the operator resumes.
   The old mailbox lines in the env file are no longer read.
+- **Campaign mailboxes**: a live batch drafts only onto the mailboxes assigned to its campaign, ticked on the Campaigns tab or set with `leads mailboxes assign|unassign ID CAMPAIGN`, and a campaign with none drafts no live batch; an unassigned mailbox's sends still count toward its domain's limit.
+  A message whose mailbox is not assigned to its campaign is held, never moved to another mailbox.
+  The mailbox check also opens `https://<host>/` and keeps where it lands, and the Campaigns tab warns when a mailbox's domain sends visitors away from the campaign's site.
   Adding a first mailbox, the key and its backup, the limits, the pauses and the first test are in "Mailboxes" in `deploy/README.md`.
 - **Suppression**: `leads suppress add address|domain VALUE [--reason manual|opt_out|bounce|replied_no]`, `leads suppress list` and `leads suppress check VALUE`; a suppressed address or domain is never drafted or sent to.
   An opt-out is read from the subject and the sender's own words only, never from quoted text or our own lines, and a draft whose text holds an opt-out word outside the opt-out line is refused.
@@ -187,14 +192,15 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   The console's Settings page changes some of these values over the file, in the database; `leads settings show` says which, and `leads settings reset` puts them back.
   `leads transfer export DIR` and `leads transfer import DIR` move lead data from one database to another, re-keyed by natural keys so they never collide with the other side's ids; an import can run again safely, it is refused while a live message may be in flight, and both print counts only.
   A transfer does not yet carry café places or an organisation's region.
-- **On a server**: five leads timers run the loop (probe daily; contacts daily, which then runs enrich, rate and build; the batch each morning; send hourly in business hours on weekdays; sync every 15 minutes); every deploy installs them, and each stays off until `/etc/leadhound/env` turns it on.
+- **On a server**: five leads timers run the loop (probe daily; contacts daily, which then runs enrich, rate and build; the batch each morning; send hourly in business hours on weekdays; sync every 15 minutes); every deploy installs them, each stays off until `/etc/leadhound/env` allows it, and each job has its own switch on the console's Controls page.
   The rate step also needs `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` in that file; without them it rates nothing, and the build after it still runs.
   `LEADHOUND_LEADS_TIMERS=on` turns on finding (probe and contacts).
-  Sending (batch, send and sync) needs all three lines, `LEADHOUND_LEADS_TIMERS=on`, `LEADHOUND_LEADS_SEND=on` and `LEADHOUND_OUTREACH=live` (without the first, the next deploy turns them off again), and sends only from a ready mailbox; even then every batch is read and approved by the operator before anything is sent.
+  Sending (batch, send and sync) needs both lines, `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` (without the first, the next deploy turns them off again), Sending switched on on the Controls page, and a ready mailbox assigned to the campaign; even then every batch is read and approved by the operator before anything is sent.
+  `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
   The batch and contact research units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00021).
-  The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings and places: every change is a new row, and the app role cannot update or delete them.
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00024).
+  The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches and campaign mailbox assignments: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 
 ### Café places

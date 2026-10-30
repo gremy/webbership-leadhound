@@ -77,6 +77,8 @@ var routes = []route{
 	{"POST /logout", "/logout", false, (*server).logout},
 	{"POST /theme", "/theme", true, (*server).setTheme},
 	{"GET /{$}", "/", false, (*server).dashboard},
+	{"GET /controls", "/controls", false, (*server).controls},
+	{"POST /controls/{job}", "/controls/batch", false, (*server).controlAct},
 	{"GET /jobs", "/jobs", false, (*server).jobs},
 	{"POST /jobs/track", "/jobs/track", false, (*server).track},
 	{"GET /tracked", "/tracked", false, (*server).tracked},
@@ -108,6 +110,7 @@ var routes = []route{
 	{"POST /leads/suppressions/lift", "/leads/suppressions/lift", false, (*server).liftSuppression},
 	{"POST /leads/contacted", "/leads/contacted", false, (*server).contacted},
 	{"POST /leads/sending", "/leads/sending", false, (*server).sending},
+	{"POST /leads/campaigns/{slug}/mailboxes", "/leads/campaigns/drupal-eol/mailboxes", false, (*server).campaignMailboxes},
 	{"POST /leads/settings/{section}", "/leads/settings/who", false, (*server).saveLeadSettings},
 	{"POST /leads/calls/{message}/outcome", "/leads/calls/9/outcome", false, (*server).leadCallOutcome},
 	{"POST /leads/drafts/{id}/review", "/leads/drafts/4/review", false, (*server).reviewDraft},
@@ -141,6 +144,7 @@ type navItem struct{ Label, Path string }
 // nav is the header's links, in order.
 var nav = []navItem{
 	{"Dashboard", "/"},
+	{"Controls", "/controls"},
 	{"Results", "/results"},
 	{"Jobs", "/jobs"},
 	{"Tracked", "/tracked"},
@@ -281,7 +285,7 @@ func (s *server) parseTemplates() map[string]*template.Template {
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
-		"mailboxes", "mailbox", "mailbox_form"} {
+		"mailboxes", "mailbox", "mailbox_form", "controls"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
@@ -342,19 +346,21 @@ func (s *server) funcs() template.FuncMap {
 			}
 			return strconv.Itoa(n) + " " + many
 		},
-		"ruleIn":       func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
-		"runCard":      func(c RunNowCard) runNowView { return runNowView{Card: c} },
-		"checkCard":    func(c MailboxCheckView) mailboxCheckView { return mailboxCheckView{Card: c} },
-		"mailboxState": mailboxState,
-		"maxMailbox":   func() int { return maxMailbox },
-		"leadsTab":     func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
-		"webURL":       webURL,
-		"stepWhen":     stepWhen,
-		"writerWords":  writerWords,
-		"shortSHA":     shortSHA,
-		"telHref":      telHref,
-		"researchLine": func(r LeadResearch) string { return researchLine(r, s.opt.Location) },
-		"noticeLines":  noticeLines,
+		"ruleIn":           func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
+		"runCard":          func(c RunNowCard) runNowView { return runNowView{Card: c} },
+		"checkCard":        func(c MailboxCheckView) mailboxCheckView { return mailboxCheckView{Card: c} },
+		"mailboxState":     mailboxState,
+		"maxMailbox":       func() int { return maxMailbox },
+		"maxControlReason": func() int { return ControlReasonMax },
+		"controlNote":      func(job string) string { return controlNotes[job] },
+		"leadsTab":         func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
+		"webURL":           webURL,
+		"stepWhen":         stepWhen,
+		"writerWords":      writerWords,
+		"shortSHA":         shortSHA,
+		"telHref":          telHref,
+		"researchLine":     func(r LeadResearch) string { return researchLine(r, s.opt.Location) },
+		"noticeLines":      noticeLines,
 		"researchNext": func(t *time.Time) string {
 			if t == nil {
 				return ""
@@ -726,7 +732,18 @@ func (s *server) renderDashboard(w http.ResponseWriter, r *http.Request, code in
 		s.fail(w, r, err)
 		return
 	}
-	s.render(w, r, code, "dashboard", page{Title: "Dashboard", Active: "/", SignedIn: true, Message: msg, Error: isErr, Data: d})
+	v := dashboardView{Dashboard: d}
+	if d.Leads != nil {
+		v.Why = s.sendingWhy(r)
+	}
+	s.render(w, r, code, "dashboard", page{Title: "Dashboard", Active: "/", SignedIn: true, Message: msg, Error: isErr, Data: v})
+}
+
+// dashboardView is the dashboard and, with leads set up, the sending sentence its leads
+// card leads with (nil when not read).
+type dashboardView struct {
+	Dashboard
+	Why *SendingWhy
 }
 
 // jobs is GET /jobs: the latest sent brief's jobs under the numbers it used.

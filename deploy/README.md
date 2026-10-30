@@ -25,7 +25,7 @@ Every timer but the leads send and sync is persistent, so a run missed while the
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
 | `leadhound-trim.timer` | 15:00 | `trim --max-duration 45m`, under `timeout 50m`: see [The trim](#the-trim) |
 
-The five leads timers are installed on every deploy but run only when `/etc/leadhound/env` switches them on: see [Leads on the server](#leads-on-the-server).
+The five leads timers are installed on every deploy but enabled only when `/etc/leadhound/env` allows them, and each job also has its own switch on the console's Controls page: see [Leads on the server](#leads-on-the-server).
 
 The console, `leadhound-console.service`, has no timer: it runs all the time once it is configured, and restarts five seconds after a crash, but never after bad config (exit 2).
 See [Console](#console).
@@ -221,13 +221,13 @@ Five timers run the leads; all times are Europe/Bucharest, each with up to 10 mi
 Every leads unit has the same sandbox as the other timed units, `MemoryMax=600M` with `GOMEMLIMIT=450MiB`, `Nice=10`, idle I/O and `CPUWeight=50`, and each command runs under a `timeout` that `TimeoutStartSec` covers.
 Business hours, spacing, daily caps, the warm-up ramp and the pause are the commands' own (`leads.yaml` and the console), never the units'.
 
-| Timer | When | Runs | Switched on by |
-| --- | --- | --- | --- |
-| `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` |
-| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000`, under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=7h` | `LEADHOUND_LEADS_TIMERS=on` |
-| `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m`, for the `drupal-eol` campaign; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time | sending on |
-| `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | sending on |
-| `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | sending on |
+| Timer | When | Runs | Enabled when | Console switch |
+| --- | --- | --- | --- | --- |
+| `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` | Site probe (`probe`) |
+| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000`, under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=7h` | `LEADHOUND_LEADS_TIMERS=on` | Contacts (`contacts`): the contacts, enrich and rate steps; the build always runs |
+| `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m`, for the `drupal-eol` campaign; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Morning batch (`batch`): `leads batch new`; the build always runs |
+| `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Sending (the send pause) |
+| `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Inbox sync (`sync`) |
 
 - The probe and the contact search are the finding timers.
   They start unattended reads of public sites: up to 10,000 homepages a day, and up to 300 organisations searched for a published contact a day, each site's robots file read and honoured first.
@@ -261,18 +261,55 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 Every deploy installs the units and decides the timers from `/etc/leadhound/env`, the last line for each name counting, as for the units:
 
 - With `LEADHOUND_LEADS_TIMERS=on`, the probe and contacts timers are enabled; otherwise they are disabled and stopped.
-- With that, `LEADHOUND_LEADS_SEND=on` and `LEADHOUND_OUTREACH=live`, the batch, send and sync timers are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch.
+- With that and `LEADHOUND_OUTREACH=live`, the batch, send and sync timers are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch.
   The mailboxes live in the database, not in this file: a run with no ready mailbox sends nothing and says so.
 - The deploy prints which leads timers are on, and for those that are off, which lines are missing.
 
+Whether an enabled timer does anything is the console's: see [Switches in the console](#switches-in-the-console).
 To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `sudo systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer` (or deploy).
-To turn sending on, first add a mailbox and send its test, as [Mailboxes](#mailboxes) says; then, with `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` already in the file, add `LEADHOUND_LEADS_SEND=on`, run `sudo systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`, and restart the console so it reads the new settings: `sudo systemctl restart leadhound-console.service`.
-Without `LEADHOUND_LEADS_TIMERS=on` the next deploy disables the sending timers again, even with the other two lines set.
+To turn sending on, first add a mailbox, assign it to its campaign and send its test, as [Mailboxes](#mailboxes) says; then, with `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` in the file, deploy (or run `sudo systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer` and `sudo systemctl restart leadhound-console.service`, so the console reads the new settings), and switch Sending on on the console's Controls page.
+Without `LEADHOUND_LEADS_TIMERS=on` the next deploy disables the sending timers again, even with `LEADHOUND_OUTREACH=live` set.
 A unit reads the env file only when it starts.
 
-To pause sending, use the pause switch on the console's Leads page: the send timer keeps running and sends nothing until you resume, and nothing on the server changes.
-To stop everything, remove the two switch lines (or set them to anything but `on`) and run `sudo systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
+To stop everything, remove `LEADHOUND_LEADS_TIMERS=on` (or set it to anything but `on`) and run `sudo systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
 A run already in progress finishes; `sudo systemctl stop leadhound-leads-<name>.service` ends it at once.
+
+### Switches in the console
+
+The console's Controls page (in the top menu, after the dashboard) shows every on/off that decides what the leads work runs, and switches each job without touching the server.
+At its top one sentence says why nothing is going out, or when the next email does: shadow mode, sending switched off, the send timer not enabled, nothing approved waiting or due, a mailbox that cannot send or is not assigned to its campaign, today's warm-up limit, or the sending window, the first that applies.
+The same sentence, with a link to Controls, sits above the Outreach tab's list and on the dashboard's Leads card.
+
+- **Sending** is the send pause, the master switch above every mailbox: switched off, the send timer keeps running and sends nothing until you switch it on, and nothing on the server changes.
+  Switching it on Controls brings you back to Controls; the same switch is on the Leads page's Outreach tab, and `leadhound leads send pause [--reason R]` and `leads send resume` work it from the command line.
+- **The jobs**, each with its own switch: Morning batch (`batch`), Inbox sync (`sync`), Site probe (`probe`), Contacts (`contacts`: the contacts, enrich and rate steps), Research (`research`), and Email check (`verify`), which runs nothing yet.
+  Each row shows what the job does, its schedule, since when and why it is on or off, whether its timer is enabled and its next run (read from `systemctl show`; when that cannot be read, the page says so and shows what the env file makes the last deploy do), and its last run.
+- **A job switched off** runs nothing: it prints "<Job> is switched off in the console (since <time>): nothing ran.", records its run with the result "switched off", and exits 0, so its timer never shows a failure for it.
+  `leads build` has no switch, so the contacts and batch units still build the list.
+  The console's New batch button is you acting by hand and still works while Morning batch is off.
+  Inbox sync switched off stops the sync timer's runs only: `leads send` reads every mailbox's replies itself before it sends, so replies and opt-outs are never missed.
+- **Research switched back on** starts what a star queued while it was off: it writes the research request file, the only thing that starts `leadhound-leads-research.service`.
+  While Research is off, a star still queues its search, and its line ends "Research is switched off on the Controls page, so it will run once research is on."; only Look again is refused, with "Research is switched off on the Controls page."
+- From the command line: `leadhound leads switches list` prints Sending and every job (on or off, since when, the reason), and `leadhound leads switches set JOB on|off [--reason R]` switches one.
+  `make remote HOST=… ARGS='leads switches list'` needs no `CONFIRM=1`; `set` does.
+
+Three switches stay on the server, on purpose, and Controls shows them read-only with the line that changes each:
+
+| Line in `/etc/leadhound/env` | What it decides |
+| --- | --- |
+| `LEADHOUND_OUTREACH` | `live` sends for real; anything else is shadow, and the server never drafts a shadow batch |
+| `LEADHOUND_LIVE` | outbound fetches and the paid Claude and Jev calls |
+| `LEADHOUND_LEADS_TIMERS` | `on` lets the deploy enable the leads timers (batch, send and sync only with live outreach too) |
+
+The console can never change them: a stolen console session must not be able to send for real from a shadow server or spend money.
+Each takes effect with the next `make deploy`.
+
+**`LEADHOUND_LEADS_SEND` is retired.**
+The first deploy with the console switches carries it over once, before it enables any timer: when the line was anything but `on` (no line counts as off), it pauses sending as the system, with the reason "Sending was off on the server (LEADHOUND_LEADS_SEND) before the console switches", so that deploy never starts sending by itself; then it writes the marker `/etc/leadhound/send-switch-converted` (root, 0640).
+With the marker there, later deploys never read the line again, so removing it is safe.
+The marker lives in `/etc/leadhound`, not the data directory, so the app user cannot delete it and a data restore cannot lose it; either would make a later deploy convert again and pause sending.
+A failed carry-over fails the deploy, writes no marker and leaves the leads timers as they were; the next deploy tries again.
+Resume sending on Controls when you mean it to send.
 
 ### Enrichment
 
@@ -385,7 +422,7 @@ Before the batch, `leads.yaml` must list your own product's hosts as `probe.cafe
 Production has never built a lead, so take these steps in order:
 
 1. Place the Anthropic key first, as [The Anthropic key](#the-anthropic-key) says: from the release with campaigns on, the batch and contact research units fail to start without it.
-2. Deploy: `make deploy` migrates the core set up to 00009 and the leads set up to 00021, with the new binary, before it puts that binary in place; a failed migration leaves the old release running.
+2. Deploy: `make deploy` migrates the core set up to 00009 and the leads set up to 00024, with the new binary, before it puts that binary in place; a failed migration leaves the old release running.
 3. `make deploy-data` (it copies `campaigns/` too), then `leads campaigns register`, as [Campaigns on the server](#campaigns-on-the-server) says.
 4. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
 5. Add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` to turn finding on.
@@ -394,7 +431,7 @@ Production has never built a lead, so take these steps in order:
 7. Rating is on by default and runs inside that unit once `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` are in the env file; turn it off in Settings if you do not want it.
    Then label 30 leads under To label and run the eval, as [Relevance](#relevance) says.
 8. Before any campaign with a call step is batched: write your privacy notice, set `sender.privacy_url` in `leads.yaml` and run `make deploy-data` (the deadline is 7 Nov), and screen the Great Britain numbers against TPS and CTPS before the first GB call, as [Calls, screening and phone research](#calls-screening-and-phone-research) says.
-9. Add a mailbox, send its test and turn sending on, as [Mailboxes](#mailboxes) and the steps above say.
+9. Add a mailbox, assign it to its campaign, send its test and turn sending on, as [Mailboxes](#mailboxes) and the steps above say.
 
 ## Mailboxes
 
@@ -402,7 +439,8 @@ A mailbox is one email account the leads are sent from: an address, its login an
 You can have as many as you like, each with its own warm-up, and you add, check, pause, resume and retire them on the console's Mailboxes page (in the top menu).
 The same verbs run from the command line: `leadhound leads mailboxes list | add | check | pause | resume | retire`; editing a mailbox is in the console only.
 On the server, add mailboxes through the console: `make remote` hands the command a pipe, not a terminal, so `leads mailboxes add` could not ask for the password without showing it; keep the command-line add for local use.
-A new lead goes to the ready mailbox with the most room left, and its follow-ups always go from the same mailbox, in the same thread.
+Each campaign sends only from the mailboxes assigned to it (see [Mailboxes per campaign](#mailboxes-per-campaign)).
+A new lead goes to the ready assigned mailbox with the most room left, and its follow-ups always go from the same mailbox, in the same thread.
 Every batch shows each message's From address before you approve it.
 
 ### The key
@@ -443,6 +481,7 @@ Before you start: the leads settings are on the server (`make deploy-data`), the
 4. Press Add and check it.
    The mailbox page opens with a Check card that says "Checking…" and updates by itself, usually within a minute.
    The check signs in to both servers, looks for the Sent and Junk folders and reads the domain's records; it never sends an email.
+   It also opens `https://<the address's host>/` (redirects followed, at most 5, within 10 seconds) and keeps the address it lands on, which the mailbox and Campaigns pages show; a website that does not answer is a note, "The domain's website didn't answer.", never a failed check.
    On the server, `leadhound-mailbox-check.path` starts the check job when the console asks; locally nothing watches for that, so run `make mailbox-check-local` (see below).
 5. The card shows one tick or cross per step, and under a cross the first thing to fix:
 
@@ -475,12 +514,30 @@ The daily domain limit, the number of mailboxes and the domain pauses count by t
 
 ### When a mailbox is given leads and sends
 
-- **New leads** go only to a mailbox that is active, whose latest check passed, and whose records passed today.
+- **New leads** go only to a mailbox that is assigned to the batch's campaign, active, whose latest check passed, and whose records passed today.
   The 06:15 batch checks today's records itself before it drafts.
   The console's New batch never reaches the network, so before 06:15 it says "Today's domain check has not run for … yet": press Check now on the mailbox's page, or wait for the morning batch.
   With no mailbox at all, a batch is refused with "Add a mailbox first".
 - **Each send** also needs that mailbox's reply sync to have just succeeded; the send run syncs first.
 - A follow-up whose mailbox is paused waits; a retired mailbox's unsent follow-ups are cancelled, since a thread must come from the same address.
+
+### Mailboxes per campaign
+
+A live batch drafts only onto the mailboxes assigned to its campaign, and a message is sent only while its mailbox is still assigned to its batch's campaign.
+Assign them on the console's Campaigns tab (Leads → Campaigns): each campaign lists every mailbox that is not retired with a tick box, its domain, its state and where its domain's website lands.
+From the command line: `leadhound leads mailboxes assign ID CAMPAIGN` and `leadhound leads mailboxes unassign ID CAMPAIGN`, with the mailbox's number and the campaign's short name; `leads mailboxes list` ends each line with its campaigns, or "no campaign".
+A mailbox's page lists its campaigns too, and says when it has none, so it sends nothing.
+
+- **A campaign with no mailbox assigned** drafts no live batch: `leads batch new` is refused with "No mailbox is assigned to <campaign>: assign one on its Campaign page.", and the Campaigns tab says so.
+  Shadow batches are unchanged.
+- **An unassigned mailbox still counts toward its domain's daily limit**: it gets no new leads, but its sends today still use the domain's room.
+- **A message whose mailbox is not assigned to its campaign** (approved before the assignment, or unassigned since) is held, not moved: the send reports it as "mailbox not assigned to the campaign" before it uses any room, checks again just before each send, and sends it once the mailbox is assigned again.
+  A message never moves to another mailbox, so unassigning a mailbox holds its follow-ups.
+- **Where each domain lands**: the Campaigns tab shows "<host> → <address>" for each mailbox, the host being the part of the mailbox's address after the `@`, from its latest check, and warns "<host> sends visitors to <address>, not to this campaign's site." when the address it lands on is not on the site of the campaign's `product.site_url`.
+  A mailbox checked before this existed shows "where its domain goes is not checked yet": press Check now on its page.
+- **The first deploy seeds the assignments**, so nothing stops: each mailbox that is not retired and whose live messages (selftests left out) all belong to one campaign is assigned to that campaign, as the system.
+  A mailbox with no live message, or with messages of two campaigns, is left unassigned: assign it yourself.
+  `leads selftest` needs no assignment.
 
 ### Limits
 
@@ -511,11 +568,13 @@ On a mailbox's page press Resume this mailbox (or Pause this mailbox, with an op
 From the command line: `leadhound leads mailboxes pause ID|--domain D [--reason R]` and `leadhound leads mailboxes resume ID|--domain D`.
 A resumed mailbox sends again once its check has passed and its records have passed today.
 Retire this mailbox… on its page (tick I understand, retire it, then press Retire <address>), or `leads mailboxes retire ID --confirm`, retires a mailbox for good; to send from another address, add a new mailbox.
-The pause switch on the Leads page stays the master switch above every mailbox.
+Sending, on the Controls page (and the pause switch on the Leads page), stays the master switch above every mailbox.
 
 ### Sending a test, then turning sending on
 
-1. Add `LEADHOUND_OUTREACH=live` to `/etc/leadhound/env`, without `LEADHOUND_LEADS_SEND=on` yet, so the sending timers stay off, then deploy or run `sudo systemctl restart leadhound-console.service`.
+1. Switch Morning batch off on the console's Controls page, so no batch is drafted before the test has passed, and assign the mailbox to its campaign on the Campaigns tab.
+   Then add `LEADHOUND_OUTREACH=live` to `/etc/leadhound/env` and deploy, or run `sudo systemctl restart leadhound-console.service`.
+   With `LEADHOUND_LEADS_TIMERS=on` in the file, the deploy enables the batch, send and sync timers; the send has nothing approved to send.
    The console reads the env file only when it starts, and until it sees live mode it treats sending as not set up and never drafts a batch; `make remote` reads the file afresh on every run, so the next steps need no restart.
 2. Find the mailbox's number, then send one test email from it to one of your own addresses, `sender.operator_addresses` in `leads.yaml`:
 
@@ -525,11 +584,11 @@ The pause switch on the Leads page stays the master switch above every mailbox.
    ```
 
    `--mailbox` takes the number or the address, and is needed when more than one mailbox is not retired.
-   The test runs the send's own order first: it stops while the pause switch on the Leads page is on, and it needs the key, a passed check, today's records and a reply sync of that mailbox, or it says "No selftest: mailbox N is not ready to send." and sends nothing.
+   The test runs the send's own order first: it stops while Sending is switched off, and it needs the key, a passed check, today's records and a reply sync of that mailbox, or it says "No selftest: mailbox N is not ready to send." and sends nothing.
    It ignores business hours and the daily limit, though its one email counts toward that day's sends, and it does not start the mailbox's warm-up ramp: only a real lead's send does.
    If the server refuses the login, the mailbox pauses itself as in any send, the test email is cancelled, and the command exits 1.
 3. Reply to the test email from your own address; the reply lands in the mailbox's inbox, where it stays.
-   The sync timer is still off, so read it by hand:
+   The sync timer reads it within 15 minutes; to read it now, by hand:
 
    ```sh
    make remote HOST=<ssh host> CONFIRM=1 ARGS='leads sync'
@@ -544,7 +603,8 @@ The pause switch on the Leads page stays the master switch above every mailbox.
 
    "Mailbox 1: synced, nothing new." means the reply has not arrived yet; "Mailbox 1: not synced: …" names what failed, and the command exits 1.
    Repeat steps 2 and 3 for each mailbox.
-4. Turn sending on as [Leads on the server](#leads-on-the-server) says: `LEADHOUND_LEADS_TIMERS=on`, `LEADHOUND_OUTREACH=live` and `LEADHOUND_LEADS_SEND=on` all in the file, the three timers enabled, and a console restart.
+   `leads sync` honours the Inbox sync switch, so switch it on first if it is off.
+4. Switch Morning batch back on, and Sending if it is off, on the Controls page, as [Leads on the server](#leads-on-the-server) says.
    Every batch still waits for you to read and approve it.
 
 ### Locally

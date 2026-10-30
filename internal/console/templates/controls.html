@@ -1,0 +1,86 @@
+{{define "content"}}
+{{$v := .Data}}{{$p := $v.Page}}
+<div class="page-head">
+  <h1>Controls</h1>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+{{with $p.Why}}{{if .Sentence}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}}</p>{{end}}{{end}}
+<p class="lede">Every switch that decides what leads work runs. A job switched off skips its runs until you switch it on again.</p>
+
+<section class="card">
+  <h2>Emails</h2>
+  <ul class="item-list control-list">
+    {{template "control_row" $p.Sending}}
+  </ul>
+  {{if $p.Sending.On}}
+  <details>
+    <summary>Pause sending…</summary>
+    <form method="post" action="/leads/sending" class="stack">
+      <input type="hidden" name="do" value="pause">
+      <input type="hidden" name="back" value="/controls">
+      <label for="pause-reason">Reason (optional)</label>
+      <input id="pause-reason" name="reason" maxlength="{{maxText}}">
+      <button type="submit">Pause sending</button>
+    </form>
+  </details>
+  {{else}}
+  <form method="post" action="/leads/sending">
+    <input type="hidden" name="do" value="resume">
+    <input type="hidden" name="back" value="/controls">
+    <button type="submit" class="primary">Resume sending</button>
+  </form>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Jobs</h2>
+  {{with $p.TimersNote}}<p class="note">{{.}}</p>{{end}}
+  <ul class="item-list control-list">
+    {{range $p.Jobs}}
+    {{template "control_row" .}}
+    {{end}}
+  </ul>
+  <p>Rating leads with Jev is {{if $p.RatingOn}}on{{else}}off{{end}}. <a href="{{$p.RatingPath}}">Change it in Settings</a></p>
+</section>
+
+<section class="card">
+  <h2>Set on the server</h2>
+  <p class="lede">{{$p.GuardsHow}}</p>
+  <ul class="item-list">
+    {{range $p.Guards}}
+    <li>
+      <span class="item-head"><code>{{.Name}}</code>{{if .Value}} = <code>{{.Value}}</code>{{else}} <span class="muted">(not set)</span>{{end}}</span>
+      <span class="item-meta">{{.State}}</span>
+      <span class="item-meta">To change it: <code>{{.Line}}</code></span>
+    </li>
+    {{end}}
+  </ul>
+</section>
+{{end}}
+
+{{define "control_row"}}<li id="control-{{if .Job}}{{.Job}}{{else}}sending{{end}}">
+  <span class="item-head">{{.Name}} <span class="mb-state {{if .On}}mb-ready{{else}}mb-paused{{end}}">{{if .On}}On{{else}}Off{{end}}</span></span>
+  {{with .What}}<span class="item-meta">{{.}}</span>{{end}}
+  <span class="item-meta">{{if .Since}}{{if .On}}On{{else}}Off{{end}} since {{when .Since}}{{with .Reason}}: {{.}}{{end}}{{if .BySystem}} (set by the system){{end}}{{else}}Never switched{{end}}</span>
+  <span class="item-meta">{{with .Schedule}}{{.}} · {{end}}{{if .Timer.Unit}}{{if .Timer.Enabled}}timer enabled{{with .Timer.Next}}, next run {{when .}}{{end}}{{else}}<span class="bad">timer not enabled</span>{{end}}{{else}}no timer of its own{{end}}</span>
+  <span class="item-meta">{{with .LastRun}}Last run {{when .StartedAt}}: {{if .Failed}}<span class="bad">{{.Result}}</span>{{else}}{{.Result}}{{end}}{{else}}Never run{{end}}</span>
+  {{with controlNote .Job}}<span class="item-meta">{{.}}</span>{{end}}
+  {{if .Job}}
+  {{if .On}}
+  <details>
+    <summary>Switch off…</summary>
+    <form method="post" action="/controls/{{.Job}}" class="stack">
+      <input type="hidden" name="do" value="off">
+      <label for="reason-{{.Job}}">Reason (optional)</label>
+      <input id="reason-{{.Job}}" name="reason" maxlength="{{maxControlReason}}">
+      <button type="submit">Switch off<span class="visually-hidden"> {{.Name}}</span></button>
+    </form>
+  </details>
+  {{else}}
+  <form method="post" action="/controls/{{.Job}}">
+    <input type="hidden" name="do" value="on">
+    <button type="submit" class="primary">Switch on<span class="visually-hidden"> {{.Name}}</span></button>
+  </form>
+  {{end}}
+  {{end}}
+</li>{{end}}
