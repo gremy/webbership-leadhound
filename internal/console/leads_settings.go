@@ -201,7 +201,7 @@ func (s *server) saveLeadSettings(w http.ResponseWriter, r *http.Request) {
 	msg := settingsTitle(section) + " saved."
 	switch {
 	case section == SettingsAll:
-		next, msg = leadsSetPath, "Every setting is back to the file."
+		next, msg = leadsSetPath, "Every setting is back to the file, the sending window set on Controls included."
 	case reset:
 		msg = settingsTitle(section) + " is back to the file."
 	}

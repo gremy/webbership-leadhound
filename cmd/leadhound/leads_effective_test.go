@@ -18,7 +18,6 @@ import (
 // leadsEnv call outside leadsOpen and backend.leadsSetup, or leadconfig.Load or LoadForProbe
 // outside leadsEnv), each with its reason: none reads a knob Settings may change (D11).
 var directLeadsReaders = map[string]string{
-	"leads_send.go":        "reads only knobs Settings shows read-only: caps, the ramp, the schedule, the sender, channels and templates (D11; plan B routes sending through settings)",
 	"leads_sites.go":       "probe-only knobs: site_lists, probe and the probe rate",
 	"leads_contacts.go":    "probe-only knobs: role_local_parts, public_body_suffixes and the probe rate",
 	"leads_agencies.go":    "probe-only knobs: agency_finding_pattern and the probe rate",
@@ -28,8 +27,9 @@ var directLeadsReaders = map[string]string{
 }
 
 // leadsDoors are the functions that read leads.yaml through leadsEnv and must apply the
-// saved settings before anyone reads the result.
-var leadsDoors = []string{"leadsOpen", "backend.leadsSetup"}
+// saved settings before anyone reads the result. leadsSendRun applies them once its store is
+// open, so the send keeps the sending window saved on Controls.
+var leadsDoors = []string{"leadsOpen", "backend.leadsSetup", "leadsSendRun"}
 
 // funcName is fn's name, with its receiver's type for a method: "backend.leadsSetup".
 func funcName(fn *ast.FuncDecl) string {

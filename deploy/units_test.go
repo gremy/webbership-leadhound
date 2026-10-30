@@ -177,9 +177,12 @@ var schedule = map[string]struct {
 var (
 	leadsFinding = []string{"leadhound-leads-contacts.timer", "leadhound-leads-probe.timer"}
 	leadsSending = []string{"leadhound-leads-batch.timer", "leadhound-leads-send.timer", "leadhound-leads-sync.timer"}
+	// leadsSendingPaths are the watchers that go with the sending timers: Send now's runs only
+	// where the hourly send does.
+	leadsSendingPaths = []string{"leadhound-leads-send-now.path"}
 	// leadsTriggered are the leads services the console starts through a watcher, with no
 	// timer: install.sh arms their watchers on every deploy, whatever the env switches say.
-	leadsTriggered = []string{"leadhound-leads-research.service"}
+	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-send-now.service"}
 )
 
 // daemons are the services that run all the time rather than from a timer, with their
@@ -217,13 +220,19 @@ var triggered = map[string]struct {
 		exec:  "/usr/bin/timeout --kill-after=5m 45m /opt/leadhound/bin/leadhound leads research run --max 20",
 		after: []string{"network-online.target", "postgresql.service"},
 	},
+	// Send now: the console asks for one send that skips the sending window and nothing
+	// else; it runs the hourly send's command with --now, so it takes the same send lock.
+	"leadhound-leads-send-now": {
+		exec:  "/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --now --max 25",
+		after: []string{"network-online.target", "postgresql.service"},
+	},
 }
 
-// runActions are the console's requests (the Run now actions, the mailbox check and contact
-// research): each has
+// runActions are the console's requests (the Run now actions, the mailbox check, contact
+// research and Send now): each has
 // a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
 // starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research"}
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -971,6 +980,7 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-leads-sync":     {"600M", "450MiB"},
 	"leadhound-mailbox-check":  {"600M", "450MiB"},
 	"leadhound-leads-research": {"600M", "450MiB"},
+	"leadhound-leads-send-now": {"600M", "450MiB"},
 }
 
 // TestMemoryCeiling: the server is shared, so every leadhound unit but the backup has a
@@ -1341,7 +1351,7 @@ func TestInstallLeadsTimers(t *testing.T) {
 		user = "LEADHOUND_OUTREACH_USER=outreach@mail.example\n"
 		imap = "LEADHOUND_IMAP_ADDR=mail.example:993\n"
 	)
-	all := slices.Concat(leadsFinding, leadsSending)
+	all := slices.Concat(leadsFinding, leadsSending, leadsSendingPaths)
 	for _, tc := range []struct {
 		name, env string
 		want      []string
@@ -1573,23 +1583,27 @@ func TestPaths(t *testing.T) {
 
 // TestInstallArmsEveryPath: make deploy copies the watchers, install.sh installs them, creates
 // the request directory for the console's user before arming them, and arms every one on
-// every deploy.
+// every deploy, but Send now's, which leads_timers arms with the send timer.
 func TestInstallArmsEveryPath(t *testing.T) {
 	steps := installSteps(t)
 	var watchers []string
 	for path := range units(t, "*.path") {
-		watchers = append(watchers, filepath.Base(path))
+		if name := filepath.Base(path); !slices.Contains(leadsSendingPaths, name) {
+			watchers = append(watchers, name)
+		}
 	}
 	slices.Sort(watchers)
 	pathName := regexp.MustCompile(`leadhound-[a-z-]+\.path`)
 	arm := slices.IndexFunc(steps, func(l string) bool {
-		return strings.HasPrefix(l, "systemctl enable --now ") && pathName.MatchString(l)
+		return strings.HasPrefix(l, "systemctl enable --now ") && pathName.MatchString(l) && !strings.Contains(l, leadsSendingPaths[0])
 	})
 	if arm < 0 {
 		t.Fatal("install.sh has no systemctl enable --now for the .path watchers")
 	}
-	if strings.Contains(installFunc(t, "leads_timers"), ".path") {
-		t.Error("install.sh arms a watcher inside leads_timers, not on every deploy")
+	inTimers := pathName.FindAllString(installFunc(t, "leads_timers"), -1)
+	slices.Sort(inTimers)
+	if inTimers = slices.Compact(inTimers); !slices.Equal(inTimers, leadsSendingPaths) {
+		t.Errorf("leads_timers arms %q, want only %q (every other watcher is armed on every deploy)", inTimers, leadsSendingPaths)
 	}
 	armed := pathName.FindAllString(steps[arm], -1)
 	slices.Sort(armed)
@@ -1640,7 +1654,7 @@ func TestInstallArmsEveryPath(t *testing.T) {
 
 // mailboxWorkers are the only services that open a sealed mailbox password, so the only ones
 // handed the mailboxes' private key, as a systemd credential.
-var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-sync", "leadhound-mailbox-check"}
+var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-send-now", "leadhound-leads-sync", "leadhound-mailbox-check"}
 
 // claudeWorkers are the only services that call Claude, so the only ones handed the Anthropic
 // key, as a systemd credential. The drafts unit joins them when it is added.
@@ -2225,5 +2239,32 @@ func TestResearchUnit(t *testing.T) {
 		if got := readUnit(t, other+".service")["Service"]["LoadCredential"]; slices.Contains(got, anthropicCredential) {
 			t.Errorf("%s gets the Anthropic key", other)
 		}
+	}
+}
+
+// TestSendNowUnit (Task 4.2): Send now runs only when the console asks (its watcher, never a
+// timer), as the hourly send's twin: the same command with --now and the same --max, the same
+// mailbox key and nothing else, the same limits, and the same send lock (the command's own
+// database lock, so no file lock either side).
+func TestSendNowUnit(t *testing.T) {
+	const name = "leadhound-leads-send-now"
+	now, send := readUnit(t, name+".service"), readUnit(t, "leadhound-leads-send.service")
+	if _, err := os.Stat(name + ".timer"); err == nil {
+		t.Errorf("%s has a timer; it runs only when the console asks", name)
+	}
+	if got := readUnit(t, name+".path").one(t, name+".path", "Path", "PathChanged"); got != runDir+"/leads-send-now" {
+		t.Errorf("%s.path watches %s", name, got)
+	}
+	nowExec, sendExec := now.one(t, name, "Service", "ExecStart"), send.one(t, "send", "Service", "ExecStart")
+	if strings.Replace(sendExec, "leads send ", "leads send --now ", 1) != nowExec {
+		t.Errorf("ExecStart %q is not the hourly send's %q with --now", nowExec, sendExec)
+	}
+	for _, key := range []string{"LoadCredential", "TimeoutStartSec", "MemoryMax", "Environment", "ReadWritePaths", "User", "EnvironmentFile"} {
+		if !slices.Equal(now["Service"][key], send["Service"][key]) {
+			t.Errorf("%s = %q, the hourly send has %q", key, now["Service"][key], send["Service"][key])
+		}
+	}
+	if strings.Contains(nowExec, "flock") || strings.Contains(sendExec, "flock") {
+		t.Error("a send unit takes a file lock; the send's database lock serialises them")
 	}
 }

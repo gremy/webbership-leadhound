@@ -4,7 +4,8 @@
   <h1>Controls</h1>
 </div>
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
-{{with $p.Why}}{{if .Sentence}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}}</p>{{end}}{{end}}
+{{with $p.Why}}{{if .Sentence}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}}</p>{{end}}
+{{template "send_now" (sendNowIn . "")}}{{end}}
 <p class="lede">Every switch that decides what leads work runs. A job switched off skips its runs until you switch it on again.</p>
 
 <section class="card">
@@ -30,6 +31,29 @@
     <button type="submit" class="primary">Resume sending</button>
   </form>
   {{end}}
+</section>
+
+<section class="card" id="sending-window">
+  <h2>Sending window</h2>
+  {{$w := $p.Window}}
+  <p>Emails go out between {{$w.Start}} and {{$w.End}} in each recipient's local time, on {{join $w.Days ", "}}. The send, the size of each morning batch and the sentence at the top all keep this window.</p>
+  {{with $p.SendSchedule}}<p>{{.}}</p>{{end}}
+  <p class="setting-source">{{with changed "" $w.Source}}{{.}}{{else}}From the leads settings file.{{end}}</p>
+  {{with $p.WindowProblems}}<div class="notice notice-error" role="alert"><p>The window was not saved:</p><ul class="notice-list">{{range .}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+  <form method="post" action="/controls/window" class="stack">
+    <label for="window-start">Start</label>
+    <input id="window-start" name="start" type="time" value="{{$v.Form.Start}}" required>
+    <label for="window-end">End</label>
+    <input id="window-end" name="end" type="time" value="{{$v.Form.End}}" required>
+    <fieldset class="plain-field">
+      <legend>Days</legend>
+      <div class="checks">{{range $v.Form.AllDays}}<label><input type="checkbox" name="day" value="{{.}}"{{if in . $v.Form.Days}} checked{{end}}> {{.}}</label>{{end}}</div>
+    </fieldset>
+    <div class="button-row">
+      <button type="submit" name="do" value="save" class="primary">Save the window</button>
+      {{if $w.Source.Console}}<button type="submit" name="do" value="reset" formnovalidate>Use the file's window</button>{{end}}
+    </div>
+  </form>
 </section>
 
 <section class="card">

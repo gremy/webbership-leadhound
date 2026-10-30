@@ -238,7 +238,7 @@ func TestSettingsSaveAndReset(t *testing.T) {
 		}
 		msg := "is back to the file."
 		if s.Name == SettingsAll {
-			msg = "Every setting is back to the file. A change applies to the queue straight away and to the next new batch; batches already made keep their leads."
+			msg = "Every setting is back to the file, the sending window set on Controls included. A change applies to the queue straight away and to the next new batch; batches already made keep their leads."
 		}
 		if page := h.do(get("/leads/settings", c, cookieNamed(w, "__Host-lh_flash"))).Body.String(); !strings.Contains(page, msg) {
 			t.Errorf("reset %s: the page does not say %q", s.Name, msg)

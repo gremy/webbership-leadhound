@@ -180,7 +180,7 @@ func batchSizing(cfg leadconfig.Config, ld sizingLoad, now time.Time, size int) 
 		today := now
 		firstSend = &today
 	}
-	days := cfg.Schedule.BusinessHours.Days
+	days := cfg.SendingWindow().Days
 	for i := 0; z.Days < sizingDays && i < 15; i++ {
 		day := time.Date(now.Year(), now.Month(), now.Day()+i, 12, 0, 0, 0, now.Location())
 		if i == 0 {
@@ -226,10 +226,10 @@ func mailboxSizing(cfg leadconfig.Config, mbs []outreach.MailboxLoad, toCheck in
 	// The days counted, the steps and the waiting mail, as the single-mailbox sizing has them.
 	z := batchSizing(cfg, ld, now, size)
 	z.Mailboxes, z.Ramp, z.Room = ready, 0, 0
-	for _, r := range outreach.RoomOver(cfg, bare, now, sizingDays, cfg.Schedule.BusinessHours) {
+	for _, r := range outreach.RoomOver(cfg, bare, now, sizingDays, cfg.SendingWindow()) {
 		z.Ramp += r
 	}
-	room := outreach.RoomOver(cfg, mbs, now, sizingDays, cfg.Schedule.BusinessHours)
+	room := outreach.RoomOver(cfg, mbs, now, sizingDays, cfg.SendingWindow())
 	for _, r := range room {
 		z.Room += r
 	}
@@ -258,7 +258,7 @@ func todayOpen(cfg leadconfig.Config, now time.Time) bool {
 		locs = []*time.Location{now.Location()}
 	}
 	for _, loc := range locs {
-		if slot := outreach.NextSlot(loc, cfg.Schedule.BusinessHours, now); !slot.IsZero() && slot.Before(end) {
+		if slot := outreach.NextSlot(loc, cfg.SendingWindow(), now); !slot.IsZero() && slot.Before(end) {
 			return true
 		}
 	}
@@ -1127,7 +1127,7 @@ func approveBatch(ctx context.Context, s *store.Store, cfg leadconfig.Config, no
 		if m.Step != 0 {
 			return time.Time{}
 		}
-		d := outreach.NextSlot(locs[m.LeadID], cfg.Schedule.BusinessHours, t)
+		d := outreach.NextSlot(locs[m.LeadID], cfg.SendingWindow(), t)
 		if !d.IsZero() && (out.FirstDue.IsZero() || d.Before(out.FirstDue)) {
 			out.FirstDue = d
 		}

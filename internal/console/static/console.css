@@ -936,6 +936,29 @@ select {
   justify-self: start;
   margin-top: 0.4rem;
 }
+/* A group of fields with no frame of its own, its legend read as a field's label. */
+.plain-field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.plain-field legend {
+  padding: 0;
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+/* Buttons side by side, wrapping on a narrow screen. */
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.stack .button-row button {
+  margin-top: 0;
+}
 .split {
   display: flex;
   flex-wrap: wrap;

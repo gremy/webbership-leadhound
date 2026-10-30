@@ -280,7 +280,7 @@
 <section class="card settings-section" id="reset-all" aria-labelledby="reset-all-title" aria-describedby="reset-all-intro">
   <h2 id="reset-all-title">Start again from the file</h2>
   {{if eq $v.Section "all"}}{{template "settings_problems" $v}}{{end}}
-  <p id="reset-all-intro" class="section-intro">Puts every section above back to the leads settings file at once. The part shown from the file and the server does not change.</p>
+  <p id="reset-all-intro" class="section-intro">Puts every section above back to the leads settings file at once, including the sending window set on Controls. The part shown from the file and the server does not change.</p>
   <details>
     <summary>Reset everything to the file</summary>
     <form method="post" action="/leads/settings/all" class="confirm-form">

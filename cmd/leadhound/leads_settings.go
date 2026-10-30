@@ -17,7 +17,7 @@ import (
 
 func init() { leadsCommands["settings"] = runLeadsSettings }
 
-const leadsSettingsUsage = "usage: leadhound leads settings show | reset [--section who|kinds|small-sites|batches|dates|relevance|order|all]"
+const leadsSettingsUsage = "usage: leadhound leads settings show | reset [--section who|kinds|small-sites|batches|dates|relevance|email-check|window|order|all]"
 
 // runLeadsSettings is `leads settings show|reset`: the settings in force, each with where it
 // comes from (leads.yaml, or a change saved in the console), and a reset back to the file.
@@ -123,6 +123,9 @@ func printSettings(w io.Writer, st settingsState, loc *time.Location) {
 	line("relevance.rating", rating, st.knob("relevance.rating"))
 	line("relevance.leads_daily_calls", fmt.Sprintf("%d (in force: %d a day; the server allows %d)",
 		cfg.Relevance.LeadsDailyCalls, st.setup.jevLeadsDailyCap(), st.setup.jevLeadsEnvCap), st.knob("relevance.leads_daily_calls"))
+	bh := cfg.SendingWindow()
+	line("schedule.business_hours (sending window, recipient's local time)",
+		fmt.Sprintf("%s to %s on %s", bh.Start, bh.End, listText(bh.Days)), st.knob("schedule.business_hours"))
 	line("priority (fallback order)", fmt.Sprintf("%d rules", orderRules(st.profile)), st.orderSource())
 	if n := st.ignoredNote(loc); n != "" {
 		_, _ = fmt.Fprintln(w, "note: "+n)
@@ -139,7 +142,7 @@ func orderRules(p leadconfig.Profile) int {
 
 // settingsResetSections are the sections `settings reset --section` takes.
 var settingsResetSections = []string{console.SettingsWho, console.SettingsKinds, console.SettingsSmallSites,
-	console.SettingsBatches, console.SettingsDates, console.SettingsRelevance, console.SettingsEmailCheck, console.SettingsOrder, console.SettingsAll}
+	console.SettingsBatches, console.SettingsDates, console.SettingsRelevance, console.SettingsEmailCheck, console.SettingsWindow, console.SettingsOrder, console.SettingsAll}
 
 func runSettingsReset(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads settings reset", flag.ContinueOnError)

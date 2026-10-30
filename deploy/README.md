@@ -87,7 +87,7 @@ The brief and ATS buttons start the timed units unchanged, so a run from the con
 A press while the same service is starting or running would be merged into that run by systemd, so the console refuses it and says when the running one started.
 `PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
 
-Check the watchers with `systemctl list-units 'leadhound-*.path'`: each of the six, these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)) and `leadhound-leads-research.path` (see [Contact research](#contact-research)), should be `active` and `waiting`; check a run with a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
+Check the watchers with `systemctl list-units 'leadhound-*.path'`: each of the six, these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)) and `leadhound-leads-research.path` (see [Contact research](#contact-research)), should be `active` and `waiting`, and Send now's `leadhound-leads-send-now.path` too wherever the send timer is enabled (see [Send now](#send-now)); check a run with a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
 The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
 
 **A watcher stops when its service hits its start limit.**
@@ -198,6 +198,9 @@ Run these on the server as root, in order.
   Locally `make db-local` applies the same file, then lifts the connection limit so parallel test runs can share the role.
 - `make deploy-data HOST=… CONFIRM=1` copies `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml`, the `leads-templates/` directory and, when there is one, the `campaigns/` directory from `LEADHOUND_PRIVATE_DIR` (default `../job-hunt/leadhound`), after `score --check-config`, `leads check-config` and (with a `campaigns/`) `leads campaigns check` pass on them; run it after you edit any of them.
   The first five must exist, or it stops before copying anything; a template or campaign file you deleted locally is deleted on the server too.
+  The config is checked twice: once on your machine with this checkout's source, then on the server with the binary already there, which runs `score --check-config` and `leads check-config` on the staged files as the leadhound user.
+  The second check catches a `leads.yaml` key the live binary doesn't know yet (on 29 Oct, `cafe_own_vendor_hosts`), which would otherwise make every leads command on the server refuse the file, sending included.
+  When either server check fails or refuses, it prints the output, removes the stage and installs nothing; deploy the newer binary first (`make deploy`), then run `deploy-data` again.
   Without a local `campaigns/`, the server's campaigns are left as they are.
   For a first `leads.yaml`, start from `examples/leads.yaml` (a demo with reserved names) and set your own sender, addresses and templates.
   It copies nothing else: the title screen is part of `leadhound.yaml`, and the eval golden set, the privacy denylist and the board seed lists are never needed on the server.
@@ -312,6 +315,34 @@ The marker lives in `/etc/leadhound`, not the data directory, so the app user ca
 A failed carry-over fails the deploy, writes no marker and leaves the leads timers as they were; the next deploy tries again.
 Resume sending on Controls when you mean it to send.
 
+### The sending window
+
+The sending window (start, end and days, in each recipient's local time) is set on the Controls page, in its Sending window card, and saved in the console's settings over `leads.yaml`'s `schedule.business_hours`.
+Every reader takes the window in force, the saved one, else the file's: the send (each message is checked against it at the moment it goes), the size of each morning batch, the time a first email falls due when you approve a batch, follow-up due times and the sentence at the top of Controls.
+The card says where the window comes from ("Changed here on …", or the leads settings file); "Use the file's window" puts the file's back.
+The form checks what `leads.yaml` checks: times like 08:30, the end after the start, at least one day.
+A saved window wins over the file, so a `make deploy-data` with another window in `leads.yaml` leaves the saved one in force, as for every other setting.
+From the command line, `leads settings show` prints it with its source and `leads settings reset --section window` puts the file's back; on the server both run through `make remote … CONFIRM=1`.
+The hourly send runs from 10:00 to 19:00 Bucharest time, Monday to Friday, and the card says so: a time the window allows outside those runs (an evening, a Saturday) is reached only by Send now.
+The sentence at the top never promises such a time: "go out in the next sending window" names the first hourly run inside a recipient's window, and a window no run ever falls in says "the hourly send never runs inside the sending window, so only Send now reaches them".
+The batch sizing still counts every day the window names.
+
+### Send now
+
+Send now sends the approved emails that are due now, skipping the sending window (its hours and days) for that one run only.
+Everything else still applies: the sending switch, shadow mode, the reply sync first, each mailbox's warm-up limit and the domain's daily limit, the spacing between emails, paused and unassigned mailboxes, suppressions, the run's `--max 25`, and every due time, so a follow-up never goes before its day.
+There is no standing bypass.
+The button sits beside the sentence on Controls and on the Leads page's Outreach tab when the sentence says the emails go in the next sending window or at the next run, with a line saying what it skips and what it keeps.
+The console refuses a press before it asks for anything when sending is off, in shadow mode, when the send timer is not enabled, when nothing is due now, when today's limit is used ("Today's warm-up limit is used (n of cap); Send now only skips the sending window."), and while a send runs or a press already waits.
+"A send runs" is read from the send lock itself, so a run that was killed without finishing its record blocks nothing.
+While a press waits or a send runs, the button gives way to that line.
+Otherwise it asks the way Run now does: it writes the request time to `run/leads-send-now`, and `leadhound-leads-send-now.path` starts `leadhound-leads-send-now.service`, which runs `leads send --now --max 25` with the hourly send's mailbox key, limits and sandbox.
+The deploy arms that watcher with the send timer, on the same two lines (`LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live`), and disarms it with them: where the hourly send does not run, Send now does not either.
+Both send units take the same database send lock, so they never run at once: whichever starts second says "Another send is running; this one did nothing."
+The run is recorded as the hourly send's is, with "send now" in its note, so Controls shows its last run as "Finished (Send now)" and the line under the button says what that run sent (an hourly run never counts as the answer to a press); its journal starts "Send now: this run skips the sending window only".
+From the command line: `make remote HOST=… CONFIRM=1 ARGS='leads send --now'`.
+If a press stays "asked and not started", reset its watcher as for Run now: `sudo systemctl reset-failed leadhound-leads-send-now.path leadhound-leads-send-now.service`, then `sudo systemctl start leadhound-leads-send-now.path`.
+
 ### Enrichment
 
 After the contact search, the contacts unit runs `leads enrich --max 300`, under `timeout 60m` and the same fetch lock, before `leads rate` and `leads build`.
@@ -365,6 +396,7 @@ It says how many calls it will make before the first, is not capped, and is reco
 The console's Settings page (`/leads/settings`) changes some leads settings over `leads.yaml`, in the database: who to contact, the kinds and their order, small sites, where batches draw from, the Drupal end-of-life dates, relevance rating and its daily calls, and the fallback order.
 The commands that use these settings read them from the database on every run, with the file underneath, so a change reaches the next run of each unit without a deploy or a restart.
 The sending pace and ramp, the sender, the country channels and languages, and the templates show read-only: the send path reads them from the file, so change them in `leads.yaml` and run `make deploy-data`.
+The sending window is the exception: it is saved the same way but changed on the Controls page (see [The sending window](#the-sending-window)), and the pace lines say where it comes from; "Reset everything to the file" resets it too.
 No secret is shown or stored.
 `leads settings show` prints each setting in force and where it comes from, and `leads settings reset [--section …]` puts a section, or all of them, back to the file; on the server both run through `make remote … CONFIRM=1`.
 

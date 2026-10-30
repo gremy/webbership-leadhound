@@ -1,0 +1,9 @@
+{{/* send_now is the Send now button beside the sending sentence, with what it skips and keeps, and
+the state of the latest press. While a press waits or a send runs, only that state shows. Its data is sendNowView: the sentence and the page to return to. */}}
+{{define "send_now"}}{{$w := .Why}}{{if and $w.SendNow (not $w.SendNowPending)}}
+<form method="post" action="/controls/send-now" class="send-now">
+  {{with .Back}}<input type="hidden" name="back" value="{{.}}">{{end}}
+  <button type="submit">Send now</button>
+  <p class="note">{{sendNowWords}}</p>
+</form>
+{{end}}{{with $w.SendNowLine}}<p class="note" role="status">{{.}}</p>{{end}}{{end}}

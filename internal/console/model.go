@@ -495,6 +495,7 @@ const (
 	SettingsRelevance  = "relevance"   // Jev relevance: rating on or off, the leads daily cap
 	SettingsEmailCheck = "email-check" // the email check before sending: what a catch-all address does
 	SettingsOrder      = "order"       // the fallback order: the priority profile's points
+	SettingsWindow     = "window"      // the sending window: saved like the others, changed on the Controls page
 	SettingsAll        = "all"         // reset only: every section back to the file
 )
 
@@ -536,6 +537,10 @@ type LeadSettingsValues struct {
 	LeadsCap string
 	// CatchAll is verify.catch_all: CatchAllSend or CatchAllBlock.
 	CatchAll string
+	// The sending window (schedule.business_hours), as the Controls page's form holds it:
+	// start and end HH:MM as typed, and the days ticked (Mon … Sun).
+	WindowStart, WindowEnd string
+	WindowDays             []string
 	// Order is the fallback order: the priority profile's points, exact version, countries
 	// and rank bands. Its Exclude is never read or written here: never-contact countries are
 	// Who's.
@@ -928,6 +933,12 @@ type ControlsBackend interface {
 	// out from it now (or when it next does). ErrNotFound for no such mailbox. It never
 	// writes.
 	MailboxSending(ctx context.Context, id int64) (MailboxSendingView, error)
+	// SendNow asks for one send that skips the sending window and nothing else: it refuses
+	// (ErrUserFixable, with the words to show) while a send runs or one is already asked,
+	// in shadow mode, while sending is off, with nothing due now and with today's warm-up
+	// limit used, and otherwise writes the request file its watcher starts the Send now unit
+	// from. The console gains no privilege: systemd runs the send.
+	SendNow(ctx context.Context) (ControlOutcome, error)
 }
 
 // The writes ControlAction.Do names.
@@ -977,6 +988,27 @@ type SendingWhy struct {
 	Blocked  bool
 	Sentence string
 	Next     *time.Time
+	// SendNow is true when the page offers Send now beside the sentence: the waiting emails
+	// go in the next sending window, or at the next run.
+	SendNow bool
+	// SendNowLine is the state of the latest Send now request ("Asked at 21:03, waiting to
+	// start."), "" with none in the last day.
+	SendNowLine string
+	// SendNowPending is true while that request waits or runs.
+	SendNowPending bool
+}
+
+// SendNowWords say what Send now skips and what it keeps, under its button.
+const SendNowWords = "Send now skips the sending window for one run only. The warm-up and domain limits, the spacing, paused and unassigned mailboxes, opt-outs and the sending switch still apply."
+
+// SendingWindowView is the sending window on the Controls page: start and end (HH:MM, in each
+// recipient's local time), the days it opens, every day the form offers, and where it comes
+// from (set on Controls, or the leads settings file).
+type SendingWindowView struct {
+	Start, End string
+	Days       []string
+	AllDays    []string
+	Source     SettingSource
 }
 
 // ControlsPage is the Controls page: the sending sentence, the sending switch, each job's
@@ -998,6 +1030,14 @@ type ControlsPage struct {
 	// the Settings page.
 	RatingOn   bool
 	RatingPath string
+	// Window is the sending window in force, which the page changes and resets.
+	Window SendingWindowView
+	// SendSchedule says when the hourly send runs, under the window: a time the window allows
+	// outside those runs is reached only by Send now.
+	SendSchedule string
+	// WindowProblems are why the window last submitted was refused, in plain words; the form
+	// then holds what was submitted.
+	WindowProblems []string
 }
 
 // RatingSettingsPath is the rating setting on the Settings page.

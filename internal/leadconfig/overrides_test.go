@@ -143,7 +143,8 @@ func wantDate(t *testing.T, d Date, want string) {
 }
 
 // TestOverridesExactlyTheEditableKnobs: the JSON keys Overrides accepts are D11's editable
-// lead_setting knobs (and the email check's verify.catch_all), no more and no fewer.
+// lead_setting knobs (and the email check's verify.catch_all, and the sending window the
+// Controls page saves), no more and no fewer.
 func TestOverridesExactlyTheEditableKnobs(t *testing.T) {
 	var keys []string
 	var walk func(prefix string, typ reflect.Type)
@@ -165,7 +166,8 @@ func TestOverridesExactlyTheEditableKnobs(t *testing.T) {
 	slices.Sort(keys)
 	want := []string{
 		"batches_from", "facts.d10_eol", "facts.d6_eol", "facts.d7_eol", "facts.d8_eol", "facts.d9_eol",
-		"kinds_off", "kinds_priority", "relevance.leads_daily_calls", "relevance.rating", "skip_rank_over", "verify.catch_all",
+		"kinds_off", "kinds_priority", "relevance.leads_daily_calls", "relevance.rating", "schedule.business_hours.days", "schedule.business_hours.end", "schedule.business_hours.start",
+		"skip_rank_over", "verify.catch_all",
 	}
 	if !slices.Equal(keys, want) {
 		t.Errorf("override keys = %v\nwant %v", keys, want)
@@ -463,5 +465,43 @@ func TestVerifyCatchAll(t *testing.T) {
 	eff, p := Overrides{Verify: &VerifyOverrides{CatchAll: ptr(CatchAllBlock)}}.Effective(base)
 	if len(p) != 0 || eff.Verify.CatchAllRule() != CatchAllBlock || base.Verify.CatchAllRule() != CatchAllSend {
 		t.Errorf("override: %q %v (file now %q)", eff.Verify.CatchAllRule(), p, base.Verify.CatchAllRule())
+	}
+}
+
+// TestSendingWindowOverride: a saved sending window is the window in force (SendingWindow),
+// whole, sharing no slice with the override or the file; the file's own checks refuse a broken
+// one in their words; no override leaves the file's window.
+func TestSendingWindowOverride(t *testing.T) {
+	base := demoConfig(t)
+	file := base.SendingWindow()
+	days := []string{"Mon", "Tue", "Wed", "Thu", "Fri"}
+	o := Overrides{Schedule: &ScheduleOverrides{BusinessHours: &BusinessHours{Start: "08:30", End: "18:00", Days: days}}}
+	eff, p := o.Effective(base)
+	if len(p) != 0 {
+		t.Fatalf("a sound window refused: %v", p)
+	}
+	if got := eff.SendingWindow(); got.Start != "08:30" || got.End != "18:00" || !slices.Equal(got.Days, days) {
+		t.Errorf("window in force %+v", got)
+	}
+	days[0] = "Sun"
+	eff.SendingWindow().Days[1] = "Sat"
+	if got := eff.SendingWindow().Days; got[0] != "Mon" || got[1] != "Tue" {
+		t.Errorf("the window shares a slice: %v", got)
+	}
+	if got := base.SendingWindow(); !reflect.DeepEqual(got, file) {
+		t.Errorf("the file's window changed: %+v", got)
+	}
+	for _, bad := range []BusinessHours{
+		{Start: "18:00", End: "08:30", Days: []string{"Mon"}},
+		{Start: "08:30", End: "18:00"},
+		{Start: "08:30", End: "18:00", Days: []string{"Mon", "Mon"}},
+	} {
+		if _, p := (Overrides{Schedule: &ScheduleOverrides{BusinessHours: &bad}}).Effective(base); len(p) == 0 ||
+			!strings.Contains(p[0].Message, "schedule.business_hours") {
+			t.Errorf("%+v: problems %v", bad, p)
+		}
+	}
+	if got := (Overrides{}).Apply(base).SendingWindow(); !reflect.DeepEqual(got, file) {
+		t.Errorf("no override: %+v, want the file's %+v", got, file)
 	}
 }

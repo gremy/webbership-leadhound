@@ -50,6 +50,7 @@ var overrideSections = map[string][]string{
 	console.SettingsDates:      {"facts.d6_eol", "facts.d7_eol", "facts.d8_eol", "facts.d9_eol", "facts.d10_eol"},
 	console.SettingsRelevance:  {"relevance.rating", "relevance.leads_daily_calls"},
 	console.SettingsEmailCheck: {"verify.catch_all"},
+	console.SettingsWindow:     {"schedule.business_hours"},
 }
 
 // eolKeys are the end-of-life dates, in the page's order, with the Drupal major each is.
@@ -73,6 +74,9 @@ func overrideKeys(o leadconfig.Overrides) map[string]bool {
 	}
 	if v := o.Verify; v != nil {
 		k["verify.catch_all"] = v.CatchAll != nil
+	}
+	if s := o.Schedule; s != nil {
+		k["schedule.business_hours"] = s.BusinessHours != nil
 	}
 	return k
 }
@@ -237,7 +241,7 @@ func (b *backend) LeadSettings(ctx context.Context) (console.LeadSettingsPage, e
 		TrustGate: trustGateWords(eval, evalOK, b.loc),
 		Labelled:  labelled,
 		LabelGoal: labelGoal,
-		ReadOnly:  readOnlySettings(cfg, kinds),
+		ReadOnly:  readOnlySettings(cfg, kinds, windowSourceWords(st.knob("schedule.business_hours"), b.loc)),
 		Sources: console.SettingsSources{
 			Who: st.whoSource(), KindsOn: st.knob("kinds_off"), KindsOrder: st.knob("kinds_priority"),
 			SkipRankOver: st.knob("skip_rank_over"), BatchesFrom: st.knob("batches_from"),
@@ -321,9 +325,9 @@ func trustGateWords(e leadstore.RelevanceEval, ok bool, loc *time.Location) cons
 // policy, the sending pace, the sender's public lines, which languages have an opt-out line,
 // the templates by name and the allowlisted environment. The sender's operator addresses
 // and every other secret stay out.
-func readOnlySettings(cfg leadconfig.Config, kinds []leadKind) console.ReadOnlySettings {
+func readOnlySettings(cfg leadconfig.Config, kinds []leadKind, windowSource string) console.ReadOnlySettings {
 	ro := console.ReadOnlySettings{
-		Pace:            paceLines(cfg),
+		Pace:            paceLines(cfg, windowSource),
 		SenderName:      cfg.Sender.Name,
 		IdentityLine:    cfg.Sender.IdentityLine,
 		SiteURL:         cfg.Sender.SiteURL,
@@ -356,8 +360,18 @@ func optOutLanguages(lines map[string]string) []string {
 	return out
 }
 
-// paceLines are the sending pace and the warm-up ramp, one plain line each.
-func paceLines(cfg leadconfig.Config) []string {
+// windowSourceWords says where the sending window in force comes from, for a line that names
+// it: set on the Controls page (and when), or the leads settings file.
+func windowSourceWords(src console.SettingSource, loc *time.Location) string {
+	if src.Console {
+		return "set on the Controls page on " + src.At.In(loc).Format("2 January 2006")
+	}
+	return "from the leads settings file"
+}
+
+// paceLines are the sending pace and the warm-up ramp, one plain line each; the sending
+// window's line says where it comes from (windowSource, windowSourceWords).
+func paceLines(cfg leadconfig.Config, windowSource string) []string {
 	c := cfg.Caps
 	var out []string
 	if c.BatchSize > 0 {
@@ -373,8 +387,9 @@ func paceLines(cfg leadconfig.Config) []string {
 		out = append(out, fmt.Sprintf("From day %d: up to %d emails a mailbox a day.", r.FromDay, r.PerDay))
 	}
 	out = append(out, fmt.Sprintf("At most %d emails a sending domain a day, and %d mailboxes a sending domain.", c.DomainPerDay, c.MailboxesPerDomain))
-	if bh := cfg.Schedule.BusinessHours; bh.Start != "" {
-		out = append(out, fmt.Sprintf("Emails go in each recipient's business hours, %s to %s on %s.", bh.Start, bh.End, strings.Join(bh.Days, ", ")))
+	if bh := cfg.SendingWindow(); bh.Start != "" {
+		out = append(out, fmt.Sprintf("Emails go in each recipient's business hours, %s to %s on %s (%s; change it on the Controls page).",
+			bh.Start, bh.End, strings.Join(bh.Days, ", "), windowSource))
 	}
 	if sm := cfg.Schedule.SpacingMinutes; len(sm) == 2 {
 		out = append(out, fmt.Sprintf("Sends are %d to %d minutes apart.", sm[0], sm[1]))
@@ -565,6 +580,8 @@ func clearSection(o *leadconfig.Overrides, section string) {
 		o.Relevance = nil
 	case console.SettingsEmailCheck:
 		o.Verify = nil
+	case console.SettingsWindow:
+		o.Schedule = nil
 	}
 }
 
@@ -627,8 +644,46 @@ func setSection(o *leadconfig.Overrides, section string, v console.LeadSettingsV
 	case console.SettingsEmailCheck:
 		rule := strings.TrimSpace(v.CatchAll)
 		o.Verify = &leadconfig.VerifyOverrides{CatchAll: &rule}
+	case console.SettingsWindow:
+		bh, problems := windowFromForm(v)
+		if len(problems) > 0 {
+			return problems
+		}
+		o.Schedule = &leadconfig.ScheduleOverrides{BusinessHours: &bh}
 	}
 	return nil
+}
+
+// windowFromForm is the sending window the Controls form asks for, or what is wrong with it
+// in plain words: the rules leads.yaml's schedule.business_hours passes (HH:MM, the end after
+// the start, at least one day, each once), the days put in week order.
+func windowFromForm(v console.LeadSettingsValues) (leadconfig.BusinessHours, []string) {
+	start, end := strings.TrimSpace(v.WindowStart), strings.TrimSpace(v.WindowEnd)
+	var problems []string
+	ts, errS := time.Parse("15:04", start)
+	te, errE := time.Parse("15:04", end)
+	switch {
+	case errS != nil || errE != nil:
+		problems = append(problems, "The start and the end each take a time like 08:30.")
+	case !te.After(ts):
+		problems = append(problems, "The end must come after the start.")
+	}
+	var days []string
+	for _, d := range leadconfig.Weekdays() {
+		if slices.Contains(v.WindowDays, d) {
+			days = append(days, d)
+		}
+	}
+	for _, d := range v.WindowDays {
+		if !slices.Contains(days, d) {
+			problems = append(problems, fmt.Sprintf("%q is not a day of the week.", d))
+			break
+		}
+	}
+	if len(days) == 0 {
+		problems = append(problems, "Choose at least one day.")
+	}
+	return leadconfig.BusinessHours{Start: start, End: end, Days: days}, problems
 }
 
 // saveProfileSection saves or resets Who to contact or the fallback order as a new version

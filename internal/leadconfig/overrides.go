@@ -14,7 +14,8 @@ import (
 // Overrides are the leads settings the console may change, saved as a partial JSON document
 // over leads.yaml: a nil field keeps the file's value. They hold only knobs every reader takes
 // through the effective config; never-contact countries and the fallback order live in the
-// priority profile, and the sender, caps, channels and templates stay in the file.
+// priority profile, and the sender, caps, channels, templates and the rest of the schedule
+// stay in the file.
 type Overrides struct {
 	KindsOff      *[]string           `json:"kinds_off,omitempty"`
 	KindsPriority *[]string           `json:"kinds_priority,omitempty"`
@@ -23,6 +24,13 @@ type Overrides struct {
 	Facts         *FactsOverrides     `json:"facts,omitempty"`
 	Relevance     *RelevanceOverrides `json:"relevance,omitempty"`
 	Verify        *VerifyOverrides    `json:"verify,omitempty"`
+	Schedule      *ScheduleOverrides  `json:"schedule,omitempty"`
+}
+
+// ScheduleOverrides are the schedule settings the console may change: the sending window,
+// whole (start, end and days together).
+type ScheduleOverrides struct {
+	BusinessHours *BusinessHours `json:"business_hours,omitempty"`
 }
 
 // FactsOverrides are the end-of-life dates the console may change.
@@ -164,6 +172,11 @@ func (o Overrides) Apply(cfg Config) Config {
 	}
 	if v := o.Verify; v != nil && v.CatchAll != nil {
 		c.Verify.CatchAll = *v.CatchAll
+	}
+	if s := o.Schedule; s != nil && s.BusinessHours != nil {
+		bh := *s.BusinessHours
+		bh.Days = slices.Clone(bh.Days)
+		c.Schedule.BusinessHours = bh
 	}
 	return c
 }

@@ -1,0 +1,22 @@
+# Send now: the console's Controls page (or the Leads page's Outreach list) checks that
+# sending is on, live, that emails are due and that today's warm-up limit has room, then writes
+# the request time to /opt/leadhound/data/run/leads-send-now, and this watcher starts
+# leadhound-leads-send-now.service, which runs leads send --now once. The console itself never
+# holds a mailbox password and never reaches a mail server.
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A request while the service is already starting or
+# running is merged into that run by systemd.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset:
+#   systemctl reset-failed leadhound-leads-send-now.path leadhound-leads-send-now.service
+#   systemctl start leadhound-leads-send-now.path
+[Unit]
+Description=leadhound send now request
+
+[Path]
+PathChanged=/opt/leadhound/data/run/leads-send-now
+
+[Install]
+WantedBy=paths.target

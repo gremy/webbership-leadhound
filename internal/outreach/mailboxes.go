@@ -122,11 +122,23 @@ func Assign(leads []int64, room map[int64]int, steps int) map[int64]int64 {
 // uses one place. With one mailbox and room = capToday - sentToday it returns exactly what
 // Plan returns. The inputs are not changed.
 func PlanMailboxes(due []PlanItem, room map[int64]int, now time.Time, bh leadconfig.BusinessHours) (send []PlanItem, held map[HoldReason]int) {
+	return planMailboxes(due, room, now, windowOpen(bh, now))
+}
+
+// PlanMailboxesAnyHour is PlanMailboxes for a run that skips the sending window (leads send
+// --now): every rule but the hours one, so nothing is held for hours. Not-due messages are
+// still held (a follow-up waits for its due time), as are a second message to one domain and
+// one past its mailbox's room.
+func PlanMailboxesAnyHour(due []PlanItem, room map[int64]int, now time.Time) (send []PlanItem, held map[HoldReason]int) {
+	return planMailboxes(due, room, now, anyHour)
+}
+
+func planMailboxes(due []PlanItem, room map[int64]int, now time.Time, open func(*time.Location) bool) (send []PlanItem, held map[HoldReason]int) {
 	left := maps.Clone(room)
 	if left == nil {
 		left = map[int64]int{}
 	}
-	return planWalk(due, now, bh,
+	return planWalk(due, now, open,
 		func(it PlanItem) bool { return left[it.MailboxID] > 0 },
 		func(it PlanItem) { left[it.MailboxID]-- })
 }

@@ -94,6 +94,8 @@ type fakeBackend struct {
 	whyErr      error // returned by SendingWhy before any leads read error
 	ctlOut      ControlOutcome
 	ctlErr      error // returned by ControlAct
+	sendNowOut  ControlOutcome
+	sendNowErr  error // returned by SendNow
 	lastControl ControlAction
 	campaignMbs []CampaignMailboxes
 	mbSending   MailboxSendingView
@@ -227,6 +229,11 @@ func (f *fakeBackend) ControlAct(_ context.Context, a ControlAction) (ControlOut
 	f.lastControl = a
 	f.mu.Unlock()
 	return f.ctlOut, f.ctlErr
+}
+
+func (f *fakeBackend) SendNow(context.Context) (ControlOutcome, error) {
+	f.count("SendNow")
+	return f.sendNowOut, f.sendNowErr
 }
 
 func (f *fakeBackend) CampaignMailboxes(context.Context) ([]CampaignMailboxes, error) {

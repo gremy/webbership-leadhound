@@ -27,7 +27,9 @@ env_value() {
 # when FILE switches it on (deploy/README.md, Leads on the server); otherwise it is disabled and
 # stopped, so a deploy never leaves one running that FILE does not ask for. The finding timers
 # need LEADHOUND_LEADS_TIMERS=on. The drafting, sending and reply timers also need live
-# outreach, so the server never drafts a shadow batch. Whether anything is sent is the
+# outreach, so the server never drafts a shadow batch. The Send now watcher goes with the send
+# timer: where the hourly send does not run, Send now does not either (the console refuses it
+# with the same sentence). Whether anything is sent is the
 # console's sending switch, in the database: LEADHOUND_LEADS_SEND is no longer read here
 # (send_switch_convert carried it over once). The mailboxes live in the database too (the
 # console's Mailboxes page): a run with no ready mailbox sends nothing and says so.
@@ -43,11 +45,11 @@ leads_timers() {
 	fi
 	[ "$(env_value "$1" LEADHOUND_OUTREACH)" = live ] || off="$off LEADHOUND_OUTREACH=live"
 	if [ -z "$off" ]; then
-		systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
-		echo "install: leads sending timers on: batch, send, sync"
+		systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer leadhound-leads-send-now.path
+		echo "install: leads sending timers on: batch, send, sync, and the Send now watcher"
 	else
-		systemctl disable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer
-		echo "install: leads sending timers off (batch, send, sync): $1 has no$off"
+		systemctl disable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer leadhound-leads-send-now.path
+		echo "install: leads sending timers off (batch, send, sync, and the Send now watcher): $1 has no$off"
 	fi
 }
 
@@ -186,7 +188,7 @@ done
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer
-# The Run now watchers, the mailbox check's and contact research's: the console asks through
+# The Run now watchers, the mailbox check's and contact research's (Send now's goes with the send timer, in leads_timers): the console asks through
 # these, and each starts only its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
 # a request file left from before cannot fire on a deploy.
 systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path

@@ -7,13 +7,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/linkedin"
+	"github.com/gremy/webbership-leadhound/internal/outreach"
 	"github.com/gremy/webbership-leadhound/internal/preview"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -704,4 +709,220 @@ func resultJob(j preview.Job, sums map[int64]store.JobSummary) console.ResultJob
 		r.Criteria = append(r.Criteria, console.JobCriterion{Name: c.Name, Verdict: c.Verdict, Keywords: c.Note})
 	}
 	return r
+}
+
+// Send now: the Controls page (or the Leads page's Outreach list) asks for one send that
+// skips the sending window, through the same request-file road as Run now: the console
+// writes <data>/run/leads-send-now and leadhound-leads-send-now.path starts the fixed
+// leadhound-leads-send-now.service (leads send --now --max 25). The console gains no
+// privilege, and the run takes the same database send lock as the hourly send.
+
+// sendNowAction is Send now's request file under runRequestDir, and its watcher's name.
+const sendNowAction = "leads-send-now"
+
+const (
+	// sendNowWait is how long a Send now request may wait for its unit to start: the
+	// watcher starts it at once, so past this (and the grace) it never will.
+	sendNowWait = 2 * time.Minute
+	// sendNowLookback is how far back the latest request and the send runs are read.
+	sendNowLookback = 24 * time.Hour
+)
+
+// sentNote reads a send run note's count of emails sent ("sent 2").
+var sentNote = regexp.MustCompile(`(?:^| · )sent (\d+)(?: ·|$)`)
+
+// sendNowView is the state of Send now from its latest request (nil: none in the lookback),
+// whether the send lock is held now (locked: a send runs, either kind, since the two share
+// one lock) and the send runs since the lookback, oldest first: a send running, the request
+// waiting for its unit or never started, or the request's own run (the first finished one
+// after it whose note says "send now") and what it did. busy is the refusal while a send runs
+// or a request waits.
+type sendNowView struct {
+	line    string
+	pending bool
+	busy    string
+}
+
+func sendNowState(requested *time.Time, locked bool, runs []store.Run, now time.Time) sendNowView {
+	var v sendNowView
+	var mine, open *store.Run
+	for i := range runs {
+		r := runs[i]
+		if r.FinishedAt == nil {
+			open = &runs[i]
+		}
+		if requested != nil && mine == nil && r.FinishedAt != nil && !r.StartedAt.Before(*requested) &&
+			leadbrief.NoteWords(r.Note)[noteSendNow] {
+			mine = &runs[i]
+		}
+	}
+	if locked {
+		since := ""
+		if open != nil {
+			since = " since " + hhmm(open.StartedAt, now)
+		}
+		v.line, v.pending = "A send is running"+since+".", true
+		v.busy = "A send is running" + since + "; press again once it has finished."
+		return v
+	}
+	if requested == nil {
+		return v
+	}
+	asked := hhmm(*requested, now)
+	switch {
+	case mine == nil && now.Sub(*requested) <= sendNowWait+runNowStuckGrace:
+		v.line, v.pending = "Send now asked at "+asked+", waiting to start.", true
+		v.busy = "Send now was already asked at " + asked + "."
+	case mine == nil && open != nil && !open.StartedAt.Before(*requested):
+		v.line = "A send that started at " + hhmm(open.StartedAt, now) + ", after Send now was asked, did not finish."
+	case mine == nil:
+		v.line = "Send now asked at " + asked + " and not started: another send may have been running, or its watcher on the server is not running. Press again to ask once more."
+	case leadbrief.NoteWords(mine.Note)[notePaused]:
+		v.line = "Send now at " + hhmm(mine.StartedAt, now) + " sent nothing: sending was off."
+	default:
+		v.line = "Send now at " + hhmm(mine.StartedAt, now) + " finished."
+		if m := sentNote.FindStringSubmatch(mine.Note); m != nil {
+			v.line = fmt.Sprintf("Send now at %s sent %s.", hhmm(mine.StartedAt, now), m[1])
+		}
+	}
+	return v
+}
+
+// sendLockHeld reports whether a send (the hourly one or Send now) holds the send lock now,
+// read from pg_locks, so nothing is taken from the send that may be starting: a run killed
+// without finishing its row holds nothing.
+func sendLockHeld(ctx context.Context, db store.DBTX) (bool, error) {
+	var held bool
+	if err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_locks
+		   WHERE locktype = 'advisory' AND granted AND objsubid = 1
+		     AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		     AND classid = ($1::bigint >> 32)::oid AND objid = ($1::bigint & 4294967295)::oid)`,
+		leadstore.SendLockKey).Scan(&held); err != nil {
+		return false, fmt.Errorf("console: send lock: %w", err)
+	}
+	return held, nil
+}
+
+// sendNowRead is the latest Send now request within the lookback (nil for none) and the
+// send runs since then, oldest first. lenient leaves out a request file that cannot be read,
+// with one logged line, so a page still shows; a press needs it read.
+func (b *backend) sendNowRead(ctx context.Context, now time.Time, lenient bool) (*time.Time, []store.Run, error) {
+	since := now.Add(-sendNowLookback)
+	req, err := readRunRequest(b.cfg.DataDir, sendNowAction)
+	switch {
+	case err != nil && lenient:
+		slog.Default().Warn("console send now: request file", "err", err)
+		req = nil
+	case err != nil:
+		return nil, nil, err
+	case req != nil && req.Before(since):
+		req = nil
+	}
+	rows, err := b.s.Pool().Query(ctx,
+		`SELECT id, command, source, started_at, finished_at, requests, failures, stop_reason, note
+		 FROM run WHERE command = $1 AND started_at >= $2 ORDER BY started_at, id`, commandLeadsSend, since)
+	if err != nil {
+		return nil, nil, fmt.Errorf("console: send runs: %w", err)
+	}
+	runs, err := pgx.CollectRows(rows, pgx.RowToStructByName[store.Run])
+	if err != nil {
+		return nil, nil, fmt.Errorf("console: send runs: %w", err)
+	}
+	return req, runs, nil
+}
+
+// withSendNow is w with Send now's state read in.
+func (b *backend) withSendNow(ctx context.Context, w console.SendingWhy) (console.SendingWhy, error) {
+	now := b.now()
+	req, runs, err := b.sendNowRead(ctx, now, true)
+	if err != nil {
+		return console.SendingWhy{}, err
+	}
+	locked, err := sendLockHeld(ctx, b.s.Pool())
+	if err != nil {
+		return console.SendingWhy{}, err
+	}
+	st := sendNowState(req, locked, runs, now.In(b.loc))
+	w.SendNowLine, w.SendNowPending = st.line, st.pending
+	return w, nil
+}
+
+// sendNowRefusal is why a Send now press must not go ahead over facts read once, in the
+// words the page shows, or "": shadow mode, the sending switch off, nothing due now (or every
+// due email held by its mailbox or its campaign), the send timer not enabled, and today's limit used on the mailboxes the
+// due emails use.
+func sendNowRefusal(f sendFacts) string {
+	if !f.live {
+		return "Shadow mode: LEADHOUND_OUTREACH is not live on the server, so Send now would send nothing for real."
+	}
+	if f.paused {
+		return "Sending is switched off. Switch it on first; Send now only skips the sending window."
+	}
+	if !f.sendTimer {
+		// Send now's watcher is armed with the send timer (install.sh's leads_timers): where
+		// the hourly send does not run, Send now does not either.
+		return whyNoTimerSentence
+	}
+	var due []leadstore.SendRow
+	for _, r := range f.rows {
+		if !r.DueAt.After(f.now) {
+			due = append(due, r)
+		}
+	}
+	if len(due) == 0 {
+		return "Nothing approved is due now. Send now never brings an email forward; it only skips the sending window."
+	}
+	used := map[int64]bool{}
+	for _, r := range due {
+		if m, ok := f.mailboxes[r.MailboxID]; ok && sendReady(m) && f.assigned[[2]int64{r.CampaignID, r.MailboxID}] {
+			used[r.MailboxID] = true
+		}
+	}
+	if len(used) == 0 {
+		return whyNot(f).Sentence
+	}
+	local := f.now.In(f.loc)
+	loads := f.loads()
+	room := outreach.RoomToday(f.cfg, loads, local)
+	left := 0
+	for id := range used {
+		left += room[id]
+	}
+	if left == 0 {
+		limit, _ := f.capLimit(used, loads, local)
+		return limit + "; Send now only skips the sending window."
+	}
+	return ""
+}
+
+// SendNow asks for one Send now run (console.ControlsBackend).
+func (b *backend) SendNow(ctx context.Context) (console.ControlOutcome, error) {
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
+	if err != nil {
+		return console.ControlOutcome{}, err
+	}
+	now := b.now()
+	req, runs, err := b.sendNowRead(ctx, now, false)
+	if err != nil {
+		return console.ControlOutcome{}, err
+	}
+	locked, err := sendLockHeld(ctx, b.s.Pool())
+	if err != nil {
+		return console.ControlOutcome{}, err
+	}
+	if st := sendNowState(req, locked, runs, now.In(b.loc)); st.busy != "" {
+		return console.ControlOutcome{}, refuse("%s", st.busy)
+	}
+	f, err := b.loadSendFacts(ctx, setup, readTimers(ctx, controlsGetenv), 0)
+	if err != nil {
+		return console.ControlOutcome{}, err
+	}
+	if why := sendNowRefusal(f); why != "" {
+		return console.ControlOutcome{}, refuse("%s", why)
+	}
+	if err := writeRunRequest(setup.dataDir, sendNowAction, now); err != nil {
+		return console.ControlOutcome{}, err
+	}
+	return console.ControlOutcome{Message: "Asked. The due emails go out now, within today's limits and spaced as usual."}, nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
@@ -103,6 +104,9 @@ type timerRead struct {
 	fromSystemd bool
 	note        string
 }
+
+// whyNoTimerSentence is reason 3's sentence, and Send now's refusal for the same cause.
+const whyNoTimerSentence = "The send timer isn't enabled on the server."
 
 // timersNotRead is the Controls line when systemd could not be asked.
 const timersNotRead = "The timers could not be read from the server, so each one shows what the server's settings make the last deploy do."
@@ -270,7 +274,7 @@ type sendWhy struct {
 
 // view is w as the console takes it.
 func (w sendWhy) view() console.SendingWhy {
-	v := console.SendingWhy{Blocked: w.Blocked, Sentence: w.Sentence}
+	v := console.SendingWhy{Blocked: w.Blocked, Sentence: w.Sentence, SendNow: w.Reason == whyHours || w.Reason == whyGoes}
 	if !w.Next.IsZero() {
 		next := w.Next
 		v.Next = &next
@@ -385,7 +389,7 @@ func whyNot(f sendFacts) sendWhy {
 	case f.paused:
 		return sendWhy{Reason: whyPaused, Blocked: true, Sentence: fmt.Sprintf("Sending is off since %s.", whenWords(f.pausedAt, loc))}
 	case !f.sendTimer:
-		return sendWhy{Reason: whyNoTimer, Blocked: true, Sentence: "The send timer isn't enabled on the server."}
+		return sendWhy{Reason: whyNoTimer, Blocked: true, Sentence: whyNoTimerSentence}
 	case len(f.rows) == 0 && f.mailboxScoped:
 		return sendWhy{Reason: whyNothing, Blocked: true, Sentence: "No approved email uses this mailbox."}
 	case len(f.rows) == 0:
@@ -447,7 +451,7 @@ func whyNot(f sendFacts) sendWhy {
 	}
 
 	// 7: today's warm-up limit, over the mailboxes the due emails use.
-	bh := f.cfg.Schedule.BusinessHours
+	bh := f.cfg.SendingWindow()
 	local := f.now.In(loc)
 	loads := f.loads()
 	room := outreach.RoomToday(f.cfg, loads, local)
@@ -473,13 +477,13 @@ func whyNot(f sendFacts) sendWhy {
 	if len(plan) == 0 {
 		var next time.Time
 		for _, r := range sendable {
-			if s := outreach.NextSlot(f.rowLoc(r), bh, f.now); !s.IsZero() && (next.IsZero() || s.Before(next)) {
+			if s := nextSendRun(f.rowLoc(r), bh, f.now); !s.IsZero() && (next.IsZero() || s.Before(next)) {
 				next = s
 			}
 		}
 		if next.IsZero() {
 			return sendWhy{Reason: whyHours, Blocked: true,
-				Sentence: fmt.Sprintf("%s for the next sending window.", emailsWait(len(sendable)))}
+				Sentence: fmt.Sprintf("%s: the hourly send never runs inside the sending window, so only Send now reaches them.", emailsWait(len(sendable)))}
 		}
 		return sendWhy{Reason: whyHours, Blocked: true, Next: next,
 			Sentence: fmt.Sprintf("%s out in the next sending window, %s.", emailsGo(len(sendable)), whenWords(next, loc))}
@@ -512,19 +516,31 @@ func mostOf(counts map[int64]int) (int64, int) {
 // counts them); else the warm-up limit of the mailboxes used, today's sends of their caps.
 func (f sendFacts) capWhy(used map[int64]bool, loads []outreach.MailboxLoad, local, next time.Time) sendWhy {
 	w := sendWhy{Reason: whyCap, Blocked: true, Next: next}
+	limit, started := f.capLimit(used, loads, local)
+	if !started {
+		w.Sentence = limit + "."
+		return w
+	}
 	end := "."
 	if !next.IsZero() {
 		end = "; the next send is " + whenWords(next, f.loc) + "."
 	}
+	w.Sentence = limit + end
+	return w
+}
+
+// capLimit is reason 7's limit in words, with no full stop: the warm-up not started (started
+// false: "The warm-up starts on Mon 16 Nov"), the warm-up limit of the mailboxes used ("Today's
+// warm-up limit is used (4 of 4)"), a sending domain's daily limit, or "Today's sending limit
+// is used". Send now's refusal says the same limit.
+func (f sendFacts) capLimit(used map[int64]bool, loads []outreach.MailboxLoad, local time.Time) (limit string, started bool) {
 	date := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC) }
 	if sd := f.cfg.Caps.StartDate; !sd.IsFirstSend() {
 		switch {
 		case sd.IsZero():
-			w.Sentence = "The warm-up has no start date, so nothing is sent."
-			return w
+			return "The warm-up has no start date, so nothing is sent", false
 		case date(local).Before(date(sd.Time)):
-			w.Sentence = "The warm-up starts on " + sd.Format("Mon 2 Jan") + "."
-			return w
+			return "The warm-up starts on " + sd.Format("Mon 2 Jan"), false
 		}
 	}
 	ownSent, ownCap := 0, 0
@@ -543,25 +559,22 @@ func (f sendFacts) capWhy(used map[int64]bool, loads []outreach.MailboxLoad, loc
 		}
 	}
 	if ownSent >= ownCap {
-		w.Sentence = fmt.Sprintf("Today's warm-up limit is used (%d of %d)%s", ownSent, ownCap, end)
-		return w
+		return fmt.Sprintf("Today's warm-up limit is used (%d of %d)", ownSent, ownCap), true
 	}
 	slices.Sort(domains)
 	for _, d := range domains {
 		if domainSent[d] >= outreach.DomainCap(f.cfg) {
-			w.Sentence = fmt.Sprintf("Today's sending limit for %s is used (%d of %d)%s", d, domainSent[d], outreach.DomainCap(f.cfg), end)
-			return w
+			return fmt.Sprintf("Today's sending limit for %s is used (%d of %d)", d, domainSent[d], outreach.DomainCap(f.cfg)), true
 		}
 	}
-	w.Sentence = "Today's sending limit is used" + end
-	return w
+	return "Today's sending limit is used", true
 }
 
 // nextRoom is the first moment after today when one of the used mailboxes has room again and
-// one of rows is inside its sending window: the first business day whose caps give room, at
-// the earliest window start of rows' recipients. Zero when none falls within the look-ahead.
+// one of rows is inside its sending window at an hourly send run: the first business day whose
+// caps give room, at the earliest such run for rows' recipients. Zero when none falls within the look-ahead.
 func (f sendFacts) nextRoom(rows []leadstore.SendRow, used map[int64]bool, loads []outreach.MailboxLoad, local time.Time) time.Time {
-	bh := f.cfg.Schedule.BusinessHours
+	bh := f.cfg.SendingWindow()
 	fresh := make([]outreach.MailboxLoad, 0, len(loads))
 	for _, ml := range loads {
 		ml.SentToday = 0
@@ -579,7 +592,7 @@ func (f sendFacts) nextRoom(rows []leadstore.SendRow, used map[int64]bool, loads
 		}
 		var next time.Time
 		for _, r := range rows {
-			s := outreach.NextSlot(f.rowLoc(r), bh, day)
+			s := nextSendRun(f.rowLoc(r), bh, day)
 			if !s.IsZero() && (next.IsZero() || s.Before(next)) {
 				next = s
 			}
@@ -587,6 +600,45 @@ func (f sendFacts) nextRoom(rows []leadstore.SendRow, used map[int64]bool, loads
 		// A slot past this day's end belongs to a later day whose room is checked there.
 		if !next.IsZero() && next.Before(day.AddDate(0, 0, 1)) {
 			return next
+		}
+	}
+	return time.Time{}
+}
+
+// The hourly send's schedule, as deploy/leadhound-leads-send.timer has it (OnCalendar=
+// Mon..Fri *-*-* 10..19:00:00 Europe/Bucharest; TestSendTimerSchedule holds the two together).
+// A time the sending window allows but no run reaches is never promised.
+const (
+	sendTimerZone  = "Europe/Bucharest"
+	sendTimerFirst = 10 // the first run's hour
+	sendTimerLast  = 19 // the last run's hour
+)
+
+// sendTimerDays are the days the hourly send runs.
+var sendTimerDays = []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday}
+
+// sendTimerSchedule is the Controls line on when the hourly send runs.
+const sendTimerSchedule = "The hourly send runs from 10:00 to 19:00 Bucharest time, Monday to Friday; a time the window allows outside those runs is reached only by Send now."
+
+// nextSendRun is the first hourly send run at or after after (its scheduled minute, before the
+// timer's random delay of up to 10 minutes) at which a recipient in loc is inside the sending
+// window bh; zero when none falls in the next two weeks.
+func nextSendRun(loc *time.Location, bh leadconfig.BusinessHours, after time.Time) time.Time {
+	tz, err := time.LoadLocation(sendTimerZone)
+	if err != nil {
+		return time.Time{}
+	}
+	a := after.In(tz)
+	for d := 0; d < 15; d++ {
+		day := time.Date(a.Year(), a.Month(), a.Day()+d, 12, 0, 0, 0, tz)
+		if !slices.Contains(sendTimerDays, day.Weekday()) {
+			continue
+		}
+		for h := sendTimerFirst; h <= sendTimerLast; h++ {
+			run := time.Date(day.Year(), day.Month(), day.Day(), h, 0, 0, 0, tz)
+			if !run.Before(after) && outreach.InBusinessHours(loc, bh, run) {
+				return run
+			}
 		}
 	}
 	return time.Time{}
@@ -688,7 +740,7 @@ func (b *backend) SendingWhy(ctx context.Context) (console.SendingWhy, error) {
 	if err != nil {
 		return console.SendingWhy{}, err
 	}
-	return w.view(), nil
+	return b.withSendNow(ctx, w.view())
 }
 
 // Controls is the Controls page, read live: the sending sentence, the sending switch and each
@@ -705,9 +757,16 @@ func (b *backend) Controls(ctx context.Context) (console.ControlsPage, error) {
 	if err != nil {
 		return console.ControlsPage{}, err
 	}
-	p := console.ControlsPage{Why: whyNot(f).view(), TimersRead: timers.fromSystemd, TimersNote: timers.note,
+	why, err := b.withSendNow(ctx, whyNot(f).view())
+	if err != nil {
+		return console.ControlsPage{}, err
+	}
+	bh := setup.leads.SendingWindow()
+	p := console.ControlsPage{Why: why, TimersRead: timers.fromSystemd, TimersNote: timers.note,
 		Guards: serverGuards(controlsGetenv), GuardsHow: guardsHow,
-		RatingOn: setup.leads.Relevance.RatingOn(), RatingPath: console.RatingSettingsPath}
+		RatingOn: setup.leads.Relevance.RatingOn(), RatingPath: console.RatingSettingsPath, SendSchedule: sendTimerSchedule,
+		Window: console.SendingWindowView{Start: bh.Start, End: bh.End, Days: bh.Days, AllDays: leadconfig.Weekdays(),
+			Source: settingsState{setup: setup}.knob("schedule.business_hours")}}
 	var commands []string
 	for _, r := range append([]controlRow{controlSending}, controlJobs...) {
 		commands = append(commands, r.commands...)
@@ -832,7 +891,7 @@ func runView(r store.Run, now time.Time) *console.ControlRun {
 		v.Result = "Switched off"
 	case r.StopReason != "":
 		v.Result, v.Failed = cmp.Or(stopWords[r.StopReason], "Stopped"), true
-	case r.Note == notePaused:
+	case r.Note == notePaused || leadbrief.NoteWords(r.Note)[notePaused]:
 		v.Result = "Sending was off"
 	case r.Note == noReoonKeyNote:
 		v.Result, v.Failed = "No Reoon key", true
@@ -840,6 +899,9 @@ func runView(r store.Run, now time.Time) *console.ControlRun {
 		v.Result, v.Failed = "Finished with "+plural(r.Failures, "failure", "failures"), true
 	default:
 		v.Result = "Finished"
+	}
+	if r.FinishedAt != nil && leadbrief.NoteWords(r.Note)[noteSendNow] {
+		v.Result += " (Send now)"
 	}
 	return v
 }

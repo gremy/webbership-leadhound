@@ -139,17 +139,19 @@ func TestWhyNotSendingStore(t *testing.T) {
 			t.Errorf("%q", got)
 		}
 	})
+	// The window opens at 09:30 London, but the first hourly send inside it is 12:00 Bucharest,
+	// 10:00 London: the sentence names the run, never a time no run reaches.
 	t.Run("warm-up limit used", func(t *testing.T) {
 		w, b := controlsWorld(t, 1)
 		w.mustRun(t, "leads", "send")
-		if got := sentence(t, b); got != "Today's warm-up limit is used (1 of 1); the next send is Wed 28 Oct 09:30." {
+		if got := sentence(t, b); got != "Today's warm-up limit is used (1 of 1); the next send is Wed 28 Oct 10:00." {
 			t.Errorf("%q", got)
 		}
 	})
 	t.Run("outside the sending window", func(t *testing.T) {
 		w, b := controlsWorld(t, 10)
 		w.clock.set(time.Date(2026, 10, 27, 17, 0, 0, 0, time.UTC))
-		if got := sentence(t, b); got != "2 approved emails go out in the next sending window, Wed 28 Oct 09:30." {
+		if got := sentence(t, b); got != "2 approved emails go out in the next sending window, Wed 28 Oct 10:00." {
 			t.Errorf("%q", got)
 		}
 	})

@@ -52,16 +52,26 @@ const (
 // Held messages claim no domain. The input slice is not changed.
 func Plan(due []PlanItem, sentToday, capToday int, now time.Time, bh leadconfig.BusinessHours) (send []PlanItem, held map[HoldReason]int) {
 	count := sentToday
-	return planWalk(due, now, bh,
+	return planWalk(due, now, windowOpen(bh, now),
 		func(PlanItem) bool { return count < capToday },
 		func(PlanItem) { count++ })
 }
 
-// planWalk is Plan's walk: it orders due as Plan says and applies the not-due, hours and
-// one-per-domain rules, then asks room whether a non-selftest message still fits; take is
-// called for every message picked (selftests included), and only for those, so a held
-// message never uses up a place. The input slice is not changed.
-func planWalk(due []PlanItem, now time.Time, bh leadconfig.BusinessHours, room func(PlanItem) bool, take func(PlanItem)) (send []PlanItem, held map[HoldReason]int) {
+// windowOpen is the hours rule of Plan and PlanMailboxes: whether a recipient in loc is inside
+// the business window bh at now.
+func windowOpen(bh leadconfig.BusinessHours, now time.Time) func(*time.Location) bool {
+	return func(loc *time.Location) bool { return InBusinessHours(loc, bh, now) }
+}
+
+// anyHour is the hours rule of a run that skips the sending window (PlanMailboxesAnyHour):
+// every recipient is open.
+func anyHour(*time.Location) bool { return true }
+
+// planWalk is Plan's walk: it orders due as Plan says and applies the not-due, hours (open,
+// per recipient zone) and one-per-domain rules, then asks room whether a non-selftest message
+// still fits; take is called for every message picked (selftests included), and only for
+// those, so a held message never uses up a place. The input slice is not changed.
+func planWalk(due []PlanItem, now time.Time, open func(*time.Location) bool, room func(PlanItem) bool, take func(PlanItem)) (send []PlanItem, held map[HoldReason]int) {
 	order := slices.Clone(due)
 	slices.SortStableFunc(order, planCompare)
 	held = map[HoldReason]int{}
@@ -76,7 +86,7 @@ func planWalk(due []PlanItem, now time.Time, bh leadconfig.BusinessHours, room f
 		switch {
 		case it.DueAt.IsZero() || it.DueAt.After(now):
 			held[HoldNotDue]++
-		case !InBusinessHours(loc, bh, now):
+		case !open(loc):
 			held[HoldHours]++
 		case domains[domain]:
 			held[HoldDomain]++

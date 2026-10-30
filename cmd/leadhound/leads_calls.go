@@ -227,7 +227,7 @@ func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 		}
 		in = &leadstore.ConsentInput{Address: addr, Wording: callConsentWording}
 	}
-	loc, bh := cfg.Policy(c.Country).Location(), cfg.Schedule.BusinessHours
+	loc, bh := cfg.Policy(c.Country).Location(), cfg.SendingWindow()
 	cal := campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
 	rec, err := lq.RecordCallOutcome(ctx, leadstore.DefaultAccountID, id, outcome, strings.TrimSpace(note), in, leadstore.ActorGremy, now, cal)
 	if words := callRefusalWords(err); words != "" {
@@ -257,7 +257,7 @@ func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 // country's zone and the business hours), as send and recordCall build it.
 func leadCalendarOf(cfg leadconfig.Config) leadstore.LeadCalendar {
 	return func(_, country string) campaign.Calendar {
-		loc, bh := cfg.Policy(country).Location(), cfg.Schedule.BusinessHours
+		loc, bh := cfg.Policy(country).Location(), cfg.SendingWindow()
 		return campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
 	}
 }

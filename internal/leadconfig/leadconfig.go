@@ -340,12 +340,27 @@ type Schedule struct {
 	SpacingMinutes       []int         `yaml:"spacing_minutes"`        // [min, max] between two sends
 }
 
-// BusinessHours is the recipient-local sending window.
+// BusinessHours is the recipient-local sending window. Read the window in force with
+// Config.SendingWindow, never the field: the console may save one over the file's.
 type BusinessHours struct {
-	Start string   `yaml:"start"` // HH:MM
-	End   string   `yaml:"end"`   // HH:MM, after Start
-	Days  []string `yaml:"days"`  // Mon … Sun
+	Start string   `yaml:"start" json:"start"` // HH:MM
+	End   string   `yaml:"end" json:"end"`     // HH:MM, after Start
+	Days  []string `yaml:"days" json:"days"`   // Mon … Sun
 }
+
+// SendingWindow is the sending window in force: the window the console saved over leads.yaml
+// when the config is the effective one (Overrides.Apply puts it in place), else the file's.
+// It is the one reader of schedule.business_hours outside the config's own loading, cloning
+// and checks (a sweep test in cmd/leadhound holds every other reader to it). The result
+// shares no slice with cfg.
+func (cfg Config) SendingWindow() BusinessHours {
+	bh := cfg.Schedule.BusinessHours
+	bh.Days = slices.Clone(bh.Days)
+	return bh
+}
+
+// Weekdays are the days a sending window may name, Monday first.
+func Weekdays() []string { return slices.Clone(weekdays) }
 
 // Caps limit sending.
 type Caps struct {

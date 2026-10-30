@@ -364,3 +364,35 @@ func TestPlanMailboxes(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanMailboxesAnyHour (Send now): with every recipient outside the window, PlanMailboxes
+// holds them all for hours and PlanMailboxesAnyHour holds none for hours, yet keeps the
+// not-due, one-per-domain and room rules exactly as PlanMailboxes applies them in hours.
+func TestPlanMailboxesAnyHour(t *testing.T) {
+	tokyo := scheduleZone(t, "Asia/Tokyo") // planNow is night in Tokyo
+	bh := scheduleHours()
+	notYet := planItem(9, 1, 9, 0, "later.example", tokyo)
+	notYet.DueAt = planNow.Add(time.Minute)
+	due := []PlanItem{
+		planItem(1, 1, 10, 0, "a.example", tokyo),
+		planItem(2, 1, 11, 0, "mail.a.example", tokyo),
+		planItem(3, 1, 12, 0, "b.example", tokyo),
+		planItem(4, 1, 13, 0, "c.example", tokyo),
+		notYet,
+	}
+	for i := range due {
+		due[i].MailboxID = 4
+	}
+	room := map[int64]int{4: 1}
+	if send, held := PlanMailboxes(due, room, planNow, bh); len(send) != 0 || held[HoldHours] != 4 {
+		t.Fatalf("in the window's rules: send %v held %v, want all held for hours", send, held)
+	}
+	send, held := PlanMailboxesAnyHour(due, room, planNow)
+	if len(send) != 1 || send[0].MessageID != 1 {
+		t.Errorf("send %v, want message 1 alone (room 1)", send)
+	}
+	want := map[HoldReason]int{HoldNotDue: 1, HoldDomain: 1, HoldCap: 2}
+	if !maps.Equal(held, want) {
+		t.Errorf("held %v, want %v", held, want)
+	}
+}

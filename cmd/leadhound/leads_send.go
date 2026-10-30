@@ -62,6 +62,9 @@ const (
 	noteNoMailbox     = "no mailbox"
 	noteMailboxPaused = "mailbox paused"
 	notePolicyBlock   = "policy-block"
+	// noteSendNow marks a run started by Send now (leads send --now), which skipped the
+	// sending window, so Controls and the journal tell it from a timer run.
+	noteSendNow = "send now"
 )
 
 // holdMailbox holds a due message whose mailbox may not send in this run: paused, not
@@ -90,6 +93,11 @@ type sendOptions struct {
 	selftestTo string
 	// selftestMailbox is the selftest's mailbox, its id or address; "" with only one.
 	selftestMailbox string
+	// now skips the sending window (hours and days) for every message of this run, and
+	// nothing else: the sending switch, shadow mode, the reply sync first, the warm-up and
+	// domain caps, the spacing, mailbox readiness and campaign assignment, suppressions, max
+	// and every due time stay as they are (Send now).
+	now bool
 }
 
 // sendReport is what one send run did; its note is the run row's note.
@@ -217,6 +225,7 @@ func runLeadsSend(ctx context.Context, args []string) error {
 	}
 	fs := flag.NewFlagSet("leads send", flag.ContinueOnError)
 	maxN := fs.Int("max", 0, "send at most this many messages")
+	now := fs.Bool("now", false, "send the due emails now, outside the sending window (this run only; every limit still applies)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -224,10 +233,10 @@ func runLeadsSend(ctx context.Context, args []string) error {
 	if len(pos) != 0 || *maxN < 0 {
 		return usageError("%s", sendUsage)
 	}
-	return leadsSendRun(ctx, stdout, sendOptions{max: *maxN})
+	return leadsSendRun(ctx, stdout, sendOptions{max: *maxN, now: *now})
 }
 
-const sendUsage = "usage: leadhound leads send [--max N] | leads send pause [--reason TEXT] | leads send resume"
+const sendUsage = "usage: leadhound leads send [--max N] [--now] | leads send pause [--reason TEXT] | leads send resume"
 
 // runLeadsSendPause is `leads send pause [--reason TEXT]` and `leads send resume`: the
 // operator's switch that every send run obeys before each message. Setting it to what it
@@ -385,6 +394,11 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 	}
 	defer s.Close()
 	lq := leadstore.NewQueries(s.Pool())
+	// The console's saved settings over leads.yaml: the sending window saved on Controls is
+	// the one this run keeps (leadconfig.Config.SendingWindow).
+	if setup, err = applyLeadSettings(ctx, lq, setup); err != nil {
+		return err
+	}
 	var selftestMB int64
 	if opts.selftestTo != "" {
 		if selftestMB, err = selftestMailbox(ctx, lq, opts.selftestMailbox, startOfDay(leadsNow(), loc)); err != nil {
@@ -597,9 +611,16 @@ func (r *sendRun) gateDNS(ctx context.Context, now time.Time) error {
 func (r *sendRun) runOrder(ctx context.Context) error {
 	now := leadsNow()
 
+	// Send now's mark first, so a run the pause stops still says it was Send now.
+	if r.opts.now {
+		r.rep.note(noteSendNow)
+	}
 	// 0. The operator's pause, before anything else (and before every message, sendOne).
 	if err := r.checkPaused(ctx, r.lq); err != nil {
 		return err
+	}
+	if r.opts.now {
+		r.printf("Send now: this run skips the sending window only; the warm-up and domain limits, the spacing, paused and unassigned mailboxes, suppressions and due times still apply.\n")
 	}
 
 	// 1. The mailbox key: live only; shadow never opens a password.
@@ -738,14 +759,19 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 		r.rep.cancelled += int64(n)
 	}
-	bh := r.setup.leads.Schedule.BusinessHours
+	bh := r.setup.leads.SendingWindow()
 	if only != 0 {
 		// The operator's own address: no cap (it still counts) and no business hours.
 		plan = items
 		defer r.cancelUnsentSelftest(ctx, only)
 	} else {
 		var held map[outreach.HoldReason]int
-		plan, held = outreach.PlanMailboxes(items, outreach.RoomToday(r.setup.leads, r.loads(), now.In(r.loc)), now, bh)
+		room := outreach.RoomToday(r.setup.leads, r.loads(), now.In(r.loc))
+		if r.opts.now {
+			plan, held = outreach.PlanMailboxesAnyHour(items, room, now)
+		} else {
+			plan, held = outreach.PlanMailboxes(items, room, now, bh)
+		}
 		for k, v := range held {
 			if k != outreach.HoldNotDue {
 				r.rep.held[k] += v
@@ -776,7 +802,7 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 		// Business hours at the moment of sending (RA8): the spacing may have carried this
 		// recipient's zone past its window; other zones may still be open.
-		if !it.Selftest && !outreach.InBusinessHours(it.Loc, bh, leadsNow()) {
+		if !it.Selftest && !r.opts.now && !outreach.InBusinessHours(it.Loc, bh, leadsNow()) {
 			r.rep.held[outreach.HoldHours]++
 			continue
 		}
@@ -790,7 +816,7 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 			copy(minutes[:], sp)
 			d := outreach.Spacing(leadsMail.rand, minutes)
 			// Nothing left would be in its hours after the pause: stop now.
-			if !anyInHours(plan[i+1:], bh, leadsNow().Add(d)) {
+			if !r.opts.now && !anyInHours(plan[i+1:], bh, leadsNow().Add(d)) {
 				r.rep.held[outreach.HoldHours] += len(plan) - i - 1
 				return nil
 			}
@@ -1216,7 +1242,7 @@ func (r *sendRun) followUp(ctx context.Context, row leadstore.SendRow, sentAt ti
 // leadCalendar is the business-day calendar of a lead of kind in country, as scheduleNext
 // builds it.
 func (r *sendRun) leadCalendar(kind, country string) campaign.Calendar {
-	loc, bh := r.rowLoc(kind, country), r.setup.leads.Schedule.BusinessHours
+	loc, bh := r.rowLoc(kind, country), r.setup.leads.SendingWindow()
 	return campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
 }
 
@@ -1239,7 +1265,7 @@ func (r *sendRun) legacyNext(ctx context.Context, tq leadstore.Queries, row lead
 	if row.Step >= len(days) || row.Step >= 2 {
 		return nil
 	}
-	due := outreach.FollowupDue(sentAt, days[row.Step], r.rowLoc(row.LeadKind, row.OrgCountry), r.setup.leads.Schedule.BusinessHours)
+	due := outreach.FollowupDue(sentAt, days[row.Step], r.rowLoc(row.LeadKind, row.OrgCountry), r.setup.leads.SendingWindow())
 	if due.IsZero() {
 		return nil
 	}

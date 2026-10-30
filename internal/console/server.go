@@ -78,6 +78,9 @@ var routes = []route{
 	{"POST /theme", "/theme", true, (*server).setTheme},
 	{"GET /{$}", "/", false, (*server).dashboard},
 	{"GET /controls", "/controls", false, (*server).controls},
+	// Both literal /controls/... POSTs are more specific than {job}, so they win.
+	{"POST /controls/send-now", "/controls/send-now", false, (*server).sendNow},
+	{"POST /controls/window", "/controls/window", false, (*server).saveWindow},
 	{"POST /controls/{job}", "/controls/batch", false, (*server).controlAct},
 	{"GET /jobs", "/jobs", false, (*server).jobs},
 	{"POST /jobs/track", "/jobs/track", false, (*server).track},
@@ -276,12 +279,12 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 	return s.headers(cop.Handler(capBody(mux)))
 }
 
-// parseTemplates parses the layout, the job row, the Run now card, the mailbox check card
-// and the Leads sub-nav once, then each page over a copy of them.
+// parseTemplates parses the layout, the job row, the Run now card, the mailbox check card,
+// the Leads sub-nav and the Send now button once, then each page over a copy of them.
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
-		"templates/leads_tabs.html"))
+		"templates/leads_tabs.html", "templates/send_now.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
@@ -352,15 +355,28 @@ func (s *server) funcs() template.FuncMap {
 		"mailboxState":     mailboxState,
 		"maxMailbox":       func() int { return maxMailbox },
 		"maxControlReason": func() int { return ControlReasonMax },
-		"controlNote":      func(job string) string { return controlNotes[job] },
-		"leadsTab":         func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
-		"webURL":           webURL,
-		"stepWhen":         stepWhen,
-		"writerWords":      writerWords,
-		"shortSHA":         shortSHA,
-		"telHref":          telHref,
-		"researchLine":     func(r LeadResearch) string { return researchLine(r, s.opt.Location) },
-		"noticeLines":      noticeLines,
+		"sendNowWords":     func() string { return SendNowWords },
+		"sendNowIn": func(why any, back string) sendNowView {
+			v := sendNowView{Back: back}
+			switch w := why.(type) {
+			case SendingWhy:
+				v.Why = w
+			case *SendingWhy:
+				if w != nil {
+					v.Why = *w
+				}
+			}
+			return v
+		},
+		"controlNote":  func(job string) string { return controlNotes[job] },
+		"leadsTab":     func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
+		"webURL":       webURL,
+		"stepWhen":     stepWhen,
+		"writerWords":  writerWords,
+		"shortSHA":     shortSHA,
+		"telHref":      telHref,
+		"researchLine": func(r LeadResearch) string { return researchLine(r, s.opt.Location) },
+		"noticeLines":  noticeLines,
 		"researchNext": func(t *time.Time) string {
 			if t == nil {
 				return ""

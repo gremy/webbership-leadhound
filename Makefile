@@ -268,6 +268,8 @@ deploy: $(if $(GATE_OK),gate-skip,gate) build-linux
 ## (nothing else); a file no longer in the private leads-templates/ or campaigns/ tree is removed. Without a
 ## private campaigns/, the server's campaigns are left as they are. The campaigns check reads no database (the draft
 ## gate lives on the server), so a writer: claude campaign is refused here. Register the campaigns after it.
+## Before anything is installed, the server's own binary checks the staged files (score --check-config and
+## leads check-config, as the leadhound user), so a key the live binary doesn't know stops the copy there.
 deploy-data:
 	@for f in leadhound.yaml ats-boards.yaml leads.yaml agencies.yaml leads-templates; do \
 		test -e "$(LEADHOUND_PRIVATE_DIR)/$$f" || { echo "deploy-data: $$f not found in LEADHOUND_PRIVATE_DIR"; exit 1; }; \
@@ -285,6 +287,13 @@ deploy-data:
 		'$(LEADHOUND_PRIVATE_DIR)/leads.yaml' '$(LEADHOUND_PRIVATE_DIR)/agencies.yaml' $(HOST):$$stage/ && \
 	$(SCP) -r '$(LEADHOUND_PRIVATE_DIR)/leads-templates' $(HOST):$$stage/ && \
 	if test -d '$(LEADHOUND_PRIVATE_DIR)/campaigns'; then $(SCP) -r '$(LEADHOUND_PRIVATE_DIR)/campaigns' $(HOST):$$stage/; fi && \
+	{ $(SSH) -t $(HOST) "sudo sh -c 'set -e; chgrp -R leadhound $$stage; chmod -R g+rX $$stage; \
+		systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound -p WorkingDirectory=/opt/leadhound \
+			/usr/bin/env LEADHOUND_DATA_DIR=$$stage /opt/leadhound/bin/leadhound score --check-config; \
+		systemd-run --quiet --wait --pipe --collect --uid=leadhound --gid=leadhound -p WorkingDirectory=/opt/leadhound \
+			/usr/bin/env LEADHOUND_DATA_DIR=$$stage /opt/leadhound/bin/leadhound leads check-config'" || \
+		{ echo "deploy-data: the server check failed or refused the staged files (output above); nothing was installed"; \
+		$(SSH) $(HOST) "sudo rm -rf $$stage"; exit 1; }; } && \
 	$(SSH) -t $(HOST) "sudo sh -c 'set -e; cd $$stage; \
 		install -o root -g leadhound -m 0640 leadhound.yaml ats-boards.yaml leads.yaml agencies.yaml /opt/leadhound/data/; \
 		for t in leads-templates campaigns; do \
