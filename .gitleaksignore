@@ -1,0 +1,3 @@
+# Findings accepted after reading them; one fingerprint per line, each with its reason.
+# rk-test-SECRET-123: a fake Reoon key the client tests send to their own httptest server.
+bf62d7e121b4788fdc8f9a747bd930192a43fb8a:internal/verify/reoon_test.go:generic-api-key:19
