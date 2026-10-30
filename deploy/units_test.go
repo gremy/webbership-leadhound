@@ -149,6 +149,8 @@ var schedule = map[string]struct {
 		true,
 		[]string{
 			"-/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build",
+			// A Reoon outage makes a smaller batch, never no unit run.
+			"-/usr/bin/timeout --kill-after=5m 50m /opt/leadhound/bin/leadhound leads verify --max 60",
 			"/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads batch new",
 		},
 	},
@@ -1644,10 +1646,16 @@ var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-sync", "l
 // key, as a systemd credential. The drafts unit joins them when it is added.
 var claudeWorkers = []string{"leadhound-leads-batch", "leadhound-leads-research"}
 
+// reoonWorkers are the only services that call Reoon (leads verify), so the only ones handed
+// the Reoon key, with an empty default for a server without it (SetCredential=).
+var reoonWorkers = []string{"leadhound-leads-batch"}
+
 const (
-	mailboxCredential   = "mailbox-key:/etc/leadhound/mailbox.key"     //nolint:gosec // G101: a systemd credential name and path, not a credential
-	anthropicCredential = "anthropic-key:/etc/leadhound/anthropic.key" //nolint:gosec // G101: a systemd credential name and path, not a credential
-	noCredentials       = "-/run/credentials"                          //nolint:gosec // G101: a path the units hide, not a credential
+	reoonCredential        = "reoon.key:/etc/leadhound/reoon.key"         //nolint:gosec // G101: a systemd credential name and path, not a credential
+	reoonDefaultCredential = "reoon.key:"                                 //nolint:gosec // G101: an empty default credential, not a credential
+	mailboxCredential      = "mailbox-key:/etc/leadhound/mailbox.key"     //nolint:gosec // G101: a systemd credential name and path, not a credential
+	anthropicCredential    = "anthropic-key:/etc/leadhound/anthropic.key" //nolint:gosec // G101: a systemd credential name and path, not a credential
+	noCredentials          = "-/run/credentials"                          //nolint:gosec // G101: a path the units hide, not a credential
 )
 
 // wantCredentials is the exact LoadCredential= list the service name gets, in file order.
@@ -1659,7 +1667,19 @@ func wantCredentials(name string) []string {
 	if slices.Contains(claudeWorkers, name) {
 		want = append(want, anthropicCredential)
 	}
+	if slices.Contains(reoonWorkers, name) {
+		want = append(want, reoonCredential)
+	}
 	return want
+}
+
+// wantSetCredentials is the exact SetCredential= list the service name gets: the Reoon key's
+// empty default for the Reoon workers, nothing for any other.
+func wantSetCredentials(name string) []string {
+	if slices.Contains(reoonWorkers, name) {
+		return []string{reoonDefaultCredential}
+	}
+	return nil
 }
 
 // TestMailboxKeyOnlyForWorkers: the send, the sync and the mailbox check have the mailbox
@@ -1688,9 +1708,13 @@ func TestMailboxKeyOnlyForWorkers(t *testing.T) {
 				if !credKey.MatchString(key) {
 					continue
 				}
+				if section == "Service" && key == "SetCredential" && filepath.Ext(path) == ".service" &&
+					len(wantSetCredentials(name)) > 0 && slices.Equal(vals, wantSetCredentials(name)) {
+					continue
+				}
 				if len(want) == 0 || section != "Service" || key != "LoadCredential" || !slices.Equal(vals, want) {
-					t.Errorf("%s: [%s] %s = %q; want exactly LoadCredential=%q (mailbox key only for %q, Anthropic key only for %q)",
-						path, section, key, vals, want, mailboxWorkers, claudeWorkers)
+					t.Errorf("%s: [%s] %s = %q; want exactly LoadCredential=%q (mailbox key only for %q, Anthropic key only for %q, Reoon key only for %q)",
+						path, section, key, vals, want, mailboxWorkers, claudeWorkers, reoonWorkers)
 				}
 			}
 		}
@@ -1705,6 +1729,11 @@ func TestMailboxKeyOnlyForWorkers(t *testing.T) {
 			t.Errorf("%s: InaccessiblePaths = %q hides its own credential", path, inaccessible)
 		case len(want) == 0 && !slices.Contains(inaccessible, noCredentials):
 			t.Errorf("%s: InaccessiblePaths = %q, want it to include %s", path, inaccessible, noCredentials)
+		}
+	}
+	for _, name := range slices.Concat(reoonWorkers) {
+		if u := readUnit(t, name+".service"); !slices.Equal(u["Service"]["SetCredential"], wantSetCredentials(name)) {
+			t.Errorf("%s: SetCredential = %q, want %q", name, u["Service"]["SetCredential"], wantSetCredentials(name))
 		}
 	}
 	for _, name := range slices.Concat(mailboxWorkers, claudeWorkers) {
@@ -2071,23 +2100,35 @@ esac
 	}
 }
 
-// TestInstallAnthropicKey: install.sh runs anthropic_key before the units are installed; the
-// function never creates, reads or prints the key, makes an existing one root:root 0600 again,
-// and on a missing one says the Claude units cannot start without failing the deploy.
+// TestInstallAnthropicKey: install.sh runs anthropic_key, and reoon_key for the Reoon key,
+// before the units are installed; each function never creates, reads or prints the key, makes
+// an existing one root:root 0600 again, and on a missing one says what then cannot run without
+// failing the deploy.
 func TestInstallAnthropicKey(t *testing.T) {
+	for _, k := range []struct{ fn, path, missing string }{
+		{"anthropic_key", "/etc/leadhound/anthropic.key", "cannot start until you place it"},
+		{"reoon_key", "/etc/leadhound/reoon.key", "checks nothing until you place it"},
+	} {
+		t.Run(k.fn, func(t *testing.T) { installKeyFunc(t, k.fn, k.path, k.missing) })
+	}
+}
+
+// installKeyFunc checks one of install.sh's key functions, fn, run on path, which says
+// missing when the key is not there.
+func installKeyFunc(t *testing.T, fnName, path, missing string) {
 	steps := installSteps(t)
-	call := firstLine(steps, "anthropic_key /etc/leadhound/anthropic.key")
+	call := firstLine(steps, fnName+" "+path)
 	unitsAt := firstLine(steps, "/etc/systemd/system/")
 	switch {
 	case call < 0:
-		t.Fatal("install.sh does not run anthropic_key /etc/leadhound/anthropic.key")
+		t.Fatalf("install.sh does not run %s %s", fnName, path)
 	case call > unitsAt:
-		t.Errorf("install.sh runs anthropic_key (line %d) after installing the units (line %d)", call, unitsAt)
+		t.Errorf("install.sh runs %s (line %d) after installing the units (line %d)", fnName, call, unitsAt)
 	}
-	fn := installFunc(t, "anthropic_key")
+	fn := installFunc(t, fnName)
 	for _, never := range []string{"cat ", "<", ">", "leadhound ", "head", "tail", "sed", "grep", "read ", "touch", "install ", "cp ", "mv "} {
 		if strings.Contains(fn, never) {
-			t.Errorf("anthropic_key uses %q; it must never create, read or move the key:\n%s", never, fn)
+			t.Errorf("%s uses %q; it must never create, read or move the key:\n%s", fnName, never, fn)
 		}
 	}
 
@@ -2097,7 +2138,7 @@ func TestInstallAnthropicKey(t *testing.T) {
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "run.sh")
-	if err := os.WriteFile(script, []byte("set -eu\n"+fn+"anthropic_key \"$1\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(script, []byte("set -eu\n"+fn+fnName+" \"$1\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "bin")
@@ -2113,7 +2154,7 @@ func TestInstallAnthropicKey(t *testing.T) {
 		mode    os.FileMode // 0: no key file
 		wantOut string
 	}{
-		{"missing", 0, "cannot start until you place it"},
+		{"missing", 0, missing},
 		{"kept 0600", 0o600, "is root:root 0600"},
 		{"restored 0644", 0o644, "is root:root 0600"},
 	} {
@@ -2132,7 +2173,7 @@ func TestInstallAnthropicKey(t *testing.T) {
 			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "LEADHOUND_LOG="+log)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Fatalf("anthropic_key: %v\n%s", err, out)
+				t.Fatalf("%s: %v\n%s", fnName, err, out)
 			}
 			if !strings.Contains(string(out), tc.wantOut) || strings.Contains(string(out), "sentinel") {
 				t.Errorf("output %q, want %q and no key material", out, tc.wantOut)

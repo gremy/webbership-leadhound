@@ -58,6 +58,7 @@
       <li>
         <span class="item-head">{{.Kind}}: {{template "lead_link" .Value}}</span>
         {{with .Note}}<span class="item-meta">{{.}}</span>{{end}}
+        {{if .Check}}<span class="item-meta">{{.Check}}{{with .CheckedAt}} · {{when .}}{{end}}</span>{{end}}
         {{if or .PageURL .FoundAt}}<span class="item-meta">{{with .PageURL}}Found on {{template "lead_link" .}}{{end}}{{if and .PageURL .FoundAt}} · {{end}}{{with .FoundAt}}{{when .}}{{end}}</span>{{end}}
       </li>
       {{end}}

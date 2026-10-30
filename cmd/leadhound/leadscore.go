@@ -347,8 +347,11 @@ type NewBatchOutcome struct {
 	// instead, by why (fbCap, fbRefused, fbUntrusted …). fallbackLine words them.
 	ClaudeDrafted int
 	Fallbacks     map[string]int
-	Sizing        *BatchSizing  // a live batch's sizing; nil for shadow
-	Rooms         map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
+	// EmailWaiting counts the live leads left for a later batch because their address has no
+	// sendable answer from the email check yet (unchecked, or a first unknown).
+	EmailWaiting int
+	Sizing       *BatchSizing  // a live batch's sizing; nil for shadow
+	Rooms        map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
 }
 
 // newBatch drafts the next batch with lq, which the caller runs in one transaction: it
@@ -360,7 +363,9 @@ type NewBatchOutcome struct {
 // batch. It never approves anything, never reaches the network (the console calls it) and
 // never opens a password; a live batch reads only the DNS checks already recorded today
 // (runBatchNew runs them first). A shadow batch reads no readiness: every active mailbox
-// takes leads.
+// takes leads. While the Email check job is on, a live lead's email address must have a
+// sendable fresh answer (emailGate.route): a blocked one falls to the lead's next route or
+// is skipped, an unchecked one waits for a later batch.
 func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, req NewBatchRequest) (NewBatchOutcome, error) {
 	out := NewBatchOutcome{Shadow: bs.shadow}
 	if bs.shadow && req.LiveOnly {
@@ -414,22 +419,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if err != nil {
 		return out, err
 	}
-	opts, err := batchCandidateOptions(ctx, lq, bs, now)
+	cands, opts, skipped, elsewhere, err := batchQueue(ctx, lq, bs, plan, campaignID, now)
 	if err != nil {
 		return out, err
 	}
-	opts.StarredOnly = plan.batchesFrom(bs.leads) == leadconfig.BatchesStarred
-	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
-	opts.PhoneOnlyCountries = plan.phoneOnlyCountries()
-	cands, err := lq.CandidateLeads(ctx, opts)
-	if err != nil {
-		return out, err
-	}
-	var elsewhere map[int64]bool
-	if out.Skipped, elsewhere, err = crossCampaignSkips(ctx, lq, campaignID); err != nil {
-		return out, err
-	}
-	cands = slices.DeleteFunc(cands, func(c leadstore.Candidate) bool { return elsewhere[c.OrgID] })
+	out.Skipped = skipped
 	if len(cands) == 0 {
 		if opts.StarredOnly {
 			st, err := lq.StarredStatus(ctx, leadstore.StarredStatusOptions{CandidateOptions: opts, Countries: countryChannels(bs.leads)})
@@ -459,6 +453,10 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			return out, &LeadRefusal{Kind: RefuseNoRoom, Sizing: z}
 		}
 		room, n = maps.Clone(r), z.Leads
+	}
+	gate, err := loadEmailGate(ctx, lq, bs, now)
+	if err != nil {
+		return out, err
 	}
 	var drafts []leadstore.DraftRow
 	suppressedPhones := map[string]bool{}
@@ -492,9 +490,39 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 				facts[f.OrgID] = append(facts[f.OrgID], f)
 			}
 		}
+		if gate.on {
+			addrs := make([]string, 0, len(span))
+			for _, c := range span {
+				if c.RouteKind == leadstore.RouteEmail {
+					addrs = append(addrs, c.Route)
+				}
+			}
+			if err := gate.load(ctx, lq, addrs...); err != nil {
+				return out, err
+			}
+		}
 		for _, c := range span {
 			if out.Leads >= n {
 				break
+			}
+			// The email check (leads verify): a live lead whose email goes to its route needs a
+			// sendable fresh answer for that address; a call-first lead's emails go to the
+			// address given on the call, so its route is not what is sent to.
+			fell := false
+			if _, seq := plan.forLead(c.Country); gate.on && seq == "" {
+				gc, res, err := gate.route(ctx, lq, bs.leads.Policy(c.Country).Channel, c)
+				if err != nil {
+					return out, err
+				}
+				switch res.kind {
+				case gateSkip:
+					out.Skipped = append(out.Skipped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: "email check: " + emailCheckWords(res.status)})
+					continue
+				case gateWait:
+					out.EmailWaiting++
+					continue
+				}
+				c, fell = gc, res.fell
 			}
 			id, ok := outreach.Assign([]int64{c.LeadID}, room, steps)[c.LeadID]
 			if !ok {
@@ -560,6 +588,13 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 					}
 				}
 			}
+			if fell {
+				// The lead is drafted on the route it fell to: its row says so, so its page and
+				// the batch show the route its messages use.
+				if _, err := lq.SetNewLeadRoute(ctx, c.LeadID, c.Channel, *c.RouteID); err != nil {
+					return out, err
+				}
+			}
 			from := cmp.Or(strings.TrimSpace(mb.FromName), bs.leads.Sender.Name)
 			for i := range ds {
 				ds[i].MailboxID, ds[i].FromName = mb.ID, from
@@ -583,6 +618,32 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	}
 	out.Counts = countDrafts(drafts)
 	return out, nil
+}
+
+// batchQueue is the queue a batch of campaignID drafts from, with plan: the candidates in
+// the batch's order (batchCandidateOptions with the campaign's own batches_from, countries
+// and phone-only countries) without the leads whose business is in a conversation in another
+// campaign (crossCampaignSkips: those leads, by domain with why, and their orgs). newBatch
+// drafts from it; leads verify checks the addresses it holds.
+func batchQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, plan batchPlan, campaignID int64, now time.Time) (
+	[]leadstore.Candidate, leadstore.CandidateOptions, []DroppedLead, map[int64]bool, error) {
+	opts, err := batchCandidateOptions(ctx, lq, bs, now)
+	if err != nil {
+		return nil, opts, nil, nil, err
+	}
+	opts.StarredOnly = plan.batchesFrom(bs.leads) == leadconfig.BatchesStarred
+	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
+	opts.PhoneOnlyCountries = plan.phoneOnlyCountries()
+	cands, err := lq.CandidateLeads(ctx, opts)
+	if err != nil {
+		return nil, opts, nil, nil, err
+	}
+	skipped, elsewhere, err := crossCampaignSkips(ctx, lq, campaignID)
+	if err != nil {
+		return nil, opts, nil, nil, err
+	}
+	cands = slices.DeleteFunc(cands, func(c leadstore.Candidate) bool { return elsewhere[c.OrgID] })
+	return cands, opts, skipped, elsewhere, nil
 }
 
 // crossCampaignSkips are the new leads of campaign campaignID whose org already has a
@@ -892,6 +953,9 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 	})
 	note := fmt.Sprintf("batch %d, %d messages, %d dropped", out.BatchID, out.Counts.Emails+out.Counts.Forms+out.Counts.LinkedIn, len(out.Dropped))
 	if line := fallbackLine(out.Fallbacks); line != "" {
+		note += "; " + line
+	}
+	if line := emailWaitingLine(out.EmailWaiting); line != "" {
 		note += "; " + line
 	}
 	switch r := asRefusal(runErr); {

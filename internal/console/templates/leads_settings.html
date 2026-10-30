@@ -178,6 +178,25 @@
   </form>
 </section>
 
+<section class="card settings-section" id="email-check" aria-labelledby="email-check-title" aria-describedby="email-check-intro">
+  <h2 id="email-check-title">Email check</h2>
+  {{if eq $v.Section "email-check"}}{{template "settings_problems" $v}}{{end}}
+  <p id="email-check-intro" class="section-intro">While the Email check is on in <a href="/controls#control-verify">Controls</a>, every address is checked with Reoon before it can enter a live batch. Some domains accept mail for any name, so their addresses cannot be confirmed: these are catch-all addresses.</p>
+  <details class="more">
+    <summary>More about this</summary>
+    <p>Catch-all domains are common among small businesses, and many of their addresses are real and read. Reoon advises sending to them in small batches and watching bounces; a mailbox pauses itself on too many bounces. Invalid, disabled, throwaway, full and trap addresses are always left out; an address Reoon cannot answer for is checked again the next day.</p>
+  </details>
+  <form method="post" action="/leads/settings/email-check" class="settings-form">
+    <fieldset>
+      <legend>Catch-all addresses</legend>
+      <div class="checks stacked">{{range $v.CatchAlls}}<label><input type="radio" aria-describedby="catch-all-hint" name="catch_all" value="{{.Value}}"{{if eq .Value $x.CatchAll}} checked{{end}}> {{.Label}}</label>{{end}}</div>
+      <p id="catch-all-hint" class="hint">Send to them is the default. A change applies from the next new batch.</p>
+    </fieldset>
+    {{with changed "" $s.CatchAll}}<p class="setting-source">{{.}}</p>{{end}}
+    {{template "settings_buttons"}}
+  </form>
+</section>
+
 <section class="card settings-section" id="order" aria-labelledby="order-title" aria-describedby="order-intro">
   <h2 id="order-title">Fallback order</h2>
   {{if eq $v.Section "order"}}{{template "settings_problems" $v}}{{end}}

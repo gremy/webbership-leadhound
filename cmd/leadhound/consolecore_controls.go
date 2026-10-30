@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -82,8 +83,9 @@ var controlJobs = []controlRow{
 	{job: leadstore.JobResearch, what: "Looks for a contact for a starred lead that has none, with Claude.",
 		schedule: "When you star a lead with no contact, or press Look again.", unit: unitResearch,
 		commands: []string{commandLeadsResearch}},
-	{job: leadstore.JobVerify, what: "Checks each email address before it can enter a batch.",
-		schedule: "Not running yet: it comes with the email check."},
+	{job: leadstore.JobVerify, what: "Checks each email address with Reoon before it can enter a live batch.",
+		schedule: "Every day at 06:15 (Bucharest time), just before the morning batch drafts, inside its run.", unit: unitBatch,
+		commands: []string{commandLeadsVerify}},
 }
 
 // unitState is one unit as systemctl show reports it.
@@ -729,9 +731,54 @@ func (b *backend) Controls(ctx context.Context) (console.ControlsPage, error) {
 	}
 	for _, r := range controlJobs {
 		s := byJob[r.job]
-		p.Jobs = append(p.Jobs, controlView(r, jobName(r.job), s.On, s.At, s.Reason, s.Actor, timers, last, b.now()))
+		row := controlView(r, jobName(r.job), s.On, s.At, s.Reason, s.Actor, timers, last, b.now())
+		if r.job == leadstore.JobVerify {
+			today, err := lq.EmailChecksSince(ctx, leadstore.DefaultAccountID, startOfDay(b.now(), b.loc))
+			if err != nil {
+				return console.ControlsPage{}, err
+			}
+			var run *store.Run
+			if lr, ok := last[commandLeadsVerify]; ok {
+				run = &lr
+			}
+			row.Lines = emailCheckLines(s.On, countEmailChecks(today, setup.leads.Verify.CatchAllRule()), run, b.loc)
+		}
+		p.Jobs = append(p.Jobs, row)
 	}
 	return p, nil
+}
+
+// creditsNote reads the credits a check run's note recorded ("credits left 18 today, 0
+// one-off").
+var creditsNote = regexp.MustCompile(`credits left (\d+) today, (\d+) one-off`)
+
+// emailCheckLines are the Email check row's own lines: that it is off (addresses then go
+// unchecked), today's checks by outcome, and the credits Reoon had left at the last run (or
+// that it had none, or that there was no key).
+func emailCheckLines(on bool, today emailCheckToday, last *store.Run, loc *time.Location) []string {
+	var out []string
+	if !on {
+		out = append(out, emailCheckOffLine)
+	}
+	if today.Checked == 0 {
+		out = append(out, "No address checked today.")
+	} else {
+		out = append(out, fmt.Sprintf("Today: %s checked, %d may be sent, %d blocked.",
+			plural(today.Checked, "address", "addresses"), today.Sendable, today.Blocked))
+	}
+	if last == nil || last.FinishedAt == nil {
+		return out
+	}
+	at := whenWords(last.StartedAt, loc)
+	switch m := creditsNote.FindStringSubmatch(last.Note); {
+	case last.Note == noCreditsLine:
+		out = append(out, fmt.Sprintf("Reoon had no credits left at the last run (%s).", at))
+	case last.Note == noReoonKeyNote:
+		out = append(out, fmt.Sprintf("The last run (%s) checked nothing: the Reoon key is not on the server yet. It goes in /etc/leadhound/reoon.key.", at))
+	case m != nil:
+		out = append(out, fmt.Sprintf("Credits left at the last run (%s): %s today, %s one-off.", at, m[1], m[2]))
+	}
+	return out
 }
 
 // controlView is one switch's row: on, since at (zero: never), reason and actor, its unit's
@@ -787,6 +834,8 @@ func runView(r store.Run, now time.Time) *console.ControlRun {
 		v.Result, v.Failed = cmp.Or(stopWords[r.StopReason], "Stopped"), true
 	case r.Note == notePaused:
 		v.Result = "Sending was off"
+	case r.Note == noReoonKeyNote:
+		v.Result, v.Failed = "No Reoon key", true
 	case r.Failures > 0:
 		v.Result, v.Failed = "Finished with "+plural(r.Failures, "failure", "failures"), true
 	default:

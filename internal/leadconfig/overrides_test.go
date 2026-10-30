@@ -143,7 +143,7 @@ func wantDate(t *testing.T, d Date, want string) {
 }
 
 // TestOverridesExactlyTheEditableKnobs: the JSON keys Overrides accepts are D11's editable
-// lead_setting knobs, no more and no fewer.
+// lead_setting knobs (and the email check's verify.catch_all), no more and no fewer.
 func TestOverridesExactlyTheEditableKnobs(t *testing.T) {
 	var keys []string
 	var walk func(prefix string, typ reflect.Type)
@@ -165,7 +165,7 @@ func TestOverridesExactlyTheEditableKnobs(t *testing.T) {
 	slices.Sort(keys)
 	want := []string{
 		"batches_from", "facts.d10_eol", "facts.d6_eol", "facts.d7_eol", "facts.d8_eol", "facts.d9_eol",
-		"kinds_off", "kinds_priority", "relevance.leads_daily_calls", "relevance.rating", "skip_rank_over",
+		"kinds_off", "kinds_priority", "relevance.leads_daily_calls", "relevance.rating", "skip_rank_over", "verify.catch_all",
 	}
 	if !slices.Equal(keys, want) {
 		t.Errorf("override keys = %v\nwant %v", keys, want)
@@ -307,6 +307,7 @@ func TestOverridesValidateMatchesLoad(t *testing.T) {
 		{"bad date", Overrides{Facts: &FactsOverrides{D10EOL: ptr(ParseDate("soon"))}}, "d10_eol: 2026-12-09", "d10_eol: soon", `facts.d10_eol: "soon" is not a date`},
 		{"blank date", Overrides{Facts: &FactsOverrides{D7EOL: ptr(ParseDate(""))}}, "d7_eol: 2025-01-05", `d7_eol: ""`, "facts.d7_eol is missing"},
 		{"negative calls", Overrides{Relevance: &RelevanceOverrides{LeadsDailyCalls: ptr(-5)}}, "leads_daily_calls: 0", "leads_daily_calls: -5", "relevance.leads_daily_calls must be 0 (the server's cap) or more, not -5"},
+		{"unknown catch-all rule", Overrides{Verify: &VerifyOverrides{CatchAll: ptr("maybe")}}, "catch_all: send", "catch_all: maybe", `verify.catch_all: "maybe" is not one of send, block`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -446,5 +447,21 @@ func removeLine(t *testing.T, dir, prefix string) {
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(slices.Delete(lines, i, i+1), "")), 0o600); err != nil { // #nosec G703 -- test data in a temp dir
 		t.Fatal(err)
+	}
+}
+
+// TestVerifyCatchAll: verify.catch_all is send when left out, block when saved so, and an
+// override replaces the file's value.
+func TestVerifyCatchAll(t *testing.T) {
+	base := demoConfig(t)
+	if got := base.Verify.CatchAllRule(); got != CatchAllSend {
+		t.Errorf("file: %q, want send", got)
+	}
+	if got := (Verify{}).CatchAllRule(); got != CatchAllSend {
+		t.Errorf("left out: %q, want send", got)
+	}
+	eff, p := Overrides{Verify: &VerifyOverrides{CatchAll: ptr(CatchAllBlock)}}.Effective(base)
+	if len(p) != 0 || eff.Verify.CatchAllRule() != CatchAllBlock || base.Verify.CatchAllRule() != CatchAllSend {
+		t.Errorf("override: %q %v (file now %q)", eff.Verify.CatchAllRule(), p, base.Verify.CatchAllRule())
 	}
 }

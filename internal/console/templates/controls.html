@@ -64,6 +64,7 @@
   <span class="item-meta">{{if .Since}}{{if .On}}On{{else}}Off{{end}} since {{when .Since}}{{with .Reason}}: {{.}}{{end}}{{if .BySystem}} (set by the system){{end}}{{else}}Never switched{{end}}</span>
   <span class="item-meta">{{with .Schedule}}{{.}} · {{end}}{{if .Timer.Unit}}{{if .Timer.Enabled}}timer enabled{{with .Timer.Next}}, next run {{when .}}{{end}}{{else}}<span class="bad">timer not enabled</span>{{end}}{{else}}no timer of its own{{end}}</span>
   <span class="item-meta">{{with .LastRun}}Last run {{when .StartedAt}}: {{if .Failed}}<span class="bad">{{.Result}}</span>{{else}}{{.Result}}{{end}}{{else}}Never run{{end}}</span>
+  {{range .Lines}}<span class="item-meta">{{.}}</span>{{end}}
   {{with controlNote .Job}}<span class="item-meta">{{.}}</span>{{end}}
   {{if .Job}}
   {{if .On}}

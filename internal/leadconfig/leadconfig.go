@@ -128,6 +128,7 @@ type Config struct {
 	SkipRankOver         int                `yaml:"skip_rank_over"` // 0 is off; else a site lead ranked above it, or unranked, leaves the queue
 	BatchSource          string             `yaml:"batches_from"`   // BatchesFrom gives the value in force
 	Relevance            Relevance          `yaml:"relevance"`
+	Verify               Verify             `yaml:"verify"`
 	Priority             *Profile           `yaml:"priority"` // nil: kinds_priority alone orders the leads
 	Copy                 Copy               `yaml:"copy"`
 	Schedule             Schedule           `yaml:"schedule"`
@@ -145,6 +146,26 @@ type Config struct {
 type Relevance struct {
 	Rating          *bool `yaml:"rating"`            // nil (left out) is on; RatingOn gives the value in force
 	LeadsDailyCalls int   `yaml:"leads_daily_calls"` // 0 uses the server's cap; DailyCalls gives the value in force
+}
+
+// Verify holds the email check before sending (internal/verify).
+type Verify struct {
+	// CatchAll is what a catch_all result does: "send" (the default when left out) or "block".
+	CatchAll string `yaml:"catch_all"`
+}
+
+// The values verify.catch_all takes.
+const (
+	CatchAllSend  = "send"
+	CatchAllBlock = "block"
+)
+
+// CatchAllRule returns verify.catch_all in force: CatchAllSend when the file leaves it out.
+func (v Verify) CatchAllRule() string {
+	if v.CatchAll == "" {
+		return CatchAllSend
+	}
+	return v.CatchAll
 }
 
 // RatingOn reports whether leads are rated for relevance; it is on unless the file says false.
@@ -647,6 +668,9 @@ func (cfg *Config) checkRest() []string {
 	}
 	if cfg.Relevance.LeadsDailyCalls < 0 {
 		p = append(p, fmt.Sprintf("relevance.leads_daily_calls must be 0 (the server's cap) or more, not %d", cfg.Relevance.LeadsDailyCalls))
+	}
+	if v := cfg.Verify.CatchAll; v != "" && v != CatchAllSend && v != CatchAllBlock {
+		p = append(p, fmt.Sprintf("verify.catch_all: %q is not one of %s, %s", v, CatchAllSend, CatchAllBlock))
 	}
 	if cfg.Priority != nil {
 		p = append(p, cfg.Priority.Problems()...)

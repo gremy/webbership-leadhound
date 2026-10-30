@@ -113,7 +113,7 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
 	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent",
 	"draft_generation", "draft_review", "draft_eval", "phone_screening", "phone_status", "phone_research",
-	"place_import", "place", "job_switch", "campaign_mailbox"}
+	"place_import", "place", "job_switch", "campaign_mailbox", "email_check"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -483,6 +483,8 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"TRUNCATE job_switch",
 		"DELETE FROM campaign_mailbox",
 		"TRUNCATE campaign_mailbox",
+		"DELETE FROM email_check",
+		"TRUNCATE email_check",
 		"DELETE FROM lead_kind",
 		"DELETE FROM lead_channel",
 		"TRUNCATE lead_kind",
@@ -586,6 +588,8 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE job_switch SET reason = ''",
 		"UPDATE campaign_mailbox SET assigned = true",
 		"UPDATE campaign_mailbox SET mailbox_id = 1",
+		// 00025: email check results are append-only.
+		"UPDATE email_check SET status = 'safe'",
 		// The reference rows change only by migration.
 		"UPDATE lead_kind SET outreach = true",
 		"UPDATE lead_channel SET label = ''",

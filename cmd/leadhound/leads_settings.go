@@ -139,7 +139,7 @@ func orderRules(p leadconfig.Profile) int {
 
 // settingsResetSections are the sections `settings reset --section` takes.
 var settingsResetSections = []string{console.SettingsWho, console.SettingsKinds, console.SettingsSmallSites,
-	console.SettingsBatches, console.SettingsDates, console.SettingsRelevance, console.SettingsOrder, console.SettingsAll}
+	console.SettingsBatches, console.SettingsDates, console.SettingsRelevance, console.SettingsEmailCheck, console.SettingsOrder, console.SettingsAll}
 
 func runSettingsReset(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads settings reset", flag.ContinueOnError)

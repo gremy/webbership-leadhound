@@ -441,6 +441,10 @@ type LeadSignal struct {
 type LeadRoute struct {
 	Kind, Value, Note, PageURL string
 	FoundAt                    *time.Time
+	// Check is an email route's latest email check in words ("Email check: safe, may be
+	// sent"), "" for a form; CheckedAt is when, nil when never checked.
+	Check     string
+	CheckedAt *time.Time
 }
 
 // LeadFact is one fact found on the lead's own pages: a phone number, a description or a
@@ -489,8 +493,15 @@ const (
 	SettingsBatches    = "batches"     // where a new batch draws its leads from
 	SettingsDates      = "dates"       // the Drupal end-of-life dates
 	SettingsRelevance  = "relevance"   // Jev relevance: rating on or off, the leads daily cap
+	SettingsEmailCheck = "email-check" // the email check before sending: what a catch-all address does
 	SettingsOrder      = "order"       // the fallback order: the priority profile's points
 	SettingsAll        = "all"         // reset only: every section back to the file
+)
+
+// The values LeadSettingsValues.CatchAll takes, as leads.yaml's verify.catch_all does.
+const (
+	CatchAllSend  = "send"  // a catch-all domain's address may enter a live batch
+	CatchAllBlock = "block" // it may not
 )
 
 // The values LeadSettingsValues.BatchesFrom takes, as leads.yaml's batches_from does.
@@ -523,6 +534,8 @@ type LeadSettingsValues struct {
 	// server's cap, LEADHOUND_JEV_LEADS_DAILY_CALL_CAP).
 	Rating   bool
 	LeadsCap string
+	// CatchAll is verify.catch_all: CatchAllSend or CatchAllBlock.
+	CatchAll string
 	// Order is the fallback order: the priority profile's points, exact version, countries
 	// and rank bands. Its Exclude is never read or written here: never-contact countries are
 	// Who's.
@@ -557,7 +570,7 @@ type SettingSource struct {
 
 // SettingsSources say where each setting of the page comes from. A date carries its own.
 type SettingsSources struct {
-	Who, KindsOn, KindsOrder, SkipRankOver, BatchesFrom, Rating, LeadsCap, Order SettingSource
+	Who, KindsOn, KindsOrder, SkipRankOver, BatchesFrom, Rating, LeadsCap, CatchAll, Order SettingSource
 }
 
 // LeadSettingsPage is the Settings page: the values in force and where each comes from,
@@ -1006,6 +1019,9 @@ type ControlRow struct {
 	Schedule string
 	Timer    TimerState
 	LastRun  *ControlRun
+	// Lines are the row's own plain lines beyond those (the Email check's: whether
+	// addresses go unchecked, today's checks, the credits left).
+	Lines []string
 }
 
 // TimerState is a job's unit as systemd reports it (or, when systemd cannot be asked, as the

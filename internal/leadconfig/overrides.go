@@ -22,6 +22,7 @@ type Overrides struct {
 	BatchesFrom   *string             `json:"batches_from,omitempty"`
 	Facts         *FactsOverrides     `json:"facts,omitempty"`
 	Relevance     *RelevanceOverrides `json:"relevance,omitempty"`
+	Verify        *VerifyOverrides    `json:"verify,omitempty"`
 }
 
 // FactsOverrides are the end-of-life dates the console may change.
@@ -37,6 +38,11 @@ type FactsOverrides struct {
 type RelevanceOverrides struct {
 	Rating          *bool `json:"rating,omitempty"`
 	LeadsDailyCalls *int  `json:"leads_daily_calls,omitempty"`
+}
+
+// VerifyOverrides are the email check settings the console may change.
+type VerifyOverrides struct {
+	CatchAll *string `json:"catch_all,omitempty"`
 }
 
 // Problem is one reason a config or a settings change is refused, in plain words that name
@@ -155,6 +161,9 @@ func (o Overrides) Apply(cfg Config) Config {
 		if r.LeadsDailyCalls != nil {
 			c.Relevance.LeadsDailyCalls = *r.LeadsDailyCalls
 		}
+	}
+	if v := o.Verify; v != nil && v.CatchAll != nil {
+		c.Verify.CatchAll = *v.CatchAll
 	}
 	return c
 }

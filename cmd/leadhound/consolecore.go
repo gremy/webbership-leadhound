@@ -895,12 +895,16 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 	for _, d := range append(slices.Clone(out.Skipped), out.Dropped...) {
 		dropped = append(dropped, d.String())
 	}
+	waiting := ""
+	if line := emailWaitingLine(out.EmailWaiting); line != "" {
+		waiting = " " + line + "."
+	}
 	if out.BatchID == 0 {
 		msg := "No batch: no candidate lead has a draft that passes the checks."
 		if len(dropped) > 0 {
 			msg += " Left out: " + strings.Join(dropped, "; ") + "."
 		}
-		return console.LeadOutcome{Message: msg}, nil
+		return console.LeadOutcome{Message: msg + waiting}, nil
 	}
 	msg := fmt.Sprintf("Batch %d: %s. Read it and approve it below.", out.BatchID, out.Counts)
 	if out.Sizing != nil {
@@ -915,7 +919,7 @@ func (b *backend) newBatch(ctx context.Context, setup leadsSetup) (console.LeadO
 	if len(dropped) > 0 {
 		msg += " Left out: " + strings.Join(dropped, "; ") + "."
 	}
-	return console.LeadOutcome{Message: msg, BatchID: out.BatchID}, nil
+	return console.LeadOutcome{Message: msg + waiting, BatchID: out.BatchID}, nil
 }
 
 func (b *backend) resolve(ctx context.Context, setup leadsSetup, a console.LeadAction) (console.LeadOutcome, error) {

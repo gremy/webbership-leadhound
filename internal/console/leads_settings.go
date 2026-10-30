@@ -26,6 +26,7 @@ var settingsSections = []settingsSection{
 	{SettingsBatches, "Batches draw from"},
 	{SettingsDates, "Dates"},
 	{SettingsRelevance, "Jev relevance"},
+	{SettingsEmailCheck, "Email check"},
 	{SettingsOrder, "Fallback order"},
 }
 
@@ -33,6 +34,12 @@ var settingsSections = []settingsSection{
 var batchSources = []FilterOption{
 	{BatchesStarred, "Starred leads only"},
 	{BatchesStarredThenRest, "Starred leads first, then the rest of the queue"},
+}
+
+// catchAllChoices are the choices of the Email check section, each a value and its words.
+var catchAllChoices = []FilterOption{
+	{CatchAllSend, "Send to them"},
+	{CatchAllBlock, "Leave them out"},
 }
 
 // envHelp is one plain line for each name on EnvAllowlist, shown under its value on the
@@ -58,6 +65,7 @@ type settingsView struct {
 	P            LeadSettingsPage
 	Sections     []settingsSection
 	BatchSources []FilterOption
+	CatchAlls    []FilterOption
 	EnvHelp      map[string]string // envHelp: a line for each allowlisted environment name
 	Message      string
 	Error        bool
@@ -117,7 +125,7 @@ func (s *server) renderSettings(w http.ResponseWriter, r *http.Request, code int
 	p.ReadOnly.Env = slices.DeleteFunc(slices.Clone(p.ReadOnly.Env), func(e EnvSetting) bool {
 		return !slices.Contains(EnvAllowlist, e.Name)
 	})
-	v := settingsView{P: p, Sections: settingsSections, BatchSources: batchSources, EnvHelp: envHelp, Message: msg, Error: isErr}
+	v := settingsView{P: p, Sections: settingsSections, BatchSources: batchSources, CatchAlls: catchAllChoices, EnvHelp: envHelp, Message: msg, Error: isErr}
 	if edit != nil {
 		v.Section, v.Problems = edit.Section, edit.Problems
 		v.SectionTitle = cmp.Or(settingsTitle(edit.Section), "Reset everything")
@@ -241,6 +249,8 @@ func settingsValues(section string, f url.Values) LeadSettingsValues {
 	case SettingsRelevance:
 		v.Rating = f.Get("rating") == "on"
 		v.LeadsCap = strings.TrimSpace(f.Get("leads_cap"))
+	case SettingsEmailCheck:
+		v.CatchAll = strings.TrimSpace(f.Get("catch_all"))
 	case SettingsOrder:
 		v.Order = priorityForm(f)
 	}
@@ -310,6 +320,8 @@ func overlaySettings(dst *LeadSettingsValues, section string, src LeadSettingsVa
 		}
 	case SettingsRelevance:
 		dst.Rating, dst.LeadsCap = src.Rating, src.LeadsCap
+	case SettingsEmailCheck:
+		dst.CatchAll = src.CatchAll
 	case SettingsOrder:
 		for i := range dst.Order.Points {
 			if j := slices.IndexFunc(src.Order.Points, func(p PointField) bool { return p.Key == dst.Order.Points[i].Key }); j >= 0 {

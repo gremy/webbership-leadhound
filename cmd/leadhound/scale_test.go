@@ -340,6 +340,11 @@ func TestScaleLeadsBuildAndBatch(t *testing.T) {
 	var out NewBatchOutcome
 	peak, took = measure(t, func() error {
 		return rolledBack(func(lq leadstore.Queries) error {
+			// The seed holds no email check, so with the Email check on every email lead would
+			// wait: switched off (rolled back with the rest), the batch drafts as it always did.
+			if _, err := lq.SetJobSwitch(ctx, 0, leadstore.JobVerify, false, "", leadstore.ActorGremy); err != nil {
+				return err
+			}
 			var err error
 			out, err = newBatch(ctx, lq, bs, info.Day.Add(10*time.Hour), NewBatchRequest{LiveOnly: true})
 			return err

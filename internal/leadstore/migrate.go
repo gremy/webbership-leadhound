@@ -99,7 +99,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // (00020; the owner alone deletes from them, to erase an org); place_import and place are
 // append-only (00021), whose new org.region column is fixed at insert; job_switch (00023) and
 // campaign_mailbox (00024) are append-only, and mailbox_check gains landing_url as a result
-// column (00024). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// column (00024); email_check is append-only (00025). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -266,6 +266,9 @@ BEGIN
   END IF;
   IF to_regclass('public.campaign_mailbox') IS NOT NULL THEN
     REVOKE UPDATE ON public.campaign_mailbox FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.email_check') IS NOT NULL THEN
+    REVOKE UPDATE ON public.email_check FROM leadhound_app;
   END IF;
 END
 $$`

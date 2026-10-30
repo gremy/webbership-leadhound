@@ -596,9 +596,23 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		p.Signals = append(p.Signals, console.LeadSignal{Name: name, Value: value, FetchURL: s.URL, FinalURL: s.FinalURL,
 			Status: httpStatusWords(s.Status), FetchedAt: s.FetchedAt})
 	}
+	var addrs []string
 	for _, r := range d.Routes {
-		p.Routes = append(p.Routes, console.LeadRoute{Kind: routeKindWords(r.Kind), Value: r.Value, Note: routeNote(r),
-			PageURL: r.FinalURL, FoundAt: new(r.FoundAt)})
+		if r.Kind == leadstore.RouteEmail {
+			addrs = append(addrs, r.Value)
+		}
+	}
+	checks, err := b.lq().EmailChecks(ctx, leadstore.DefaultAccountID, addrs, time.Time{})
+	if err != nil {
+		return console.LeadDetailPage{}, err
+	}
+	for _, r := range d.Routes {
+		lr := console.LeadRoute{Kind: routeKindWords(r.Kind), Value: r.Value, Note: routeNote(r),
+			PageURL: r.FinalURL, FoundAt: new(r.FoundAt)}
+		if r.Kind == leadstore.RouteEmail {
+			lr.Check, lr.CheckedAt = emailCheckLine(checks[strings.ToLower(r.Value)], w.cfg.Verify.CatchAllRule(), b.now(), startOfDay(b.now(), b.loc))
+		}
+		p.Routes = append(p.Routes, lr)
 	}
 	for _, f := range d.Facts {
 		lf := console.LeadFact{Value: f.Value, PageURL: f.FinalURL, FoundAt: new(f.FoundAt)}

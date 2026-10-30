@@ -47,9 +47,12 @@ func leadsScene(t *testing.T) string {
 }
 
 // goLive switches the commands to live outreach and lets the fixture's reserved names into
-// a live batch (only tests do: leadsMail.allowReserved).
+// a live batch (only tests do: leadsMail.allowReserved). It switches the Email check job off,
+// so a live batch drafts as it did before the check (these tests are about drafting and
+// sending; leads_verify_integration_test.go switches it on).
 func goLive(t *testing.T) {
 	t.Helper()
+	setVerify(t, false)
 	t.Setenv("LEADHOUND_OUTREACH", "live")
 	saved := leadsMail
 	leadsMail.allowReserved = true

@@ -49,6 +49,7 @@ var overrideSections = map[string][]string{
 	console.SettingsBatches:    {"batches_from"},
 	console.SettingsDates:      {"facts.d6_eol", "facts.d7_eol", "facts.d8_eol", "facts.d9_eol", "facts.d10_eol"},
 	console.SettingsRelevance:  {"relevance.rating", "relevance.leads_daily_calls"},
+	console.SettingsEmailCheck: {"verify.catch_all"},
 }
 
 // eolKeys are the end-of-life dates, in the page's order, with the Drupal major each is.
@@ -69,6 +70,9 @@ func overrideKeys(o leadconfig.Overrides) map[string]bool {
 	}
 	if r := o.Relevance; r != nil {
 		k["relevance.rating"], k["relevance.leads_daily_calls"] = r.Rating != nil, r.LeadsDailyCalls != nil
+	}
+	if v := o.Verify; v != nil {
+		k["verify.catch_all"] = v.CatchAll != nil
 	}
 	return k
 }
@@ -237,7 +241,8 @@ func (b *backend) LeadSettings(ctx context.Context) (console.LeadSettingsPage, e
 		Sources: console.SettingsSources{
 			Who: st.whoSource(), KindsOn: st.knob("kinds_off"), KindsOrder: st.knob("kinds_priority"),
 			SkipRankOver: st.knob("skip_rank_over"), BatchesFrom: st.knob("batches_from"),
-			Rating: st.knob("relevance.rating"), LeadsCap: st.knob("relevance.leads_daily_calls"), Order: st.orderSource(),
+			Rating: st.knob("relevance.rating"), LeadsCap: st.knob("relevance.leads_daily_calls"),
+			CatchAll: st.knob("verify.catch_all"), Order: st.orderSource(),
 		},
 	}
 	for _, n := range []string{fileNote, st.ignoredNote(b.loc), st.kindOrderNote()} {
@@ -282,6 +287,7 @@ func settingsValues(st settingsState, kinds []leadKind) console.LeadSettingsValu
 	}
 	v.Rating = cfg.Relevance.RatingOn()
 	v.LeadsCap = strconv.Itoa(cfg.Relevance.LeadsDailyCalls)
+	v.CatchAll = cfg.Verify.CatchAllRule()
 	v.Order = profileForm(st.profile)
 	v.Order.Exclude = "" // never-contact countries are Who to contact's
 	return v
@@ -557,6 +563,8 @@ func clearSection(o *leadconfig.Overrides, section string) {
 		o.Facts = nil
 	case console.SettingsRelevance:
 		o.Relevance = nil
+	case console.SettingsEmailCheck:
+		o.Verify = nil
 	}
 }
 
@@ -616,6 +624,9 @@ func setSection(o *leadconfig.Overrides, section string, v console.LeadSettingsV
 		}
 		rating := v.Rating
 		o.Relevance = &leadconfig.RelevanceOverrides{Rating: &rating, LeadsDailyCalls: &n}
+	case console.SettingsEmailCheck:
+		rule := strings.TrimSpace(v.CatchAll)
+		o.Verify = &leadconfig.VerifyOverrides{CatchAll: &rule}
 	}
 	return nil
 }

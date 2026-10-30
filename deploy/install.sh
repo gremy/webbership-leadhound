@@ -126,6 +126,20 @@ anthropic_key() {
 	echo "install: the Anthropic key at $1 is root:root 0600"
 }
 
+# reoon_key KEY: the Reoon key (deploy/README.md, The Reoon key), as anthropic_key does the
+# Anthropic key: placed by hand, never created, read or printed here, made root:root 0600 on
+# every deploy when it is there. Without it the batch unit still starts (its SetCredential=
+# default) and its email check says there is no key.
+reoon_key() {
+	if [ ! -e "$1" ]; then
+		echo "install: no Reoon key at $1: the email check checks nothing until you place it; switch the Email check off in Controls meanwhile (deploy/README.md, The Reoon key)"
+		return
+	fi
+	chown root:root "$1"
+	chmod 0600 "$1"
+	echo "install: the Reoon key at $1 is root:root 0600"
+}
+
 # The one-time bootstrap (deploy/README.md) comes first.
 id leadhound >/dev/null 2>&1 || fail "no leadhound user: run the bootstrap in deploy/README.md first"
 id postgres >/dev/null 2>&1 || fail "no postgres user: install Postgres first (deploy/README.md)"
@@ -163,6 +177,7 @@ mv -f "$bin/.leadhound.new" "$bin/leadhound"
 mailbox_key /etc/leadhound/mailbox.key /etc/leadhound/env
 # The Anthropic key's owner and mode, before the units that read it are installed.
 anthropic_key /etc/leadhound/anthropic.key
+reoon_key /etc/leadhound/reoon.key
 install -o root -g root -m 0755 "$stage/leadhound-backup.sh" "$bin/leadhound-backup"
 for f in "$stage"/leadhound-*.service "$stage"/leadhound-*.timer "$stage"/leadhound-*.path; do
 	install -o root -g root -m 0644 "$f" /etc/systemd/system/

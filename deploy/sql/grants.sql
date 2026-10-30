@@ -235,5 +235,9 @@ BEGIN
   IF to_regclass('public.campaign_mailbox') IS NOT NULL THEN
     REVOKE UPDATE ON public.campaign_mailbox FROM leadhound_app;
   END IF;
+  -- The email check results (00025) are append-only.
+  IF to_regclass('public.email_check') IS NOT NULL THEN
+    REVOKE UPDATE ON public.email_check FROM leadhound_app;
+  END IF;
 END
 $$;

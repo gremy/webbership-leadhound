@@ -225,7 +225,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 | --- | --- | --- | --- | --- |
 | `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` | Site probe (`probe`) |
 | `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000`, under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=7h` | `LEADHOUND_LEADS_TIMERS=on` | Contacts (`contacts`): the contacts, enrich and rate steps; the build always runs |
-| `leadhound-leads-batch.timer` | 06:15 | `leads build`, then `leads batch new`, each under `timeout 20m`, for the `drupal-eol` campaign; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Morning batch (`batch`): `leads batch new`; the build always runs |
+| `leadhound-leads-batch.timer` | 06:15 | `leads build`, under `timeout 20m`, then `leads verify --max 60`, under `timeout 50m`, then `leads batch new`, under `timeout 20m`, for the `drupal-eol` campaign; `TimeoutStartSec=2h`; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time, and the [Reoon key](#the-reoon-key) for the email check | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Morning batch (`batch`): `leads batch new`; Email check (`verify`): `leads verify`; the build always runs |
 | `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Sending (the send pause) |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Inbox sync (`sync`) |
 
@@ -249,6 +249,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
   Every step but the build is `ExecStart=-`, so a failed search, enrichment or rating never stops the build.
   The rating and the build read no web page, so they run outside the fetch lock.
   `TimeoutStartSec=7h` is longer than the four timeouts and their kill graces together (6h40).
+- Before the batch drafts, `leads verify` checks with Reoon the email addresses that batch would draft (see [The email check](#the-email-check)); it is written `ExecStart=-`, so a Reoon outage or a missing key makes a smaller batch, never no batch.
 - The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
   While your saved settings no longer fit `leads.yaml` (so they are not applied), `leads batch new` makes none and exits 2, so the batch unit shows as failed in `systemctl`; fix or reset them in Leads → Settings.
   The send sends only approved messages, each in its recipient's business hours (the send hours cover the working day in the UK, Ireland and central Europe), and the sync reads every mailbox that is not retired for replies, opt-outs and bounces.
@@ -282,7 +283,7 @@ The same sentence, with a link to Controls, sits above the Outreach tab's list a
 
 - **Sending** is the send pause, the master switch above every mailbox: switched off, the send timer keeps running and sends nothing until you switch it on, and nothing on the server changes.
   Switching it on Controls brings you back to Controls; the same switch is on the Leads page's Outreach tab, and `leadhound leads send pause [--reason R]` and `leads send resume` work it from the command line.
-- **The jobs**, each with its own switch: Morning batch (`batch`), Inbox sync (`sync`), Site probe (`probe`), Contacts (`contacts`: the contacts, enrich and rate steps), Research (`research`), and Email check (`verify`), which runs nothing yet.
+- **The jobs**, each with its own switch: Morning batch (`batch`), Inbox sync (`sync`), Site probe (`probe`), Contacts (`contacts`: the contacts, enrich and rate steps), Research (`research`), and Email check (`verify`: `leads verify`, and the check every live batch makes; see [The email check](#the-email-check)).
   Each row shows what the job does, its schedule, since when and why it is on or off, whether its timer is enabled and its next run (read from `systemctl show`; when that cannot be read, the page says so and shows what the env file makes the last deploy do), and its last run.
 - **A job switched off** runs nothing: it prints "<Job> is switched off in the console (since <time>): nothing ran.", records its run with the result "switched off", and exits 0, so its timer never shows a failure for it.
   `leads build` has no switch, so the contacts and batch units still build the list.
@@ -730,6 +731,46 @@ Every Claude call is priced before it is made, at its worst case, and refused wh
 - The ceiling's default and the current per-purpose and per-lead caps, and the drafting writer's output ceiling they are sized against, are in `deploy/env.example`; only the ceiling is set in the env file, the per-purpose and per-lead caps are built in and the same for every campaign, and a campaign spec cannot set its own caps yet.
 - A refused call costs nothing and is logged; the dashboard and the Campaigns tab show today's spend against the ceiling.
 - A batch that reaches a cap drafts the remaining leads from templates and says how many and why.
+
+## The Reoon key
+
+The email check (`leads verify`) asks Reoon about each address, so it needs a Reoon API key.
+The key is a file on the server, `/etc/leadhound/reoon.key` (`root:root 0600`), holding the key alone on one line, handled exactly as [the Anthropic key](#the-anthropic-key) is.
+
+- **Place it by hand**: make the key in your Reoon account (Dashboard, API), then on the server `sudo -e /etc/leadhound/reoon.key`, paste, save, `sudo chmod 0600 /etc/leadhound/reoon.key`.
+  Never type it into a command line or paste it into a chat.
+- **Who reads it**: only `leadhound-leads-batch.service`, as the systemd credential `LoadCredential=reoon.key:/etc/leadhound/reoon.key`; no other unit, never the console, and it is never a line in `/etc/leadhound/env`.
+  LeadHound reads it from `$CREDENTIALS_DIRECTORY/reoon.key` on the server, or locally from the file `LEADHOUND_REOON_KEY_FILE` names (made `0600`; a file others can read is refused).
+- **Without the key the batch still runs.**
+  The unit also has `SetCredential=reoon.key:`, an empty default systemd uses when the file cannot be read, so the unit starts; `leads verify` reads the empty credential as no key, prints that nothing was checked because the key is not at `/etc/leadhound/reoon.key`, records its run, and Controls says the last run checked nothing for that reason.
+  While the Email check is on, a live batch then drafts no email lead whose address was never checked, so switch the Email check off on Controls until the key is in.
+  That default relies on systemd treating a `LoadCredential=` that cannot be read as not fatal when the same name has a `SetCredential=`; check it once on the server before you rely on it (place no key, `sudo systemctl start leadhound-leads-batch.service`, and read `journalctl -u leadhound-leads-batch.service` for the "no Reoon key" line).
+- **Every deploy** makes the file `root:root 0600` again if it is there, and never creates, reads or prints it; until you place it, the deploy says `install: no Reoon key at /etc/leadhound/reoon.key`.
+- **Every check needs `LEADHOUND_LIVE=1`** as well as the key; without it `leads verify` prints one line saying no Reoon call was made and exits 0.
+- **To rotate**, make a new key in Reoon, replace the file's contents, and the next run uses it; then delete the old key in Reoon.
+- **Credits.**
+  Reoon gives 20 checks a day free; daily plans start at 500 a day, and one-off credits never expire (re-check the prices on Reoon's site before buying).
+  `LEADHOUND_REOON_DAILY_CAP` in `/etc/leadhound/env` (default 200) is LeadHound's own ceiling for one day, counted from the day's stored checks.
+
+### The email check
+
+While the Email check job is on, every address must pass a Reoon check before it can enter a live batch, so a dead address never costs a mailbox its reputation.
+
+- **`leads verify [--max N]`** reads the credits first and stops with "No Reoon credits left today." when none of either kind is left.
+  Then it takes the email addresses the next live batch of each active campaign would draft, in the batch's own order (starred first, then the outreach order), skips every address with a fresh answer, and checks the rest two at a time, at most `--max`, the day's cap and the credits left.
+  Each answer is stored (`email_check`, append-only); the run is recorded with how many were checked, may be sent and are blocked, and the credits left.
+  A check that fails (Reoon down, an error answer) is counted, stores nothing, and the address is tried again on the next run.
+- **What each answer does**, in one place (`internal/verify`, whose comment records Reoon's own meanings):
+  safe and role addresses (info@, contact@) are sent; invalid, disabled, disposable, inbox full and spam trap are blocked; catch-all is sent unless Leads → Settings → Email check says to leave catch-all addresses out (`verify.catch_all: block` in `leads.yaml` does the same); unknown is checked again the next day and blocked after a second unknown in a row.
+  An answer older than 90 days counts as no answer, so the address is checked again.
+- **The batch's gate.**
+  A live lead whose email goes to its own address needs a sendable fresh answer for it.
+  A blocked address makes the lead fall to its next route, as a missing email does when the list is built: another email address of the same domain, judged the same way, or a contact form; the lead is then drafted there and its page shows that route.
+  With no other route it is skipped, with the line "skipped <domain> (<kind>, email): email check: <answer>", the answer in plain words (catch-all, inbox full, role address, invalid, …).
+  An address with no answer yet waits for a later batch, and the batch says "N leads wait for their email check."
+  A call-first lead's emails go to the address given on the call, so its route is not gated.
+- **Switched off**, batches draft exactly as before the check, and Controls says "Email check is off: addresses are not checked before sending."
+- Controls' Email check row shows the switch, the last run, today's checks (checked, may be sent, blocked) and the credits Reoon had left at the last run; each email address on a lead's page shows its latest answer and when.
 
 ## Contact research
 

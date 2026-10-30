@@ -148,6 +148,9 @@ func runBatchNew(ctx context.Context, args []string) error {
 	for _, d := range out.Dropped {
 		_, _ = fmt.Fprintf(stdout, "dropped %s\n", d)
 	}
+	if line := emailWaitingLine(out.EmailWaiting); line != "" {
+		_, _ = fmt.Fprintln(stdout, line+".")
+	}
 	if out.BatchID == 0 {
 		_, _ = fmt.Fprintln(stdout, "No batch: no candidate lead has a draft that passes the checks.")
 		return nil

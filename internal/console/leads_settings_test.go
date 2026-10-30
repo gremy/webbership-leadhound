@@ -558,9 +558,10 @@ func TestSettingsHelp(t *testing.T) {
 			}
 		}
 		// 2 countries, never-contact, 3 kinds, small sites, 2 batch choices, 3 dates,
-		// the rating switch and its cap, 2 points, exact version, rank bands, countries.
-		if fields != 19 {
-			t.Errorf("%s: %d fields checked, want 19", name, fields)
+		// the rating switch and its cap, 2 catch-all choices, 2 points, exact version, rank
+		// bands, countries.
+		if fields != 21 {
+			t.Errorf("%s: %d fields checked, want 21", name, fields)
 		}
 
 		more := 0

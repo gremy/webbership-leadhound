@@ -29,6 +29,8 @@ batches_from: starred # starred (the default when left out): batch new drafts st
 relevance:
   rating: true # Jev rates each lead's relevance; on when left out
   leads_daily_calls: 0 # the most rating calls a day; 0 uses LEADHOUND_JEV_LEADS_DAILY_CALL_CAP, and a value can lower that cap, never raise it
+verify: # the email check before sending (Reoon), while the Email check job is on in Controls
+  catch_all: send # send (the default when left out): a catch-all domain's address may enter a live batch; block: it may not
 priority: # the order batches draw leads in: highest score first; points are -100 to 100
   kinds: {unsupported: 20, d10: 10, agency_partner: 15} # replaces kinds_priority's order when present
   majors: {6: 5, 7: 30, 8: 20, 9: 15, 10: 10} # Drupal major -> points
