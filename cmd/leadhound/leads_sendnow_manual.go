@@ -156,7 +156,7 @@ func (b *backend) SendNowPreview(ctx context.Context, req console.ManualSendRequ
 			return console.SendPlan{}, err
 		}
 	}
-	plan, _, err := b.manualSendPlan(ctx, setup, id, now)
+	plan, _, err := b.manualSendPlan(ctx, setup, id, now, false)
 	if err != nil {
 		return console.SendPlan{}, err
 	}
@@ -166,12 +166,23 @@ func (b *backend) SendNowPreview(ctx context.Context, req console.ManualSendRequ
 
 // SendNowPlan is the plan of an unapproved batch as it stands now; it writes nothing.
 func (b *backend) SendNowPlan(ctx context.Context, batchID int64) (console.SendPlan, error) {
+	return b.sendNowPlan(ctx, batchID, false)
+}
+
+// SendNowAgainPlan is the plan of Send now again: a manual batch approved by its confirm whose
+// request never ran (refused, or expired while the hourly send held the lock), with none of its
+// messages sending or sent. It writes nothing.
+func (b *backend) SendNowAgainPlan(ctx context.Context, batchID int64) (console.SendPlan, error) {
+	return b.sendNowPlan(ctx, batchID, true)
+}
+
+func (b *backend) sendNowPlan(ctx context.Context, batchID int64, again bool) (console.SendPlan, error) {
 	setup, err := b.leadsSetup(ctx, leadsForOutreach)
 	if err != nil {
 		return console.SendPlan{}, err
 	}
 	now := b.now()
-	plan, _, err := b.manualSendPlan(ctx, setup, batchID, now)
+	plan, _, err := b.manualSendPlan(ctx, setup, batchID, now, again)
 	if err != nil {
 		return console.SendPlan{}, err
 	}
@@ -207,7 +218,7 @@ func (b *backend) SendNowConfirm(ctx context.Context, c console.ManualConfirm) (
 	if st := sendNowState(asked, locked, runs, now.In(b.loc)); st.busy != "" {
 		return console.ControlOutcome{}, refused("%s Nothing was sent.", st.busy)
 	}
-	plan, f, err := b.manualSendPlan(ctx, setup, c.BatchID, now)
+	plan, f, err := b.manualSendPlan(ctx, setup, c.BatchID, now, c.Again)
 	if err != nil {
 		return console.ControlOutcome{}, err
 	}
@@ -231,8 +242,11 @@ func (b *backend) SendNowConfirm(ctx context.Context, c console.ManualConfirm) (
 	if err != nil {
 		return console.ControlOutcome{}, err
 	}
+	if c.Again {
+		return b.sendNowAgain(ctx, setup, c, plan, f, shown, now)
+	}
 	approved, err := approveBatch(ctx, b.s, setup.leads, func() time.Time { return now }, ApproveRequest{
-		ID: c.BatchID, HashPrefix: plan.HashPrefix, Skip: f.skip, DueNow: true,
+		ID: c.BatchID, HashPrefix: plan.HashPrefix, Skip: f.skip, DueNow: true, Manual: true,
 		before: func(tq leadstore.Queries) error { return tq.MarkBatchManual(ctx, c.BatchID) },
 		after: func(tq leadstore.Queries, a leadstore.Approval) error {
 			if a.Already {
@@ -260,8 +274,13 @@ func (b *backend) SendNowConfirm(ctx context.Context, c console.ManualConfirm) (
 		return console.ControlOutcome{}, fmt.Errorf("manual send: batch %d is approved (%d messages) but the send could not be asked, so the hourly send takes it within today's limits: %w",
 			c.BatchID, approved.Approval.Approved, err)
 	}
+	return b.askedOutcome(f), nil
+}
+
+// askedOutcome is the line a confirmed Send now answers with.
+func (b *backend) askedOutcome(f manualFacts) console.ControlOutcome {
 	if b.dev {
-		return console.ControlOutcome{Message: "Asked. In dev nothing watches the request: run leadhound leads send --from-request to write them to the shadow outbox."}, nil
+		return console.ControlOutcome{Message: "Asked. In dev nothing watches the request: run leadhound leads send --from-request to write them to the shadow outbox."}
 	}
 	msg := "Asked. " + goesNow(f.now)
 	if len(f.codes) > 0 {
@@ -271,7 +290,62 @@ func (b *backend) SendNowConfirm(ctx context.Context, c console.ManualConfirm) (
 	if f.later > 0 {
 		msg += fmt.Sprintf(" %s in the next runs, one per recipient domain each run.", goLater(f.later))
 	}
-	return console.ControlOutcome{Message: msg}, nil
+	return console.ControlOutcome{Message: msg}
+}
+
+// sendNowAgain is Send now again's confirm: the batch was approved by its first confirm and is
+// never approved again. With the batch row locked it checks again that the batch is still an
+// approved manual batch nothing of which went, writes a fresh send_request row with the warnings
+// this page showed, and then the request file.
+func (b *backend) sendNowAgain(ctx context.Context, setup leadsSetup, c console.ManualConfirm, plan console.SendPlan, f manualFacts,
+	shown []byte, now time.Time) (console.ControlOutcome, error) {
+	err := manualTx(ctx, b, func(tx pgx.Tx, tq leadstore.Queries) error {
+		var manual, approved, discarded bool
+		if err := tx.QueryRow(ctx,
+			`SELECT manual, approved_at IS NOT NULL, discarded_at IS NOT NULL FROM outreach_batch WHERE id = $1 FOR UPDATE`,
+			c.BatchID).Scan(&manual, &approved, &discarded); errors.Is(err, pgx.ErrNoRows) {
+			return console.ErrNotFound
+		} else if err != nil {
+			return fmt.Errorf("manual send: send again: %w", err)
+		}
+		gone, err := manualGone(ctx, tx, c.BatchID)
+		if err != nil {
+			return err
+		}
+		switch {
+		case discarded:
+			return console.ErrNotFound
+		case !manual || !approved:
+			return refused("Batch %d is not a Send now waiting to go; nothing was sent.", c.BatchID)
+		case gone:
+			return refused("Batch %d already went; nothing more was asked.", c.BatchID)
+		}
+		_, err = tq.InsertSendRequest(ctx, leadstore.SendRequest{BatchID: c.BatchID, Codes: f.codes,
+			HashPrefix: plan.HashPrefix, Operator: strings.TrimSpace(c.Operator), Shown: shown})
+		return err
+	})
+	if err != nil {
+		return console.ControlOutcome{}, err
+	}
+	if err := writeSendNowManualRequest(setup.dataDir, c.BatchID, now); err != nil {
+		return console.ControlOutcome{}, fmt.Errorf("manual send: batch %d is approved but the send could not be asked again, so the hourly send takes it within today's limits: %w",
+			c.BatchID, err)
+	}
+	return b.askedOutcome(f), nil
+}
+
+// manualGone reports whether any message of batch id is sending, sent, maybe sent or written to
+// the shadow outbox: such a batch went, and Send now again never asks for it.
+func manualGone(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, id int64) (bool, error) {
+	var gone bool
+	if err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM outreach_message WHERE batch_id = $1 AND state IN ('sending', 'sent', 'maybe_sent', 'shadow_sent'))`,
+		id).Scan(&gone); err != nil {
+		return false, fmt.Errorf("manual send: batch sent: %w", err)
+	}
+	return gone, nil
 }
 
 func goesNow(n int) string {
@@ -348,7 +422,11 @@ func (b *backend) SendNowCheckEmail(ctx context.Context, batchID int64) (console
 		return console.ControlOutcome{}, err
 	}
 	now := b.now()
-	plan, _, err := b.manualSendPlan(ctx, setup, batchID, now)
+	again := false
+	if bt, err := b.lq().BatchByID(ctx, batchID); err == nil {
+		again = bt.ApprovedAt != nil // Send now again's page asks too
+	}
+	plan, _, err := b.manualSendPlan(ctx, setup, batchID, now, again)
 	if err != nil {
 		return console.ControlOutcome{}, err
 	}
@@ -410,10 +488,8 @@ func (b *backend) buildManual(ctx context.Context, setup leadsSetup, now time.Ti
 				return nil
 			}
 		}
-		for _, id := range slices.Sorted(maps.Keys(open)) {
-			if _, err := tq.DiscardBatch(ctx, id); err != nil {
-				return err
-			}
+		if err := discardOpenManual(ctx, tq, slices.Sorted(maps.Keys(open))); err != nil {
+			return err
 		}
 		// A lead whose first email is in another batch never enters this one (batch 0 is none).
 		taken, err := firstEmailElsewhere(ctx, tx, 0, ids)
@@ -488,6 +564,23 @@ func (b *backend) buildManual(ctx context.Context, setup leadsSetup, now time.Ti
 	}
 	b.manual.built(out.BatchID, now, extra, notes)
 	return out.BatchID, nil
+}
+
+// discardOpenManual discards the open manual batches ids before a new one takes their leads.
+// Another tab can confirm (or discard) one between openManualBatches' read and here: that is a
+// refusal asking to start again, never a 500, and the next preview's firstEmailElsewhere then
+// says where the lead's first email went.
+func discardOpenManual(ctx context.Context, tq leadstore.Queries, ids []int64) error {
+	for _, id := range ids {
+		_, err := tq.DiscardBatch(ctx, id)
+		switch {
+		case errors.Is(err, leadstore.ErrBatchApproved), errors.Is(err, leadstore.ErrBatchDiscarded):
+			return refused("Batch %d was sent or discarded from another page meanwhile; nothing was sent. Start Send now again.", id)
+		case err != nil:
+			return err
+		}
+	}
+	return nil
 }
 
 // manualStopWords is a reason newBatch gave, as one sentence that starts with a capital.
@@ -673,8 +766,10 @@ func manualRoom(bs batchSetup, now time.Time, n, steps int, mbs []leadstore.Mail
 
 // manualSendPlan is the one reading of a batch for Send now: what the preview shows, the confirm
 // page polls and the confirm checks against. It reads only. A batch that is not there, or
-// discarded, is console.ErrNotFound; an approved one is a refusal.
-func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64, now time.Time) (console.SendPlan, manualFacts, error) {
+// discarded, is console.ErrNotFound; an approved one is a refusal, except for again (Send now
+// again): then only an approved manual batch nothing of which went is read, and only its
+// approved first emails are in the plan.
+func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64, now time.Time, again bool) (console.SendPlan, manualFacts, error) {
 	lq := b.lq()
 	var f manualFacts
 	v, err := batchView(ctx, lq, id)
@@ -685,16 +780,30 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 		return console.SendPlan{}, f, err
 	}
 	f.batch = v.Batch
+	gone := false
+	if again && v.Batch.ApprovedAt != nil && v.Batch.Manual {
+		if gone, err = manualGone(ctx, b.s.Pool(), id); err != nil {
+			return console.SendPlan{}, f, err
+		}
+	}
 	switch {
 	case v.Batch.DiscardedAt != nil:
 		return console.SendPlan{}, f, console.ErrNotFound
+	case again && (v.Batch.ApprovedAt == nil || !v.Batch.Manual):
+		return console.SendPlan{}, f, refused("Batch %d is not a Send now waiting to go; open it from its batch page.", id)
+	case again && gone:
+		return console.SendPlan{}, f, refused("Batch %d already went; nothing more to do here.", id)
+	case again:
 	case v.Batch.ApprovedAt != nil && v.Batch.Manual:
 		return console.SendPlan{}, f, refused("Batch %d was already sent with Send now; nothing more to do here.", id)
 	case v.Batch.ApprovedAt != nil:
 		return console.SendPlan{}, f, refused("Batch %d is already approved; the hourly send takes it.", id)
 	}
-	plan := console.SendPlan{BatchID: id, HashPrefix: v.HashPrefix()}
+	plan := console.SendPlan{BatchID: id, HashPrefix: v.HashPrefix(), Again: again}
 	memo := b.manual.get(id)
+	if again {
+		memo = manualEntry{} // the preview's left-out leads are back in the queue by now
+	}
 	live := setup.env.Live()
 	bh := setup.leads.SendingWindow()
 
@@ -764,7 +873,7 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 	// own batch manual at once). There the operator chose the batch, not a lead to leave out, so
 	// Send now never skips one: its contact forms, LinkedIn notes and calls are approved as
 	// Approve approves them, and any hard stop on one of its emails stops the whole send.
-	batchMode := !v.Batch.Manual
+	batchMode := !v.Batch.Manual && !again
 	byHand := 0
 	emailLead := map[int64]bool{}
 	want := leadstore.LeadBatched
@@ -789,7 +898,8 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 	}
 	var ok []cand
 	// skippable are the item numbers of the leads with a hard stop the approval must leave out
-	// by its skip list. A suppressed lead and one no longer in the batch's state are left out by
+	// by its skip list; ApproveManualBatch sends each back to new, since most stops hold only
+	// today. A suppressed lead and one no longer in the batch's state are left out by
 	// ApproveBatch's own re-check (the first moves to suppressed there), so they are not listed.
 	skippable := map[int64]int{}
 	for _, it := range v.Items {
@@ -799,6 +909,9 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 			if it.Msgs[k].Step == 0 {
 				first = &it.Msgs[k]
 			}
+		}
+		if again && (first == nil || first.Channel != leadstore.ChannelEmail || first.State != leadstore.MsgApproved) {
+			continue // left out at the first confirm, or approved to do by hand: not in this send
 		}
 		if first != nil {
 			l.Email = first.ToAddress
@@ -827,7 +940,7 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 		case addr == "" && batchMode:
 			byHand++ // approved as Approve approves it; nothing of it is sent by email now
 		case addr == "":
-			l.Stop = "Its first step is not an email (a call, a contact form or a LinkedIn note), so Send now leaves it out; it is skipped when the rest are sent."
+			l.Stop = "Its first step is not an email (a call, a contact form or a LinkedIn note), so Send now leaves it out; it goes back to new for the next batch when the rest are sent."
 		case live && !leadsMail.allowReserved && (outreach.ReservedDomain(it.Org.Domain) || outreach.ReservedDomain(recipientDomain(addr))):
 			l.Stop = "It is on a reserved test domain, never sent for real."
 		case !known || !ready(m):
@@ -1034,6 +1147,18 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 	}
 	f.skip = slices.Sorted(maps.Values(skippable))
 	blocked := false
+	if again {
+		// The batch is approved and is never approved again, so no lead can be left out now: a
+		// hard stop on any of its emails stops the whole send, and the hourly send keeps holding it.
+		f.skip = nil
+		for _, l := range plan.Leads {
+			if l.Stop != "" && all == "" {
+				blocked = true
+				plan.Notes = append(plan.Notes, fmt.Sprintf("%s can't go now: %s The hourly send takes the batch once it can.",
+					cmp.Or(l.Name, l.Domain, fmt.Sprintf("Lead %d", l.LeadID)), l.Stop))
+			}
+		}
+	}
 	if batchMode {
 		f.skip = nil
 		if byHand > 0 {

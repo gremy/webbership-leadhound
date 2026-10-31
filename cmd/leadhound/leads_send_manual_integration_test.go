@@ -351,6 +351,10 @@ func TestManualSendClaim(t *testing.T) {
 			if n := len(w.overrides(t, id)); n != 0 {
 				t.Errorf("%d override rows", n)
 			}
+			// Checked before it is claimed: a refused request is not used up.
+			if n := w.count(t, `SELECT count(*) FROM send_request WHERE used_at IS NOT NULL`); n != 0 {
+				t.Errorf("a refused request was claimed (%d used)", n)
+			}
 		})
 	}
 }

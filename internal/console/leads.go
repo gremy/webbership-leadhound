@@ -211,7 +211,10 @@ type LeadBatch struct {
 	ApprovedAt, DiscardedAt *time.Time
 	Changed                 bool
 	HashPrefix              string
-	Items                   []LeadItem
+	// SendAgain is set for a manual batch its Send now approved whose send never ran: none of
+	// its messages is sending or sent, so the page offers Send now again.
+	SendAgain bool
+	Items     []LeadItem
 }
 
 // LeadItem is one lead of a batch, numbered as the approval's skip list.

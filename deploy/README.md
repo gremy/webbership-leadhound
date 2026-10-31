@@ -88,7 +88,8 @@ The brief and ATS buttons start the timed units unchanged, so a run from the con
 A press while the same service is starting or running would be merged into that run by systemd, so the console refuses it and says when the running one started.
 `PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
 
-Check the watchers with `systemctl list-units 'leadhound-*.path'`: each of the six, these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)) and `leadhound-leads-research.path` (see [Contact research](#contact-research)), should be `active` and `waiting`, and Send now's `leadhound-leads-send-now.path` too wherever the send timer is enabled (see [Send now](#send-now)); check a run with a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
+Check the watchers with `systemctl list-units 'leadhound-*.path'`: these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)), `leadhound-leads-research.path` (see [Contact research](#contact-research)), the Status page's `leadhound-leads-verify-balance.path` and Check email now's `leadhound-leads-verify-now.path` should all be `active` and `waiting`, and Send now's `leadhound-leads-send-now.path` too wherever the send timer is enabled (see [Send now](#send-now)).
+Check a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
 The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
 
 **A watcher stops when its service hits its start limit.**
@@ -109,7 +110,7 @@ sudo systemctl start leadhound-brief.path
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
 | `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` `leads-templates/` and `campaigns/` (root:leadhound 0640, from `make deploy-data`; see [Campaigns on the server](#campaigns-on-the-server)), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
-| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) and the Status page's Reoon refresh (`run/leads-verify-balance`), one file per action, read by the `leadhound-*.path` watchers |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) the Status page's Reoon refresh (`run/leads-verify-balance`), Send now and the manual send (`run/leads-send-now`) and Check email now (`run/leads-verify-now`), one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
 | `/etc/leadhound/mailbox.key` | root, 0600 | the mailboxes' private key, made by the first deploy; see [Mailboxes](#mailboxes) |
 | `/etc/leadhound/anthropic.key` | root, 0600 | the Anthropic API key, placed by hand; see [The Anthropic key](#the-anthropic-key) |
@@ -337,12 +338,88 @@ The button sits beside the sentence on Controls and on the Leads page's Outreach
 The console refuses a press before it asks for anything when sending is off, in shadow mode, when the send timer is not enabled, when nothing is due now, when today's limit is used ("Today's warm-up limit is used (n of cap); Send now only skips the sending window."), and while a send runs or a press already waits.
 "A send runs" is read from the send lock itself, so a run that was killed without finishing its record blocks nothing.
 While a press waits or a send runs, the button gives way to that line.
-Otherwise it asks the way Run now does: it writes the request time to `run/leads-send-now`, and `leadhound-leads-send-now.path` starts `leadhound-leads-send-now.service`, which runs `leads send --now --max 25` with the hourly send's mailbox key, limits and sandbox.
+Otherwise it asks the way Run now does: it writes the request time to `run/leads-send-now`, and `leadhound-leads-send-now.path` starts `leadhound-leads-send-now.service`, with the hourly send's mailbox key, limits and sandbox.
+The unit's command is fixed, `leads send --from-request`, and `--from-request` implies `--now` and `--max 25`.
+It reads the request file: a time or an empty file, as this button writes it, is this Send now, the same run as `leads send --now --max 25`; a JSON line is a manual send (see [Manual Send now](#manual-send-now)).
 The deploy arms that watcher with the send timer, on the same two lines (`LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live`), and disarms it with them: where the hourly send does not run, Send now does not either.
 Both send units take the same database send lock, so they never run at once: whichever starts second says "Another send is running; this one did nothing."
 The run is recorded as the hourly send's is, with "send now" in its note, so Controls shows its last run as "Finished (Send now)" and the line under the button says what that run sent (an hourly run never counts as the answer to a press); its journal starts "Send now: this run skips the sending window only".
 From the command line: `make remote HOST=… CONFIRM=1 ARGS='leads send --now'`.
 If a press stays "asked and not started", reset its watcher as for Run now: `sudo systemctl reset-failed leadhound-leads-send-now.path leadhound-leads-send-now.service`, then `sudo systemctl start leadhound-leads-send-now.path`.
+
+### Manual Send now
+
+The manual Send now sends leads you pick, now, and lets you go past named warnings with one confirm.
+It rides the same watcher, unit and send lock as Send now; the console still never chooses a command line and holds no key.
+
+**End to end.**
+
+1. **Pick.** "Send now" on a lead's page, the Leads list's tick boxes and "Send now (N)", or "Approve and send now" on a batch's page.
+   At most 25 leads go in one send; more is refused with "Split it".
+2. **Preview** (`POST /leads/send-now/preview`).
+   The console builds a manual batch of the chosen leads through the normal batch path, with the campaign's template drafts (a manual batch never waits for Claude drafts).
+   The confirm page (`/leads/send-now/{id}`) lists each lead as going, waiting, or stopped with its reason, and every warning as a sentence with its numbers.
+   A manual batch never blocks the morning batch, and one left unconfirmed is discarded after 30 minutes (on the next preview).
+3. **Waiting on the email check.**
+   With the Email check on, an address not checked yet holds the send button, and so does an unsure answer, which is asked again the next day.
+   "Check email now" (`POST /leads/send-now/{id}/check-email`) writes `run/leads-verify-now`; `leadhound-leads-verify-now.path` starts `leadhound-leads-verify-now.service`, which runs `leads verify --from-request --max 25` on that batch's addresses only, with the Reoon key, and the page updates itself while it waits.
+4. **Confirm** (`POST /leads/send-now/{id}/confirm`).
+   You tick "I have read the warnings" and press send.
+   The backend reads the plan again: the batch hash must be the one shown, every warning now must be one the page showed, and a new hard stop sends you back to the confirm page with the new plan.
+   It then approves the batch with its first emails due now, leaves out the leads with a hard stop, and writes a `send_request` row in the same transaction: the batch, the warning codes, the hash shown, the operator, and the warnings as shown.
+   A lead left out by a hard stop goes back to new (lead_event reason "left out of manual batch N"), so the next batch or Send now can take it again; only the operator's own skip on a daily batch marks a lead skipped.
+5. **The request file.**
+   Only once that row is committed does the console write `run/leads-send-now`, as one JSON line holding the batch and the time, `{"batch_id": N, "at": "…"}`.
+   The file is untrusted, because the console and the send service run as the same user, so it names the batch only; the codes and the operator come from the row.
+6. **The run.**
+   `leadhound-leads-send-now.path` starts `leadhound-leads-send-now.service`: `leads send --from-request`.
+   After the pause check, it takes the batch's newest unused `send_request` row no older than 15 minutes and checks it again, then claims it, once only, in the same transaction: the batch exists, is manual, approved, not discarded and of this server's kind (live or shadow), its hash matches what was confirmed and its messages still hash to it, and every code is in the closed set.
+   A refused request sends nothing, fails the unit so it shows, and stays unused; a request already used or over 15 minutes old sends nothing.
+   Either way the batch page then offers **Send now again** (`/leads/send-now/{id}/again`) while none of the batch's messages has gone: it shows the warnings again, asks for the tick again and writes a fresh `send_request`, without approving the batch again.
+   An approved manual batch nobody sends again goes out with the hourly send, under the normal limits and with no overrides.
+   A paused run never uses up the request: once sending is resumed it still works within its 15 minutes.
+   The run sends that batch alone, with only the confirmed warnings lifted.
+   Leads that share a recipient domain go one per run, so the rest go in the next runs, and the confirm page says so.
+
+**The request file formats** that `leads send --from-request` accepts in `run/leads-send-now`:
+
+| Content | Means |
+| --- | --- |
+| empty | Send now from Controls (`leads send --now --max 25`) |
+| an RFC3339 time | Send now from Controls, as the button writes it |
+| a JSON line `{"batch_id": N, "at": "…"}` with N above 0 | the manual send of batch N, under its `send_request` row |
+
+Text starting with `{` that is not exactly that JSON, or names no batch, is refused, and so is a missing file or one over 4 KiB.
+Any other text is read as a Controls Send now, because the old service never read the file.
+
+**Warnings you may go past** (the closed set; the database refuses any other code):
+
+| Code | What it lifts |
+| --- | --- |
+| `window` | your sending window is closed now |
+| `business_hours` | a recipient is outside business hours in their own time, or will be before the send is through |
+| `ramp` | a mailbox's warm-up cap for today; it may then go up to the hard ceiling of 40 |
+| `domain_daily` | the sending domain's daily limit (`caps.domain_per_day`, 50 by default); it may then go up to the hard ceiling of 100 |
+| `spacing_jitter` | the usual random spacing; emails go 60 seconds apart instead, never closer |
+| `schedule` | a first email would wait for its next slot; it goes now instead |
+
+**Hard stops no confirm lifts**: sending switched off on Controls, shadow mode on a live batch (or a live batch on a shadow server), a suppressed lead, a lead no longer new, a blocked email check, a reserved test domain, a mailbox that is not ready (paused, retired, not checked today) or not assigned to the campaign, 40 sends a day per mailbox (`HardDailyCeiling`), 100 a day per sending domain (`HardDomainDailyCeiling`), a first email already sent or already in another batch, a first step that is not an email, more than 25 leads, a batch whose messages changed after drafting, and one recipient domain per run.
+On "Approve and send now" a stopped email lead blocks the whole batch, so a daily batch is never sent with a lead quietly left out: use Approve to send it on its schedule instead.
+The send checks suppressions, the email check, reserved domains and a first email already gone once more as it sends each message.
+
+**Where overrides are recorded.**
+The run note gets `override: <codes>` (for example `override: business_hours,schedule,window`), beside `send now`.
+Every message a manual send with any override sends (or writes to the shadow outbox) gets a `send_override` row: the run, the batch, the lead, the message, the codes, the operator, and in `detail` the numbers each warning carried at the run's start together with the warnings exactly as the confirm page showed them.
+The row is written after the email is sent, so a database error at that moment stops the run but leaves that one email sent without its `send_override` row; the run note still says `override: <codes>`.
+The `send_request` row keeps the confirm itself, with `used_at` set when the run claims it.
+
+**Shadow and dev.**
+On a server in shadow mode the preview is refused with the shadow stop, and a batch drafted in the other mode cannot be sent.
+On `make console-local` (dev) a manual batch is allowed in shadow; nothing watches the request file there, so the confirm says to run `leadhound leads send --from-request`, which writes the emails to the shadow outbox.
+Selftest leads cannot be picked in the console; `--from-request` sends a batch of selftest leads alone, and refuses one that mixes them with other leads.
+
+If a manual send stays "asked and not started", reset the watcher as above; the request still works if the run starts within 15 minutes of the confirm, and after that, use Send now again on the batch page.
+For "Check email now": `sudo systemctl reset-failed leadhound-leads-verify-now.path leadhound-leads-verify-now.service`, then `sudo systemctl start leadhound-leads-verify-now.path`.
 
 ### Enrichment
 
@@ -456,7 +533,7 @@ Before the batch, `leads.yaml` must list your own product's hosts as `probe.cafe
 Production has never built a lead, so take these steps in order:
 
 1. Place the Anthropic key first, as [The Anthropic key](#the-anthropic-key) says: from the release with campaigns on, the batch and contact research units fail to start without it.
-2. Deploy: `make deploy` migrates the core set up to 00009 and the leads set up to 00024, with the new binary, before it puts that binary in place; a failed migration leaves the old release running.
+2. Deploy: `make deploy` migrates the core set up to 00009 and the leads set up to 00028 (see [Leads migrations 00026 to 00028](#leads-migrations-00026-to-00028)), with the new binary, before it puts that binary in place; a failed migration leaves the old release running.
 3. `make deploy-data` (it copies `campaigns/` too), then `leads campaigns register`, as [Campaigns on the server](#campaigns-on-the-server) says.
 4. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
 5. Add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` to turn finding on.
@@ -772,7 +849,7 @@ The key is a file on the server, `/etc/leadhound/reoon.key` (`root:root 0600`), 
 
 - **Place it by hand**: make the key in your Reoon account (Dashboard, API), then on the server `sudo -e /etc/leadhound/reoon.key`, paste, save, `sudo chmod 0600 /etc/leadhound/reoon.key`.
   Never type it into a command line or paste it into a chat.
-- **Who reads it**: only `leadhound-leads-batch.service` and `leadhound-leads-verify-balance.service` (the credits for the Status page, below), as the systemd credential `LoadCredential=reoon.key:/etc/leadhound/reoon.key`; no other unit, never the console, and it is never a line in `/etc/leadhound/env`.
+- **Who reads it**: only `leadhound-leads-batch.service`, `leadhound-leads-verify-balance.service` (the credits for the Status page, below) and `leadhound-leads-verify-now.service` (Check email now, see [Manual Send now](#manual-send-now)), as the systemd credential `LoadCredential=reoon.key:/etc/leadhound/reoon.key`; no other unit, never the console, and it is never a line in `/etc/leadhound/env`.
   LeadHound reads it from `$CREDENTIALS_DIRECTORY/reoon.key` on the server, or locally from the file `LEADHOUND_REOON_KEY_FILE` names (made `0600`; a file others can read is refused).
 - **Without the key the batch still runs.**
   The unit also has `SetCredential=reoon.key:`, an empty default systemd uses when the file cannot be read, so the unit starts; `leads verify` reads the empty credential as no key, prints that nothing was checked because the key is not at `/etc/leadhound/reoon.key`, records its run, and Controls says the last run checked nothing for that reason.
@@ -900,10 +977,31 @@ It is the contact research below with phones only: Claude (Haiku) searches, Lead
 Each organisation gets one try every 90 days, found or not, under the research caps in [Claude spend caps](#claude-spend-caps).
 It has no unit and no timer: run it by hand with the key, as "Running a Claude command by hand" in [The Anthropic key](#the-anthropic-key) shows.
 
+## Leads migrations 00026 to 00028
+
+`make deploy` applies them with the new binary, as the owner role, before the binary is put in place.
+
+| Migration | Adds |
+| --- | --- |
+| `00026_service_status.sql` | `service_status` (the last Reoon and Claude reading or error, one row per provider) and `claude_topup` (the top-ups the Status page's credit estimate counts from) |
+| `00027_send_override.sql` | `outreach_batch.manual`, `send_request` (each manual confirm, claimed once) and `send_override` (each message sent past a warning); both check their codes against the closed set |
+| `00028_crm.sql` | `lead_crm` (stage, lost reason, note, next action and its date, deal value and currency, tenant link, snooze), `lead_stage_event` (every stage change), `mailbox_event.snippet` (at most 300 characters) and `call_outcome.call_back_on` |
+
+A database that applied an earlier draft of 00027 during development needs it rolled back and applied again; production has not run any 00027 yet.
+
+## Reply snippets
+
+Reply sync used to keep no text of a reply.
+Since 00028 it keeps one thing for the Replies page: a snippet on a `reply` event matched to a lead, at most 300 characters.
+It is the reply's opening plain text: the first text part is decoded, HTML is stripped, and quoted history (attribution lines, quote headers, lines starting with `>`), the signature, phone and webmail footers and our own lines (the identity and opt-out lines) are taken out, then whitespace collapses and a longer text is cut on a word.
+Any other event, and a reply matched to no lead, keeps no snippet, and nothing else of any body is stored.
+`leads forget org` empties the snippets of the organisation's lead and deletes its CRM rows, as [Erasure](#erasure) says; a backup written before then keeps them until it ages out.
+
 ## Erasure
 
 `leads forget org ID --reason TEXT` erases one organisation's personal data when someone asks, in one transaction: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts, and the phones and emails of its map listing.
 It also suppresses the organisation's domain and its numbers (as hashes, with the source `forget: <reason>`), so it is never collected, enriched, researched or called again, moves its leads to suppressed and cancels their pending messages.
+It also erases its lead's CRM: every reply snippet of its mailbox events is emptied (the event rows stay), and its `lead_crm` row (note, next action, deal, tenant link) and its stage changes (`lead_stage_event`) are deleted; the counts line names them.
 The reason is one line of at most 200 characters with no `@` in it; it prints counts only, never a number or a page.
 ID is the organisation's id in the database (the `id` column of the `org` table), not the lead's number; the console does not show it yet.
 

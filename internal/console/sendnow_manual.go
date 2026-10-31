@@ -25,8 +25,22 @@ type sendConfirmView struct {
 	Error   bool
 }
 
-// Path is this page's own path, with its back kept.
-func (v sendConfirmView) Path() string { return sendConfirmPath(v.Plan.BatchID, v.Back) }
+// Path is this page's own path, with its back kept: the confirm page, or Send now again's.
+func (v sendConfirmView) Path() string {
+	if v.Plan.Again {
+		return sendAgainPath(v.Plan.BatchID, v.Back)
+	}
+	return sendConfirmPath(v.Plan.BatchID, v.Back)
+}
+
+// Action is where the page's send posts: confirm, or Send now again's own post.
+func (v sendConfirmView) Action() string {
+	id := strconv.FormatInt(v.Plan.BatchID, 10)
+	if v.Plan.Again {
+		return sendNowPath + id + "/again"
+	}
+	return sendNowPath + id + "/confirm"
+}
 
 // CancelTo is where Cancel goes: the page the send started from, or the batch.
 func (v sendConfirmView) CancelTo() string {
@@ -80,6 +94,15 @@ func (v sendConfirmView) ShowSend() bool {
 // sendConfirmPath is the confirm page of batch id, with back as its query when set.
 func sendConfirmPath(id int64, back string) string {
 	p := sendNowPath + strconv.FormatInt(id, 10)
+	if back != "" {
+		p += "?back=" + url.QueryEscape(back)
+	}
+	return p
+}
+
+// sendAgainPath is Send now again's page of batch id, with back as its query when set.
+func sendAgainPath(id int64, back string) string {
+	p := sendNowPath + strconv.FormatInt(id, 10) + "/again"
 	if back != "" {
 		p += "?back=" + url.QueryEscape(back)
 	}
@@ -203,8 +226,34 @@ func (s *server) sendConfirm(w http.ResponseWriter, r *http.Request) {
 	s.renderSendConfirm(w, r, http.StatusOK, id, back, s.takeFlash(w, r), false)
 }
 
+// sendAgain is GET /leads/send-now/{id}/again: Send now again's page, the confirm page of a manual
+// batch whose send never ran, with the plan read again (warnings and the tick box as before).
+func (s *server) sendAgain(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	back := sendNowBack(r.URL.Query().Get("back"))
+	s.renderSendPage(w, r, http.StatusOK, id, back, s.takeFlash(w, r), false, true)
+}
+
 func (s *server) renderSendConfirm(w http.ResponseWriter, r *http.Request, code int, id int64, back, msg string, isErr bool) {
-	plan, err := s.b.SendNowPlan(r.Context(), id)
+	s.renderSendPage(w, r, code, id, back, msg, isErr, false)
+}
+
+// renderSendPage shows the confirm page, or Send now again's when again is set.
+func (s *server) renderSendPage(w http.ResponseWriter, r *http.Request, code int, id int64, back, msg string, isErr, again bool) {
+	read := s.b.SendNowPlan
+	if again {
+		read = s.b.SendNowAgainPlan
+	}
+	plan, err := read(r.Context(), id)
+	if again && errors.Is(err, ErrUserFixable) {
+		// A batch that went (or another tab sent it): its batch page says what happened.
+		s.sendNowRefused(w, r, "send-now again", refusalWords(err), leadBatchPath+strconv.FormatInt(id, 10))
+		return
+	}
 	if s.leadsRead(w, r, code, err) {
 		return
 	}
@@ -219,6 +268,16 @@ func (s *server) showSendConfirm(w http.ResponseWriter, r *http.Request, code in
 // read (the "I have read" tick) and back. With warnings shown and no tick it refuses without asking
 // the backend. A plan that changed shows the page again with the plan now.
 func (s *server) sendNowConfirm(w http.ResponseWriter, r *http.Request) {
+	s.confirmSend(w, r, false)
+}
+
+// sendNowAgain is POST /leads/send-now/{id}/again: Send now again's press, the same form as
+// confirm's. The backend never approves the batch again; it writes a fresh send request.
+func (s *server) sendNowAgain(w http.ResponseWriter, r *http.Request) {
+	s.confirmSend(w, r, true)
+}
+
+func (s *server) confirmSend(w http.ResponseWriter, r *http.Request, again bool) {
 	id, ok := pathID(r)
 	if !ok {
 		http.NotFound(w, r)
@@ -227,14 +286,20 @@ func (s *server) sendNowConfirm(w http.ResponseWriter, r *http.Request) {
 	if !leadsForm(w, r) {
 		return
 	}
-	const do = "send-now confirm"
+	do := "send-now confirm"
+	if again {
+		do = "send-now again"
+	}
 	f := r.PostForm
 	back := sendNowBack(f.Get("back"))
-	c := ManualConfirm{BatchID: id, HashPrefix: strings.TrimSpace(f.Get("hash")), Operator: s.opt.Operator}
+	refuse := func(msg string) {
+		s.leadsLog(do, "refused")
+		s.renderSendPage(w, r, http.StatusUnprocessableEntity, id, back, msg, true, again)
+	}
+	c := ManualConfirm{BatchID: id, HashPrefix: strings.TrimSpace(f.Get("hash")), Operator: s.opt.Operator, Again: again}
 	for _, code := range f["code"] {
 		if !slices.Contains(SendWarningCodes, code) {
-			s.leadsLog(do, "refused")
-			s.renderSendConfirm(w, r, http.StatusUnprocessableEntity, id, back, "The send named a warning this console does not know; check the warnings again.", true)
+			refuse("The send named a warning this console does not know; check the warnings again.")
 			return
 		}
 		if !slices.Contains(c.Codes, code) {
@@ -242,14 +307,11 @@ func (s *server) sendNowConfirm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if c.HashPrefix == "" {
-		s.leadsLog(do, "refused")
-		s.renderSendConfirm(w, r, http.StatusUnprocessableEntity, id, back, "The send carried no batch hash; check the warnings again.", true)
+		refuse("The send carried no batch hash; check the warnings again.")
 		return
 	}
 	if len(c.Codes) > 0 && f.Get("read") == "" {
-		s.leadsLog(do, "refused")
-		s.renderSendConfirm(w, r, http.StatusUnprocessableEntity, id, back,
-			"Tick that you have read the "+plural(len(c.Codes), "warning", "warnings")+" before you send past them; nothing was sent.", true)
+		refuse("Tick that you have read the " + plural(len(c.Codes), "warning", "warnings") + " before you send past them; nothing was sent.")
 		return
 	}
 	out, err := s.b.SendNowConfirm(r.Context(), c)
@@ -260,8 +322,7 @@ func (s *server) sendNowConfirm(w http.ResponseWriter, r *http.Request) {
 		s.showSendConfirm(w, r, http.StatusConflict, sendConfirmView{Plan: changed.Plan, Back: back, Message: changed.Error(), Error: true})
 		return
 	case errors.Is(err, ErrUserFixable):
-		s.leadsLog(do, "refused")
-		s.renderSendConfirm(w, r, http.StatusUnprocessableEntity, id, back, refusalWords(err), true)
+		refuse(refusalWords(err))
 		return
 	case errors.Is(err, ErrNotFound):
 		s.leadsLog(do, "refused")
@@ -293,6 +354,9 @@ func (s *server) sendNowCheckEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	const do = "send-now check email"
 	next := sendConfirmPath(id, sendNowBack(r.PostForm.Get("back")))
+	if r.PostForm.Get("again") != "" {
+		next = sendAgainPath(id, sendNowBack(r.PostForm.Get("back")))
+	}
 	out, err := s.b.SendNowCheckEmail(r.Context(), id)
 	switch {
 	case errors.Is(err, ErrUserFixable):

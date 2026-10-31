@@ -35,27 +35,34 @@ func TestCSSHasBoardComponents(t *testing.T) {
 	}
 }
 
-// TestCSSBoardScoping: the board's rules for names the older pages use with another
-// meaning reach only a .page, and the older rules stop at .page, so no current page
-// changes before it is restyled.
+// TestCSSBoardScoping: the board's rules for names the older pages used with another meaning
+// reach only a .page, never the shell around it. The older pages' rules are gone: every page's
+// content sits in a .page, so a rule that stopped at .page would reach nothing a page shows.
 func TestCSSBoardScoping(t *testing.T) {
 	b, err := staticFS.ReadFile("static/console.css")
 	if err != nil {
 		t.Fatal(err)
 	}
 	css := string(b)
-	const old = ":where(:not(.page *))"
 	for _, name := range []string{"card", "grid", "page-head", "empty", "stats", "hint", "filters", "stack", "split", "pager"} {
 		if !strings.Contains(css, "\n:where(.page) ."+name+" ") {
 			t.Errorf("the board's .%s is not scoped to .page", name)
 		}
-		if !strings.Contains(css, "."+name+old) {
-			t.Errorf("the older .%s does not stop at .page", name)
-		}
 	}
-	for _, el := range []string{"h1", "h2", "h3", "p", "code", "button", "summary", "label", "input", "select"} {
-		if !strings.Contains(css, "\n"+el+old) {
-			t.Errorf("the older %s rule does not stop at .page", el)
+	if strings.Contains(css, ":where(:not(.page *))") {
+		t.Error("an older rule that stops at .page is back; every page is in a .page now")
+	}
+	entries, err := templateFS.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		raw, err := templateFS.ReadFile("templates/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), `{{define "content"}}`) && !strings.Contains(string(raw), `<div class="page">`) {
+			t.Errorf("%s has a page that is not in a .page", e.Name())
 		}
 	}
 	if !regexp.MustCompile(`\.table-wrap \{\s*position: relative;`).MatchString(css) {

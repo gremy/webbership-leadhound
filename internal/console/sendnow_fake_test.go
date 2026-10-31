@@ -43,6 +43,19 @@ func (f *fakeBackend) SendNowPlan(_ context.Context, id int64) (SendPlan, error)
 	return f.plan, nil
 }
 
+func (f *fakeBackend) SendNowAgainPlan(_ context.Context, id int64) (SendPlan, error) {
+	f.count("SendNowAgainPlan")
+	if f.planErr != nil {
+		return SendPlan{}, f.planErr
+	}
+	if id != f.plan.BatchID {
+		return SendPlan{}, ErrNotFound
+	}
+	p := f.plan
+	p.Again = true
+	return p, nil
+}
+
 func (f *fakeBackend) SendNowConfirm(_ context.Context, c ManualConfirm) (ControlOutcome, error) {
 	f.count("SendNowConfirm")
 	f.mu.Lock()

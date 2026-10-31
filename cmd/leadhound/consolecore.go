@@ -616,6 +616,18 @@ func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, e
 	if v.Approvable() {
 		out.HashPrefix = v.HashPrefix()
 	}
+	// Send now again: a manual batch approved by its confirm, with a first email still waiting
+	// and nothing sending or sent (manualGone's states).
+	if v.Batch.Manual && v.Batch.ApprovedAt != nil && v.Batch.DiscardedAt == nil && !v.Changed {
+		waiting, gone := false, false
+		for _, it := range v.Items {
+			for _, m := range it.Msgs {
+				waiting = waiting || (m.Step == 0 && m.Channel == leadstore.ChannelEmail && m.State == leadstore.MsgApproved)
+				gone = gone || slices.Contains([]string{leadstore.MsgSending, leadstore.MsgSent, leadstore.MsgMaybeSent, leadstore.MsgShadowSent}, m.State)
+			}
+		}
+		out.SendAgain = waiting && !gone
+	}
 	gens := map[int64]*outreach.WrittenDraft{}
 	for _, it := range v.Items {
 		li := console.LeadItem{N: it.N, LeadID: it.Lead.ID, Domain: it.Org.Domain, Kind: it.Lead.Kind, Channel: it.Lead.Channel, Route: it.Route,

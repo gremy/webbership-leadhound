@@ -982,7 +982,7 @@ func TestOldLeadsLinksPointToOutreach(t *testing.T) {
 			t.Fatal(err)
 		}
 		has := strings.Contains(string(raw), `href="/leads"`)
-		if allowed := slices.Contains([]string{"leads_tabs.html", "leads_list.html", "lead_detail.html"}, e.Name()); has && !allowed {
+		if allowed := slices.Contains([]string{"leads_list.html", "lead_detail.html"}, e.Name()); has && !allowed {
 			t.Errorf("%s links to /leads", e.Name())
 		}
 	}

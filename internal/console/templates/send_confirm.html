@@ -3,13 +3,15 @@
 <div class="page">
 <div id="send-confirm"{{if $p.Waiting}} hx-get="{{$path}}" hx-trigger="every 3s" hx-select="#send-confirm" hx-target="this" hx-swap="outerHTML"{{end}}>
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}} send-confirm-notice" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
-<form class="confirm" method="post" action="/leads/send-now/{{$p.BatchID}}/confirm" aria-labelledby="confirm-h">
+<form class="confirm" method="post" action="{{$v.Action}}" aria-labelledby="confirm-h">
   <input type="hidden" name="hash" value="{{$p.HashPrefix}}">
+  {{if $p.Again}}<input type="hidden" name="again" value="1">{{end}}
   {{range $p.Warnings}}<input type="hidden" name="code" value="{{.Code}}">{{end}}
   {{with $v.Back}}<input type="hidden" name="back" value="{{.}}">{{end}}
   <div class="confirm-head">
-    <span class="eyebrow">Manual batch {{$p.BatchID}} · {{plural (len $p.Leads) "lead" "leads"}} chosen</span>
+    <span class="eyebrow">Manual batch {{$p.BatchID}} · {{if $p.Again}}Send now again{{else}}{{plural (len $p.Leads) "lead" "leads"}} chosen{{end}}</span>
     <h1 id="confirm-h">{{if $v.ShowSend}}Send {{plural $v.SendNow "email" "emails"}} now?{{else if $p.Waiting}}Getting the send ready{{else}}Nothing can go now{{end}}</h1>
+    {{if $p.Again}}<p class="page-sub">This batch was approved when you first confirmed it, but its send never ran. Sending again asks for the run once more; nothing is approved again.</p>{{end}}
     <p class="page-sub">{{if $v.ShowSend}}Leads with a hard stop are left out; {{if $nw}}the rest can go past the warnings below.{{else}}the rest go now.{{end}}{{else if $p.Waiting}}This page updates itself when it is ready.{{else}}Every chosen lead has a hard stop or is still waiting, so there is no send button.{{end}}</p>
   </div>
   <div class="confirm-body">

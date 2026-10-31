@@ -1,6 +1,14 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Console redesign, Dashboard and Status, manual Send now and the CRM (2026-10-31, on local main, not pushed or deployed; plan `leadhound-console-redesign-manual-send`, Checkpoints 1-4b built, in CP5):
+- Committed: CP1 the board (`640b3b3`), CP2 the shell with Leads | Jobs, the gear menu and the theme button (`69efac8`), CP3 the restyle (`dcb9739`, `12ea73b`), CP3b the Dashboard cards and the Status page (`6587109`), CP4 the manual Send now (`9600e3a`); CP4b the CRM is built (Replies, Pipeline, Calls, Reports, the lead timeline, note, next action and deal).
+- What exists: Send now on chosen leads with a confirm page, overridable warnings (`window`, `business_hours`, `ramp`, `domain_daily`, `spacing_jitter`, `schedule`) and hard stops; `leads send --from-request` runs it from a `send_request` row, and every override lands in the run note and `send_override`; `leads verify --balance-only` and the `leadhound-leads-verify-balance` units feed Status; reply sync keeps a snippet of at most 300 characters, which `leads forget` empties.
+- Migrations: leads up to 00028 (00026 Status, 00027 manual send, 00028 CRM); local dev and test DBs redid the first draft of 00027.
+- Docs: README console tour, CRM and the two Send now roads; `deploy/README.md` "Manual Send now", "Leads migrations 00026 to 00028", "Reply snippets".
+- Not verified: the new units with `systemd-analyze` (server only); the 100-a-day domain ceiling end to end; the empty `SetCredential=reoon.key:` (below) also sits in the balance and Check email now units.
+- Next: CP5, `make gate` then `make prepush`, the risk review of the sending and data changes, then push and deploy on the operator's yes and check live (sign in, the shell, a Send now preview; selftest leads can't be picked in the console).
+
 Console controls, mailboxes per campaign, Reoon email check, sending window and Send now: live in production (2026-10-31, `a0dda1e`; plan `leadhound-console-controls-mailbox-campaigns`, Checkpoints 1-5):
 - Commits: `2c855ea` job switches + campaign mailboxes, `4230be7` Controls page, `bf62d7e` Reoon email check, `523aad5` sending window + Send now + deploy-data checked by the server's binary, `a0dda1e` gitleaks accepts the fake test key.
 - Production after deploy: every switch on (Email check on, Reoon key at `/etc/leadhound/reoon.key`, root 0600); mailbox 1 → `drupal-eol`, mailbox 2 → `cafes-loyalty`, both active; the conversion marker exists; the Send now watcher is enabled with the sending timers; no failed leadhound unit; window 08:30-18:00 Mon-Fri, from the file.

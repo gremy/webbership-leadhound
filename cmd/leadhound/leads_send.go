@@ -986,72 +986,99 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 }
 
 // claimRequest reads what --from-request asks. A legacy request (a time, or an empty file) is
-// today's Send now and claims nothing. A manual one claims its batch's newest send_request row
-// no older than sendRequestMaxAge, once only, and checks it again: the batch is there, manual,
-// approved, not discarded and of this run's kind (live or shadow); the hash the operator
-// confirmed is its content hash, which its rows still hash to; every code is in the closed set.
-// stop is true when the run must end with nothing sent; a refusal is also an error, so the
-// unit fails where the operator sees it. It runs after the pause check, never before.
+// today's Send now and claims nothing. A manual one takes its batch's newest send_request row
+// no older than sendRequestMaxAge and checks it: the batch is there, manual, approved, not
+// discarded and of this run's kind (live or shadow); the hash the operator confirmed is its
+// content hash, which its rows still hash to; every code is in the closed set. Only a request
+// that passes is claimed (marked used), in the same transaction as the checks, so it is claimed
+// once and a refused one stays unused: fixed within its 15 minutes, it can still go, and the
+// console's Send now again writes a fresh one. stop is true when the run must end with nothing
+// sent; a refusal is also an error, so the unit fails where the operator sees it. It runs after
+// the pause check, never before.
 func (r *sendRun) claimRequest(ctx context.Context, now time.Time) (stop bool, err error) {
-	refuse := func(format string, a ...any) (bool, error) {
-		why := fmt.Sprintf(format, a...)
+	refuse := func(why string) (bool, error) {
 		r.rep.note(noteRequestRefused)
 		r.rep.stopped = true
 		r.printf("No sends: the Send now request is refused: %s.\n", why)
 		return true, fmt.Errorf("leads send: send now request refused: %s", why)
 	}
 	if r.reqErr != nil {
-		return refuse("%v", r.reqErr)
+		return refuse(r.reqErr.Error())
 	}
 	if r.reqBatch == 0 {
 		return false, nil
 	}
-	req, ok, err := r.lq.ClaimSendRequest(ctx, r.reqBatch, now.Add(-sendRequestMaxAge), now)
-	if err != nil {
-		return true, err
+	var (
+		req     leadstore.SendRequest
+		b       leadstore.Batch
+		ov      outreach.Overrides
+		gate    *emailGate
+		found   bool
+		refusal string
+	)
+	// A refusal rolls the transaction back, so the request is not used.
+	errRefused := errors.New("send now request refused")
+	no := func(format string, a ...any) error {
+		refusal = fmt.Sprintf(format, a...)
+		return errRefused
 	}
-	if !ok {
-		r.rep.note(noteNoRequest)
-		r.rep.stopped = true
-		r.printf("No sends: batch %d has no confirmed Send now waiting (it was sent already, or confirmed over %d minutes ago); confirm it again in the console.\n",
-			r.reqBatch, int(sendRequestMaxAge.Minutes()))
-		return true, nil
-	}
-	b, err := r.lq.BatchByID(ctx, req.BatchID)
+	err = leadsInTx(ctx, r.s.Pool(), func(tq leadstore.Queries) error {
+		var err error
+		if req, found, err = tq.PendingSendRequest(ctx, r.reqBatch, now.Add(-sendRequestMaxAge)); err != nil || !found {
+			return err
+		}
+		b, err = tq.BatchByID(ctx, req.BatchID)
+		switch {
+		case errors.Is(err, leadstore.ErrBatchNotFound):
+			return no("batch %d is not there", req.BatchID)
+		case err != nil:
+			return err
+		case !b.Manual:
+			return no("batch %d is not a manual batch", b.ID)
+		case b.DiscardedAt != nil:
+			return no("batch %d is discarded", b.ID)
+		case b.ApprovedAt == nil:
+			return no("batch %d is not approved", b.ID)
+		case b.Shadow == r.live:
+			return no("batch %d is a %s batch and sending is %s", b.ID, map[bool]string{true: "shadow", false: "live"}[b.Shadow],
+				map[bool]string{true: "live", false: "shadow"}[r.live])
+		}
+		prefix := strings.ToLower(strings.TrimSpace(req.HashPrefix))
+		if len(prefix) < leadstore.MinHashPrefix || !strings.HasPrefix(hex.EncodeToString(b.ContentSHA256), prefix) ||
+			!bytes.Equal(b.ApprovedHash, b.ContentSHA256) {
+			return no("batch %d is not the batch that was confirmed (its hash differs)", b.ID)
+		}
+		sum, err := tq.BatchContentSHA256(ctx, b.ID)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(sum, b.ContentSHA256) {
+			return no("batch %d changed after it was written (its messages no longer hash to it)", b.ID)
+		}
+		if ov, err = outreach.ParseOverrides(req.Codes); err != nil {
+			return no("%v", err)
+		}
+		if gate, err = loadEmailGate(ctx, tq, batchSetup{leads: r.setup.leads, shadow: !r.live, loc: r.loc}, now); err != nil {
+			return err
+		}
+		// Every check passed: claim it, last.
+		if ok, err := tq.UseSendRequest(ctx, req.ID, now); err != nil || !ok {
+			found = false
+			return err
+		}
+		return nil
+	})
 	switch {
-	case errors.Is(err, leadstore.ErrBatchNotFound):
-		return refuse("batch %d is not there", req.BatchID)
+	case errors.Is(err, errRefused):
+		return refuse(refusal)
 	case err != nil:
 		return true, err
-	case !b.Manual:
-		return refuse("batch %d is not a manual batch", b.ID)
-	case b.DiscardedAt != nil:
-		return refuse("batch %d is discarded", b.ID)
-	case b.ApprovedAt == nil:
-		return refuse("batch %d is not approved", b.ID)
-	case b.Shadow == r.live:
-		return refuse("batch %d is a %s batch and sending is %s", b.ID, map[bool]string{true: "shadow", false: "live"}[b.Shadow],
-			map[bool]string{true: "live", false: "shadow"}[r.live])
-	}
-	prefix := strings.ToLower(strings.TrimSpace(req.HashPrefix))
-	if len(prefix) < leadstore.MinHashPrefix || !strings.HasPrefix(hex.EncodeToString(b.ContentSHA256), prefix) ||
-		!bytes.Equal(b.ApprovedHash, b.ContentSHA256) {
-		return refuse("batch %d is not the batch that was confirmed (its hash differs)", b.ID)
-	}
-	sum, err := r.lq.BatchContentSHA256(ctx, b.ID)
-	if err != nil {
-		return true, err
-	}
-	if !bytes.Equal(sum, b.ContentSHA256) {
-		return refuse("batch %d changed after it was written (its messages no longer hash to it)", b.ID)
-	}
-	ov, err := outreach.ParseOverrides(req.Codes)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	gate, err := loadEmailGate(ctx, r.lq, batchSetup{leads: r.setup.leads, shadow: !r.live, loc: r.loc}, now)
-	if err != nil {
-		return true, err
+	case !found:
+		r.rep.note(noteNoRequest)
+		r.rep.stopped = true
+		r.printf("No sends: batch %d has no confirmed Send now waiting (it was sent already, or confirmed over %d minutes ago); press Send now again on its batch page in the console.\n",
+			r.reqBatch, int(sendRequestMaxAge.Minutes()))
+		return true, nil
 	}
 	r.manual = &manualSend{batch: b, req: req, ov: ov, detail: map[int64]*limitDetail{}}
 	r.gate = gate
@@ -1113,8 +1140,10 @@ func (m *manualSend) limits(cfg leadconfig.Config, loads []outreach.MailboxLoad,
 }
 
 // recordOverride writes the send_override row of a message a manual send with overrides has
-// just sent (or, shadow, written to the outbox). It runs after the send is committed; a failure
-// stops the run, so nothing more goes without its record.
+// just sent (or, shadow, written to the outbox). It runs after the send is committed, in its own
+// statement: a failure stops the run, so nothing more goes without its record, but the message
+// already sent stays sent without its send_override row. That gap is accepted: the email went
+// and cannot be called back, and the run's note still says "override: <codes>" for the batch.
 func (r *sendRun) recordOverride(ctx context.Context, row leadstore.SendRow) error {
 	m := r.manual
 	if m == nil || len(m.ov.Codes()) == 0 {
@@ -1487,6 +1516,8 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		r.rep.sent = append(r.rep.sent, domain)
 		r.followUp(wctx, row, now)
 		r.appendSent(ctx, mb, raw)
+		// After SMTP accepted it: a failure here leaves the email sent without its override row
+		// (recordOverride says why that is accepted).
 		if err := r.recordOverride(wctx, row); err != nil {
 			return true, err
 		}

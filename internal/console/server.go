@@ -119,6 +119,7 @@ var routes = []route{
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
 	{"GET /leads/reports/{id}", "/leads/reports/5", false, (*server).leadReport},
 	{"GET /leads/send-now/{id}", "/leads/send-now/7", false, (*server).sendConfirm},
+	{"GET /leads/send-now/{id}/again", "/leads/send-now/7/again", false, (*server).sendAgain},
 	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
 	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
 	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
@@ -138,6 +139,7 @@ var routes = []route{
 	{"POST /leads/send-now/preview", "/leads/send-now/preview", false, (*server).sendNowPreview},
 	{"POST /leads/send-now/{id}/confirm", "/leads/send-now/7/confirm", false, (*server).sendNowConfirm},
 	{"POST /leads/send-now/{id}/check-email", "/leads/send-now/7/check-email", false, (*server).sendNowCheckEmail},
+	{"POST /leads/send-now/{id}/again", "/leads/send-now/7/again", false, (*server).sendNowAgain},
 	// Every literal /leads/... POST above is more specific than this pattern, so it wins.
 	{"POST /leads/{id}/{action}", "/leads/5/star", false, (*server).leadAct},
 	// The CRM writes go through the same pattern (leadAct dispatches them): POST /leads/{id}/crm
@@ -393,7 +395,6 @@ func (s *server) funcs() template.FuncMap {
 			return v
 		},
 		"controlNote":  func(job string) string { return controlNotes[job] },
-		"leadsTab":     func(tab string, exact bool) leadsTabView { return leadsTabView{Tab: tab, Exact: exact} },
 		"webURL":       webURL,
 		"stepWhen":     stepWhen,
 		"writerWords":  writerWords,

@@ -77,13 +77,6 @@ type leadActView struct {
 	Do, Label, Back, SR string
 }
 
-// leadsTabView is the Leads sub-nav: which tab is current, and whether the page is that
-// tab itself (aria-current="page") or a page inside it (aria-current="true").
-type leadsTabView struct {
-	Tab   string // list | outreach | campaigns | settings
-	Exact bool
-}
-
 // leadList is GET /leads: the leads under the query's filter, one page of them.
 func (s *server) leadList(w http.ResponseWriter, r *http.Request) {
 	s.renderList(w, r, http.StatusOK, r.URL.Query(), s.takeFlash(w, r), false)

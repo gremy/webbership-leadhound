@@ -1135,6 +1135,9 @@ type ApproveRequest struct {
 	// DueNow is a manual Send now's approval: each first email is due at the approval's time,
 	// not at its next business slot (the confirm page warned about the hours).
 	DueNow bool
+	// Manual is a manual Send now's approval: Skip names the leads a hard stop left out, and
+	// they go back to new instead of to skipped (leadstore.ApproveManualBatch).
+	Manual bool
 	// before and after, when set, run in the approval's transaction, before it and after it
 	// (with what it did); an error from either rolls everything back. Manual Send now marks
 	// the batch manual before and writes its send_request row after, so the batch is never
@@ -1210,7 +1213,11 @@ func approveBatch(ctx context.Context, s *store.Store, cfg leadconfig.Config, no
 				return err
 			}
 		}
-		out.Approval, err = tq.ApproveBatch(ctx, req.ID, req.HashPrefix, req.Skip, due)
+		approve := tq.ApproveBatch
+		if req.Manual {
+			approve = tq.ApproveManualBatch
+		}
+		out.Approval, err = approve(ctx, req.ID, req.HashPrefix, req.Skip, due)
 		if err != nil || req.after == nil {
 			return err
 		}

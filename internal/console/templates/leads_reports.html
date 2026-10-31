@@ -17,12 +17,13 @@
   <div class="table-wrap card-body-flush">
     <table class="table report-table">
       <caption class="visually-hidden">Each campaign's funnel, revenue and cost over the last {{$v.Days}} days</caption>
-      <thead><tr><th scope="col">Campaign</th><th scope="col" class="num">Sent</th><th scope="col" class="num">Replied</th><th scope="col" class="num">Positive</th><th scope="col" class="num">Won</th><th scope="col" class="num">Reply rate</th><th scope="col" class="num">Revenue</th><th scope="col" class="num">Cost per lead</th><th scope="col" class="num">Cost per reply</th><th scope="col" class="num">Email checks</th></tr></thead>
+      <thead><tr><th scope="col">Campaign</th><th scope="col" class="num">Sent</th><th scope="col" class="num">Contacted</th><th scope="col" class="num">Replied</th><th scope="col" class="num">Positive</th><th scope="col" class="num">Won</th><th scope="col" class="num">Reply rate</th><th scope="col" class="num">Revenue</th><th scope="col" class="num">Cost per lead</th><th scope="col" class="num">Cost per reply</th><th scope="col" class="num">Email checks</th></tr></thead>
       <tbody>
       {{range $v.Rows}}
         <tr>
           <td class="cell-main">{{.Campaign}}</td>
           <td class="num">{{thousands .Sent}}</td>
+          <td class="num">{{thousands .Contacted}}</td>
           <td class="num">{{thousands .Replied}}</td>
           <td class="num">{{thousands .Positive}}</td>
           <td class="num">{{thousands .Won}}</td>
@@ -39,7 +40,7 @@
   {{else}}
   <div class="empty empty-compact"><p class="empty-title">Nothing sent in the last {{$v.Days}} days</p><p class="empty-text">Each campaign's sends, replies, wins and cost show here once its first emails go out.</p></div>
   {{end}}
-  <div class="card-foot report-note">Costs are Claude only: the drafting and research spent on each campaign's leads. Email checks are a count; no price is put on them.</div>
+  <div class="card-foot report-note">Costs are Claude only: the drafting and research spent on each campaign's leads. Cost per lead divides by the leads contacted (by email, form or call), not by the emails sent. Email checks are a count; no price is put on them.</div>
 </section>
 </div>
 {{end}}

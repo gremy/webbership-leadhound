@@ -46,7 +46,9 @@ func TestCRMPagesRender(t *testing.T) {
 			`action="/leads/calls/9/outcome"`, `name="back" value="/leads/calls"`, `name="call_back_on" type="date" min="2026-10-24"`,
 			`name="outcome" value="no_answer"`, "call-back Tue 3 Nov", "Already called", "Not callable now: outside calling hours now"},
 		leadsReportsPath: {"<h1>Reports</h1>", "last 30 days, from 24 Sep", "&lt;script&gt;alert(1)&lt;/script&gt;", "<td class=\"num\">212</td>",
-			"9%", "£2,400", "$0.09", "$0.85", "<td class=\"num\">140</td>", "Costs are Claude only", "Email checks are a count", "—"},
+			"<th scope=\"col\" class=\"num\">Sent</th><th scope=\"col\" class=\"num\">Contacted</th><th scope=\"col\" class=\"num\">Replied</th>",
+			"<td class=\"num\">212</td>\n          <td class=\"num\">180</td>\n          <td class=\"num\">19</td>",
+			"Cost per lead divides by the leads contacted (by email, form or call), not by the emails sent.", "9%", "£2,400", "$0.09", "$0.85", "<td class=\"num\">140</td>", "Costs are Claude only", "Email checks are a count", "—"},
 	}
 	for _, p := range crmPages {
 		w := h.do(get(p, c))

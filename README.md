@@ -29,12 +29,20 @@
   `leadhound trim` blanks the description text of postings rejected by a gate more than 7 days ago and expired more than 30 days ago, in batches of 5,000 within a 45-minute budget (`--rejected-after`, `--expired-after`, `--batch`, `--max-duration`); every row, verdict and id stays, and a job you acted on or that appeared in a brief is never trimmed.
   On a server it runs daily as `leadhound-trim.timer`; how to recover from an over-budget database is in "Backups and the storage budget" and "The trim" in `deploy/README.md`.
 - **Console**: `leadhound serve` is a small web console for one operator, on loopback behind a reverse proxy, and every action in it runs the same code as the matching command.
-  - The dashboard: the day's health, funnel, cost, boards and runs, built in the background and served from the last snapshot, so a page never waits for the ranking.
-  - Jobs: the latest brief's jobs to mark applied, skip or maybe (the same writes as `track`), and a page per job (`/jobs/{id}`) with everything needed to apply and its own mark form; the tracked jobs, capped at 500 rows with the total shown; the runs.
-  - Rules: the list, with forms to add a rule and to disable one.
+  - The shell: a header with a switcher between two products, Leads and Jobs, each with its own sub-nav bar under the header.
+    A gear menu holds Settings, Controls, Status, Mailboxes, Account and Sign out.
+    One button flips the theme between light and dark; with no choice made, the console follows the device's own setting.
+  - The Dashboard (`/`, after sign-in) is a set of cards, each linking to its page: Status (one line per area, worst first), Today in Leads (emails due, sent today against the room, replies, calls due), Needs me (replied or connected leads with nothing scheduled, or a next action due), the campaign funnel over 30 days, Claude spend this month, and Jobs.
+  - Status (`/status`): mailboxes (state, last check, sent today against the ramp, bounces, last reply sync), Reoon email checks and credits, the server and every unit's last run, Claude spend against its daily caps with an estimate of credit left from the last recorded top-up, and Jev calls.
+    Each area is green, amber, red, or grey for "not checked yet".
+    The console holds no key, so the Reoon credits come from a row the key-holding jobs write; Refresh asks for a new reading (see "The credits on the Status page" in `deploy/README.md`).
+  - Jobs: Home (`/jobs/home`, the job-hunt health and the Run now card), Jobs (the latest brief's jobs to mark applied, skip or maybe, the same writes as `track`, and a page per job at `/jobs/{id}` with its own mark form), Tracked (capped at 500 rows with the total shown), Runs, Rules (add a rule, disable one) and Results.
+  - Account (`/account`): who is signed in, and Sign out.
   - Controls (`/controls`): one sentence on why nothing is going out (or when the next email does), the Sending switch, a switch per leads job (morning batch, inbox sync, site probe, contacts, research, and the email check, with today's checks and the Reoon credits left) with its timer read from systemd and its last run, and the three server-only lines (`LEADHOUND_OUTREACH`, `LEADHOUND_LIVE`, `LEADHOUND_LEADS_TIMERS`) shown read-only; see "Switches in the console" in `deploy/README.md`.
     The sending window (start, end, days, in each recipient's local time) is set there and saved over `leads.yaml`, the card says when the hourly send runs (Monday to Friday, 10:00 to 19:00 Bucharest), and a Send now button beside the sentence sends the due emails outside the window for one run, every limit still applying, wherever the send timer is enabled; see "The sending window" and "Send now" in `deploy/README.md`.
-  - Leads, in six tabs: Today (`/leads/today`), the List (`/leads`) with a page per lead, Outreach (`/leads/outreach`), Drafts (`/leads/drafts`), Campaigns (`/leads/campaigns`) and Settings (`/leads/settings`); see "The Leads console" and "Calls" under Campaigns and leads.
+  - Leads, in ten pages on its sub-nav: Home (`/leads/home`), List (`/leads`, with a page per lead), Outreach (`/leads/outreach`, with each batch's page), Today (`/leads/today`), Replies (`/leads/replies`), Pipeline (`/leads/pipeline`), Calls (`/leads/calls`), Drafts (`/leads/drafts`), Campaigns (`/leads/campaigns`) and Reports (`/leads/reports`); Settings (`/leads/settings`) sits in the gear menu.
+    See "The Leads console", "Calls" and "The CRM" under Campaigns and leads.
+    Send now picks leads by hand: "Send now" on a lead's page, the List's tick boxes with "Send now (N)", or "Approve and send now" on a batch; each shows a confirm page first (see "Shadow and live" below).
     Outreach is the summary and the sending state with the pause switch, under the Controls sentence on why nothing is going out (also on the dashboard's Leads card); each batch waiting for approval read in full, with its approve form shown only while the messages still match their hash, and discard; replies with suppress, suppressions, manual items to mark done, mark contacted, and a message to check by hand as sent or not sent.
     The old queue and priorities pages are retired: `/leads/next` goes to the list in your order (`/leads?sort=order`), and `/leads/priorities` goes to the fallback order in Settings.
     The console never approves a batch on its own and never drafts a shadow batch.
@@ -139,11 +147,21 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   The emails offer the report and you send it when the lead replies: no email carries a link to it or attaches it, and there is no public address for it.
 - **Erasure**: `leads forget org ID --reason TEXT` erases an organisation's personal data in one transaction, as the owner role: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts and its map listing's phones and emails.
   It suppresses the organisation's domain and its numbers (hashed), so it is never collected, researched, enriched or called again, and cancels its pending messages.
+  It also erases its lead's CRM: the reply snippets are emptied, and the note, next action, deal, tenant link and stage history are deleted.
   It prints counts only, and run again it finds nothing left; see "Erasure" in `deploy/README.md` for backups.
 - **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, phone), its relevance and a star.
   It filters by kind, country, channel, starred, has a phone, minimum relevance and status (not contacted yet, contacted, all), and sorts by relevance, newest or your outreach order; the filters survive paging.
   A lead's page (`/leads/{id}`) shows the finding with its evidence, the ways to reach them and the pages they came from, phone numbers, description and social links, the agency page, the site, its history, its place in the queue, its messages and one line per reason it ranks where it does.
   Nothing on a GET writes.
+- **The CRM**: once a lead replies or a call gets through, it shows as Talking, and you move it to Proposal, Won or Lost (Lost needs a reason).
+  Replies (`/leads/replies`) lists the leads that answered, newest first, with the first lines of what they said, stage buttons, and Snooze for 1 day or 1 week.
+  Pipeline (`/leads/pipeline`) is four columns of cards with stage buttons; it needs no drag and no JavaScript.
+  A lead's page adds its timeline (events, messages sent, replies, calls, email checks and stage changes, newest first), a note and a next action with its date, and a deal value in GBP, EUR, RON or USD; a won lead can link to its Webbership tenant.
+  Expected revenue is the value times the stage's weight (Talking 20%, Proposal 50%, Won 100%, Lost 0), summed per currency and never converted.
+  A next action due today or earlier puts the lead on the Dashboard's Needs me card; a snoozed lead or one whose next action is still ahead stays off it.
+  Calls (`/leads/calls`) is the call queue: calls due today and call-backs due, with the outcome buttons and a call-back date on the outcome form.
+  Reports (`/leads/reports`) is the funnel per campaign, with won leads and revenue, plus the Claude cost per lead contacted and per reply and the email checks as a count.
+  Reply sync keeps one thing from a reply's text: a snippet of at most 300 characters, its opening plain-text lines with quoted history, signature and our own lines taken out; nothing else of the body is stored.
 - **Stars and the order**: a star puts a lead at the bottom of your outreach order; Up, Down and Top move it, Unstar takes it out, Push back defers it (14 days by default), Skip drops it for good and Clear puts it back in its place by score.
   Up, Down and Top on a lead that is not starred are refused with "Star it first."
   Starred leads always come first, in your order; every star and move is kept as a row, and the latest per lead wins.
@@ -177,7 +195,12 @@ A draft is either a template filled with stored facts or, once a campaign has ea
 - **Shadow and live**: without `LEADHOUND_OUTREACH=live`, `leads send` writes each complete message to `<data dir>/outreach-outbox/` and nothing leaves the machine.
   With `LEADHOUND_OUTREACH=live`, a message is sent only from a batch the operator approved, from the mailbox it was drafted for, after that mailbox's records passed today's DNS check (`leads senders check`) and its reply sync has just succeeded.
   `leads send pause [--reason TEXT]` and `leads send resume`, or Sending on the console's Controls page, stop and restart sending; the pause is checked before every message.
-  `leads send --now` (Send now on Controls) skips the sending window for that run only; the switch, shadow mode, the caps, the spacing, the mailboxes' readiness and assignment, suppressions and due times still apply.
+  There are two Send now roads.
+  Send now on Controls is `leads send --now`: it skips the sending window for that run only, and the switch, shadow mode, the caps, the spacing, the mailboxes' readiness and assignment, suppressions and due times still apply.
+  The manual Send now sends leads you pick (at most 25) as a manual batch: a confirm page lists each lead as going, waiting for its email check, or stopped, and names every warning with its numbers.
+  You may go past the warnings (the sending window, the recipient's business hours, a mailbox's warm-up ramp, the domain's daily limit of 50, the usual spacing, and the due-time schedule) by ticking "I have read the warnings".
+  The hard stops are never overridable: sending switched off, shadow mode, a suppressed lead, a blocked email check, a mailbox that is not ready or not assigned, 40 a day per mailbox, 100 a day per domain, a reserved test domain, a first email already sent or batched, and a changed batch.
+  The run is `leads send --from-request`, which sends that batch alone and records every warning you went past in its run note and in `send_override`; see "Manual Send now" in `deploy/README.md`.
   The other leads jobs have switches too (`leads switches list`, `leads switches set JOB on|off [--reason R]`): a job switched off runs nothing, records its run as "switched off" and exits 0.
   `leads sync` reads replies, bounces and opt-outs from every mailbox and suppresses where they say so; it exits 1 when any mailbox could not be read.
   `leads selftest --to ADDRESS [--mailbox ID]` sends one real message from one mailbox to one of `sender.operator_addresses`.
@@ -206,7 +229,7 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
   The batch and contact research units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00024).
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00028: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM).
   The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches and campaign mailbox assignments: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 

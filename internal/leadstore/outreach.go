@@ -38,6 +38,8 @@ const (
 	SkipByGremy         = "skipped at approval"
 	SkipSuppressed      = "suppressed"
 	SkipLeadState       = "lead " // + the lead's state, e.g. "lead replied"
+	// SkipLeftOut is a manual batch's lead a hard stop at confirm left out (ApproveManualBatch).
+	SkipLeftOut = "left out of manual batch"
 )
 
 // MinHashPrefix is the fewest hex digits of content_sha256 ApproveBatch accepts (RA2).
@@ -625,6 +627,20 @@ type Approval struct {
 // A discarded batch is ErrBatchDiscarded; the row lock it takes is the one DiscardBatch
 // takes, so the two never interleave. Run it in a transaction.
 func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, skip []int, due func(Message) time.Time) (Approval, error) {
+	return q.approveBatch(ctx, id, hashPrefix, skip, due, false)
+}
+
+// ApproveManualBatch is ApproveBatch for a manual Send now, where skip names the leads a hard
+// stop at confirm left out, not leads the operator chose to drop. Most of those stops hold only
+// today (a mailbox paused or at its ceiling, a reserved domain, a first step that is not an
+// email), so in a live batch such a lead goes from batched back to new ("left out of manual
+// batch N"), as DiscardBatch sends its leads back, and its messages are skipped (SkipLeftOut).
+// A lead whose stop does last (a blocked address) is kept out by the next batch's own checks.
+func (q Queries) ApproveManualBatch(ctx context.Context, id int64, hashPrefix string, skip []int, due func(Message) time.Time) (Approval, error) {
+	return q.approveBatch(ctx, id, hashPrefix, skip, due, true)
+}
+
+func (q Queries) approveBatch(ctx context.Context, id int64, hashPrefix string, skip []int, due func(Message) time.Time, manual bool) (Approval, error) {
 	prefix := strings.ToLower(strings.TrimSpace(hashPrefix))
 	if _, err := hex.DecodeString(prefix + strings.Repeat("0", len(prefix)%2)); err != nil || len(prefix) < MinHashPrefix {
 		return Approval{}, fmt.Errorf("leadstore: approve batch %d: %w", id, ErrHashTooShort)
@@ -694,6 +710,14 @@ func (q Queries) ApproveBatch(ctx context.Context, id int64, hashPrefix string, 
 		}
 		reason := ""
 		switch {
+		case skipped[i+1] && manual:
+			reason = SkipLeftOut
+			if !shadow {
+				if _, err := q.setLeadStateFrom(ctx, leadID, []string{LeadBatched}, LeadNew,
+					fmt.Sprintf("left out of manual batch %d", id), ActorSystem); err != nil {
+					return Approval{}, fmt.Errorf("leadstore: approve batch: %w", err)
+				}
+			}
 		case skipped[i+1]:
 			reason = SkipByGremy
 			if !shadow {

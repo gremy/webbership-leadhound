@@ -393,3 +393,85 @@ func TestSendNowButtons(t *testing.T) {
 		}
 	}
 }
+
+// TestSendNowAgainPage: Send now again's page is the confirm page posting to its own path, saying
+// nothing is approved again, with the warnings and the tick box as before.
+func TestSendNowAgainPage(t *testing.T) {
+	h := newSendHarness(t)
+	w := h.do(get("/leads/send-now/7/again", h.session(t)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`action="/leads/send-now/7/again"`, `name="again" value="1"`, "Manual batch 7 · Send now again", "nothing is approved again",
+		"6 warnings you can go past", `name="read" value="1" required`, "Send anyway (2)", `href="/leads/batches/7">Cancel`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `/leads/send-now/7/confirm"`) || h.b.n("SendNowAgainPlan") != 1 || h.b.n("SendNowPlan") != 0 {
+		t.Errorf("the again page read the confirm plan (again %d, plan %d)", h.b.n("SendNowAgainPlan"), h.b.n("SendNowPlan"))
+	}
+	// A batch that went: back to its page with why.
+	h.b.planErr = fmt.Errorf("%w: Batch 7 already went; nothing more to do here.", ErrUserFixable)
+	w = h.do(get("/leads/send-now/7/again", h.session(t)))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads/batches/7" {
+		t.Fatalf("a batch that went: %d to %q", w.Code, w.Header().Get("Location"))
+	}
+	if msg := flashOf(t, w); msg != "Batch 7 already went; nothing more to do here." {
+		t.Errorf("flash %q", msg)
+	}
+}
+
+// TestSendNowAgainPress: the again post passes what was shown with Again set; without the tick it
+// shows the again page, never the confirm page; check email from it comes back to it.
+func TestSendNowAgainPress(t *testing.T) {
+	b := richBackend("x")
+	b.confirmOut = ControlOutcome{Message: "Asked. 2 emails go out now."}
+	h := harnessAs(t, b, "operator@example.com")
+	w := h.do(post("/leads/send-now/7/again", confirmForm(), h.session(t)))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/leads/batches/7" {
+		t.Fatalf("%d to %q", w.Code, w.Header().Get("Location"))
+	}
+	if got := h.b.lastConfirm; !got.Again || got.BatchID != 7 || got.HashPrefix != "fedcba987654" || !slices.Equal(got.Codes, SendWarningCodes) || got.Operator != "operator@example.com" {
+		t.Errorf("confirmed %+v", got)
+	}
+	f := confirmForm()
+	f.Del("read")
+	w = h.do(post("/leads/send-now/7/again", f, h.session(t)))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `action="/leads/send-now/7/again"`) ||
+		!strings.Contains(w.Body.String(), "Tick that you have read the 6 warnings") {
+		t.Errorf("no tick: %d", w.Code)
+	}
+	if h.b.n("SendNowConfirm") != 1 {
+		t.Errorf("confirm called %d times", h.b.n("SendNowConfirm"))
+	}
+	// The plain confirm says Again false.
+	h.do(post("/leads/send-now/7/confirm", confirmForm(), h.session(t)))
+	if h.b.lastConfirm.Again {
+		t.Error("the plain confirm asked again")
+	}
+	w = h.do(post("/leads/send-now/7/check-email", url.Values{"again": {"1"}}, h.session(t)))
+	if w.Header().Get("Location") != "/leads/send-now/7/again" {
+		t.Errorf("check email from the again page goes to %q", w.Header().Get("Location"))
+	}
+}
+
+// TestBatchPageOffersSendNowAgain: only a batch whose send never ran shows Send now again.
+func TestBatchPageOffersSendNowAgain(t *testing.T) {
+	for _, again := range []bool{false, true} {
+		b := richBackend("x")
+		at := statusNow
+		b.batch = LeadBatch{ID: 3, CreatedAt: at, ApprovedAt: &at, SendAgain: again}
+		h := newHarness(t, b, false)
+		w := h.do(get("/leads/batches/3", h.session(t)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d", w.Code)
+		}
+		if got := strings.Contains(w.Body.String(), `href="/leads/send-now/3/again"`); got != again {
+			t.Errorf("SendAgain %v: link shown %v", again, got)
+		}
+	}
+}

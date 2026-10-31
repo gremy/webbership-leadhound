@@ -152,6 +152,35 @@ func (q Queries) ClaimSendRequest(ctx context.Context, batchID int64, notBefore,
 	return rs[0], true, nil
 }
 
+// PendingSendRequest is ClaimSendRequest's read without the claim: the newest unused send
+// request of batch batchID created at or after notBefore, its row locked for the transaction (one
+// another transaction holds is passed over), so the send can check it and only then mark it used
+// (UseSendRequest) in the same transaction. A request the check refuses stays unused. ok is false
+// when there is none. Run it in a transaction.
+func (q Queries) PendingSendRequest(ctx context.Context, batchID int64, notBefore time.Time) (SendRequest, bool, error) {
+	rs, err := collect(ctx, q.db, pgx.RowToStructByName[SendRequest],
+		`SELECT id, batch_id, codes, hash_prefix, operator, created_at, used_at, shown FROM send_request
+		 WHERE batch_id = $1 AND used_at IS NULL AND created_at >= $2
+		 ORDER BY created_at DESC, id DESC LIMIT 1
+		 FOR UPDATE SKIP LOCKED`, batchID, notBefore)
+	if err != nil {
+		return SendRequest{}, false, fmt.Errorf("leadstore: pending send request: %w", err)
+	}
+	if len(rs) == 0 {
+		return SendRequest{}, false, nil
+	}
+	return rs[0], true, nil
+}
+
+// UseSendRequest marks send request id used at now. ok is false when it was used already.
+func (q Queries) UseSendRequest(ctx context.Context, id int64, now time.Time) (bool, error) {
+	tag, err := q.db.Exec(ctx, `UPDATE send_request SET used_at = $2 WHERE id = $1 AND used_at IS NULL`, id, now)
+	if err != nil {
+		return false, fmt.Errorf("leadstore: use send request: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // InsertSendOverride stores o (ID is ignored; a zero At stores now). A code outside
 // OverrideCodes is refused by the table (a check violation).
 func (q Queries) InsertSendOverride(ctx context.Context, o SendOverride) error {

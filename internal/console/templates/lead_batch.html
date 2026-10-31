@@ -72,6 +72,19 @@
 </section>
 {{end}}
 
+{{if $b.SendAgain}}
+<section class="card approve mt-2" aria-labelledby="again-h">
+  <div class="card-head"><h2 id="again-h">Its send never ran</h2></div>
+  <div class="card-body">
+    <p class="muted">You confirmed Send now for this batch, but its send never ran: the request was refused, or it ran out while another send was running. Nothing in it has gone yet; the hourly send takes it within today's limits, or send it now.</p>
+  </div>
+  <div class="confirm-foot">
+    <span class="muted small">The send check runs again first; nothing is approved again.</span>
+    <span class="btn-row"><a class="btn btn-primary" href="/leads/send-now/{{$b.ID}}/again"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Send now again</a></span>
+  </div>
+</section>
+{{end}}
+
 {{if and (not $b.ApprovedAt) (not $b.DiscardedAt)}}
 <form method="post" action="/leads/batches/{{$b.ID}}/discard" class="mt-2">
   <button type="submit" class="btn btn-secondary">Discard this batch</button>

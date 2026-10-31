@@ -1186,6 +1186,10 @@ type ManualSendBackend interface {
 	// SendNowPlan re-reads the plan of a manual batch (the confirm page's GET and its htmx poll). It
 	// never writes. ErrNotFound for no such manual batch.
 	SendNowPlan(ctx context.Context, batchID int64) (SendPlan, error)
+	// SendNowAgainPlan is the plan of Send now again: a manual batch its confirm approved whose
+	// send never ran (the request was refused or expired) and none of whose messages went. It
+	// never writes. A batch that went, or is not such a batch, is a refusal.
+	SendNowAgainPlan(ctx context.Context, batchID int64) (SendPlan, error)
 	// SendNowConfirm approves and asks for the send; a plan that changed since the page was shown returns *PlanChangedError.
 	// Changed means: a different hash, a warning that is not in Codes, or a hard stop that is new.
 	SendNowConfirm(ctx context.Context, c ManualConfirm) (ControlOutcome, error)
@@ -1209,6 +1213,7 @@ type SendPlan struct {
 	Notes      []string      // e.g. two leads share a domain so one goes in the next run; more than 25 must be split
 	Waiting    string        // non-empty while drafts are still being written (page polls)
 	CanSend    bool          // at least one lead OK and nothing waiting
+	Again      bool          // Send now again: the batch is approved, and its confirm only asks for the send
 }
 
 // SendPlanLead is one chosen lead and what happens to it. At most one of OK, Stop and Waiting holds.
@@ -1249,6 +1254,9 @@ type ManualConfirm struct {
 	HashPrefix string
 	Codes      []string
 	Operator   string
+	// Again is Send now again's press: the batch was approved by its first confirm and is never
+	// approved again; only a fresh send request is written.
+	Again bool
 }
 
 // PlanChangedError is SendNowConfirm's answer when the plan is no longer the one the page showed;

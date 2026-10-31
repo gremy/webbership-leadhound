@@ -1,21 +1,5 @@
-{{define "leads_tabs"}}
-<nav class="filters leads-tabs" aria-label="Leads">
-  <ul>
-    <li><a href="/leads/today"{{if eq .Tab "today"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Today</a></li>
-    <li><a href="/leads"{{if eq .Tab "list"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>List</a></li>
-    <li><a href="/leads/outreach"{{if eq .Tab "outreach"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Outreach</a></li>
-    <li><a href="/leads/drafts"{{if eq .Tab "drafts"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Drafts</a></li>
-    <li><a href="/leads/campaigns"{{if eq .Tab "campaigns"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Campaigns</a></li>
-    <li><a href="/leads/settings"{{if eq .Tab "settings"}} aria-current="{{if .Exact}}page{{else}}true{{end}}"{{end}}>Settings</a></li>
-  </ul>
-</nav>
-{{end}}
-
 {{/* lead_channels is how a lead of the list or the lead page can be reached, in words. */}}
 {{define "lead_channels"}}{{if or .HasEmail .HasForm .HasPhone}}{{if .HasEmail}}email{{end}}{{if and .HasEmail (or .HasForm .HasPhone)}} · {{end}}{{if .HasForm}}form{{end}}{{if and .HasForm .HasPhone}} · {{end}}{{if .HasPhone}}phone{{end}}{{else}}no way to reach yet{{end}}{{end}}
-
-{{/* lead_act is one lead action: a form posting to the lead's action with where to come back to. SR names the lead for a screen reader. */}}
-{{define "lead_act"}}<form method="post" action="/leads/{{.ID}}/{{.Do}}"><input type="hidden" name="back" value="{{.Back}}"><button type="submit">{{.Label}}{{with .SR}}<span class="visually-hidden"> {{.}}</span>{{end}}</button></form>{{end}}
 
 {{/* lead_star is a lead's star toggle: the star alone with the lead's name for a screen reader, or the star and Label in words. */}}
 {{define "lead_star"}}{{$on := eq .Do "unstar"}}<form method="post" action="/leads/{{.ID}}/{{.Do}}" class="star-form"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="star-toggle{{if $on}} is-starred{{end}}"{{if not .Label}} title="{{if $on}}Unstar{{else}}Star{{end}}"{{end}}><span aria-hidden="true">{{if $on}}★{{else}}☆{{end}}</span>{{if .Label}} {{.Label}}{{else}}<span class="visually-hidden">{{if $on}}Unstar{{else}}Star{{end}} {{.SR}}</span>{{end}}</button></form>{{end}}
