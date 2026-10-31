@@ -883,6 +883,28 @@ func TestLeadDetailPage(t *testing.T) {
 	}
 }
 
+// TestLeadDetailSendNowBlock: a lead Send now cannot send shows the button off, tied to the
+// reason beside it; a sendable lead shows it on with no reason.
+func TestLeadDetailSendNowBlock(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	body := h.do(get("/leads/5", c)).Body.String()
+	if strings.Contains(body, "send-now-block") || strings.Contains(body, " disabled aria-describedby") {
+		t.Error("a sendable lead has Send now off")
+	}
+	b.detail.SendNowBlock = "Germany is written to by contact form only in leads.yaml, and it has no contact form."
+	body = h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{
+		`<button type="submit" class="btn btn-primary" disabled aria-describedby="send-now-block">`,
+		`<p class="hint send-now-block" id="send-now-block">Send now is off for this lead. Germany is written to by contact form only in leads.yaml, and it has no contact form.</p>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the blocked lead page lacks %q", want)
+		}
+	}
+}
+
 func TestLeadDetailNotFound(t *testing.T) {
 	b := richBackend("x")
 	h := newHarness(t, b, false)

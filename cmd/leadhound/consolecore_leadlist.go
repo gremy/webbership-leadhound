@@ -597,11 +597,14 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 			Status: httpStatusWords(s.Status), FetchedAt: s.FetchedAt})
 	}
 	var addrs []string
+	hasMX := false
 	for _, r := range d.Routes {
 		if r.Kind == leadstore.RouteEmail {
 			addrs = append(addrs, r.Value)
+			hasMX = hasMX || r.MXOK
 		}
 	}
+	p.SendNowBlock = sendNowBlock(w.cfg, d.ListRow, len(addrs) > 0, hasMX)
 	checks, err := b.lq().EmailChecks(ctx, leadstore.DefaultAccountID, addrs, time.Time{})
 	if err != nil {
 		return console.LeadDetailPage{}, err
@@ -654,6 +657,21 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		p.RelevanceHistory = append(p.RelevanceHistory, console.LeadRelevance{Words: words, At: r.CreatedAt})
 	}
 	return p, nil
+}
+
+// sendNowBlock is why Send now cannot send lead r, from the lead alone, in the words the
+// manual send's refusal uses (manualLeftOut); "" when it may be tried.
+func sendNowBlock(cfg leadconfig.Config, r leadstore.ListRow, hasEmail, hasMX bool) string {
+	switch {
+	case r.State == leadstore.LeadBatched:
+		return "It is already in a batch that waits for approval; send that batch instead."
+	case r.State != leadstore.LeadNew:
+		return "Its state is " + leadStateWords(r.State) + ", and only a new lead can be sent."
+	case r.Channel == leadstore.ChannelNone:
+		w := noChannelWhy(cfg, r.Country, hasEmail, hasMX)
+		return strings.ToUpper(w[:1]) + w[1:] + "."
+	}
+	return ""
 }
 
 // countryPolicy is the line leads.yaml and the profile give the lead's country: never

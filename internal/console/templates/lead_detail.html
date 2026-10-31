@@ -12,10 +12,11 @@
     <form method="post" action="/leads/send-now/preview" class="send-now-lead">
       <input type="hidden" name="lead" value="{{$d.LeadID}}">
       <input type="hidden" name="back" value="{{$v.Back}}">
-      <button type="submit" class="btn btn-primary"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Send now</button>
+      <button type="submit" class="btn btn-primary"{{with $d.SendNowBlock}} disabled aria-describedby="send-now-block"{{end}}><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Send now</button>
     </form>
   </div>
 </div>
+{{with $d.SendNowBlock}}<p class="hint send-now-block" id="send-now-block">Send now is off for this lead. {{.}}</p>{{end}}
 {{if and $d.StarNote (not $d.Starred)}}<p class="hint star-note">{{$d.StarNote}}.</p>{{end}}
 {{if and $v.Message (not $v.AtCall)}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 

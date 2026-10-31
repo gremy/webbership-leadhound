@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 )
@@ -58,5 +59,51 @@ func TestManualChanged(t *testing.T) {
 	q.Warnings = q.Warnings[:1]
 	if manualChanged(q, c, shown) {
 		t.Error("a warning gone since counts as a change")
+	}
+}
+
+// TestNoChannelWhy: a lead with channel none is told the fact that stopped it, never "no email
+// address" while it has one (an address, but its country held to forms).
+func TestNoChannelWhy(t *testing.T) {
+	cfg := leadconfig.Config{Countries: map[string]leadconfig.Country{
+		"GB": {Channel: leadconfig.ChannelEmail},
+		"DE": {Channel: leadconfig.ChannelForm},
+		"FR": {Channel: leadconfig.ChannelNone},
+	}}
+	for _, c := range []struct {
+		country         string
+		hasEmail, hasMX bool
+		want            string
+	}{
+		{"DE", true, true, "Germany is written to by contact form only in leads.yaml, and it has no contact form"},
+		{"FR", true, true, "France has no channel in leads.yaml, so it is not written to"},
+		{"US", true, true, "United States has no channel in leads.yaml, so it is not written to"},
+		{"", true, true, "its country has no channel in leads.yaml, so it is not written to"},
+		{"GB", false, false, "it has no email address to send to"},
+		{"GB", true, false, "its email address has no mail server"},
+		{"GB", true, true, "its channel was set before its email address was found or its country was opened; the next lead build sets it"},
+	} {
+		if got := noChannelWhy(cfg, c.country, c.hasEmail, c.hasMX); got != c.want {
+			t.Errorf("%q email %v mx %v: %q, want %q", c.country, c.hasEmail, c.hasMX, got, c.want)
+		}
+	}
+}
+
+// TestSendNowBlock: the lead page turns Send now off only for what the lead alone settles, in
+// the refusal's own words as a sentence.
+func TestSendNowBlock(t *testing.T) {
+	cfg := leadconfig.Config{Countries: map[string]leadconfig.Country{"DE": {Channel: leadconfig.ChannelForm}}}
+	for _, c := range []struct {
+		row  leadstore.ListRow
+		want string
+	}{
+		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelEmail}, ""},
+		{leadstore.ListRow{State: leadstore.LeadBatched, Channel: leadstore.ChannelEmail}, "It is already in a batch that waits for approval; send that batch instead."},
+		{leadstore.ListRow{State: leadstore.LeadOptedOut, Channel: leadstore.ChannelEmail}, "Its state is opted out, and only a new lead can be sent."},
+		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelNone, Country: "DE"}, "Germany is written to by contact form only in leads.yaml, and it has no contact form."},
+	} {
+		if got := sendNowBlock(cfg, c.row, true, true); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.row, got, c.want)
+		}
 	}
 }

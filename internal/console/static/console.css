@@ -1928,7 +1928,8 @@ details.inline summary {
 .lead-star .star-note {
   margin-top: 0.35rem;
 }
-.star-note {
+.star-note,
+.send-now-block {
   display: block;
 }
 .research {

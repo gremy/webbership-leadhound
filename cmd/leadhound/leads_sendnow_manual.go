@@ -728,16 +728,44 @@ func manualLeftOut(ctx context.Context, lq leadstore.Queries, bs batchSetup, cam
 			return d, nil
 		}
 	}
-	hasEmail := false
+	hasEmail, hasMX := false, false
 	for _, r := range routes {
 		hasEmail = hasEmail || r.Kind == leadstore.RouteEmail
+		hasMX = hasMX || r.Kind == leadstore.RouteEmail && r.MXOK
 	}
-	if !hasEmail || l.Channel == leadconfig.ChannelNone {
+	switch {
+	case l.Channel == leadconfig.ChannelNone:
+		d.Why = noChannelWhy(bs.leads, o.Country, hasEmail, hasMX)
+		return d, nil
+	case !hasEmail:
 		d.Why = "it has no email address to send to"
 		return d, nil
 	}
 	d.Why = "it is not in the send queue now: its business was already reached, it is deferred, or its kind, country or rank is left out in Settings"
 	return d, nil
+}
+
+// noChannelWhy is why a lead whose channel is none cannot be emailed, in words. The build
+// picks the channel from the same facts (outreach.PickChannel over the country's policy in
+// leads.yaml and the org's routes), so each reason names the fact that stopped it: the
+// country's policy, no email address, an address with no mail server, or a channel set before
+// an address that now qualifies was found, which the next build corrects.
+func noChannelWhy(cfg leadconfig.Config, country string, hasEmail, hasMX bool) string {
+	name := cmp.Or(countryName(country), "its country")
+	switch cfg.Policy(country).Channel {
+	case leadconfig.ChannelEmail:
+	case leadconfig.ChannelForm:
+		return name + " is written to by contact form only in leads.yaml, and it has no contact form"
+	default:
+		return name + " has no channel in leads.yaml, so it is not written to"
+	}
+	switch {
+	case !hasEmail:
+		return "it has no email address to send to"
+	case !hasMX:
+		return "its email address has no mail server"
+	}
+	return "its channel was set before its email address was found or its country was opened; the next lead build sets it"
 }
 
 // manualRoom is the room a manual batch assigns its n leads with: every mailbox ready for new

@@ -392,6 +392,10 @@ type LeadDetailPage struct {
 	ClaudeSpend      string          // what Claude has cost on this lead in words; "" when nothing
 	Research         LeadResearch    // the contact research of the lead's org: the "Contact research" line
 	Report           ReportLink      // the upgrade-risk report: offered, or why not
+	// SendNowBlock is why Send now cannot send this lead, known from the lead alone (its
+	// state, or no channel to email it on); "" when the button is offered. The confirm page
+	// still checks the rest (suppression, mailboxes, limits).
+	SendNowBlock string
 }
 
 // The contact research statuses LeadResearch.Status names (the store's own).
