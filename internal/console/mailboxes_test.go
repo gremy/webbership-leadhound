@@ -297,7 +297,7 @@ func TestMailboxesList(t *testing.T) {
 	h := newHarness(t, richBackend("holiday"), false)
 	body := h.do(get("/mailboxes", h.session(t))).Body.String()
 	for _, want := range []string{
-		`<a href="/mailboxes" aria-current="page">Mailboxes</a>`,
+		`href="/mailboxes" aria-current="page">`,
 		"<h2>northwind.example</h2>", "7 of 50", "2 of 2",
 		"mail.northwind.example", "SPF ok", `DMARC <span class="bad">missing</span>`, "not checked today",
 		`href="/mailboxes/1"`, "outreach@mail.northwind.example", "Ready", "Paused: holiday", "4 of 10", "day 3",
@@ -504,7 +504,7 @@ func TestMailboxDetail(t *testing.T) {
 	body := h.do(get("/mailboxes/1", c)).Body.String()
 	for _, want := range []string{"outreach@mail.northwind.example", "smtp.northwind.example:465", `id="mailbox-check"`,
 		`action="/mailboxes/1/pause"`, `action="/mailboxes/1/retire"`, `name="confirm" value="yes" required`, `href="/mailboxes/1/edit"`,
-		`<a href="/mailboxes" aria-current="page">Mailboxes</a>`} {
+		`href="/mailboxes" aria-current="true">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail lacks %q", want)
 		}

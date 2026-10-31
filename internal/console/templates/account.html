@@ -1,0 +1,10 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Account</h1>
+</div>
+<section class="card">
+  <h2>Signed in</h2>
+  {{with .Shell.Operator}}<p>{{.}}</p>{{else}}<p class="muted">The operator of this console.</p>{{end}}
+  <form method="post" action="/logout"><button type="submit">Sign out</button></form>
+</section>
+{{end}}

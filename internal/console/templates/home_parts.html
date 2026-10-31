@@ -1,0 +1,115 @@
+{{/* The dashboard's parts, shared by the dashboard (/), Leads home and Jobs home. Each takes the dashboardView. */}}
+{{define "home_head"}}
+<div class="page-head">
+  <h1>{{if .Day.IsZero}}Today{{else}}{{day .Day}}{{end}}</h1>
+</div>
+{{end}}
+
+{{/* home_jobs is the job-hunt part: Run now, the morning email, the day's numbers and today's jobs. */}}
+{{define "home_jobs"}}
+{{$d := .}}
+{{template "run_now" (runCard $d.RunNow)}}
+
+<div class="grid two">
+  <section class="card">
+    <h2>This morning's email</h2>
+    {{with $d.LastBrief}}
+    <p class="muted">{{day .Day}} · sent {{clock .SentAt}} · {{.Listed}} {{if eq .Listed 1}}job{{else}}jobs{{end}} listed</p>
+    {{if .Health}}<ul class="health">{{range .Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">No health lines in that email.</p>{{end}}
+    {{else}}
+    <p class="empty">No brief has been sent yet.</p>
+    {{end}}
+  </section>
+  <section class="card">
+    <h2>Now</h2>
+    {{if not $d.AsOf.IsZero}}
+    <p class="muted">as of {{clock $d.AsOf}}{{if $d.Updating}} · updating…{{end}}</p>
+    {{with $d.LastBuildFailedAt}}<p class="notice notice-error" role="alert">The last update failed at {{clock .}}; showing {{clock $d.AsOf}}'s numbers.</p>{{end}}
+    {{if $d.Health}}<ul class="health">{{range $d.Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">Nothing to report yet.</p>{{end}}
+    {{else if and $d.LastBuildFailedAt (not $d.Building)}}
+    <p class="notice notice-error" role="alert">The day's numbers could not be worked out at {{clock $d.LastBuildFailedAt}}; refresh in a few minutes.</p>
+    {{else}}
+    <p class="notice" role="status">The day's numbers are being worked out; refresh in a minute.</p>
+    {{end}}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Today's jobs</h2>
+  <p><a href="/jobs">The jobs of the last brief</a></p>
+  {{if not $d.AsOf.IsZero}}
+  <dl class="stats">
+    <div><dt>Apply</dt><dd>{{thousands $d.ApplyNow}}</dd></div>
+    <div><dt>Your call</dt><dd>{{thousands $d.YourCallNow}}</dd></div>
+    <div><dt>Unscored</dt><dd>{{thousands $d.Unscored}}</dd></div>
+    <div><dt>Unreachable</dt><dd>{{thousands $d.Unreachable}}</dd></div>
+  </dl>
+  <h3>New today</h3>
+  {{with sources $d.Funnel.NewBySource}}
+  <ul class="counts">
+    {{range .}}<li><span>{{.Name}}</span><span class="num">{{thousands .N}}</span></li>{{end}}
+  </ul>
+  {{else}}<p class="muted">No new jobs today.</p>{{end}}
+  <h3>Funnel</h3>
+  <dl class="stats">
+    <div><dt>Gated</dt><dd>{{thousands $d.Funnel.Gated}}</dd></div>
+    <div><dt>Gate failed</dt><dd>{{thousands $d.Funnel.GateFailed}}</dd></div>
+    <div><dt>Scored</dt><dd>{{thousands $d.Funnel.Scored}}</dd></div>
+  </dl>
+  {{else}}<p class="muted">Shown once the day's numbers are worked out.</p>{{end}}
+  <h3>Scoring</h3>
+  <p class="cost">{{callsLine $d.Dashboard}}</p>
+  <p class="cost">{{costLine $d.Dashboard}}</p>
+  <p class="cost">{{claudeLine $d.Dashboard}}</p>
+</section>
+{{end}}
+
+{{/* home_runs is the boards and the last runs. */}}
+{{define "home_runs"}}
+{{$d := .}}
+<div class="grid two">
+  <section class="card">
+    <h2>Boards</h2>
+    {{if $d.Boards}}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th scope="col">ATS</th><th scope="col">State</th><th scope="col" class="num">Boards</th></tr></thead>
+      <tbody>{{range $d.Boards}}<tr><td>{{.ATS}}</td><td>{{.State}}</td><td class="num">{{thousands .N}}</td></tr>{{end}}</tbody>
+    </table>
+    </div>
+    {{else}}<p class="empty">No boards yet.</p>{{end}}
+  </section>
+  <section class="card">
+    <h2>Last runs</h2>
+    {{if $d.LastRuns}}
+    <ul class="item-list">
+      {{range $d.LastRuns}}{{template "run_item" .}}{{end}}
+    </ul>
+    <p><a href="/runs">All runs</a></p>
+    {{else}}<p class="empty">No runs yet.</p>{{end}}
+  </section>
+</div>
+{{end}}
+
+{{/* home_leads is the Leads part: sending, the waiting batch and the day's outreach numbers. */}}
+{{define "home_leads"}}
+{{$d := .}}
+{{with $d.Leads}}
+<section class="card">
+  <h2>Leads</h2>
+  {{with $d.Why}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}} <a href="/controls">Controls</a></p>{{end}}
+  {{if not $d.Why}}{{with .Paused}}<p class="notice notice-error" role="status">Sending is paused (since {{when .}}).</p>{{end}}{{end}}
+  {{with .Stopped}}<p class="notice notice-error" role="status">The last send run stopped sending: {{.}}.</p>{{end}}
+  {{with .Batch}}<p><a href="/leads/batches/{{.ID}}">Batch {{.ID}} waits for your approval</a>{{if .Shadow}} (shadow){{end}}: {{plural .Emails "email" "emails"}}, {{plural .Forms "contact form" "contact forms"}}, {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}}.</p>{{end}}
+  <dl class="stats">
+    <div><dt>Replies</dt><dd>{{.Replies}}</dd></div>
+    <div><dt>To use by hand</dt><dd>{{.ManualWaiting}}</dd></div>
+    <div><dt>Check by hand</dt><dd>{{.CheckByHand}}</dd></div>
+    <div><dt>Sent yesterday</dt><dd>{{.SentYesterday}}</dd></div>
+    <div><dt>Bounces</dt><dd>{{.Bounced}}</dd></div>
+    <div><dt>Opt-outs</dt><dd>{{.OptedOut}}</dd></div>
+  </dl>
+  <p><a href="/leads/outreach">Outreach</a></p>
+</section>
+{{end}}
+{{end}}

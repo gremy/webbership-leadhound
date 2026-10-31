@@ -12,27 +12,22 @@ import (
 // themeTTL is how long the theme cookie lasts.
 const themeTTL = 365 * 24 * time.Hour
 
-// themeOption is one button of the header's theme switch.
-type themeOption struct{ Value, Label string }
-
-// themeOptions are the header's theme switch, in order. "system" follows the
-// device's own setting and is the default.
-var themeOptions = []themeOption{{"system", "System"}, {"light", "Light"}, {"dark", "Dark"}}
-
-// themeOf returns v when it is one of the themes, else "system".
+// themeOf returns v when it is one of the two themes, "light" or "dark", else "": no
+// choice, so the page follows the device's own setting.
 func themeOf(v string) string {
 	switch v {
 	case "light", "dark":
 		return v
 	}
-	return "system"
+	return ""
 }
 
-// theme returns the theme the request's cookie chose, "system" without one.
+// theme returns the theme the request's cookie chose, "" without one. An old "system"
+// cookie, or any other value, reads as no choice.
 func (s *server) theme(r *http.Request) string {
 	c, err := r.Cookie(s.themeName)
 	if err != nil {
-		return "system"
+		return ""
 	}
 	return themeOf(c.Value)
 }
@@ -74,8 +69,9 @@ func safeBack(back string) string {
 	return u.RequestURI()
 }
 
-// setTheme is POST /theme: it stores the chosen theme in a cookie and goes back to
-// the page the switch was on. It needs no session, so the sign-in page has it too;
+// setTheme is POST /theme: it stores the chosen theme, light or dark, in a cookie and
+// goes back to the page the switch was on; any other value clears the choice, so the page
+// follows the device again. It needs no session, so the sign-in page has it too;
 // cross-site posts are refused before it runs, as for every POST.
 func (s *server) setTheme(w http.ResponseWriter, r *http.Request) {
 	if ok, tooBig := parseForm(w, r); tooBig {
@@ -84,14 +80,18 @@ func (s *server) setTheme(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+	theme, maxAge := themeOf(r.PostForm.Get("theme")), int(themeTTL/time.Second)
+	if theme == "" {
+		maxAge = -1
+	}
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is off only in dev mode, over plain http on loopback
 		Name:     s.themeName,
-		Value:    themeOf(r.PostForm.Get("theme")),
+		Value:    theme,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   !s.opt.Dev,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(themeTTL / time.Second),
+		MaxAge:   maxAge,
 	})
 	// The page the switch was on read its flash as it rendered; set it again so the page it
 	// goes back to still shows it. Only an encoded flash is taken, and cross-site posts never

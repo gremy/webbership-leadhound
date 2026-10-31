@@ -44,7 +44,7 @@ func TestCampaignsPage(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		`<a href="/leads/campaigns" aria-current="page">Campaigns</a>`, `<a href="/leads" aria-current="page">Leads</a>`,
+		`<a href="/leads/campaigns" aria-current="page">Campaigns</a>`, `<a href="/leads/home" aria-current="true">Leads</a>`,
 		`<section class="card settings-section campaign" id="campaign-drupal-eol"`,
 		`<h2 id="campaign-drupal-eol-title">Drupal end-of-life</h2>`,
 		"<dt>Short name</dt><dd><code>drupal-eol</code></dd>",

@@ -130,7 +130,7 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	srv := &http.Server{
 		Addr:              cfg.ConsoleAddr,
-		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger}),
+		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger, Operator: cfg.ConsoleEmail.Reveal()}),
 		ReadHeaderTimeout: serveReadHeaderTimeout,
 		ReadTimeout:       serveReadTimeout,
 		WriteTimeout:      serveWriteTimeout,

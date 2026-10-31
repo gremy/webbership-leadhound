@@ -2,6 +2,7 @@ package console
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -17,13 +18,29 @@ func themeCookie(dev bool, value string) *http.Cookie {
 	return &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}
 }
 
+func TestThemeReadsCookie(t *testing.T) {
+	s := &server{themeName: "lh_theme"}
+	if got := s.theme(httptest.NewRequest(http.MethodGet, "/", nil)); got != "" {
+		t.Errorf("no cookie: %q, want no choice", got)
+	}
+	for _, tt := range []struct{ cookie, want string }{
+		{"light", "light"}, {"dark", "dark"}, {"system", ""}, {"", ""}, {"purple", ""}, {"DARK", ""},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.AddCookie(themeCookie(true, tt.cookie))
+		if got := s.theme(r); got != tt.want {
+			t.Errorf("cookie %q: %q, want %q", tt.cookie, got, tt.want)
+		}
+	}
+}
+
 func TestThemeSetsCookieAndGoesBack(t *testing.T) {
 	for _, dev := range []bool{false, true} {
 		h := newHarness(t, richBackend("x"), dev)
 		name := themeCookie(dev, "").Name
 		for _, tt := range []struct{ theme, want string }{
-			{"light", "light"}, {"dark", "dark"}, {"system", "system"},
-			{"", "system"}, {"purple", "system"}, {"DARK", "system"}, {"dark;x=1", "system"},
+			{"light", "light"}, {"dark", "dark"}, {"system", ""},
+			{"", ""}, {"purple", ""}, {"DARK", ""}, {"dark;x=1", ""},
 		} {
 			w := h.do(post("/theme", url.Values{"theme": {tt.theme}, "back": {"/jobs?x=1"}}, h.session(t)))
 			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/jobs?x=1" {
@@ -33,10 +50,24 @@ func TestThemeSetsCookieAndGoesBack(t *testing.T) {
 			if c == nil {
 				t.Fatalf("dev=%v theme %q: no %s cookie", dev, tt.theme, name)
 			}
-			if c.Value != tt.want || c.Path != "/" || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode ||
-				c.Secure == dev || c.MaxAge < 360*24*60*60 || c.Domain != "" {
-				t.Errorf("dev=%v theme %q: cookie %+v, want %s, Path /, HttpOnly, Lax, Secure %v, a year", dev, tt.theme, c, tt.want, !dev)
+			if c.Value != tt.want || c.Path != "/" || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Secure == dev || c.Domain != "" {
+				t.Errorf("dev=%v theme %q: cookie %+v, want %q, Path /, HttpOnly, Lax, Secure %v", dev, tt.theme, c, tt.want, !dev)
 			}
+			// A choice lasts a year; anything else clears the cookie, so the page follows the device.
+			if tt.want != "" && c.MaxAge < 360*24*60*60 || tt.want == "" && c.MaxAge >= 0 {
+				t.Errorf("dev=%v theme %q: MaxAge %d", dev, tt.theme, c.MaxAge)
+			}
+		}
+	}
+}
+
+func TestThemeToggleFlips(t *testing.T) {
+	h := newHarness(t, richBackend("x"), false)
+	s := h.session(t)
+	for _, v := range []string{"dark", "light", "dark"} {
+		c := cookieNamed(h.do(post("/theme", url.Values{"theme": {v}, "back": {"/"}}, s)), "__Host-lh_theme")
+		if c == nil || c.Value != v || c.MaxAge <= 0 {
+			t.Fatalf("theme %q: cookie %+v", v, c)
 		}
 	}
 }
@@ -88,16 +119,18 @@ func TestThemeCrossSiteRefused(t *testing.T) {
 
 var htmlTag = regexp.MustCompile(`<html[^>]*>`)
 
+// TestLayoutRendersTheme: no choice (no cookie, an old "system" one, junk) renders no
+// data-theme, so the CSS follows the device; a choice renders it.
 func TestLayoutRendersTheme(t *testing.T) {
 	for _, dev := range []bool{false, true} {
 		h := newHarness(t, richBackend("x"), dev)
 		s := h.session(t)
-		for _, tt := range []struct{ cookie, attr, scheme, pressed string }{
-			{"", "", "light dark", "system"},
-			{"system", "", "light dark", "system"},
-			{"light", ` data-theme="light"`, "light", "light"},
-			{"dark", ` data-theme="dark"`, "dark", "dark"},
-			{"purple", "", "light dark", "system"},
+		for _, tt := range []struct{ cookie, attr string }{
+			{"", ""},
+			{"system", ""},
+			{"purple", ""},
+			{"light", ` data-theme="light"`},
+			{"dark", ` data-theme="dark"`},
 		} {
 			for _, p := range []string{"/login", "/", "/leads/today", "/jobs"} {
 				cookies := []*http.Cookie{s}
@@ -111,17 +144,11 @@ func TestLayoutRendersTheme(t *testing.T) {
 				if got, want := htmlTag.FindString(body), `<html lang="en"`+tt.attr+`>`; got != want {
 					t.Errorf("dev=%v %s cookie %q: %s, want %s", dev, p, tt.cookie, got, want)
 				}
-				if !strings.Contains(body, `<meta name="color-scheme" content="`+tt.scheme+`">`) {
-					t.Errorf("dev=%v %s cookie %q: color-scheme meta is not %q", dev, p, tt.cookie, tt.scheme)
+				if tt.attr == "" && strings.Contains(body, "data-theme=") {
+					t.Errorf("dev=%v %s cookie %q: renders a data-theme with no choice", dev, p, tt.cookie)
 				}
-				if !strings.Contains(body, `<form class="theme" method="post" action="/theme">`) {
+				if !strings.Contains(body, `action="/theme"`) {
 					t.Fatalf("dev=%v %s: no theme form", dev, p)
-				}
-				for _, v := range []string{"system", "light", "dark"} {
-					want := `name="theme" value="` + v + `" data-label="` + map[string]string{"system": "System", "light": "Light", "dark": "Dark"}[v] + `" aria-pressed="` + map[bool]string{true: "true", false: "false"}[v == tt.pressed] + `"`
-					if !strings.Contains(body, want) {
-						t.Errorf("dev=%v %s cookie %q: lacks %s", dev, p, tt.cookie, want)
-					}
 				}
 				back := `name="back" value="` + p + `"`
 				if !strings.Contains(body, back) {

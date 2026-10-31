@@ -51,14 +51,20 @@ const (
 // cssVersion is the start of console.css's SHA-256. The page links the
 // stylesheet with it as a query, so a new stylesheet is fetched at once although
 // static files are cached for a day.
-var cssVersion = func() string {
-	b, err := fs.ReadFile(staticFS, "static/console.css")
+var cssVersion = staticVersion("static/console.css")
+
+// jsVersion is console.js's version pin, made the same way as cssVersion.
+var jsVersion = staticVersion("static/console.js")
+
+// staticVersion is the start of the embedded file's SHA-256.
+func staticVersion(name string) string {
+	b, err := fs.ReadFile(staticFS, name)
 	if err != nil {
 		panic(err)
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:4])
-}()
+}
 
 // route is one entry of the console's routing table. New builds the mux from
 // routes, and the tests sweep the same table.
@@ -77,6 +83,9 @@ var routes = []route{
 	{"POST /logout", "/logout", false, (*server).logout},
 	{"POST /theme", "/theme", true, (*server).setTheme},
 	{"GET /{$}", "/", false, (*server).dashboard},
+	{"GET /leads/home", "/leads/home", false, (*server).leadsHome},
+	{"GET /jobs/home", "/jobs/home", false, (*server).jobsHome},
+	{"GET /account", "/account", false, (*server).account},
 	{"GET /controls", "/controls", false, (*server).controls},
 	// Both literal /controls/... POSTs are more specific than {job}, so they win.
 	{"POST /controls/send-now", "/controls/send-now", false, (*server).sendNow},
@@ -141,21 +150,8 @@ var routes = []route{
 	{"GET /healthz", "/healthz", true, (*server).healthz},
 }
 
-// navItem is one link of the page header.
+// navItem is one link of a filter row (the Tracked page's status filters).
 type navItem struct{ Label, Path string }
-
-// nav is the header's links, in order.
-var nav = []navItem{
-	{"Dashboard", "/"},
-	{"Controls", "/controls"},
-	{"Results", "/results"},
-	{"Jobs", "/jobs"},
-	{"Tracked", "/tracked"},
-	{"Runs", "/runs"},
-	{"Rules", "/rules"},
-	{"Leads", "/leads"},
-	{"Mailboxes", "/mailboxes"},
-}
 
 // trackedFilters are the Tracked page's status filters: "" is every job no
 // longer new, "all" every job with a status, then each status.
@@ -187,13 +183,15 @@ type server struct {
 	nextAt    []string        // the patterns of signed-in pages with an id in their path
 }
 
-// page is what the layout renders.
+// page is what the layout renders. Product and Shell are set by render from the request's
+// path, never by a handler.
 type page struct {
 	Title    string
 	Active   string
-	Nav      []navItem
+	Product  string // "leads", "jobs" or "" (the dashboard and the gear pages)
+	Shell    shellView
 	SignedIn bool
-	Theme    string // system, light or dark
+	Theme    string // light or dark; "" follows the device
 	Back     string // where the theme switch goes back to
 	Flash    string // the flash this request carried, encoded, so the theme switch keeps it
 	Message  string
@@ -287,11 +285,11 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
-		"templates/leads_tabs.html", "templates/send_now.html"))
+		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
-		"mailboxes", "mailbox", "mailbox_form", "controls"} {
+		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
@@ -340,7 +338,7 @@ func (s *server) funcs() template.FuncMap {
 		"row":          func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
 		"ruleFields":   func() []string { return ruleFields },
 		"cssVersion":   func() string { return cssVersion },
-		"themes":       func() []themeOption { return themeOptions },
+		"jsVersion":    func() string { return jsVersion },
 		"approveWords": approveWords,
 		"maxText":      func() int { return maxLeadsText },
 		"add":          func(a, b int) int { return a + b },
@@ -625,7 +623,8 @@ func (s *server) nextWithID(p string) bool {
 
 // render writes the named page inside the layout with status code.
 func (s *server) render(w http.ResponseWriter, r *http.Request, code int, name string, p page) {
-	p.Nav = nav
+	p.Product = productOf(r.URL.Path)
+	p.Shell = s.shell(r.URL.Path, p.Product)
 	p.Theme = s.theme(r)
 	p.Back = themeBack(r, p)
 	p.Flash = s.flashCarry(r)
@@ -746,6 +745,12 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) renderDashboard(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
+	s.renderHome(w, r, code, "dashboard", page{Title: "Dashboard", Active: "/", Message: msg, Error: isErr})
+}
+
+// renderHome renders a page made of the dashboard's parts (the dashboard, Leads home, Jobs
+// home) with the dashboard's data.
+func (s *server) renderHome(w http.ResponseWriter, r *http.Request, code int, name string, p page) {
 	d, err := s.b.Dashboard(r.Context())
 	if err != nil {
 		s.fail(w, r, err)
@@ -755,7 +760,8 @@ func (s *server) renderDashboard(w http.ResponseWriter, r *http.Request, code in
 	if d.Leads != nil {
 		v.Why = s.sendingWhy(r)
 	}
-	s.render(w, r, code, "dashboard", page{Title: "Dashboard", Active: "/", SignedIn: true, Message: msg, Error: isErr, Data: v})
+	p.SignedIn, p.Data = true, v
+	s.render(w, r, code, name, p)
 }
 
 // dashboardView is the dashboard and, with leads set up, the sending sentence its leads

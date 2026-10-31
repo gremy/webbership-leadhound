@@ -1,0 +1,11 @@
+{{define "content"}}
+{{$d := .Data}}
+{{template "home_head" $d}}
+{{if $d.Leads}}{{template "home_leads" $d}}{{else}}
+<section class="card">
+  <h2>Leads</h2>
+  <p class="empty">Leads are not set up on this server yet.</p>
+  <p><a href="/leads/outreach">Outreach</a></p>
+</section>
+{{end}}
+{{end}}

@@ -130,7 +130,7 @@ func TestSettingsPage(t *testing.T) {
 	}
 	body := w.Body.String()
 	wants := []string{
-		`<a href="/leads" aria-current="page">Leads</a>`,
+		`<a href="/leads/home">Leads</a>`, `href="/leads/settings" aria-current="page"><svg`,
 		`<a href="/leads/settings" aria-current="page">Settings</a>`,
 		"A change applies to the queue straight away and to the next new batch; batches already made keep their leads.",
 		"<p class=\"setting-source\">Changed here on 24 October 2026.</p>", "Order changed here on 24 October 2026.",

@@ -1,72 +1,154 @@
-/* LeadHound console. One file, no external fonts, light and dark. */
+/* LeadHound console. One file, system fonts, no images, light and dark. Under the CSP
+   (style-src 'self') there are no inline styles, so every visual is a class. The tokens
+   and the shell (header, product switcher, theme button, gear menu, sub-nav) come from
+   the approved board (internal/console/board/board.css). */
 
 :root {
   color-scheme: light dark;
-  --bg: #f6f7f9;
+  /* Surfaces and text */
+  --bg: #f5f6f8;
   --surface: #ffffff;
-  --text: #1c2128;
-  --muted: #5b6573;
-  --border: #dde1e6;
+  --surface-2: #f9fafb;
+  --sunken: #eef0f3;
+  --text: #1a1f26;
+  --muted: #576170;
+  --subtle: #69727f;
+  --border: #e1e4e9;
+  --border-strong: #c9ced6;
+  /* One accent */
   --accent: #2357c6;
+  --accent-hover: #1b47a6;
   --accent-text: #ffffff;
-  --accent-soft: #e8eefb;
+  --accent-soft: #e9effb;
+  --accent-soft-text: #1b47a6;
+  /* States */
   --good: #1d7a46;
   --good-soft: #e5f4ec;
+  --good-border: #b5dcc5;
   --warn: #8a5a00;
-  --warn-soft: #fbf1dc;
+  --warn-soft: #fcf3df;
+  --warn-border: #ecd29a;
   --bad: #b3261e;
   --bad-soft: #fbe9e7;
+  --bad-border: #f0bdb7;
+  --grey: #8a939f;
+  --grey-soft: #eef0f3;
+  --danger-bg: #b3261e;
+  --danger-hover: #951f19;
+  --danger-text: #ffffff;
   --focus: #2357c6;
-  --radius: 10px;
+  /* Elevation */
   --shadow: 0 1px 2px rgb(16 24 40 / 6%);
+  --shadow-lg: 0 12px 32px rgb(16 24 40 / 14%), 0 2px 6px rgb(16 24 40 / 6%);
+  /* Spacing: an 8px grid with one 4px half-step */
+  --sp-half: 4px;
+  --sp-1: 8px;
+  --sp-2: 16px;
+  --sp-3: 24px;
+  --sp-4: 32px;
+  --sp-5: 40px;
+  --sp-6: 48px;
+  /* Type scale */
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.9375rem;
+  --fs-lg: 1.125rem;
+  --fs-xl: 1.375rem;
+  --fs-2xl: 1.75rem;
+  --fs-num: 1.75rem;
+  /* Shape */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --content: 1200px;
 }
 
 /* Dark tokens. CSS cannot share one block between a media query and a selector, so
    the same list stands twice: for the device's own dark setting unless Light is chosen,
    and for Dark chosen. Change both together; TestCSSHasBothDarkSelectors fails when
-   they differ. */
+   they differ. This is the file's only colour-scheme media query, so the theme button's
+   no-choice rule lives in it too. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #111418;
-    --surface: #1a1f25;
+    --bg: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1b2027;
+    --sunken: #12161b;
     --text: #e6e9ed;
-    --muted: #9aa4b1;
-    --border: #2d343c;
-    --accent: #7aa2f7;
-    --accent-text: #0e1420;
-    --accent-soft: #1f2a40;
+    --muted: #a1aab6;
+    --subtle: #8f99a6;
+    --border: #2a3039;
+    --border-strong: #3b434e;
+    --accent: #7ea6f8;
+    --accent-hover: #9bbafa;
+    --accent-text: #0d1422;
+    --accent-soft: #1d2840;
+    --accent-soft-text: #b1c8fc;
     --good: #6cc895;
-    --good-soft: #17301f;
-    --warn: #e2b55c;
-    --warn-soft: #33290f;
+    --good-soft: #15281c;
+    --good-border: #2d5a3f;
+    --warn: #e5b860;
+    --warn-soft: #2c2410;
+    --warn-border: #5e4b1d;
     --bad: #f28b82;
-    --bad-soft: #3a1d1b;
+    --bad-soft: #331a18;
+    --bad-border: #6b302b;
+    --grey: #6f7884;
+    --grey-soft: #232931;
+    --danger-bg: #f28b82;
+    --danger-hover: #f5a59e;
+    --danger-text: #2a0e0c;
     --focus: #9dbbff;
     --shadow: none;
+    --shadow-lg: 0 12px 32px rgb(0 0 0 / 50%), 0 0 0 1px #2a3039;
+  }
+
+  /* No choice and a dark device: the button offers Light. */
+  :root:not([data-theme="light"]) .theme-form .theme-to-light {
+    display: inline-flex;
+  }
+
+  :root:not([data-theme="light"]) .theme-form .theme-to-dark {
+    display: none;
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #111418;
-  --surface: #1a1f25;
+  --bg: #0f1216;
+  --surface: #171b21;
+  --surface-2: #1b2027;
+  --sunken: #12161b;
   --text: #e6e9ed;
-  --muted: #9aa4b1;
-  --border: #2d343c;
-  --accent: #7aa2f7;
-  --accent-text: #0e1420;
-  --accent-soft: #1f2a40;
+  --muted: #a1aab6;
+  --subtle: #8f99a6;
+  --border: #2a3039;
+  --border-strong: #3b434e;
+  --accent: #7ea6f8;
+  --accent-hover: #9bbafa;
+  --accent-text: #0d1422;
+  --accent-soft: #1d2840;
+  --accent-soft-text: #b1c8fc;
   --good: #6cc895;
-  --good-soft: #17301f;
-  --warn: #e2b55c;
-  --warn-soft: #33290f;
+  --good-soft: #15281c;
+  --good-border: #2d5a3f;
+  --warn: #e5b860;
+  --warn-soft: #2c2410;
+  --warn-border: #5e4b1d;
   --bad: #f28b82;
-  --bad-soft: #3a1d1b;
+  --bad-soft: #331a18;
+  --bad-border: #6b302b;
+  --grey: #6f7884;
+  --grey-soft: #232931;
+  --danger-bg: #f28b82;
+  --danger-hover: #f5a59e;
+  --danger-text: #2a0e0c;
   --focus: #9dbbff;
   --shadow: none;
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 50%), 0 0 0 1px #2a3039;
 }
 
 :root[data-theme="light"] {
@@ -149,90 +231,330 @@ code {
   padding: 0.5rem 0.75rem;
 }
 
-/* Header and navigation */
+/* ---------- Shell: header, product switcher, theme button, gear menu, sub-nav ---------- */
 
-.site-header {
+.icon {
+  width: 18px;
+  height: 18px;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
-.bar,
-.site-header nav,
-main {
-  max-width: 1080px;
+.app-header-inner {
+  max-width: var(--content);
   margin: 0 auto;
-  padding-left: 16px;
-  padding-right: 16px;
-}
-
-.bar {
+  padding: 0 var(--sp-2);
+  height: 56px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  min-height: 52px;
+  gap: var(--sp-3);
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text);
+  text-decoration: none;
   font-weight: 700;
+  font-size: var(--fs-md);
   letter-spacing: 0.01em;
 }
 
-.bar-end {
+.brand:hover {
+  color: var(--text);
+}
+
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+
+.brand-mark path {
+  stroke: var(--accent-text);
+}
+
+.header-end {
+  margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  min-width: 0;
+  gap: var(--sp-half);
 }
 
-.logout,
-.theme {
-  margin: 0;
-}
-
-/* The theme switch: three quiet buttons, the chosen one marked. */
-.theme fieldset {
+/* Product switcher: a segmented control of two links. */
+.switcher {
   display: flex;
   gap: 2px;
+  padding: 3px;
   margin: 0;
-  padding: 2px;
+  list-style: none;
+  background: var(--sunken);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 9px;
 }
 
-.theme button {
-  min-height: 36px;
-  padding: 0 0.6rem;
-  font-size: 0.875rem;
+.switcher a {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 var(--sp-2);
   border-radius: 6px;
-}
-
-/* Reserves the bold label's width, so choosing a theme never moves the header. */
-.theme button::after {
-  content: attr(data-label);
-  display: block;
-  height: 0;
-  overflow: hidden;
-  visibility: hidden;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
-.theme button[aria-pressed="true"] {
-  background: var(--accent-soft);
+.switcher a:hover {
   color: var(--text);
-  font-weight: 600;
+}
+
+.switcher a[aria-current="page"],
+.switcher a[aria-current="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 10%), 0 0 0 1px var(--border);
+}
+
+/* Icon buttons: 40px target, quiet until hovered. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.icon-btn:hover {
+  background: var(--sunken);
+  color: var(--text);
+  border-color: transparent;
+}
+
+/* The page's own button and summary rules (further down) must not reach the shell's. */
+.icon-btn,
+.menu button {
+  min-height: 36px;
+}
+
+.gear > summary::after,
+.gear[open] > summary::after {
+  content: none;
+}
+
+.theme-form {
+  margin: 0;
+}
+
+/* The theme button: two submit buttons, only the one that flips the theme on screen shown.
+   Light (chosen, or no choice on a light device) offers Dark; dark offers Light. The
+   no-choice dark-device rule is in the dark tokens' media query above. */
+.theme-form .theme-to-light {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme-form .theme-to-light {
+  display: inline-flex;
+}
+
+:root[data-theme="dark"] .theme-form .theme-to-dark {
+  display: none;
+}
+
+/* Gear menu: a <details>, so it opens with JS off. */
+.gear {
+  position: relative;
+}
+
+.gear > summary {
+  list-style: none;
+}
+
+.gear > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gear[open] > summary {
+  background: var(--sunken);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--sp-1));
+  z-index: 30;
+  width: 260px;
+  padding: var(--sp-1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+
+.menu-head {
+  padding: var(--sp-1) var(--sp-1) var(--sp-1);
+  margin-bottom: var(--sp-half);
+  border-bottom: 1px solid var(--border);
+}
+
+.menu-head strong {
+  display: block;
+  font-size: var(--fs-sm);
+}
+
+.menu-head span {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.menu ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.menu a,
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--sp-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-decoration: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu a:hover,
+.menu button:hover {
+  background: var(--sunken);
+  color: var(--text);
+}
+
+.menu svg {
+  color: var(--muted);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: var(--sp-half) 0;
+  background: var(--border);
+}
+
+.menu form {
+  margin: 0;
+}
+
+/* ---------- Product sub-nav ---------- */
+
+.subnav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.subnav ul {
+  max-width: var(--content);
+  margin: 0 auto;
+  padding: 0 var(--sp-1);
+  display: flex;
+  gap: 0;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.subnav ul::-webkit-scrollbar {
+  display: none;
+}
+
+.subnav a {
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 var(--sp-1);
+  margin: 0 var(--sp-half);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+
+.subnav a:hover {
+  color: var(--text);
+}
+
+.subnav a[aria-current="page"],
+.subnav a[aria-current="true"] {
+  color: var(--text);
+  font-weight: 650;
+  border-bottom-color: var(--accent);
+}
+
+main {
+  max-width: var(--content);
+  margin: 0 auto;
+  padding-left: var(--sp-2);
+  padding-right: var(--sp-2);
 }
 
 @media (max-width: 639px) {
-  .bar {
-    gap: 0.5rem;
+  .app-header-inner {
+    gap: 12px;
+    padding: 0 12px;
   }
 
-  .bar-end .quiet {
-    padding: 0 0.45rem;
+  .brand-name {
+    display: none;
+  }
+
+  .switcher a {
+    padding: 0 12px;
+  }
+
+  .menu {
+    position: fixed;
+    top: 64px;
+    right: 12px;
+    left: auto;
+    width: min(280px, calc(100vw - 24px));
   }
 }
 
-.site-header nav ul,
+@media (prefers-reduced-motion: no-preference) {
+  .icon-btn,
+  .switcher a,
+  .subnav a {
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+}
+
+/* Filter rows (the Tracked page's statuses, the Leads tabs). */
 .filters ul {
   display: flex;
   gap: 0.25rem;
@@ -240,27 +562,6 @@ main {
   margin: 0;
   padding: 0;
   overflow-x: auto;
-}
-
-.site-header nav a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 0.75rem;
-  color: var(--muted);
-  text-decoration: none;
-  border-bottom: 2px solid transparent;
-  white-space: nowrap;
-}
-
-.site-header nav a:hover {
-  color: var(--text);
-}
-
-.site-header nav a[aria-current="page"] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-  font-weight: 600;
 }
 
 main {
@@ -834,17 +1135,6 @@ select {
     padding: 0.9rem 1rem;
   }
 
-  .site-header nav a {
-    padding: 0 0.5rem;
-  }
-
-  /* Every item shows on a phone, the current one included: the nav wraps rather than
-     hiding items off to the side. */
-  .site-header nav ul {
-    flex-wrap: wrap;
-    overflow-x: visible;
-    gap: 0;
-  }
 }
 
 .tracked .actions button {

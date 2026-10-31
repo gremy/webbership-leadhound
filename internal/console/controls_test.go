@@ -65,7 +65,7 @@ func TestControlsPage(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		`<a href="/controls" aria-current="page">Controls</a>`,
+		`href="/controls" aria-current="page">`,
 		`notice notice-warn sending-why`, "Shadow mode: LEADHOUND_OUTREACH is not live",
 		"Morning batch", "What Morning batch does", "Off since", "held for the holidays", "(set by the system)",
 		"Every morning at 07:00", "timer enabled, next run", "timer not enabled", "no timer of its own", "Never switched", "Never run",
@@ -82,9 +82,9 @@ func TestControlsPage(t *testing.T) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
-	navAt, dashAt := strings.Index(body, `href="/controls"`), strings.Index(body, `href="/">Dashboard`)
-	if dashAt < 0 || navAt < dashAt || strings.Index(body, `href="/results"`) < navAt {
-		t.Error("Controls is not right after Dashboard in the nav")
+	settingsAt, navAt := strings.Index(body, `href="/leads/settings">`), strings.Index(body, `href="/controls"`)
+	if settingsAt < 0 || navAt < settingsAt || strings.Index(body, `href="/mailboxes"`) < navAt {
+		t.Error("Controls is not right after Settings in the gear menu")
 	}
 	if n := h.b.n("ControlAct"); n != 0 {
 		t.Errorf("GET called ControlAct %d times", n)

@@ -109,6 +109,8 @@ type Options struct {
 	Dev      bool
 	Location *time.Location
 	Logger   *slog.Logger
+	// Operator is the operator's sign-in email, shown in the gear menu and on Account.
+	Operator string
 }
 
 // Dashboard is the state the dashboard page shows. The health lines, the tiers

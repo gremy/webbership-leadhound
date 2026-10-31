@@ -509,8 +509,13 @@ func TestLeadsPages(t *testing.T) {
 				t.Errorf("%s lacks %q", p, want)
 			}
 		}
-		if !strings.Contains(body, `<a href="/leads" aria-current="page">Leads</a>`) {
-			t.Errorf("%s: the Leads nav entry is not current", p)
+		// Settings sits in the gear menu, outside both products.
+		want := `<a href="/leads/home" aria-current="true">Leads</a>`
+		if p == "/leads/settings" {
+			want = `<a href="/leads/home">Leads</a>`
+		}
+		if !strings.Contains(body, want) {
+			t.Errorf("%s: the switcher lacks %q", p, want)
 		}
 	}
 	b := richBackend("x")
@@ -724,7 +729,7 @@ func TestLeadListPage(t *testing.T) {
 	h := newHarness(t, richBackend("Northwind Trading"), false)
 	body := h.do(get("/leads", h.session(t))).Body.String()
 	for _, want := range []string{
-		`<a href="/leads" aria-current="page">Leads</a>`,
+		`<a href="/leads/home" aria-current="true">Leads</a>`,
 		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`, `<a href="/leads/settings">Settings</a>`,
 		`<form method="get" action="/leads" class="lead-filters">`,
 		`<ul class="item-list narrow-only">`, `<div class="table-wrap wide-only">`,
@@ -843,7 +848,7 @@ func TestLeadDetailPage(t *testing.T) {
 		last = i
 	}
 	for _, want := range []string{
-		`<a href="/leads" aria-current="page">Leads</a>`, `<a href="/leads" aria-current="true">List</a>`,
+		`<a href="/leads/home" aria-current="true">Leads</a>`, `<a href="/leads" aria-current="true">List</a>`,
 		`<article class="record lead-record" id="lead-5">`, "<h1>Northwind Trading</h1>",
 		"<dt>Relevance</dt><dd>Northwind Trading\n", "<summary>1 rating so far</summary>",
 		`<li><span class="item-head">Northwind Trading</span><span class="item-meta">Sat 24 Oct 04:50</span></li>`,
