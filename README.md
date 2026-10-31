@@ -10,9 +10,10 @@
   - `make check`: format check, vet, lint (when installed), unit tests and the tracked-file privacy check.
   - `make test-integration`: database tests against the local `leadhound_test`.
   - `make test-scale`: time and memory budgets on `leadhound_scale`, a local database the size of production: 450,000 jobs (`LEADHOUND_SCALE_JOBS`) and a year of lead finding and outreach (a million sites, 700,000 probed, 5,000 leads, 400 batches).
-    It is seeded once, about two minutes for the jobs, and reused; `make deploy` runs it and refuses to ship when a budget fails.
-  - `make gate`: everything a deploy must pass, in order: `check`, `test-integration`, `test-scale`, `go vet` with the integration and scale tags, and the deploy tests.
+    It is seeded once, about two minutes for the jobs, and reused; `make gate-full` runs it.
+  - `make gate`: what a deploy must pass, in a few minutes: `check`, `go vet` with the integration and scale tags (so every integration and scale test still compiles), and the deploy tests.
     When it passes on a clean tree (untracked files count), it writes the commit to `bin/gate-passed`, and `make deploy` on that same commit, still clean, skips the gate.
+  - `make gate-full`: the gate plus `test-integration` and `test-scale`, tens of minutes; run it when you choose, it stamps the same way.
   - `make db-local`: create the roles, their limits and the local dev, test and scale databases.
   - `make migrate`: apply migrations to the dev database as the owner role.
   - `make hooks`: install the pre-commit and commit-msg privacy hooks.

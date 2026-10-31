@@ -9,7 +9,7 @@ TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound
 TEST_SCALE_DSN                 ?= postgres://leadhound_app@localhost/leadhound_scale?sslmode=disable
 TEST_SCALE_MIGRATE_DSN         ?= postgres://leadhound_owner@localhost/leadhound_scale?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote forget console-password console-local mailbox-key mailbox-check-local
+.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-full gate-stamp gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote forget console-password console-local mailbox-key mailbox-check-local
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -116,7 +116,7 @@ endif
 # untracked .go file is compiled in and an untracked deploy/leadhound-*.service is shipped,
 # so a tree with one is not the commit the stamp names. Read once, when make starts.
 GATE_STAMP ?= bin/gate-passed
-ifneq ($(filter gate deploy,$(MAKECMDGOALS)),)
+ifneq ($(filter gate gate-full deploy,$(MAKECMDGOALS)),)
 GATE_HEAD  := $(shell git rev-parse --verify -q HEAD 2>/dev/null)
 GATE_SHORT := $(shell git rev-parse --short HEAD 2>/dev/null)
 GATE_CLEAN := $(shell s=$$(git status --porcelain 2>/dev/null) && [ -z "$$s" ] && echo yes)
@@ -165,15 +165,28 @@ test-scale:
 ## check: everything a commit must pass
 check: fmt-check vet lint-if-present test privacy-tree
 
-## gate: everything a deploy must pass, in order: check, test-integration, test-scale, vet with the
-## integration and scale tags, the deploy tests; then, only from a clean tree, stamp HEAD in GATE_STAMP
+## gate: what a deploy must pass, in minutes: check, vet with the integration and scale tags (so
+## every integration and scale test still compiles), the deploy tests; then, only from a clean
+## tree, stamp HEAD in GATE_STAMP. The integration and scale runs are gate-full's, run by choice.
 gate:
+	@rm -f '$(GATE_STAMP)'
+	@$(MAKE) --no-print-directory check
+	go vet -tags 'integration scale' ./...
+	go test ./deploy/ -race -count=1
+	@$(MAKE) --no-print-directory gate-stamp GATE_HEAD='$(GATE_HEAD)' GATE_SHORT='$(GATE_SHORT)' GATE_CLEAN='$(GATE_CLEAN)'
+
+## gate-full: gate plus the integration and scale suites (tens of minutes); run it when you choose
+gate-full:
 	@rm -f '$(GATE_STAMP)'
 	@$(MAKE) --no-print-directory check
 	@$(MAKE) --no-print-directory test-integration
 	@$(MAKE) --no-print-directory test-scale
 	go vet -tags 'integration scale' ./...
 	go test ./deploy/ -race -count=1
+	@$(MAKE) --no-print-directory gate-stamp GATE_HEAD='$(GATE_HEAD)' GATE_SHORT='$(GATE_SHORT)' GATE_CLEAN='$(GATE_CLEAN)'
+
+# gate-stamp writes HEAD to GATE_STAMP when the tree is the clean commit the gate started on.
+gate-stamp:
 	@if [ -n '$(GATE_HEAD)' ] && [ '$(GATE_CLEAN)' = yes ] && [ "$$(git rev-parse --verify -q HEAD)" = '$(GATE_HEAD)' ] && \
 		[ -z "$$(git status --porcelain)" ]; then \
 		mkdir -p '$(dir $(GATE_STAMP))' && printf '%s\n' '$(GATE_HEAD)' > '$(GATE_STAMP)' && \

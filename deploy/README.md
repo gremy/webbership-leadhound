@@ -183,7 +183,7 @@ Run these on the server as root, in order.
 
 ## Everyday
 
-- `make deploy HOST=… [ARCH=…] CONFIRM=1` ships a new release: it runs `make gate` (check, the integration and scale tests, vet with their tags, the deploy tests), builds a static Linux binary, copies it with `deploy/install.sh`, the backup script and the units, runs `migrate` with the new binary as the owner role, then puts the new binary and units in place, reloads systemd and enables the timers and the Run now watchers.
+- `make deploy HOST=… [ARCH=…] CONFIRM=1` ships a new release: it runs `make gate` (check, vet with the integration and scale tags, the deploy tests; the integration and scale suites are `make gate-full`, run by choice), builds a static Linux binary, copies it with `deploy/install.sh`, the backup script and the units, runs `migrate` with the new binary as the owner role, then puts the new binary and units in place, reloads systemd and enables the timers and the Run now watchers.
   When the gate already passed on this commit and the tree is clean (`git status --porcelain` empty, untracked files included), it prints `deploy: the gate passed on <hash>; not running it again` and goes straight to the build; any change, or a new commit, runs the gate again.
   A failed `migrate` stops the deploy with a non-zero exit and leaves the old binary and units running; the release stays in its temporary directory on the server.
   Once the console is configured, the deploy also restarts it on the new binary and waits up to 10 seconds for it to answer; if it does not, the deploy prints its last log lines and exits non-zero, with the timers already in place.

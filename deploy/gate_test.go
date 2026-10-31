@@ -23,16 +23,20 @@ esac
 // gateCommands are the gate's steps as make -n prints them, in the order they must run.
 var gateCommands = []string{
 	"gofmt -s -l .",                          // check
-	"go test -tags integration -p 1 ./...",   // test-integration
-	"-run 'Scale'",                           // test-scale
-	"go vet -tags 'integration scale' ./...", // vet with both tags
+	"go vet -tags 'integration scale' ./...", // vet with both tags: every integration and scale test compiles
 	"go test ./deploy/ -race -count=1",       // the deploy tests
 }
 
-// TestDeployGateStamp: make deploy runs the gate (check, test-integration, test-scale, vet
-// with the tags, the deploy tests, in that order) unless the stamp names HEAD and the tree is
-// clean, untracked files included; then it says so in one line and runs none of it. Either
-// way it builds and copies as before, and a dry run never writes the stamp.
+// fullOnly are gate-full's slow suites, which a deploy's gate never runs.
+var fullOnly = []string{
+	"go test -tags integration -p 1 ./...", // test-integration
+	"-run 'Scale'",                         // test-scale
+}
+
+// TestDeployGateStamp: make deploy runs the gate (check, vet with the tags, the deploy tests,
+// in that order; never the integration or scale suites, which are gate-full's) unless the stamp
+// names HEAD and the tree is clean, untracked files included; then it says so in one line and
+// runs none of it. Either way it builds and copies as before, and a dry run never writes the stamp.
 func TestDeployGateStamp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake git is a shell script")
@@ -86,6 +90,11 @@ func TestDeployGateStamp(t *testing.T) {
 					t.Errorf("the gate's %q does not run, or not in order:\n%s", c, out)
 				case !tc.skip:
 					at += i + len(c)
+				}
+			}
+			for _, c := range fullOnly {
+				if strings.Contains(out, c) {
+					t.Errorf("deploy's gate runs gate-full's %q:\n%s", c, out)
 				}
 			}
 			build := strings.Index(out, "go build -trimpath")
