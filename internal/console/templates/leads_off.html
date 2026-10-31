@@ -1,5 +1,14 @@
 {{define "content"}}
-<h1>Leads</h1>
-{{if not .Data}}<p class="empty">Leads are not set up on this server yet.</p>{{end}}
-<p><a href="/leads/outreach">Back to outreach</a></p>
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Leads</h1>
+      <p class="page-sub"><a href="/leads/outreach">Back to outreach</a></p>
+    </div>
+  </div>
+  {{if not .Data}}<section class="card"><div class="empty empty-compact">
+    <p class="empty-title">Leads are not set up</p>
+    <p class="empty-text">Leads are not set up on this server yet.</p>
+  </div></section>{{end}}
+</div>
 {{end}}

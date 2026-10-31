@@ -131,7 +131,6 @@ func TestSettingsPage(t *testing.T) {
 	body := w.Body.String()
 	wants := []string{
 		`<a href="/leads/home">Leads</a>`, `href="/leads/settings" aria-current="page"><svg`,
-		`<a href="/leads/settings" aria-current="page">Settings</a>`,
 		"A change applies to the queue straight away and to the next new batch; batches already made keep their leads.",
 		"<p class=\"setting-source\">Changed here on 24 October 2026.</p>", "Order changed here on 24 October 2026.",
 		`name="wanted" value="GB" checked`, `name="wanted" value="DE">`, `name="never_contact" value="northwind.example"`,
@@ -155,7 +154,7 @@ func TestSettingsPage(t *testing.T) {
 			t.Errorf("settings page lacks %q", want)
 		}
 	}
-	if n := strings.Count(body, `value="reset" class="quiet">Reset this section`); n != len(settingsSections) {
+	if n := strings.Count(body, `value="reset" class="btn btn-secondary">Reset this section`); n != len(settingsSections) {
 		t.Errorf("%d section resets, want %d", n, len(settingsSections))
 	}
 	// A value from the file says nothing about where it comes from; only a change made here
@@ -186,7 +185,7 @@ func TestSettingsPage(t *testing.T) {
 		t.Errorf("POST /leads/priorities: %d, want 405", w.Code)
 	}
 	for _, p := range []string{"/leads", "/leads/outreach", "/leads/5"} {
-		if !strings.Contains(h.do(get(p, c)).Body.String(), `<a href="/leads/settings">Settings</a>`) {
+		if !strings.Contains(h.do(get(p, c)).Body.String(), `href="/leads/settings"`) {
 			t.Errorf("%s: the Settings tab does not link /leads/settings", p)
 		}
 	}

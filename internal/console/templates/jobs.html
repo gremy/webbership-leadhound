@@ -1,15 +1,31 @@
 {{define "content"}}
-<h1>Jobs</h1>
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>Jobs</h1>
+    {{if .Data.SentAt}}<p class="page-sub">From the brief of {{day .Data.Day}}, sent at {{clock .Data.SentAt}}. The numbers are the ones the email used.</p>{{end}}
+  </div>
+</div>
 {{if not .Data.SentAt}}
-<p class="empty">No brief has been sent yet.</p>
+<div class="card">
+  <div class="empty">
+    <p class="empty-title">No brief has been sent yet.</p>
+    <p class="empty-text">Once today's email goes out, its jobs are listed here with the same numbers.</p>
+  </div>
+</div>
 {{else}}
-<p class="lede">From the brief of {{day .Data.Day}}, sent at {{clock .Data.SentAt}}. The numbers are the ones the email used.</p>
 {{if .Data.Jobs}}
-<div class="jobs">
+<div class="stack-sm">
 {{range .Data.Jobs}}{{template "job_row" (row . $.Data.Day)}}{{end}}
 </div>
 {{else}}
-<p class="empty">That brief listed no jobs.</p>
+<div class="card">
+  <div class="empty">
+    <p class="empty-title">That brief listed no jobs</p>
+    <p class="empty-text">When a day has matches they show up here, ready to mark.</p>
+  </div>
+</div>
 {{end}}
 {{end}}
+</div>
 {{end}}

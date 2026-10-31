@@ -1,26 +1,28 @@
 {{define "mailbox_check"}}{{$c := .Card}}
-<section class="card mailbox-check" id="mailbox-check"{{if .Polling}} hx-get="/mailboxes/{{$c.MailboxID}}/check" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}>
-  <h2>Check</h2>
-  {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+<section class="card span-6 mailbox-check" id="mailbox-check" aria-labelledby="check-h"{{if .Polling}} hx-get="/mailboxes/{{$c.MailboxID}}/check" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}>
+  <div class="card-head"><h2 id="check-h">Check</h2>{{if eq $c.Outcome "passed"}}<span class="badge badge-good">Passed</span>{{else if eq $c.Outcome "failed"}}<span class="badge badge-bad">Failed</span>{{else if and (ne $c.Outcome "") (ne $c.Outcome "requested")}}<span class="badge badge-bad">Could not run</span>{{end}}</div>
+  <div class="card-body stack">
+  {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}} mb-0" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
   {{if and (eq $c.Outcome "requested") $c.NotStarted}}
-  <p class="notice notice-error" role="status">The check has not started. It was asked for at {{clock $c.RequestedAt}}; press Check now to ask again.</p>
+  <div class="alert alert-warn" role="status">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">The check has not started. It was asked for at {{clock $c.RequestedAt}}; press Check now to ask again.</p></div></div>
   {{else if eq $c.Outcome "requested"}}
-  <p class="run-line check-waiting" role="status">Checking… asked for at {{clock $c.RequestedAt}}. This card updates by itself.</p>
+  <p class="state state-warn mb-0" role="status"><span class="dot dot-warn"></span>Checking… asked for at {{clock $c.RequestedAt}}. This card updates by itself.</p>
   <p class="hint">Signs in to both servers and reads the domain's records, usually within a minute. Nothing is sent.</p>
   {{else if eq $c.Outcome ""}}
-  <p class="empty">Not checked yet.</p>
+  <div class="empty empty-compact"><p class="empty-title">Not checked yet</p><p class="empty-text">Check now signs in to both servers and reads the domain's records.</p></div>
   {{else}}
-  <p class="check-outcome">{{if eq $c.Outcome "passed"}}<span class="good">Passed</span>{{else if eq $c.Outcome "failed"}}<span class="bad">Failed</span>{{else}}<span class="bad">Could not run</span>{{end}}{{with $c.CheckedAt}}, {{when .}}{{end}}.</p>
-  <ul class="ticks">
-    {{range .Ticks}}<li class="tick tick-{{.State}}"><span class="mark" aria-hidden="true">{{if eq .State "ok"}}✓{{else if eq .State "bad"}}✗{{else}}–{{end}}</span> {{.Label}}: {{if eq .State "ok"}}passed{{else if eq .State "bad"}}failed{{else}}not run{{end}}</li>{{end}}
+  <p class="mb-0">{{if eq $c.Outcome "passed"}}<span class="text-good strong">Passed</span>{{else if eq $c.Outcome "failed"}}<span class="text-bad strong">Failed</span>{{else}}<span class="text-bad strong">Could not run</span>{{end}}{{with $c.CheckedAt}}, {{when .}}{{end}}.</p>
+  <ul class="list">
+    {{range .Ticks}}<li class="list-item tick-{{.State}}"><span class="list-main"><span class="list-title">{{.Label}}</span></span><span class="list-end"><span class="state {{if eq .State "ok"}}state-good{{else if eq .State "bad"}}state-bad{{else}}state-grey{{end}}"><span class="dot {{if eq .State "ok"}}dot-good{{else if eq .State "bad"}}dot-bad{{else}}dot-grey{{end}}"></span>{{if eq .State "ok"}}passed{{else if eq .State "bad"}}failed{{else}}not run{{end}}</span></span></li>{{end}}
   </ul>
-  {{with $c.Fix}}<p class="notice notice-error" role="status">{{.}}</p>{{end}}
+  {{with $c.Fix}}<div class="alert alert-stop" role="status">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">{{.}}</p></div></div>{{end}}
   {{end}}
   {{if and (or (ne $c.Outcome "requested") $c.NotStarted) (not $c.Retired)}}
   <form method="post" action="/mailboxes/{{$c.MailboxID}}/check" hx-post="/mailboxes/{{$c.MailboxID}}/check" hx-target="#mailbox-check" hx-swap="outerHTML">
-    <button type="submit"{{if ne $c.Outcome "passed"}} class="primary"{{end}}>Check now</button>
+    <button type="submit" class="btn {{if ne $c.Outcome "passed"}}btn-primary{{else}}btn-secondary{{end}}">Check now</button>
   </form>
   <p class="hint">Signs in to both servers, looks for the Sent and Junk folders and reads the domain's records. Sends nothing.</p>
   {{end}}
+  </div>
 </section>
 {{end}}

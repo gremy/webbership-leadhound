@@ -1,125 +1,143 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.P}}{{$f := $p.Filter}}{{$o := $p.Options}}
+<div class="page">
 <div class="page-head">
-  <h1>Leads</h1>
+  <div>
+    <h1>Leads</h1>
+    {{if not (or $v.NoLeads $v.NoneMatch)}}<p class="page-sub">{{plural $p.Total "lead" "leads"}}{{if gt $v.Pages 1}} · page {{$p.Page}} of {{$v.Pages}}{{end}}</p>{{end}}
+  </div>
 </div>
-{{template "leads_tabs" (leadsTab "list" true)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 {{if and $p.LabelGoal (not $v.NoLeads)}}
-<section class="card label-progress" aria-labelledby="label-title">
-  <h2 id="label-title" class="visually-hidden">Your calls</h2>
-  <p><strong>{{$p.Labelled}} of {{$p.LabelGoal}} labelled.</strong>
-    {{if $v.ToLabel}}<a href="/leads">Show every lead</a>{{else}}<a href="/leads?to_label=1">To label</a>{{end}}</p>
-  {{if $v.ToLabel}}<p class="hint">These are {{$p.LabelGoal}} leads picked across kinds, Drupal versions and countries, plus every lead you have already labelled. Open one, read it, and give it your call. Jev's number only starts ordering your list once it agrees with your calls on at least {{$p.LabelGoal}} leads.</p>
-  {{else}}<p class="hint">Your calls are the answer key Jev is checked against. Label {{$p.LabelGoal}} leads to let relevance order your list.</p>{{end}}
+<section class="card label-progress mt-2" aria-labelledby="label-title">
+  <div class="card-body">
+    <h2 id="label-title" class="visually-hidden">Your calls</h2>
+    <p><strong>{{$p.Labelled}} of {{$p.LabelGoal}} labelled.</strong>
+      {{if $v.ToLabel}}<a href="/leads">Show every lead</a>{{else}}<a href="/leads?to_label=1">To label</a>{{end}}</p>
+    {{if $v.ToLabel}}<p class="hint">These are {{$p.LabelGoal}} leads picked across kinds, Drupal versions and countries, plus every lead you have already labelled. Open one, read it, and give it your call. Jev's number only starts ordering your list once it agrees with your calls on at least {{$p.LabelGoal}} leads.</p>
+    {{else}}<p class="hint">Your calls are the answer key Jev is checked against. Label {{$p.LabelGoal}} leads to let relevance order your list.</p>{{end}}
+  </div>
 </section>
 {{end}}
 
-<section class="card">
+<section class="card mt-2">
   <h2 class="visually-hidden">Filter</h2>
+  <div class="card-body">
   <details class="filter-fold">
   <summary>Filters{{with $v.Filters}} · {{.}} on{{end}}</summary>
   <form method="get" action="/leads" class="lead-filters">
     {{with $o.Kinds}}
     <fieldset>
       <legend>Kind</legend>
-      <div class="checks">{{range .}}<label><input type="checkbox" name="kind" value="{{.Value}}"{{if in .Value $f.Kinds}} checked{{end}}> {{.Label}}</label>{{end}}</div>
+      <div class="checks">{{range .}}<label><input class="check" type="checkbox" name="kind" value="{{.Value}}"{{if in .Value $f.Kinds}} checked{{end}}> {{.Label}}</label>{{end}}</div>
     </fieldset>
     {{end}}
     {{with $o.Countries}}
     <fieldset>
       <legend>Country</legend>
-      <div class="checks">{{range .}}<label><input type="checkbox" name="country" value="{{.Value}}"{{if in .Value $f.Countries}} checked{{end}}> {{.Label}}</label>{{end}}</div>
+      <div class="checks">{{range .}}<label><input class="check" type="checkbox" name="country" value="{{.Value}}"{{if in .Value $f.Countries}} checked{{end}}> {{.Label}}</label>{{end}}</div>
     </fieldset>
     {{end}}
     <fieldset>
       <legend>Can be reached by</legend>
       <div class="checks">
-        {{range $o.Channels}}{{if or (ne .Value "phone") (in .Value $f.Channels)}}<label><input type="checkbox" name="channel" value="{{.Value}}"{{if in .Value $f.Channels}} checked{{end}}> {{.Label}}</label>{{end}}{{end}}
-        <label><input type="checkbox" name="has_phone" value="1"{{if eq $f.HasPhone "1"}} checked{{end}}> Has a phone number</label>
+        {{range $o.Channels}}{{if or (ne .Value "phone") (in .Value $f.Channels)}}<label><input class="check" type="checkbox" name="channel" value="{{.Value}}"{{if in .Value $f.Channels}} checked{{end}}> {{.Label}}</label>{{end}}{{end}}
+        <label><input class="check" type="checkbox" name="has_phone" value="1"{{if eq $f.HasPhone "1"}} checked{{end}}> Has a phone number</label>
       </div>
     </fieldset>
     <fieldset>
       <legend>Your calls</legend>
       <div class="checks">
-        <label><input type="checkbox" name="to_label" value="1"{{if eq $f.ToLabel "1"}} checked{{end}}> Only the leads to label</label>
+        <label><input class="check" type="checkbox" name="to_label" value="1"{{if eq $f.ToLabel "1"}} checked{{end}}> Only the leads to label</label>
       </div>
     </fieldset>
     <div class="filter-fields">
       {{with $o.Campaigns}}
-      <div>
-        <label for="filter-campaign">Campaign</label>
-        <select id="filter-campaign" name="campaign">
+      <div class="field">
+        <label class="label" for="filter-campaign">Campaign</label>
+        <select class="select" id="filter-campaign" name="campaign">
           <option value="">Every campaign</option>
           {{range .}}<option value="{{.Value}}"{{if eq .Value $f.Campaign}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
       </div>
       {{end}}
-      <div>
-        <label for="filter-starred">Starred</label>
-        <select id="filter-starred" name="starred">
+      <div class="field">
+        <label class="label" for="filter-starred">Starred</label>
+        <select class="select" id="filter-starred" name="starred">
           <option value="">Any</option>
           <option value="yes"{{if eq $f.Starred "yes"}} selected{{end}}>Starred</option>
           <option value="no"{{if eq $f.Starred "no"}} selected{{end}}>Not starred</option>
         </select>
       </div>
-      <div>
-        <label for="filter-relevance">Relevance at least</label>
-        <input id="filter-relevance" name="min_relevance" type="number" min="0" max="100" step="1" inputmode="numeric" value="{{$f.MinRelevance}}">
+      <div class="field">
+        <label class="label" for="filter-relevance">Relevance at least</label>
+        <input class="input" id="filter-relevance" name="min_relevance" type="number" min="0" max="100" step="1" inputmode="numeric" value="{{$f.MinRelevance}}">
       </div>
       {{with $o.Statuses}}
-      <div>
-        <label for="filter-status">Status</label>
-        <select id="filter-status" name="status">{{range .}}<option value="{{.Value}}"{{if eq .Value $f.Status}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+      <div class="field">
+        <label class="label" for="filter-status">Status</label>
+        <select class="select" id="filter-status" name="status">{{range .}}<option value="{{.Value}}"{{if eq .Value $f.Status}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       </div>
       {{end}}
       {{with $o.Sorts}}
-      <div class="filter-sort">
-        <label for="filter-sort">Sort by</label>
-        <select id="filter-sort" name="sort">{{range .}}<option value="{{.Value}}"{{if eq .Value $f.Sort}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+      <div class="field filter-sort">
+        <label class="label" for="filter-sort">Sort by</label>
+        <select class="select" id="filter-sort" name="sort">{{range .}}<option value="{{.Value}}"{{if eq .Value $f.Sort}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       </div>
       {{end}}
     </div>
     <div class="filter-buttons">
-      <button type="submit" class="primary">Show leads</button>
-      <a href="/leads">Clear the filter</a>
+      <button type="submit" class="btn btn-primary">Show leads</button>
+      <a class="btn btn-ghost" href="/leads">Clear the filter</a>
     </div>
   </form>
   </details>
-  {{range $p.Notes}}<p class="hint">{{.}}</p>{{end}}
+  {{range $p.Notes}}<p class="hint mt-1">{{.}}</p>{{end}}
+  </div>
 </section>
 
 {{if $v.NoLeads}}
-<p class="empty">No leads yet. Finding builds them: on the server it is off until <code>LEADHOUND_LEADS_TIMERS=on</code>.</p>
+<div class="card mt-2"><div class="empty">
+  <span class="empty-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg></span>
+  <p class="empty-title">No leads yet</p>
+  <p class="empty-text">Finding builds them: on the server it is off until <code>LEADHOUND_LEADS_TIMERS=on</code>.</p>
+</div></div>
 {{else if $v.NoneMatch}}
-<p class="empty">No leads match these filters.</p>
+<div class="card mt-2"><div class="empty">
+  <span class="empty-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span>
+  <p class="empty-title">No leads match these filters</p>
+  <p class="empty-text">Widen the filter or clear it to see every lead.</p>
+  <a class="btn btn-secondary" href="/leads">Clear the filter</a>
+</div></div>
 {{else}}
-<section class="card lead-list">
+<section class="card lead-list mt-2">
   <h2 class="visually-hidden">Leads</h2>
-  <p class="muted">{{plural $p.Total "lead" "leads"}}{{if gt $v.Pages 1}} · page {{$p.Page}} of {{$v.Pages}}{{end}}</p>
-  <ul class="item-list narrow-only">
+  <ul class="list narrow-only">
     {{range $p.Rows}}
     {{$back := printf "%s#lead-n-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
-    <li id="lead-n-{{.LeadID}}">
+    <li class="list-item lead-item-narrow" id="lead-n-{{.LeadID}}">
+      <div class="list-main">
       <div class="lead-card-head">
         {{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}
-        <span class="item-head"><a href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</span>
+        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}</span>
       </div>
       <span class="item-meta">{{.Domain}}{{with .Country}} · {{.}}{{end}} · {{.Kind}}{{with .State}} · {{.}}{{end}}</span>
       {{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
       <span class="item-meta">{{template "lead_channels" .}}{{with .Relevance}} · {{.}}{{end}}{{with .Position}} · number {{.}} in the outreach order{{end}}</span>
       {{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}
-      {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="tag call-tag">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
+      {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="badge badge-accent">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
       {{if and $v.Order .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}
+      </div>
     </li>
     {{end}}
   </ul>
   <div class="table-wrap wide-only">
-  <table class="lead-table">
+  <table class="table lead-table">
+    <caption class="visually-hidden">Leads</caption>
     <thead><tr>
-      <th scope="col"><span class="visually-hidden">Starred</span></th>
+      <th scope="col" class="col-star"><span class="visually-hidden">Starred</span></th>
       <th scope="col">Lead</th><th scope="col">Country</th><th scope="col">Kind</th><th scope="col">Finding</th>
       <th scope="col">Reach by</th>
       {{- if $v.ShowRelevance}}<th scope="col">Relevance</th>{{end}}
@@ -132,16 +150,16 @@
     {{range $p.Rows}}
     {{$back := printf "%s#lead-w-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
     <tr id="lead-w-{{.LeadID}}">
-      <td class="star-cell">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
-      <td class="lead-cell"><a href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a><span class="item-meta" title="{{.Domain}}">{{.Domain}}</span>{{if .SmallSite}} <span class="tag">small site</span>{{end}}</td>
+      <td class="star-cell col-star">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
+      <td class="lead-cell"><a class="cell-main" href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a><span class="cell-sub" title="{{.Domain}}">{{.Domain}}</span>{{if .SmallSite}} <span class="badge">small site</span>{{end}}</td>
       <td>{{.Country}}</td>
-      <td>{{.Kind}}{{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}</td>
+      <td>{{.Kind}}{{with .Campaign}}<span class="cell-sub">{{.}}</span>{{end}}</td>
       <td>{{.Finding}}</td>
       <td>{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}</td>
       {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}
-      {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="tag call-tag">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
+      {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="badge badge-accent">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
       {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}
-      {{- if $v.ShowState}}<td class="state-cell">{{.State}}</td>{{end}}
+      {{- if $v.ShowState}}<td class="state-cell"><span class="badge">{{.State}}</span></td>{{end}}
       {{- if $v.Order}}<td>{{if .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}</td>{{end}}
     </tr>
     {{end}}
@@ -150,20 +168,27 @@
   </div>
   {{if or $v.Prev $v.Next}}
   <nav class="pager" aria-label="Pages">
-    {{if $v.Prev}}<a href="{{$v.Prev}}" rel="prev">Previous page</a>{{else}}<span></span>{{end}}
-    {{if $v.Next}}<a href="{{$v.Next}}" rel="next">Next page</a>{{end}}
+    <span>{{if gt $v.Pages 1}}Page {{$p.Page}} of {{$v.Pages}}{{end}}</span>
+    <span class="btn-row">
+    {{if $v.Prev}}<a class="btn btn-secondary btn-sm" href="{{$v.Prev}}" rel="prev">Previous page</a>{{end}}
+    {{if $v.Next}}<a class="btn btn-secondary btn-sm" href="{{$v.Next}}" rel="next">Next page</a>{{end}}
+    </span>
   </nav>
   {{end}}
 </section>
 {{end}}
+</div>
 {{end}}
 
 
 {{/* lead_order is a starred lead's moves in the outreach order: the lead's ID, Back and its name in SR. Its Unstar is the row's star toggle. */}}
 {{define "lead_order"}}
-{{template "lead_act" (leadAct .ID "up" "Up" .Back .SR)}}
-{{template "lead_act" (leadAct .ID "down" "Down" .Back .SR)}}
-{{template "lead_act" (leadAct .ID "top" "Pin to top" .Back .SR)}}
-{{template "lead_act" (leadAct .ID "defer" "Push back" .Back .SR)}}
-{{template "lead_act" (leadAct .ID "skip" "Skip" .Back .SR)}}
+{{template "lead_move" (leadAct .ID "up" "Up" .Back .SR)}}
+{{template "lead_move" (leadAct .ID "down" "Down" .Back .SR)}}
+{{template "lead_move" (leadAct .ID "top" "Pin to top" .Back .SR)}}
+{{template "lead_move" (leadAct .ID "defer" "Push back" .Back .SR)}}
+{{template "lead_move" (leadAct .ID "skip" "Skip" .Back .SR)}}
 {{end}}
+
+{{/* lead_move is one move button in the board's button style (lead_act's bare button has no style inside a .page). */}}
+{{define "lead_move"}}<form method="post" action="/leads/{{.ID}}/{{.Do}}"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm">{{.Label}}{{with .SR}}<span class="visually-hidden"> {{.}}</span>{{end}}</button></form>{{end}}

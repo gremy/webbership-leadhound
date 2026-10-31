@@ -1,26 +1,35 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.P}}
+<div class="page">
 <div class="page-head">
-  <h1>Drafts</h1>
+  <div>
+    <h1>Drafts</h1>
+    <p class="page-sub">Sample drafts Claude wrote for review only: nothing here is sent. Approve the ones you would send as they are and reject the rest with a reason. Claude drafts a campaign's batches only once enough are reviewed and approved.</p>
+  </div>
 </div>
-{{template "leads_tabs" (leadsTab "drafts" true)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
-<p class="lede">Sample drafts Claude wrote for review only: nothing here is sent. Approve the ones you would send as they are and reject the rest with a reason. Claude drafts a campaign's batches only once enough are reviewed and approved.</p>
 
 {{if $p.Campaigns}}
-<form method="get" action="/leads/drafts" class="today-filter">
-  <label for="drafts-campaign">Campaign</label>
-  <select id="drafts-campaign" name="campaign">
-    {{range $p.Campaigns}}<option value="{{.Value}}"{{if eq .Value $p.Campaign}} selected{{end}}>{{.Label}}</option>{{end}}
-  </select>
-  <button type="submit">Show</button>
+<form method="get" action="/leads/drafts" class="card filters" role="search">
+  <div class="field field-grow">
+    <label class="label" for="drafts-campaign">Campaign</label>
+    <select class="select" id="drafts-campaign" name="campaign">
+      {{range $p.Campaigns}}<option value="{{.Value}}"{{if eq .Value $p.Campaign}} selected{{end}}>{{.Label}}</option>{{end}}
+    </select>
+  </div>
+  <button type="submit" class="btn btn-secondary">Show</button>
 </form>
-{{with $p.Gate.Summary}}<p class="note drafts-gate{{if $p.Gate.Trusted}} is-trusted{{end}}">{{.}}</p>{{end}}
+{{with $p.Gate.Summary}}<p class="note drafts-gate mt-2{{if $p.Gate.Trusted}} is-trusted{{end}}">{{.}}</p>{{end}}
 
+<div class="stack mt-2">
 {{range $p.Samples}}{{$d := .}}
 <article class="card draft" id="draft-{{.GenerationID}}" aria-labelledby="draft-{{.GenerationID}}-title">
-  <h2 id="draft-{{.GenerationID}}-title">{{.Domain}}{{if .Fake}} <span class="tag">test draft (not counted)</span>{{end}}</h2>
-  <p class="muted">Draft {{.GenerationID}} · written {{when .At}}{{if gt .Attempt 1}} · on the retry{{end}} · <a href="/leads/{{.LeadID}}">the lead</a></p>
+  <div class="card-head">
+    <h2 id="draft-{{.GenerationID}}-title">{{.Domain}}{{if .Fake}} <span class="tag">test draft (not counted)</span>{{end}}</h2>
+    {{if .CheckOK}}<span class="badge badge-good">Passed the check</span>{{else}}<span class="badge badge-bad">Refused by the check</span>{{end}}
+  </div>
+  <div class="card-body">
+  <p class="muted small">Draft {{.GenerationID}} · written {{when .At}}{{if gt .Attempt 1}} · on the retry{{end}} · <a href="/leads/{{.LeadID}}">the lead</a></p>
   {{if .CheckOK}}
   <p class="draft-check is-passed">Passed the check: every claim rests on a stored fact.</p>
   {{else}}
@@ -44,7 +53,7 @@
     <ol class="claims">{{range .}}{{template "draft_paragraph" .}}{{end}}</ol>
   </section>
   {{end}}
-  {{if and (not .Steps) (not .TalkingPoints)}}<p class="empty">The draft's text could not be read.</p>{{end}}
+  {{if and (not .Steps) (not .TalkingPoints)}}<div class="empty empty-compact"><p class="empty-title">The draft's text could not be read.</p></div>{{end}}
 
   {{with .Facts}}
   <details class="draft-facts">
@@ -61,24 +70,35 @@
   <form method="post" action="/leads/drafts/{{.GenerationID}}/review" class="review-form">
     <input type="hidden" name="campaign" value="{{$p.Campaign}}">
     <fieldset>
-      <legend>{{if .Review}}Review it again (the latest review counts){{else}}Your review{{end}}</legend>
+      <legend class="label">{{if .Review}}Review it again (the latest review counts){{else}}Your review{{end}}</legend>
       <p class="hint" id="reasons-hint-{{.GenerationID}}">To reject it, tick at least one reason.</p>
       <div class="checks">{{range $v.Reasons}}<label><input type="checkbox" name="reason" value="{{.}}" aria-describedby="reasons-hint-{{$d.GenerationID}}"{{if in . $f.Reasons}} checked{{end}}> {{reasonWords .}}</label>{{end}}</div>
-      <label for="review-note-{{.GenerationID}}">Note (needed with Other, up to {{maxText}} characters)</label>
-      <input id="review-note-{{.GenerationID}}" name="note" maxlength="{{maxText}}" value="{{$f.Note}}" autocomplete="off">
+      <div class="field">
+        <label class="label" for="review-note-{{.GenerationID}}">Note (needed with Other, up to {{maxText}} characters)</label>
+        <input class="input" id="review-note-{{.GenerationID}}" name="note" maxlength="{{maxText}}" value="{{$f.Note}}" autocomplete="off">
+      </div>
     </fieldset>
-    <div class="review-buttons">
-      <button type="submit" name="verdict" value="approve" class="primary">Approve</button>
-      <button type="submit" name="verdict" value="reject">Reject</button>
+    <div class="form-actions">
+      <button type="submit" name="verdict" value="approve" class="btn btn-primary">Approve</button>
+      <button type="submit" name="verdict" value="reject" class="btn btn-secondary">Reject</button>
     </div>
   </form>
   {{end}}
+  </div>
 </article>
 {{else}}
-<p class="empty">No sample drafts for this campaign yet. Run <code>{{$v.Sample}}</code> to draft samples for review.</p>
+<div class="card"><div class="empty">
+  <p class="empty-title">No sample drafts for this campaign yet</p>
+  <p class="empty-text">Run <code>{{$v.Sample}}</code> to draft samples for review.</p>
+</div></div>
 {{end}}
-{{if $v.Capped}}<p class="hint">The newest {{len $p.Samples}} drafts are shown.</p>{{end}}
+</div>
+{{if $v.Capped}}<p class="hint mt-2">The newest {{len $p.Samples}} drafts are shown.</p>{{end}}
 {{else}}
-<p class="empty">No campaigns yet. The first one is registered from its file when LeadHound next builds leads.</p>
+<div class="card"><div class="empty">
+  <p class="empty-title">No campaigns yet.</p>
+  <p class="empty-text">The first one is registered from its file when LeadHound next builds leads.</p>
+</div></div>
 {{end}}
+</div>
 {{end}}

@@ -1,60 +1,71 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.Page}}{{$m := $p.Row}}
+<div class="page">
 <div class="page-head">
-  <h1>{{$m.Address}}</h1>
-  <p><a href="/mailboxes">Back to mailboxes</a></p>
+  <div>
+    <p class="eyebrow"><a href="/mailboxes">Mailboxes</a></p>
+    <h1>{{$m.Address}}</h1>
+    <p class="page-sub">{{template "adm_mb_state" $m}}</p>
+  </div>
+  {{if ne $m.State "retired"}}<div class="btn-row"><a class="btn btn-secondary" href="/mailboxes/{{$m.ID}}/edit">Edit its settings</a></div>{{end}}
 </div>
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
-<div class="grid two">
-  <section class="card">
-    <h2>Mailbox <span class="mb-state mb-{{$m.State}}">{{mailboxState $m.State $m.Reason}}</span></h2>
-    <dl class="fields">
-      <div><dt>Domain</dt><dd>{{$p.Domain}}</dd></div>
-      <div><dt>Login</dt><dd>{{$p.Login}}</dd></div>
-      <div><dt>Sending server</dt><dd>{{$p.SMTPAddr}}</dd></div>
-      <div><dt>Reading server</dt><dd>{{$p.IMAPAddr}}</dd></div>
-      <div><dt>DKIM selector</dt><dd>{{$p.Selector}}</dd></div>
-      <div><dt>From name</dt><dd>{{$p.FromName}}</dd></div>
-      <div><dt>Sent today</dt><dd>{{$m.SentToday}} of {{$m.CapToday}}</dd></div>
-      <div><dt>Warm-up</dt><dd>{{if $m.RampDay}}day {{$m.RampDay}} of the ramp{{else}}{{with $m.RampStart}}Warm-up starts on {{day .}}.{{else}}Warm-up starts with this mailbox's first email.{{end}}{{with $v.Sending}} Nothing has gone out yet because: {{.Why.Sentence}}{{end}}{{end}}</dd></div>
+<div class="grid">
+  <section class="card span-6" aria-labelledby="mb-h">
+    <div class="card-head"><h2 id="mb-h">Mailbox</h2></div>
+    <div class="card-body">
+    <dl class="kv">
+      <dt>Domain</dt><dd>{{$p.Domain}}</dd>
+      <dt>Login</dt><dd>{{$p.Login}}</dd>
+      <dt>Sending server</dt><dd>{{$p.SMTPAddr}}</dd>
+      <dt>Reading server</dt><dd>{{$p.IMAPAddr}}</dd>
+      <dt>DKIM selector</dt><dd>{{$p.Selector}}</dd>
+      <dt>From name</dt><dd>{{$p.FromName}}</dd>
+      <dt>Sent today</dt><dd>{{$m.SentToday}} of {{$m.CapToday}}</dd>
+      <dt>Warm-up</dt><dd>{{if $m.RampDay}}day {{$m.RampDay}} of the ramp{{else}}{{with $m.RampStart}}Warm-up starts on {{day .}}.{{else}}Warm-up starts with this mailbox's first email.{{end}}{{with $v.Sending}} Nothing has gone out yet because: {{.Why.Sentence}}{{end}}{{end}}</dd>
       {{with $v.Sending}}
-      {{if $m.RampDay}}<div><dt>Sending</dt><dd>{{.Why.Sentence}}</dd></div>{{end}}
-      <div><dt>Campaigns</dt><dd>{{range $i, $c := .Campaigns}}{{if $i}}, {{end}}<a href="/leads/campaigns#campaign-{{$c.Value}}">{{or $c.Label $c.Value}}</a>{{else}}none, so it sends nothing. <a href="/leads/campaigns">Assign it on Campaigns</a>{{end}}</dd></div>
-      <div><dt>Its website goes to</dt><dd>{{.LandingWords}}</dd></div>
+      {{if $m.RampDay}}<dt>Sending</dt><dd>{{.Why.Sentence}}</dd>{{end}}
+      <dt>Campaigns</dt><dd>{{range $i, $c := .Campaigns}}{{if $i}}, {{end}}<a href="/leads/campaigns#campaign-{{$c.Value}}">{{or $c.Label $c.Value}}</a>{{else}}none, so it sends nothing. <a href="/leads/campaigns">Assign it on Campaigns</a>{{end}}</dd>
+      <dt>Its website goes to</dt><dd>{{.LandingWords}}</dd>
       {{end}}
     </dl>
-    {{if ne $m.State "retired"}}<p><a href="/mailboxes/{{$m.ID}}/edit">Edit its settings</a></p>{{end}}
+    </div>
   </section>
 
   {{template "mailbox_check" (checkCard $p.Check)}}
 </div>
 
 {{if ne $m.State "retired"}}
-<section class="card">
-  <h2>Pause or retire</h2>
+<section class="card mt-2" aria-labelledby="pause-h">
+  <div class="card-head"><h2 id="pause-h">Pause or retire</h2></div>
+  <div class="card-body stack">
   {{if eq $m.State "paused"}}
   {{if $m.DomainPause}}<p class="hint">Paused with its whole domain: resuming the domain on the Mailboxes page resumes it too.</p>{{end}}
   <form method="post" action="/mailboxes/{{$m.ID}}/resume">
-    <button type="submit" class="primary">Resume this mailbox</button>
+    <button type="submit" class="btn btn-primary">Resume this mailbox</button>
   </form>
   <p class="hint">A resumed mailbox sends again once its check has passed and its records passed today.</p>
   {{else}}
   <form method="post" action="/mailboxes/{{$m.ID}}/pause" class="stack">
-    <label for="pause-reason">Reason (optional)</label>
-    <input id="pause-reason" name="reason" maxlength="{{maxText}}">
-    <button type="submit">Pause this mailbox</button>
+    <div class="field">
+      <label class="label" for="pause-reason">Reason (optional)</label>
+      <input class="input" id="pause-reason" name="reason" maxlength="{{maxText}}">
+    </div>
+    <div class="form-actions"><button type="submit" class="btn btn-secondary">Pause this mailbox</button></div>
   </form>
   <p class="hint">Nothing is sent from it until you resume. Follow-ups wait for it.</p>
   {{end}}
   <details>
     <summary>Retire this mailbox…</summary>
-    <form method="post" action="/mailboxes/{{$m.ID}}/retire" class="confirm-form">
+    <form method="post" action="/mailboxes/{{$m.ID}}/retire" class="stack mt-1">
       <p class="hint">A retired mailbox never sends again. Its follow-ups not yet sent are cancelled, since a thread must come from the same address. This cannot be undone.</p>
-      <p class="confirm-line"><input type="checkbox" id="retire-confirm" name="confirm" value="yes" required> <label for="retire-confirm">I understand, retire it</label></p>
-      <button type="submit" class="primary">Retire {{$m.Address}}</button>
+      <label class="inline-check" for="retire-confirm"><input class="check" type="checkbox" id="retire-confirm" name="confirm" value="yes" required> I understand, retire it</label>
+      <div class="form-actions"><button type="submit" class="btn btn-danger">Retire {{$m.Address}}</button></div>
     </form>
   </details>
+  </div>
 </section>
 {{end}}
+</div>
 {{end}}

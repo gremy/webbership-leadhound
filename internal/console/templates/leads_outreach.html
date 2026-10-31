@@ -1,177 +1,204 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.Data}}{{$s := $p.Sending}}
+<div class="page">
 <div class="page-head">
-  <h1>Leads</h1>
+  <div>
+    <p class="eyebrow">Outreach</p>
+    <h1>Leads</h1>
+    <p class="page-sub">Sending, batches waiting, replies and the lists you keep by hand.</p>
+  </div>
+  <div class="btn-row"><a class="btn btn-secondary" href="/mailboxes">Mailboxes</a></div>
 </div>
-{{template "leads_tabs" (leadsTab "outreach" true)}}
 {{if $v.Message}}{{$n := noticeLines $v.Message}}{{if $n.Items}}<div class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}"><p>{{$n.Head}}</p><ol class="notice-list">{{range $n.Items}}<li>{{.}}</li>{{end}}</ol></div>{{else}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}{{end}}
 
 {{with $v.Why}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}} <a href="/controls">Controls</a></p>
 {{template "send_now" (sendNowIn . "/leads/outreach")}}{{end}}
-<div class="grid two">
-  <section class="card">
-    <h2>Sending</h2>
-    {{if $s.Paused}}
-    <p class="notice notice-error" role="status">Sending is paused (since {{when $s.PausedAt}}){{with $s.PauseReason}}: {{.}}{{end}}. Nothing is sent until you resume.</p>
-    {{else if not $s.SetUp}}
-    <p class="notice" role="status">Sending isn't set up on this server yet.</p>
-    {{else}}
-    <p>Sending is on.</p>
-    {{end}}
-    {{with $s.Stopped}}<p class="notice notice-error" role="status">The last send run stopped sending: {{.}}.</p>{{end}}
-    <dl class="stats">
-      <div><dt>Sent today</dt><dd>{{$s.SentToday}} of {{$s.CapToday}}</dd></div>
-      <div><dt>Sent yesterday</dt><dd>{{$s.SentYesterday}}</dd></div>
-      <div><dt>Bounces</dt><dd>{{$s.Bounced}}</dd></div>
-      <div><dt>Opt-outs</dt><dd>{{$s.OptedOut}}</dd></div>
-    </dl>
-    <p class="muted">Today's limit is the warm-up ramp's; bounces and opt-outs are yesterday's.</p>
-    {{with $s.DNS}}
-    <p>Sender records, checked {{when .At}}: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}</p>
-    {{else}}<p class="muted">The sender's records have not been checked yet.</p>{{end}}
-    {{with $s.Mailboxes}}
-    <h3>Mailboxes</h3>
-    <ul class="item-list">
-      {{range .}}
-      <li>
-        <span class="item-head">{{.Address}} <span class="mb-state mb-{{.State}}">{{mailboxState .State .Reason}}</span></span>
-        <span class="item-meta">{{.Domain}} · sent {{.SentToday}} of {{.CapToday}} today · {{with .DNS}}records: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}{{else}}records not checked today{{end}}</span>
-      </li>
-      {{end}}
-    </ul>
-    {{end}}
-    <p><a href="/mailboxes">Mailboxes</a></p>
-    {{if $s.Paused}}
-    <form method="post" action="/leads/sending">
-      <input type="hidden" name="do" value="resume">
-      <button type="submit" class="primary">Resume sending</button>
-    </form>
-    {{else if $s.SetUp}}
-    <form method="post" action="/leads/sending" class="stack">
-      <input type="hidden" name="do" value="pause">
-      <label for="pause-reason">Reason (optional)</label>
-      <input id="pause-reason" name="reason" maxlength="{{maxText}}">
-      <button type="submit">Pause sending</button>
-    </form>
-    {{end}}
-  </section>
 
-  <section class="card">
-    <h2>Batches waiting for approval</h2>
-    {{if $p.Batches}}
-    <ul class="item-list">
-      {{range $p.Batches}}
-      <li>
-        <span class="item-head"><a href="/leads/batches/{{.ID}}">Batch {{.ID}}</a>{{if .Shadow}} <span class="tag">shadow</span>{{end}}</span>
-        <span class="item-meta">{{plural .Leads "lead" "leads"}} · {{plural .Emails "email" "emails"}} · {{plural .Forms "contact form" "contact forms"}} · {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}} · made {{when .CreatedAt}}</span>
-      </li>
-      {{end}}
-    </ul>
-    {{else}}<p class="empty">No batch waits for approval.</p>{{end}}
-    {{if $s.SetUp}}
-    <form method="post" action="/leads/batches/new">
-      <button type="submit"{{if not $p.Batches}} class="primary"{{end}}>Make the next batch now</button>
-    </form>
-    <p class="hint">Sized to what the warm-up ramp can send over the next days. You read and approve it before anything is sent.</p>
-    {{else}}
-    <p class="hint">Sending isn't set up here, so batches on this server are shadow batches, made from the command line with <code>leadhound leads batch new</code>. Nothing in them is sent.</p>
-    {{end}}
-  </section>
-</div>
-
-{{with $p.Starred}}
-<section class="card">
-  <h2>Starred leads and why each is out</h2>
-  <ol class="notice-list starred-out">
-    {{range .}}<li><a href="/leads/{{.LeadID}}">{{.Domain}}</a> — {{.Why}}</li>{{end}}
-  </ol>
-  <p class="hint">A batch takes starred leads first; these are starred but would not be taken now.</p>
+<section aria-labelledby="sending-h" class="section">
+  <h2 id="sending-h" class="visually-hidden">Sending</h2>
+  {{if $s.Paused}}
+  <p class="notice notice-error" role="status">Sending is paused (since {{when $s.PausedAt}}){{with $s.PauseReason}}: {{.}}{{end}}. Nothing is sent until you resume.</p>
+  {{else if not $s.SetUp}}
+  <p class="notice" role="status">Sending isn't set up on this server yet.</p>
+  {{else}}
+  <p class="muted"><span class="state state-good"><span class="dot dot-good"></span>Sending is on.</span></p>
+  {{end}}
+  {{with $s.Stopped}}<p class="notice notice-error" role="status">The last send run stopped sending: {{.}}.</p>{{end}}
+  <div class="stats">
+    <div class="card stat"><span class="stat-label">Sent today</span><span class="stat-value">{{$s.SentToday}} of {{$s.CapToday}}</span></div>
+    <div class="card stat"><span class="stat-label">Sent yesterday</span><span class="stat-value">{{$s.SentYesterday}}</span></div>
+    <div class="card stat"><span class="stat-label">Bounces</span><span class="stat-value">{{$s.Bounced}}</span></div>
+    <div class="card stat"><span class="stat-label">Opt-outs</span><span class="stat-value">{{$s.OptedOut}}</span></div>
+  </div>
+  <p class="muted small mt-1">Today's limit is the warm-up ramp's; bounces and opt-outs are yesterday's.</p>
 </section>
-{{end}}
 
-<div class="grid two">
-  <section class="card">
-    <h2>Replies since yesterday</h2>
-    {{if $p.Replies}}
-    <ul class="item-list">
-      {{range $p.Replies}}
-      <li class="split">
-        <span class="item-head">{{.}}</span>
-        <form method="post" action="/leads/suppress">
-          <input type="hidden" name="kind" value="domain">
-          <input type="hidden" name="value" value="{{.}}">
-          <input type="hidden" name="reason" value="replied_no">
-          <button type="submit">Suppress</button>
-        </form>
-      </li>
-      {{end}}
-    </ul>
-    {{else}}<p class="empty">No replies since yesterday.</p>{{end}}
-    {{if $p.Other}}<p class="muted">{{plural $p.Other "other message" "other messages"}} in the mailbox since yesterday.</p>{{end}}
-  </section>
-
-  <section class="card">
-    <h2>Check by hand</h2>
-    {{if $p.CheckByHand}}
-    <p class="hint">These emails may have gone out. Look for each in the mailbox's Sent folder first.</p>
-    <ul class="item-list">
-      {{range $p.CheckByHand}}
-      <li>
-        <span class="item-head">Message {{.MessageID}} · {{.Domain}} · email {{.Step}} · {{.State}}</span>
-        <span class="item-meta">{{with .At}}tried {{when .}}{{end}}</span>
-        <span class="actions">
-          <form method="post" action="/leads/messages/{{.MessageID}}/resolve"><input type="hidden" name="sent" value="sent"><button type="submit">Sent</button></form>
-          <form method="post" action="/leads/messages/{{.MessageID}}/resolve"><input type="hidden" name="sent" value="not-sent"><button type="submit">Not sent</button></form>
+<div class="grid mt-2">
+  <section class="card span-6" aria-labelledby="records-h">
+    <div class="card-head"><h2 id="records-h">Sender records and mailboxes</h2><a class="card-link" href="/mailboxes">Mailboxes</a></div>
+    <div class="card-body">
+      {{with $s.DNS}}
+      <p>Sender records, checked {{when .At}}: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}</p>
+      {{else}}<p class="muted">The sender's records have not been checked yet.</p>{{end}}
+    </div>
+    {{with $s.Mailboxes}}
+    <ul class="list">
+      {{range .}}
+      <li class="list-item">
+        <span class="list-main">
+          <span class="list-title">{{.Address}} <span class="mb-state mb-{{.State}}">{{mailboxState .State .Reason}}</span></span>
+          <span class="list-meta">{{.Domain}} · sent {{.SentToday}} of {{.CapToday}} today · {{with .DNS}}records: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}{{else}}records not checked today{{end}}</span>
         </span>
       </li>
       {{end}}
     </ul>
-    {{else}}<p class="empty">Nothing to check.</p>{{end}}
+    {{end}}
+    <div class="card-body">
+      {{if $s.Paused}}
+      <form method="post" action="/leads/sending">
+        <input type="hidden" name="do" value="resume">
+        <button type="submit" class="btn btn-primary">Resume sending</button>
+      </form>
+      {{else if $s.SetUp}}
+      <form method="post" action="/leads/sending" class="filters">
+        <input type="hidden" name="do" value="pause">
+        <div class="field field-grow"><label class="label" for="pause-reason">Reason (optional)</label>
+        <input class="input" id="pause-reason" name="reason" maxlength="{{maxText}}"></div>
+        <button type="submit" class="btn btn-secondary">Pause sending</button>
+      </form>
+      {{end}}
+    </div>
+  </section>
+
+  <section class="card span-6" aria-labelledby="batches-h">
+    <div class="card-head"><h2 id="batches-h">Batches waiting for approval</h2></div>
+    {{if $p.Batches}}
+    <ul class="list">
+      {{range $p.Batches}}
+      <li class="list-item">
+        <span class="list-main">
+          <span class="list-title"><a href="/leads/batches/{{.ID}}">Batch {{.ID}}</a>{{if .Shadow}} <span class="badge">shadow</span>{{end}}</span>
+          <span class="list-meta">{{plural .Leads "lead" "leads"}} · {{plural .Emails "email" "emails"}} · {{plural .Forms "contact form" "contact forms"}} · {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}} · made {{when .CreatedAt}}</span>
+        </span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<div class="empty empty-compact"><p class="empty-title">No batch waits for approval</p><p class="empty-text">No batch waits for approval.</p></div>{{end}}
+    <div class="card-body">
+      {{if $s.SetUp}}
+      <form method="post" action="/leads/batches/new">
+        <button type="submit" class="btn {{if not $p.Batches}}btn-primary{{else}}btn-secondary{{end}}">Make the next batch now</button>
+      </form>
+      <p class="hint">Sized to what the warm-up ramp can send over the next days. You read and approve it before anything is sent.</p>
+      {{else}}
+      <p class="hint">Sending isn't set up here, so batches on this server are shadow batches, made from the command line with <code>leadhound leads batch new</code>. Nothing in them is sent.</p>
+      {{end}}
+    </div>
   </section>
 </div>
 
-<section class="card">
-  <h2>Contact forms and LinkedIn notes to use</h2>
+{{with $p.Starred}}
+<section class="card mt-2" aria-labelledby="starred-h">
+  <div class="card-head"><h2 id="starred-h">Starred leads and why each is out</h2></div>
+  <div class="card-body">
+    <ol class="notice-list starred-out">
+      {{range .}}<li><a href="/leads/{{.LeadID}}">{{.Domain}}</a> — {{.Why}}</li>{{end}}
+    </ol>
+    <p class="hint">A batch takes starred leads first; these are starred but would not be taken now.</p>
+  </div>
+</section>
+{{end}}
+
+<div class="grid mt-2">
+  <section class="card span-6" aria-labelledby="replies-h">
+    <div class="card-head"><h2 id="replies-h">Replies since yesterday</h2></div>
+    {{if $p.Replies}}
+    <ul class="list">
+      {{range $p.Replies}}
+      <li class="list-item">
+        <span class="list-main"><span class="list-title">{{.}}</span></span>
+        <form method="post" action="/leads/suppress" class="list-end">
+          <input type="hidden" name="kind" value="domain">
+          <input type="hidden" name="value" value="{{.}}">
+          <input type="hidden" name="reason" value="replied_no">
+          <button type="submit" class="btn btn-secondary btn-sm">Suppress</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<div class="empty empty-compact"><p class="empty-title">No replies yet</p><p class="empty-text">No replies since yesterday.</p></div>{{end}}
+    {{if $p.Other}}<div class="card-foot">{{plural $p.Other "other message" "other messages"}} in the mailbox since yesterday.</div>{{end}}
+  </section>
+
+  <section class="card span-6" aria-labelledby="hand-h">
+    <div class="card-head"><h2 id="hand-h">Check by hand</h2></div>
+    {{if $p.CheckByHand}}
+    <div class="card-body"><p class="hint">These emails may have gone out. Look for each in the mailbox's Sent folder first.</p></div>
+    <ul class="list">
+      {{range $p.CheckByHand}}
+      <li class="list-item">
+        <span class="list-main">
+          <span class="list-title">Message {{.MessageID}} · {{.Domain}} · email {{.Step}} · {{.State}}</span>
+          <span class="list-meta">{{with .At}}tried {{when .}}{{end}}</span>
+        </span>
+        <span class="list-end btn-row">
+          <form method="post" action="/leads/messages/{{.MessageID}}/resolve"><input type="hidden" name="sent" value="sent"><button type="submit" class="btn btn-secondary btn-sm">Sent</button></form>
+          <form method="post" action="/leads/messages/{{.MessageID}}/resolve"><input type="hidden" name="sent" value="not-sent"><button type="submit" class="btn btn-secondary btn-sm">Not sent</button></form>
+        </span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<div class="empty empty-compact"><p class="empty-title">All clear</p><p class="empty-text">Nothing to check.</p></div>{{end}}
+  </section>
+</div>
+
+<section class="card mt-2" aria-labelledby="manual-h">
+  <div class="card-head"><h2 id="manual-h">Contact forms and LinkedIn notes to use</h2></div>
   {{if $p.Manual}}
-  <ul class="item-list">
+  <ul class="list">
     {{range $p.Manual}}
-    <li class="split">
-      <span><span class="item-head">{{.Domain}} · {{if eq .Channel "form"}}contact form{{else}}LinkedIn note{{end}}</span>
-      <span class="item-meta">message {{.MessageID}} in <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Route}} · {{.}}{{end}}</span></span>
-      <form method="post" action="/leads/items/{{.MessageID}}/done"><button type="submit">Done</button></form>
+    <li class="list-item">
+      <span class="list-main">
+        <span class="list-title">{{.Domain}} · {{if eq .Channel "form"}}contact form{{else}}LinkedIn note{{end}}</span>
+        <span class="list-meta">message {{.MessageID}} in <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Route}} · {{.}}{{end}}</span>
+      </span>
+      <form method="post" action="/leads/items/{{.MessageID}}/done" class="list-end"><button type="submit" class="btn btn-secondary btn-sm">Done</button></form>
     </li>
     {{end}}
   </ul>
-  {{else}}<p class="empty">None waiting.</p>{{end}}
+  {{else}}<div class="empty empty-compact"><p class="empty-title">Nothing to send by hand</p><p class="empty-text">None waiting.</p></div>{{end}}
 </section>
 
-<div class="grid two">
-  <section class="card">
-    <h2>Mark a domain contacted</h2>
-    <form method="post" action="/leads/contacted" class="stack">
-      <label for="contacted-domain">Domain</label>
-      <input id="contacted-domain" name="domain" required maxlength="253">
-      <label for="contacted-note">Note (optional)</label>
-      <input id="contacted-note" name="note" maxlength="{{maxText}}">
-      <button type="submit">Mark contacted</button>
+<div class="grid mt-2">
+  <section class="card span-6" aria-labelledby="contacted-h">
+    <div class="card-head"><h2 id="contacted-h">Mark a domain contacted</h2></div>
+    <form method="post" action="/leads/contacted" class="card-body stack">
+      <div class="field"><label class="label" for="contacted-domain">Domain</label>
+      <input class="input" id="contacted-domain" name="domain" required maxlength="253"></div>
+      <div class="field"><label class="label" for="contacted-note">Note (optional)</label>
+      <input class="input" id="contacted-note" name="note" maxlength="{{maxText}}"></div>
+      <div class="form-actions"><button type="submit" class="btn btn-secondary">Mark contacted</button></div>
+      <p class="hint">No batch drafts a domain you reached by hand.</p>
     </form>
-    <p class="hint">No batch drafts a domain you reached by hand.</p>
   </section>
 
-  <section class="card">
-    <h2>Suppressions</h2>
+  <section class="card span-6" aria-labelledby="supp-h">
+    <div class="card-head"><h2 id="supp-h">Suppressions</h2></div>
     {{with $p.Suppressions}}
-    {{if .Counts}}<p>{{range $i, $c := .Counts}}{{if $i}} · {{end}}{{$c.Kind}} {{$c.Reason}} {{$c.N}}{{end}}</p>{{else}}<p class="empty">No suppressions.</p>{{end}}
+    <div class="card-body stack">
+    {{if .Counts}}<p>{{range $i, $c := .Counts}}{{if $i}} · {{end}}{{$c.Kind}} {{$c.Reason}} {{$c.N}}{{end}}</p>{{else}}<div class="empty empty-compact"><p class="empty-title">No suppressions</p><p class="empty-text">No suppressions.</p></div>{{end}}
     <form method="post" action="/leads/suppress" class="stack">
-      <label for="suppress-kind">Kind</label>
-      <select id="suppress-kind" name="kind"><option value="domain">domain</option><option value="address">address</option></select>
-      <label for="suppress-value">Domain or address</label>
-      <input id="suppress-value" name="value" required maxlength="320">
-      <label for="suppress-reason">Reason</label>
-      <select id="suppress-reason" name="reason">
-        <option value="manual">manual</option><option value="opt_out">opt_out</option><option value="bounce">bounce</option><option value="replied_no">replied_no</option>
-      </select>
-      <button type="submit">Suppress</button>
+      <div class="form-grid">
+        <div class="field"><label class="label" for="suppress-kind">Kind</label>
+        <select class="select" id="suppress-kind" name="kind"><option value="domain">domain</option><option value="address">address</option></select></div>
+        <div class="field"><label class="label" for="suppress-reason">Reason</label>
+        <select class="select" id="suppress-reason" name="reason">
+          <option value="manual">manual</option><option value="opt_out">opt_out</option><option value="bounce">bounce</option><option value="replied_no">replied_no</option>
+        </select></div>
+      </div>
+      <div class="field"><label class="label" for="suppress-value">Domain or address</label>
+      <input class="input" id="suppress-value" name="value" required maxlength="320"></div>
+      <div class="form-actions"><button type="submit" class="btn btn-secondary">Suppress</button></div>
     </form>
     <p class="hint">A suppression stops all writing to that address or domain. Lift one only when it was recorded by mistake: the lift is kept with its reason, and a new opt-out suppresses again.</p>
     {{if .Rows}}
@@ -188,18 +215,22 @@
     {{end}}
     <h3>Lift a suppression</h3>
     <form method="post" action="/leads/suppressions/lift" class="stack">
-      <label for="lift-id">Number</label>
-      <input id="lift-id" name="id" inputmode="numeric" required>
-      <label for="lift-domain">Domain</label>
-      <input id="lift-domain" name="domain" required maxlength="253" aria-describedby="lift-domain-hint">
-      <p class="hint" id="lift-domain-hint">the domain shown in the list, to confirm</p>
-      <label for="lift-reason">Reason</label>
-      <input id="lift-reason" name="reason" required minlength="3" maxlength="300">
-      <button type="submit">Lift</button>
+      <div class="form-grid">
+        <div class="field"><label class="label" for="lift-id">Number</label>
+        <input class="input" id="lift-id" name="id" inputmode="numeric" required></div>
+        <div class="field"><label class="label" for="lift-domain">Domain</label>
+        <input class="input" id="lift-domain" name="domain" required maxlength="253" aria-describedby="lift-domain-hint">
+        <p class="hint" id="lift-domain-hint">the domain shown in the list, to confirm</p></div>
+      </div>
+      <div class="field"><label class="label" for="lift-reason">Reason</label>
+      <input class="input" id="lift-reason" name="reason" required minlength="3" maxlength="300"></div>
+      <div class="form-actions"><button type="submit" class="btn btn-secondary">Lift</button></div>
     </form>
+    </div>
     {{end}}
   </section>
 </div>
 
-{{if $p.Checked}}<p class="muted">Sites checked yesterday: {{$p.Checked}}, of which {{$p.Drupal}} on Drupal.</p>{{end}}
+{{if $p.Checked}}<p class="muted mt-2">Sites checked yesterday: {{$p.Checked}}, of which {{$p.Drupal}} on Drupal.</p>{{end}}
+</div>
 {{end}}

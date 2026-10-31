@@ -299,7 +299,7 @@ func TestMailboxesList(t *testing.T) {
 	for _, want := range []string{
 		`href="/mailboxes" aria-current="page">`,
 		"<h2>northwind.example</h2>", "7 of 50", "2 of 2",
-		"mail.northwind.example", "SPF ok", `DMARC <span class="bad">missing</span>`, "not checked today",
+		"mail.northwind.example", "SPF ok", `DMARC <span class="text-bad">missing</span>`, "not checked today",
 		`href="/mailboxes/1"`, "outreach@mail.northwind.example", "Ready", "Paused: holiday", "4 of 10", "day 3",
 		`action="/mailboxes/domains/northwind.example/pause"`, `href="/mailboxes/new"`,
 	} {

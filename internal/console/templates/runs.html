@@ -1,8 +1,22 @@
 {{define "content"}}
-<h1>Runs</h1>
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>Runs</h1>
+    <p class="page-sub">Every search and brief the server has run, latest first.</p>
+  </div>
+</div>
 {{if .Data}}
-{{template "run_table" .Data}}
+<section class="card" aria-label="Runs">
+  {{template "run_table" .Data}}
+</section>
 {{else}}
-<p class="empty">No runs yet.</p>
+<div class="card">
+  <div class="empty">
+    <p class="empty-title">No runs yet</p>
+    <p class="empty-text">A run appears here as soon as a search or brief has started.</p>
+  </div>
+</div>
 {{end}}
+</div>
 {{end}}

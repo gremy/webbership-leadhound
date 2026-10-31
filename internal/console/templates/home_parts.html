@@ -1,92 +1,125 @@
-{{/* The dashboard's parts, shared by the dashboard (/), Leads home and Jobs home. Each takes the dashboardView. */}}
-{{define "home_head"}}
-<div class="page-head">
-  <h1>{{if .Day.IsZero}}Today{{else}}{{day .Day}}{{end}}</h1>
-</div>
-{{end}}
+{{/* The dashboard's parts, shared by the dashboard (/), Leads home and Jobs home. Each takes the dashboardView and sits inside a <div class="page">. */}}
 
 {{/* home_jobs is the job-hunt part: Run now, the morning email, the day's numbers and today's jobs. */}}
 {{define "home_jobs"}}
 {{$d := .}}
 {{template "run_now" (runCard $d.RunNow)}}
 
-<div class="grid two">
-  <section class="card">
-    <h2>This morning's email</h2>
+<div class="grid mt-2">
+  <section class="card span-6" aria-labelledby="brief-h">
+    <div class="card-head"><h2 id="brief-h">This morning's email</h2></div>
     {{with $d.LastBrief}}
-    <p class="muted">{{day .Day}} · sent {{clock .SentAt}} · {{.Listed}} {{if eq .Listed 1}}job{{else}}jobs{{end}} listed</p>
-    {{if .Health}}<ul class="health">{{range .Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">No health lines in that email.</p>{{end}}
+    <div class="card-body stack-sm">
+      <p class="muted small">{{day .Day}} · sent {{clock .SentAt}} · {{.Listed}} {{if eq .Listed 1}}job{{else}}jobs{{end}} listed</p>
+      {{if .Health}}<ul class="list">{{range .Health}}<li class="list-item"><span class="list-main"><span class="list-title">{{health .}}</span></span></li>{{end}}</ul>{{else}}<p class="muted">No health lines in that email.</p>{{end}}
+    </div>
     {{else}}
-    <p class="empty">No brief has been sent yet.</p>
+    <div class="empty empty-compact">
+      <p class="empty-title">No brief has been sent yet.</p>
+      <p class="empty-text">The morning email shows here once it has gone out.</p>
+    </div>
     {{end}}
   </section>
-  <section class="card">
-    <h2>Now</h2>
+  <section class="card span-6" aria-labelledby="now-h">
+    <div class="card-head"><h2 id="now-h">Now</h2></div>
     {{if not $d.AsOf.IsZero}}
-    <p class="muted">as of {{clock $d.AsOf}}{{if $d.Updating}} · updating…{{end}}</p>
-    {{with $d.LastBuildFailedAt}}<p class="notice notice-error" role="alert">The last update failed at {{clock .}}; showing {{clock $d.AsOf}}'s numbers.</p>{{end}}
-    {{if $d.Health}}<ul class="health">{{range $d.Health}}<li>{{health .}}</li>{{end}}</ul>{{else}}<p class="muted">Nothing to report yet.</p>{{end}}
+    <div class="card-body stack-sm">
+      <p class="muted small">as of {{clock $d.AsOf}}{{if $d.Updating}} · updating…{{end}}</p>
+      {{with $d.LastBuildFailedAt}}<p class="notice notice-error" role="alert">The last update failed at {{clock .}}; showing {{clock $d.AsOf}}'s numbers.</p>{{end}}
+      {{if $d.Health}}<ul class="list">{{range $d.Health}}<li class="list-item"><span class="list-main"><span class="list-title">{{health .}}</span></span></li>{{end}}</ul>{{else}}<p class="muted">Nothing to report yet.</p>{{end}}
+    </div>
     {{else if and $d.LastBuildFailedAt (not $d.Building)}}
-    <p class="notice notice-error" role="alert">The day's numbers could not be worked out at {{clock $d.LastBuildFailedAt}}; refresh in a few minutes.</p>
+    <div class="card-body"><p class="notice notice-error" role="alert">The day's numbers could not be worked out at {{clock $d.LastBuildFailedAt}}; refresh in a few minutes.</p></div>
     {{else}}
-    <p class="notice" role="status">The day's numbers are being worked out; refresh in a minute.</p>
+    <div class="card-body"><p class="notice" role="status">The day's numbers are being worked out; refresh in a minute.</p></div>
     {{end}}
   </section>
 </div>
 
-<section class="card">
-  <h2>Today's jobs</h2>
-  <p><a href="/jobs">The jobs of the last brief</a></p>
+<section class="section mt-2" aria-labelledby="jobs-h">
+  <div class="section-head"><h2 id="jobs-h">Today's jobs</h2><a class="card-link" href="/jobs">The jobs of the last brief</a></div>
   {{if not $d.AsOf.IsZero}}
-  <dl class="stats">
-    <div><dt>Apply</dt><dd>{{thousands $d.ApplyNow}}</dd></div>
-    <div><dt>Your call</dt><dd>{{thousands $d.YourCallNow}}</dd></div>
-    <div><dt>Unscored</dt><dd>{{thousands $d.Unscored}}</dd></div>
-    <div><dt>Unreachable</dt><dd>{{thousands $d.Unreachable}}</dd></div>
-  </dl>
-  <h3>New today</h3>
-  {{with sources $d.Funnel.NewBySource}}
-  <ul class="counts">
-    {{range .}}<li><span>{{.Name}}</span><span class="num">{{thousands .N}}</span></li>{{end}}
-  </ul>
-  {{else}}<p class="muted">No new jobs today.</p>{{end}}
-  <h3>Funnel</h3>
-  <dl class="stats">
-    <div><dt>Gated</dt><dd>{{thousands $d.Funnel.Gated}}</dd></div>
-    <div><dt>Gate failed</dt><dd>{{thousands $d.Funnel.GateFailed}}</dd></div>
-    <div><dt>Scored</dt><dd>{{thousands $d.Funnel.Scored}}</dd></div>
-  </dl>
-  {{else}}<p class="muted">Shown once the day's numbers are worked out.</p>{{end}}
-  <h3>Scoring</h3>
-  <p class="cost">{{callsLine $d.Dashboard}}</p>
-  <p class="cost">{{costLine $d.Dashboard}}</p>
-  <p class="cost">{{claudeLine $d.Dashboard}}</p>
+  <div class="stats">
+    <div class="card stat"><span class="stat-label">Apply</span><span class="stat-value">{{thousands $d.ApplyNow}}</span></div>
+    <div class="card stat"><span class="stat-label">Your call</span><span class="stat-value">{{thousands $d.YourCallNow}}</span></div>
+    <div class="card stat"><span class="stat-label">Unscored</span><span class="stat-value">{{thousands $d.Unscored}}</span></div>
+    <div class="card stat"><span class="stat-label">Unreachable</span><span class="stat-value">{{thousands $d.Unreachable}}</span></div>
+  </div>
+  <div class="grid mt-2">
+    <section class="card span-4" aria-labelledby="new-h">
+      <div class="card-head"><h3 id="new-h">New today</h3></div>
+      {{with sources $d.Funnel.NewBySource}}
+      <ul class="list card-body-flush">
+        {{range .}}<li class="list-item"><span class="list-main"><span class="list-title">{{.Name}}</span></span><span class="list-end num">{{thousands .N}}</span></li>{{end}}
+      </ul>
+      {{else}}
+      <div class="empty empty-compact"><p class="empty-title">No new jobs today.</p></div>
+      {{end}}
+    </section>
+    <section class="card span-4" aria-labelledby="funnel-h">
+      <div class="card-head"><h3 id="funnel-h">Funnel</h3></div>
+      <div class="card-body">
+        <dl class="kv">
+          <dt>Gated</dt><dd class="num">{{thousands $d.Funnel.Gated}}</dd>
+          <dt>Gate failed</dt><dd class="num">{{thousands $d.Funnel.GateFailed}}</dd>
+          <dt>Scored</dt><dd class="num">{{thousands $d.Funnel.Scored}}</dd>
+        </dl>
+      </div>
+    </section>
+    <section class="card span-4" aria-labelledby="scoring-h">
+      <div class="card-head"><h3 id="scoring-h">Scoring</h3></div>
+      <div class="card-body stack-sm">
+        <p class="small mb-0">{{callsLine $d.Dashboard}}</p>
+        <p class="small mb-0">{{costLine $d.Dashboard}}</p>
+        <p class="small mb-0">{{claudeLine $d.Dashboard}}</p>
+      </div>
+    </section>
+  </div>
+  {{else}}
+  <section class="card">
+    <div class="empty empty-compact">
+      <p class="empty-title">Numbers on their way</p>
+      <p class="empty-text">Shown once the day's numbers are worked out.</p>
+    </div>
+  </section>
+  <section class="card mt-2" aria-labelledby="scoring-h">
+    <div class="card-head"><h3 id="scoring-h">Scoring</h3></div>
+    <div class="card-body stack-sm">
+      <p class="small mb-0">{{callsLine $d.Dashboard}}</p>
+      <p class="small mb-0">{{costLine $d.Dashboard}}</p>
+      <p class="small mb-0">{{claudeLine $d.Dashboard}}</p>
+    </div>
+  </section>
+  {{end}}
 </section>
 {{end}}
 
 {{/* home_runs is the boards and the last runs. */}}
 {{define "home_runs"}}
 {{$d := .}}
-<div class="grid two">
-  <section class="card">
-    <h2>Boards</h2>
+<div class="grid mt-2">
+  <section class="card span-6" aria-labelledby="boards-h">
+    <div class="card-head"><h2 id="boards-h">Boards</h2></div>
     {{if $d.Boards}}
-    <div class="table-wrap">
-    <table>
+    <div class="table-wrap card-body-flush">
+    <table class="table">
       <thead><tr><th scope="col">ATS</th><th scope="col">State</th><th scope="col" class="num">Boards</th></tr></thead>
       <tbody>{{range $d.Boards}}<tr><td>{{.ATS}}</td><td>{{.State}}</td><td class="num">{{thousands .N}}</td></tr>{{end}}</tbody>
     </table>
     </div>
-    {{else}}<p class="empty">No boards yet.</p>{{end}}
+    {{else}}
+    <div class="empty empty-compact"><p class="empty-title">No boards yet</p><p class="empty-text">Boards show here once the ATS collect has found some.</p></div>
+    {{end}}
   </section>
-  <section class="card">
-    <h2>Last runs</h2>
+  <section class="card span-6" aria-labelledby="runs-h">
+    <div class="card-head"><h2 id="runs-h">Last runs</h2>{{if $d.LastRuns}}<a class="card-link" href="/runs">All runs</a>{{end}}</div>
     {{if $d.LastRuns}}
-    <ul class="item-list">
-      {{range $d.LastRuns}}{{template "run_item" .}}{{end}}
+    <ul class="list card-body-flush">
+      {{range $d.LastRuns}}<li class="list-item"><span class="list-main"><span class="list-title">{{.Command}}{{if .Source}} · {{.Source}}{{end}}</span><span class="list-meta">{{when .StartedAt}} · {{took .}}{{if .Failures}} · <span class="text-bad">{{thousands .Failures}} failed</span>{{end}}{{if .StopReason}} · {{.StopReason}}{{end}}{{if .Note}} · {{.Note}}{{end}}</span></span></li>{{end}}
     </ul>
-    <p><a href="/runs">All runs</a></p>
-    {{else}}<p class="empty">No runs yet.</p>{{end}}
+    {{else}}
+    <div class="empty empty-compact"><p class="empty-title">No runs yet</p><p class="empty-text">Runs show here as the jobs run.</p></div>
+    {{end}}
   </section>
 </div>
 {{end}}
@@ -95,21 +128,27 @@
 {{define "home_leads"}}
 {{$d := .}}
 {{with $d.Leads}}
-<section class="card">
-  <h2>Leads</h2>
+<section class="section" aria-labelledby="leads-h">
+  <div class="section-head"><h2 id="leads-h">Leads</h2><a class="card-link" href="/leads/outreach">Outreach</a></div>
   {{with $d.Why}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}} <a href="/controls">Controls</a></p>{{end}}
   {{if not $d.Why}}{{with .Paused}}<p class="notice notice-error" role="status">Sending is paused (since {{when .}}).</p>{{end}}{{end}}
   {{with .Stopped}}<p class="notice notice-error" role="status">The last send run stopped sending: {{.}}.</p>{{end}}
-  {{with .Batch}}<p><a href="/leads/batches/{{.ID}}">Batch {{.ID}} waits for your approval</a>{{if .Shadow}} (shadow){{end}}: {{plural .Emails "email" "emails"}}, {{plural .Forms "contact form" "contact forms"}}, {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}}.</p>{{end}}
-  <dl class="stats">
-    <div><dt>Replies</dt><dd>{{.Replies}}</dd></div>
-    <div><dt>To use by hand</dt><dd>{{.ManualWaiting}}</dd></div>
-    <div><dt>Check by hand</dt><dd>{{.CheckByHand}}</dd></div>
-    <div><dt>Sent yesterday</dt><dd>{{.SentYesterday}}</dd></div>
-    <div><dt>Bounces</dt><dd>{{.Bounced}}</dd></div>
-    <div><dt>Opt-outs</dt><dd>{{.OptedOut}}</dd></div>
-  </dl>
-  <p><a href="/leads/outreach">Outreach</a></p>
+  {{with .Batch}}<p class="notice" role="status"><a href="/leads/batches/{{.ID}}">Batch {{.ID}} waits for your approval</a>{{if .Shadow}} (shadow){{end}}: {{plural .Emails "email" "emails"}}, {{plural .Forms "contact form" "contact forms"}}, {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}}.</p>{{end}}
+  <div class="stats">
+    <div class="card stat"><span class="stat-label">Replies</span><span class="stat-value">{{.Replies}}</span></div>
+    <div class="card stat"><span class="stat-label">To use by hand</span><span class="stat-value">{{.ManualWaiting}}</span></div>
+    <div class="card stat"><span class="stat-label">Check by hand</span><span class="stat-value">{{.CheckByHand}}</span></div>
+    <div class="card stat"><span class="stat-label">Sent yesterday</span><span class="stat-value">{{.SentYesterday}}</span></div>
+    <div class="card stat"><span class="stat-label">Bounces</span><span class="stat-value">{{.Bounced}}</span></div>
+    <div class="card stat"><span class="stat-label">Opt-outs</span><span class="stat-value">{{.OptedOut}}</span></div>
+  </div>
 </section>
 {{end}}
 {{end}}
+
+{{/* adm_alert_icon is the warning triangle the alert family wears. */}}
+{{define "adm_alert_icon"}}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>{{end}}
+
+{{/* adm_mb_state is a mailbox's state as a dot and a word. Its data has .State and .Reason. */}}
+{{define "adm_mb_state"}}<span class="state {{if eq .State "ready"}}state-good{{else if eq .State "paused"}}state-bad{{else if eq .State "retired"}}state-grey{{else}}state-warn{{end}}"><span class="dot {{if eq .State "ready"}}dot-good{{else if eq .State "paused"}}dot-bad{{else if eq .State "retired"}}dot-grey{{else}}dot-warn{{end}}"></span>{{mailboxState .State .Reason}}</span>{{end}}
+

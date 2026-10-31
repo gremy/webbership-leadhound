@@ -1,56 +1,75 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.Page}}
+<div class="page">
 <div class="page-head">
-  <h1>Mailboxes</h1>
-  {{if not $p.KeyMissing}}<p><a href="/mailboxes/new">Add a mailbox</a></p>{{end}}
+  <div>
+    <h1>Mailboxes</h1>
+    <p class="page-sub">Each mailbox sends from its own address. The daily limit, the number of mailboxes and pauses count per domain; the records are checked on each address's own host.</p>
+  </div>
+  {{if not $p.KeyMissing}}<div class="btn-row"><a class="btn btn-primary" href="/mailboxes/new">Add a mailbox</a></div>{{end}}
 </div>
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
-{{if $p.KeyMissing}}<p class="notice notice-error" role="status">Mailboxes can't be added yet: the mailbox key is not set up. See deploy/README.md, Mailboxes.</p>{{end}}
-{{with $p.RetiredEnv}}<p class="notice notice-error" role="status">These lines in the server's env file are no longer read: {{join . ", "}}. A mailbox belongs on this page now: add it here, then remove the lines.</p>{{end}}
-<p class="lede">Each mailbox sends from its own address. The daily limit, the number of mailboxes and pauses count per domain; the records are checked on each address's own host.</p>
+{{if $p.KeyMissing}}<div class="alert alert-stop mb-2" role="status">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">Mailboxes can't be added yet: the mailbox key is not set up. See deploy/README.md, Mailboxes.</p></div></div>{{end}}
+{{with $p.RetiredEnv}}<div class="alert alert-stop mb-2" role="status">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">These lines in the server's env file are no longer read: {{join . ", "}}. A mailbox belongs on this page now: add it here, then remove the lines.</p></div></div>{{end}}
 
+<div class="stack">
 {{range $p.Groups}}{{$g := .}}
 <section class="card mailbox-domain" id="domain-{{.Domain}}">
-  <h2>{{.Domain}}</h2>
-  {{if .Paused}}<p class="notice notice-error" role="status">This domain is paused{{with .PauseReason}}: {{.}}{{end}}. None of its mailboxes sends until you resume it.</p>{{end}}
-  <dl class="stats">
-    <div><dt>Sent today</dt><dd>{{.SentToday}} of {{.DomainLimit}}</dd></div>
-    <div><dt>Mailboxes</dt><dd>{{.Mailboxes}} of {{.MailboxLimit}}</dd></div>
-  </dl>
-  {{range .DNS}}
-  {{if .At}}
-  <p class="records">Records for {{.Host}} (selector {{.Selector}}), checked {{when .At}}: SPF {{if .SPF}}ok{{else}}<span class="bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="bad">missing</span>{{end}}</p>
-  {{else}}
-  <p class="records">Records for {{.Host}} (selector {{.Selector}}): <span class="muted">not checked today</span></p>
-  {{end}}
-  {{end}}
-  <ul class="item-list">
+  <div class="card-head"><h2>{{.Domain}}</h2>{{if .Paused}}<span class="badge badge-bad">Paused</span>{{end}}</div>
+  {{if .Paused}}<div class="card-body"><div class="alert alert-stop" role="status">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">This domain is paused{{with .PauseReason}}: {{.}}{{end}}. None of its mailboxes sends until you resume it.</p></div></div></div>{{end}}
+  <div class="card-body stack">
+    <div class="stats">
+      <div class="card stat"><span class="stat-label">Sent today</span><span class="stat-value">{{.SentToday}} of {{.DomainLimit}}</span></div>
+      <div class="card stat"><span class="stat-label">Mailboxes</span><span class="stat-value">{{.Mailboxes}} of {{.MailboxLimit}}</span></div>
+    </div>
+    {{range .DNS}}
+    {{if .At}}
+    <p class="small mb-0">Records for {{.Host}} (selector {{.Selector}}), checked {{when .At}}: SPF {{if .SPF}}ok{{else}}<span class="text-bad">missing</span>{{end}} · DKIM {{if .DKIM}}ok{{else}}<span class="text-bad">missing</span>{{end}} · DMARC {{if .DMARC}}ok{{else}}<span class="text-bad">missing</span>{{end}}</p>
+    {{else}}
+    <p class="small mb-0">Records for {{.Host}} (selector {{.Selector}}): <span class="muted">not checked today</span></p>
+    {{end}}
+    {{end}}
+  </div>
+  <ul class="list">
     {{range .Rows}}
-    <li class="split">
-      <span>
-        <span class="item-head"><a href="/mailboxes/{{.ID}}">{{.Address}}</a> <span class="mb-state mb-{{.State}}">{{mailboxState .State .Reason}}</span></span>
-        <span class="item-meta">sent {{.SentToday}} of {{.CapToday}} today · {{if .RampDay}}day {{.RampDay}} of the ramp{{else}}{{with .RampStart}}warm-up starts on {{day .}}{{else}}warm-up starts with its first email{{end}}{{end}}{{with .LastCheck}} · checked {{when .}}{{end}}</span>
+    <li class="list-item">
+      <span class="list-main">
+        <span class="list-title"><a href="/mailboxes/{{.ID}}">{{.Address}}</a></span>
+        <span class="list-meta">sent {{.SentToday}} of {{.CapToday}} today · {{if .RampDay}}day {{.RampDay}} of the ramp{{else}}{{with .RampStart}}warm-up starts on {{day .}}{{else}}warm-up starts with its first email{{end}}{{end}}{{with .LastCheck}} · checked {{when .}}{{end}}</span>
       </span>
+      <span class="list-end">{{template "adm_mb_state" .}}</span>
     </li>
     {{end}}
   </ul>
+  <div class="card-body">
   {{if .Paused}}
   <form method="post" action="/mailboxes/domains/{{.Domain}}/resume">
-    <button type="submit" class="primary">Resume {{.Domain}}</button>
+    <button type="submit" class="btn btn-primary">Resume {{.Domain}}</button>
   </form>
   {{else}}
   <details>
     <summary>Pause {{.Domain}}…</summary>
-    <form method="post" action="/mailboxes/domains/{{.Domain}}/pause" class="stack">
-      <label for="pause-domain-{{.Domain}}">Reason (optional)</label>
-      <input id="pause-domain-{{.Domain}}" name="reason" maxlength="{{maxText}}">
-      <button type="submit">Pause every mailbox on {{.Domain}}</button>
+    <form method="post" action="/mailboxes/domains/{{.Domain}}/pause" class="stack mt-1">
+      <div class="field">
+        <label class="label" for="pause-domain-{{.Domain}}">Reason (optional)</label>
+        <input class="input" id="pause-domain-{{.Domain}}" name="reason" maxlength="{{maxText}}">
+      </div>
+      <div class="form-actions"><button type="submit" class="btn btn-secondary">Pause every mailbox on {{.Domain}}</button></div>
     </form>
   </details>
   {{end}}
+  </div>
 </section>
 {{else}}
-<p class="empty">No mailbox yet.</p>
+<section class="card">
+  <div class="empty">
+    <p class="empty-title">No mailbox yet.</p>
+    <p class="empty-text">Add the address emails will come from. It is checked before it sends anything.</p>
+    {{if not $p.KeyMissing}}<a class="btn btn-primary btn-sm" href="/mailboxes/new">Add a mailbox</a>{{end}}
+  </div>
+</section>
 {{end}}
-<p><a href="/leads/outreach">Back to outreach</a></p>
+</div>
+<p class="mt-2"><a href="/leads/outreach">Back to outreach</a></p>
+</div>
 {{end}}

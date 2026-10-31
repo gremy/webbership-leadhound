@@ -4060,3 +4060,43 @@ a[aria-current="true"] .count {
 .card-body .stats .stat {
   padding: 0;
 }
+
+/* Leads core (list, lead, batch): small additions, scoped under .page. */
+.page .lead-call {
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+}
+.page .star-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-half);
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.page .lead-table .star-toggle,
+.page .lead-list .star-toggle {
+  min-height: 32px;
+  min-width: 32px;
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
+}
+.page .call-bands button.is-current {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+.page .evidence li,
+.page .message-body,
+.page .message-head {
+  overflow-wrap: anywhere;
+}

@@ -1,111 +1,141 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.Page}}
+<div class="page">
 <div class="page-head">
-  <h1>Controls</h1>
+  <div>
+    <h1>Controls</h1>
+    <p class="page-sub">Every switch that decides what leads work runs. A job switched off skips its runs until you switch it on again.</p>
+  </div>
 </div>
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 {{with $p.Why}}{{if .Sentence}}<p class="notice {{if .Blocked}}notice-warn{{else}}notice-good{{end}} sending-why" role="status">{{.Sentence}}</p>{{end}}
 {{template "send_now" (sendNowIn . "")}}{{end}}
-<p class="lede">Every switch that decides what leads work runs. A job switched off skips its runs until you switch it on again.</p>
 
-<section class="card">
-  <h2>Emails</h2>
-  <ul class="item-list control-list">
+<div class="stack mt-2">
+<section class="card" aria-labelledby="emails-h">
+  <div class="card-head"><h2 id="emails-h">Emails</h2></div>
+  <ul class="list">
     {{template "control_row" $p.Sending}}
   </ul>
+  <div class="card-body">
   {{if $p.Sending.On}}
   <details>
     <summary>Pause sending…</summary>
-    <form method="post" action="/leads/sending" class="stack">
+    <form method="post" action="/leads/sending" class="stack mt-1">
       <input type="hidden" name="do" value="pause">
       <input type="hidden" name="back" value="/controls">
-      <label for="pause-reason">Reason (optional)</label>
-      <input id="pause-reason" name="reason" maxlength="{{maxText}}">
-      <button type="submit">Pause sending</button>
+      <div class="field">
+        <label class="label" for="pause-reason">Reason (optional)</label>
+        <input class="input" id="pause-reason" name="reason" maxlength="{{maxText}}">
+      </div>
+      <div class="form-actions"><button type="submit" class="btn btn-secondary">Pause sending</button></div>
     </form>
   </details>
   {{else}}
   <form method="post" action="/leads/sending">
     <input type="hidden" name="do" value="resume">
     <input type="hidden" name="back" value="/controls">
-    <button type="submit" class="primary">Resume sending</button>
+    <button type="submit" class="btn btn-primary">Resume sending</button>
   </form>
   {{end}}
+  </div>
 </section>
 
-<section class="card" id="sending-window">
-  <h2>Sending window</h2>
+<section class="card" id="sending-window" aria-labelledby="window-h">
+  <div class="card-head"><h2 id="window-h">Sending window</h2></div>
   {{$w := $p.Window}}
-  <p>Emails go out between {{$w.Start}} and {{$w.End}} in each recipient's local time, on {{join $w.Days ", "}}. The send, the size of each morning batch and the sentence at the top all keep this window.</p>
-  {{with $p.SendSchedule}}<p>{{.}}</p>{{end}}
-  <p class="setting-source">{{with changed "" $w.Source}}{{.}}{{else}}From the leads settings file.{{end}}</p>
-  {{with $p.WindowProblems}}<div class="notice notice-error" role="alert"><p>The window was not saved:</p><ul class="notice-list">{{range .}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
-  <form method="post" action="/controls/window" class="stack">
-    <label for="window-start">Start</label>
-    <input id="window-start" name="start" type="time" value="{{$v.Form.Start}}" required>
-    <label for="window-end">End</label>
-    <input id="window-end" name="end" type="time" value="{{$v.Form.End}}" required>
-    <fieldset class="plain-field">
-      <legend>Days</legend>
-      <div class="checks">{{range $v.Form.AllDays}}<label><input type="checkbox" name="day" value="{{.}}"{{if in . $v.Form.Days}} checked{{end}}> {{.}}</label>{{end}}</div>
-    </fieldset>
-    <div class="button-row">
-      <button type="submit" name="do" value="save" class="primary">Save the window</button>
-      {{if $w.Source.Console}}<button type="submit" name="do" value="reset" formnovalidate>Use the file's window</button>{{end}}
-    </div>
-  </form>
+  <div class="card-body stack">
+    <p class="mb-0">Emails go out between {{$w.Start}} and {{$w.End}} in each recipient's local time, on {{join $w.Days ", "}}. The send, the size of each morning batch and the sentence at the top all keep this window.</p>
+    {{with $p.SendSchedule}}<p class="mb-0">{{.}}</p>{{end}}
+    <p class="hint">{{with changed "" $w.Source}}{{.}}{{else}}From the leads settings file.{{end}}</p>
+    {{with $p.WindowProblems}}<div class="notice notice-error" role="alert"><p>The window was not saved:</p><ul class="notice-list">{{range .}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+    <form method="post" action="/controls/window" class="stack">
+      <div class="form-grid">
+        <div class="field">
+          <label class="label" for="window-start">Start</label>
+          <input class="input input-narrow" id="window-start" name="start" type="time" value="{{$v.Form.Start}}" required>
+        </div>
+        <div class="field">
+          <label class="label" for="window-end">End</label>
+          <input class="input input-narrow" id="window-end" name="end" type="time" value="{{$v.Form.End}}" required>
+        </div>
+      </div>
+      <fieldset class="plain-field">
+        <legend class="label">Days</legend>
+        <div class="cluster">{{range $v.Form.AllDays}}<label class="inline-check"><input class="check" type="checkbox" name="day" value="{{.}}"{{if in . $v.Form.Days}} checked{{end}}> {{.}}</label>{{end}}</div>
+      </fieldset>
+      <div class="form-actions">
+        <button type="submit" name="do" value="save" class="btn btn-primary">Save the window</button>
+        {{if $w.Source.Console}}<button type="submit" class="btn btn-secondary" name="do" value="reset" formnovalidate>Use the file's window</button>{{end}}
+      </div>
+    </form>
+  </div>
 </section>
 
-<section class="card">
-  <h2>Jobs</h2>
-  {{with $p.TimersNote}}<p class="note">{{.}}</p>{{end}}
-  <ul class="item-list control-list">
+<section class="card" aria-labelledby="jobs-h">
+  <div class="card-head"><h2 id="jobs-h">Jobs</h2></div>
+  {{with $p.TimersNote}}<div class="card-body"><p class="notice notice-warn mb-0" role="status">{{.}}</p></div>{{end}}
+  {{if $p.Jobs}}
+  <ul class="list">
     {{range $p.Jobs}}
     {{template "control_row" .}}
     {{end}}
   </ul>
-  <p>Rating leads with Jev is {{if $p.RatingOn}}on{{else}}off{{end}}. <a href="{{$p.RatingPath}}">Change it in Settings</a></p>
+  {{else}}
+  <div class="empty empty-compact"><p class="empty-title">No jobs to switch</p><p class="empty-text">Jobs show here once leads are set up on this server.</p></div>
+  {{end}}
+  <div class="card-foot">Rating leads with Jev is {{if $p.RatingOn}}on{{else}}off{{end}}. <a href="{{$p.RatingPath}}">Change it in Settings</a></div>
 </section>
 
-<section class="card">
-  <h2>Set on the server</h2>
-  <p class="lede">{{$p.GuardsHow}}</p>
-  <ul class="item-list">
+<section class="card" aria-labelledby="guards-h">
+  <div class="card-head"><h2 id="guards-h">Set on the server</h2></div>
+  <div class="card-body"><p class="mb-0 muted small">{{$p.GuardsHow}}</p></div>
+  {{if $p.Guards}}
+  <ul class="list">
     {{range $p.Guards}}
-    <li>
-      <span class="item-head"><code>{{.Name}}</code>{{if .Value}} = <code>{{.Value}}</code>{{else}} <span class="muted">(not set)</span>{{end}}</span>
-      <span class="item-meta">{{.State}}</span>
-      <span class="item-meta">To change it: <code>{{.Line}}</code></span>
+    <li class="list-item">
+      <span class="list-main">
+        <span class="list-title"><code>{{.Name}}</code>{{if .Value}} = <code>{{.Value}}</code>{{else}} <span class="muted">(not set)</span>{{end}}</span>
+        <span class="list-meta">{{.State}}</span>
+        <span class="list-meta">To change it: <code>{{.Line}}</code></span>
+      </span>
     </li>
     {{end}}
   </ul>
+  {{end}}
 </section>
+</div>
+</div>
 {{end}}
 
-{{define "control_row"}}<li id="control-{{if .Job}}{{.Job}}{{else}}sending{{end}}">
-  <span class="item-head">{{.Name}} <span class="mb-state {{if .On}}mb-ready{{else}}mb-paused{{end}}">{{if .On}}On{{else}}Off{{end}}</span></span>
-  {{with .What}}<span class="item-meta">{{.}}</span>{{end}}
-  <span class="item-meta">{{if .Since}}{{if .On}}On{{else}}Off{{end}} since {{when .Since}}{{with .Reason}}: {{.}}{{end}}{{if .BySystem}} (set by the system){{end}}{{else}}Never switched{{end}}</span>
-  <span class="item-meta">{{with .Schedule}}{{.}} · {{end}}{{if .Timer.Unit}}{{if .Timer.Enabled}}timer enabled{{with .Timer.Next}}, next run {{when .}}{{end}}{{else}}<span class="bad">timer not enabled</span>{{end}}{{else}}no timer of its own{{end}}</span>
-  <span class="item-meta">{{with .LastRun}}Last run {{when .StartedAt}}: {{if .Failed}}<span class="bad">{{.Result}}</span>{{else}}{{.Result}}{{end}}{{else}}Never run{{end}}</span>
-  {{range .Lines}}<span class="item-meta">{{.}}</span>{{end}}
-  {{with controlNote .Job}}<span class="item-meta">{{.}}</span>{{end}}
-  {{if .Job}}
-  {{if .On}}
-  <details>
-    <summary>Switch off…</summary>
-    <form method="post" action="/controls/{{.Job}}" class="stack">
-      <input type="hidden" name="do" value="off">
-      <label for="reason-{{.Job}}">Reason (optional)</label>
-      <input id="reason-{{.Job}}" name="reason" maxlength="{{maxControlReason}}">
-      <button type="submit">Switch off<span class="visually-hidden"> {{.Name}}</span></button>
+{{define "control_row"}}<li class="list-item" id="control-{{if .Job}}{{.Job}}{{else}}sending{{end}}">
+  <span class="list-main">
+    <span class="list-title">{{.Name}} <span class="badge {{if .On}}badge-good{{else}}badge-warn{{end}}">{{if .On}}On{{else}}Off{{end}}</span></span>
+    {{with .What}}<span class="list-meta">{{.}}</span>{{end}}
+    <span class="list-meta">{{if .Since}}{{if .On}}On{{else}}Off{{end}} since {{when .Since}}{{with .Reason}}: {{.}}{{end}}{{if .BySystem}} (set by the system){{end}}{{else}}Never switched{{end}}</span>
+    <span class="list-meta">{{with .Schedule}}{{.}} · {{end}}{{if .Timer.Unit}}{{if .Timer.Enabled}}timer enabled{{with .Timer.Next}}, next run {{when .}}{{end}}{{else}}<span class="text-bad">timer not enabled</span>{{end}}{{else}}no timer of its own{{end}}</span>
+    <span class="list-meta">{{with .LastRun}}Last run {{when .StartedAt}}: {{if .Failed}}<span class="text-bad">{{.Result}}</span>{{else}}{{.Result}}{{end}}{{else}}Never run{{end}}</span>
+    {{range .Lines}}<span class="list-meta">{{.}}</span>{{end}}
+    {{with controlNote .Job}}<span class="list-meta">{{.}}</span>{{end}}
+    {{if .Job}}
+    {{if .On}}
+    <details class="mt-1">
+      <summary>Switch off…</summary>
+      <form method="post" action="/controls/{{.Job}}" class="stack mt-1">
+        <input type="hidden" name="do" value="off">
+        <div class="field">
+          <label class="label" for="reason-{{.Job}}">Reason (optional)</label>
+          <input class="input" id="reason-{{.Job}}" name="reason" maxlength="{{maxControlReason}}">
+        </div>
+        <div class="form-actions"><button type="submit" class="btn btn-secondary">Switch off<span class="visually-hidden"> {{.Name}}</span></button></div>
+      </form>
+    </details>
+    {{else}}
+    <form method="post" action="/controls/{{.Job}}" class="mt-1">
+      <input type="hidden" name="do" value="on">
+      <button type="submit" class="btn btn-primary btn-sm">Switch on<span class="visually-hidden"> {{.Name}}</span></button>
     </form>
-  </details>
-  {{else}}
-  <form method="post" action="/controls/{{.Job}}">
-    <input type="hidden" name="do" value="on">
-    <button type="submit" class="primary">Switch on<span class="visually-hidden"> {{.Name}}</span></button>
-  </form>
-  {{end}}
-  {{end}}
+    {{end}}
+    {{end}}
+  </span>
 </li>{{end}}

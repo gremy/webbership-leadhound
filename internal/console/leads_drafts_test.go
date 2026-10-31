@@ -102,7 +102,7 @@ func TestDraftsTab(t *testing.T) {
 		"The facts it was given (2)", "context only, never quoted",
 		"Rejected on Sat 24 Oct 04:50: Too long, Other · “rambles”",
 		"Review it again (the latest review counts)",
-		`<button type="submit" name="verdict" value="approve" class="primary">Approve</button>`,
+		`<button type="submit" name="verdict" value="approve" class="btn btn-primary">Approve</button>`,
 		`<span class="tag">test draft (not counted)</span>`,
 		"Refused by the check", "Email 1, paragraph 2: 2019 is not in a cited fact",
 		"<summary>Rule codes</summary>",

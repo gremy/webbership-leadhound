@@ -1,35 +1,26 @@
 {{define "content"}}
 {{$v := .Data}}{{$d := $v.Data}}
+<div class="page">
 <div class="page-head">
-  <h1>{{or $d.Name $d.Domain}}</h1>
-  <p><a href="/leads">Back to the list</a></p>
+  <div>
+    <span class="eyebrow"><a href="/leads">Leads</a>{{with $d.Campaign}} / {{.}}{{end}}</span>
+    <h1>{{or $d.Name $d.Domain}}</h1>
+    <p class="page-sub cluster"><span class="badge badge-accent">{{$d.State}}</span>{{if $d.SmallSite}}<span class="badge">small site</span>{{end}}<span class="muted small">{{$d.Domain}}{{with $d.Relevance}} · relevance {{.}}{{end}}</span></p>
+  </div>
+  <div class="btn-row">
+    <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
+  </div>
 </div>
-{{template "leads_tabs" (leadsTab "list" false)}}
+{{if and $d.StarNote (not $d.Starred)}}<p class="hint star-note">{{$d.StarNote}}.</p>{{end}}
 {{if and $v.Message (not $v.AtCall)}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 <article class="record lead-record" id="lead-{{$d.LeadID}}">
-  <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}{{if and $d.StarNote (not $d.Starred)}}<p class="hint star-note">{{$d.StarNote}}.</p>{{end}}</div>
-  <dl class="fields">
-    <div><dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd></div>
-    <div><dt>Domain</dt><dd>{{$d.Domain}}</dd></div>
-    {{with $d.Country}}<div><dt>Country</dt><dd>{{.}}</dd></div>{{end}}
-    {{with $d.Campaign}}<div><dt>Campaign</dt><dd>{{.}}</dd></div>{{end}}
-    <div><dt>Kind</dt><dd>{{$d.Kind}}</dd></div>
-    <div><dt>State</dt><dd>{{$d.State}}</dd></div>
-    <div><dt>Relevance</dt><dd>{{or $d.Relevance "not rated yet"}}
-      {{with $d.RelevanceHistory}}<details class="fact-more">
-        <summary>{{plural (len .) "rating" "ratings"}} so far</summary>
-        <ul class="item-list">{{range .}}<li><span class="item-head">{{.Words}}</span><span class="item-meta">{{when .At}}</span></li>{{end}}</ul>
-      </details>{{end}}</dd></div>
-    <div><dt>Reach by</dt><dd>{{template "lead_channels" $d}}</dd></div>
-    <div><dt>Outreach order</dt><dd>{{with $d.Position}}number {{.}}{{else}}not in the order{{end}}</dd></div>
-    <div><dt>Starred</dt><dd>{{if $d.Starred}}yes{{else}}no{{end}}</dd></div>
-    {{with $d.ClaudeSpend}}<div><dt>Claude spend</dt><dd>{{.}} in all</dd></div>{{end}}
-    {{if $d.SmallSite}}<div><dt>Size</dt><dd><span class="tag">small site</span></dd></div>{{end}}
-  </dl>
+<div class="columns">
+<div class="stack">
 
-  <section>
-    <h2>Finding</h2>
+  <section class="card">
+    <div class="card-head"><h2>Finding</h2></div>
+    <div class="card-body">
     {{with $d.Finding}}<p>{{.}}</p>{{else}}<p class="muted">No finding on file.</p>{{end}}
     {{if eq $d.Origin "place"}}<p class="hint">Found through a map listing: place data from Overture Maps Foundation (overturemaps.org), CDLA Permissive 2.0.</p>{{end}}
     {{range $v.Fetches}}
@@ -40,18 +31,22 @@
       <ul class="item-list">{{range .Signals}}<li><span class="item-head">{{.Name}}{{with .Value}}: {{.}}{{end}}</span></li>{{end}}</ul>
     </div>
     {{end}}
+    </div>
   </section>
 
   {{with $d.Report}}{{if or .Ready .Why}}
-  <section class="lead-report">
-    <h2>Upgrade-risk report</h2>
+  <section class="card lead-report">
+    <div class="card-head"><h2>Upgrade-risk report</h2></div>
+    <div class="card-body">
     {{if .Ready}}<p><a href="/leads/reports/{{$d.LeadID}}" download>Report</a> <span class="hint">· one self-contained page built from the stored findings; attach it, or open it and print to PDF</span></p>
     {{else}}<p class="muted">{{.Why}}</p>{{end}}
+    </div>
   </section>
   {{end}}{{end}}
 
-  <section>
-    <h2>Ways to reach them</h2>
+  <section class="card">
+    <div class="card-head"><h2>Ways to reach them</h2></div>
+    <div class="card-body">
     {{if $d.Routes}}
     <ul class="item-list">
       {{range $d.Routes}}
@@ -73,17 +68,19 @@
       {{if $r.NextAt}}<p class="hint">It can look again from {{researchNext $r.NextAt}}: one search per organisation every 90 days.</p>
       {{else}}<form method="post" action="/leads/{{$d.LeadID}}/look-again" class="research-form">
         <input type="hidden" name="back" value="{{$v.Back}}#contact-research">
-        <button type="submit">Look again</button>
+        <button type="submit" class="btn btn-secondary">Look again</button>
       </form>
-      <p class="hint">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
+      <p class="hint mt-1">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
       {{end}}
       {{end}}
     </div>
     {{end}}
+    </div>
   </section>
 
-  <section>
-    <h2>From their site</h2>
+  <section class="card">
+    <div class="card-head"><h2>From their site</h2></div>
+    <div class="card-body">
     <h3>Phone numbers</h3>
     {{if $d.Phones}}<ul class="item-list">{{range $d.Phones}}{{template "lead_fact" .}}{{end}}</ul>{{else}}<p class="muted">None found.</p>{{end}}
     <h3>Description</h3>
@@ -97,20 +94,22 @@
     {{if $d.Social}}<ul class="item-list">{{range $d.Social}}{{template "lead_fact" .}}{{end}}</ul>
     <p class="hint">Shown as found on their pages; LeadHound never opens them.</p>
     {{else}}<p class="muted">None found.</p>{{end}}
+    </div>
   </section>
 
   {{$c := $d.YourCall}}
-  <section class="lead-call" id="your-call" aria-labelledby="call-title">
-    <h2 id="call-title">Your call</h2>
+  <section class="card lead-call" id="your-call" aria-labelledby="call-title">
+    <div class="card-head"><h2 id="call-title">Your call</h2><span class="muted small">{{$c.Labelled}} of {{$c.LabelGoal}} labelled</span></div>
+    <div class="card-body">
     {{if and $v.Message $v.AtCall}}<p class="notice call-notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
     <p class="call-now">{{if $d.Call}}You said <strong>{{$d.Call}}</strong>{{with $c.At}} on {{when .}}{{end}}.{{else}}No call yet.{{end}}
       {{with $d.Relevance}}Jev says {{.}}.{{else}}Jev has not rated it yet.{{end}}</p>
     <form method="post" action="/leads/{{$d.LeadID}}/label" class="call-form">
       <input type="hidden" name="back" value="{{$v.Back}}">
       <div class="call-bands" role="group" aria-label="Your call on this lead">
-        {{range $c.Bands}}<button type="submit" name="band" value="{{.Value}}" title="{{.Help}}"{{if eq .Value $d.Call}} class="is-current" aria-current="true"{{end}}>{{.Label}}</button>{{end}}
+        {{range $c.Bands}}<button type="submit" name="band" value="{{.Value}}" title="{{.Help}}" class="btn btn-secondary{{if eq .Value $d.Call}} is-current{{end}}"{{if eq .Value $d.Call}} aria-current="true"{{end}}>{{.Label}}</button>{{end}}
       </div>
-      {{if $d.Call}}<div class="call-clear-row"><button type="submit" name="band" value="clear" class="call-clear">Clear</button></div>{{end}}
+      {{if $d.Call}}<div class="call-clear-row"><button type="submit" name="band" value="clear" class="btn btn-ghost call-clear">Clear</button></div>{{end}}
     </form>
     <details class="call-help">
       <summary>What each call means</summary>
@@ -118,42 +117,79 @@
     </details>
     <p class="hint">Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least {{$c.LabelGoal}} leads.</p>
     <p class="hint">{{$c.Labelled}} of {{$c.LabelGoal}} labelled · <a href="/leads?to_label=1">Leads to label</a></p>
+    </div>
+  </section>
+
+</div>
+<div class="stack">
+
+  <section class="card">
+    <div class="card-head"><h2>Details</h2></div>
+    <div class="card-body">
+    <dl class="kv">
+      <dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd>
+      <dt>Domain</dt><dd>{{$d.Domain}}</dd>
+      {{with $d.Country}}<dt>Country</dt><dd>{{.}}</dd>{{end}}
+      {{with $d.Campaign}}<dt>Campaign</dt><dd>{{.}}</dd>{{end}}
+      <dt>Kind</dt><dd>{{$d.Kind}}</dd>
+      <dt>State</dt><dd>{{$d.State}}</dd>
+      <dt>Relevance</dt><dd>{{or $d.Relevance "not rated yet"}}
+      {{with $d.RelevanceHistory}}<details class="fact-more">
+        <summary>{{plural (len .) "rating" "ratings"}} so far</summary>
+        <ul class="item-list">{{range .}}<li><span class="item-head">{{.Words}}</span><span class="item-meta">{{when .At}}</span></li>{{end}}</ul>
+      </details>{{end}}</dd>
+      <dt>Reach by</dt><dd>{{template "lead_channels" $d}}</dd>
+      <dt>Outreach order</dt><dd>{{with $d.Position}}number {{.}}{{else}}not in the order{{end}}</dd>
+      <dt>Starred</dt><dd>{{if $d.Starred}}yes{{else}}no{{end}}</dd>
+      {{with $d.ClaudeSpend}}<dt>Claude spend</dt><dd>{{.}} in all</dd>{{end}}
+      {{if $d.SmallSite}}<dt>Size</dt><dd><span class="badge">small site</span></dd>{{end}}
+    </dl>
+    </div>
   </section>
 
   {{with $d.Agency}}
-  <section>
-    <h2>Agency page</h2>
-    <dl class="fields">
-      <div><dt>Page</dt><dd>{{template "lead_link" .URL}}</dd></div>
-      {{with .Phrase}}<div><dt>Says</dt><dd>“{{.}}”</dd></div>{{end}}
-      {{if and .FetchURL (ne .FetchURL .URL)}}<div><dt>Fetched</dt><dd>{{template "lead_link" .FetchURL}}</dd></div>{{end}}
+  <section class="card">
+    <div class="card-head"><h2>Agency page</h2></div>
+    <div class="card-body">
+    <dl class="kv">
+      <dt>Page</dt><dd>{{template "lead_link" .URL}}</dd>
+      {{with .Phrase}}<dt>Says</dt><dd>“{{.}}”</dd>{{end}}
+      {{if and .FetchURL (ne .FetchURL .URL)}}<dt>Fetched</dt><dd>{{template "lead_link" .FetchURL}}</dd>{{end}}
     </dl>
+    </div>
   </section>
   {{end}}
 
-  <section>
-    <h2>The site</h2>
-    <dl class="fields">
-      <div><dt>List rank</dt><dd>{{or $d.ListRank "unknown"}}</dd></div>
-      {{with $d.Origin}}<div><dt>Found through</dt><dd>{{.}}</dd></div>{{end}}
-      {{with $d.CountryPolicy}}<div><dt>Country</dt><dd>{{.}}</dd></div>{{end}}
+  <section class="card">
+    <div class="card-head"><h2>The site</h2></div>
+    <div class="card-body">
+    <dl class="kv">
+      <dt>List rank</dt><dd>{{or $d.ListRank "unknown"}}</dd>
+      {{with $d.Origin}}<dt>Found through</dt><dd>{{.}}</dd>{{end}}
+      {{with $d.CountryPolicy}}<dt>Country</dt><dd>{{.}}</dd>{{end}}
     </dl>
+    </div>
   </section>
 
-  <section>
-    <h2>History</h2>
+  <section class="card">
+    <div class="card-head"><h2>History</h2></div>
+    <div class="card-body">
     {{if $d.Events}}
     <ul class="item-list">{{range $d.Events}}<li><span class="item-head">{{.State}}</span><span class="item-meta">{{when .At}}{{with .Actor}} · {{.}}{{end}}{{with .Reason}} · {{.}}{{end}}</span></li>{{end}}</ul>
     {{else}}<p class="muted">No changes yet.</p>{{end}}
+    </div>
   </section>
 
-  <section>
-    <h2>Place in the queue</h2>
+  <section class="card">
+    <div class="card-head"><h2>Place in the queue</h2></div>
+    <div class="card-body">
     {{with $d.Priority}}<p>{{.Words}}</p><p class="hint">{{when .At}}{{with .Actor}} · {{.}}{{end}}</p>{{else}}<p class="muted">Not steered: it takes its place by score.</p>{{end}}
+    </div>
   </section>
 
-  <section>
-    <h2>Messages</h2>
+  <section class="card">
+    <div class="card-head"><h2>Messages</h2></div>
+    <div class="card-body">
     {{if $d.Messages}}
     {{range $d.Messages}}
     <details class="lead-message">
@@ -164,22 +200,31 @@
     </details>
     {{end}}
     {{else}}<p class="muted">Nothing drafted for this lead yet.</p>{{end}}
+    </div>
   </section>
 
-  <section>
-    <h2>Sequence</h2>
+  <section class="card">
+    <div class="card-head"><h2>Sequence</h2></div>
+    <div class="card-body">
     {{if $v.Seq}}
     <ol class="item-list sequence-steps">
       {{range $v.Seq}}<li><span class="item-head">Step {{add .Step 1}}: {{.Kind}}</span><span class="item-meta">{{.Words}}{{with .Card}} · <a href="{{.}}">Open the call card</a>{{end}}</span></li>{{end}}
     </ol>
     {{else}}<p class="muted">No sequence yet: it starts when a batch with this lead is approved.</p>{{end}}
+    </div>
   </section>
 
-  <section>
-    <h2>Why it ranks here</h2>
+  <section class="card">
+    <div class="card-head"><h2>Why it ranks here</h2></div>
+    <div class="card-body">
     {{if $d.Why}}<ul class="evidence">{{range $d.Why}}<li>{{.}}</li>{{end}}</ul>{{else}}<p class="muted">No reasons on file.</p>{{end}}
+    </div>
   </section>
+
+</div>
+</div>
 </article>
+</div>
 {{end}}
 
 {{/* lead_link shows a URL: a link only when it is http or https, else plain text. */}}

@@ -1063,7 +1063,7 @@ func TestSkipPatternHint(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	body := h.do(get("/jobs", h.session(t))).Body.String()
 	for _, want := range []string{
-		`<input id="skip-pattern-1" name="rule_pattern" maxlength="500" aria-describedby="skip-pattern-hint-1">`,
+		`<input class="input" id="skip-pattern-1" name="rule_pattern" maxlength="500" aria-describedby="skip-pattern-hint-1">`,
 		`<p id="skip-pattern-hint-1" class="hint">A regular expression; case is ignored.</p>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1521,8 +1521,8 @@ func TestDashboardNewToday(t *testing.T) {
 	b.dash.Funnel.NewBySource = map[string]int{"lever": 859, "greenhouse": 3519}
 	h := newHarness(t, b, false)
 	body := h.do(get("/", h.session(t))).Body.String()
-	gh := strings.Index(body, "<span>greenhouse</span><span class=\"num\">3,519</span>")
-	lv := strings.Index(body, "<span>lever</span><span class=\"num\">859</span>")
+	gh := strings.Index(body, "<span class=\"list-title\">greenhouse</span></span><span class=\"list-end num\">3,519</span>")
+	lv := strings.Index(body, "<span class=\"list-title\">lever</span></span><span class=\"list-end num\">859</span>")
 	if !strings.Contains(body, "New today") || gh < 0 || lv < 0 || gh > lv {
 		t.Errorf("new jobs by source are not a list, largest first: %s", body)
 	}
@@ -1540,7 +1540,7 @@ func TestRunsAndRulesStackOnNarrowScreens(t *testing.T) {
 	c := h.session(t)
 	for _, p := range []string{"/runs", "/rules"} {
 		body := h.do(get(p, c)).Body.String()
-		if !strings.Contains(body, `class="item-list narrow-only"`) || !strings.Contains(body, `class="table-wrap wide-only"`) {
+		if !strings.Contains(body, "narrow-only") || !strings.Contains(body, "wide-only") {
 			t.Errorf("%s lacks the stacked list or the wide table", p)
 		}
 	}

@@ -1,7 +1,8 @@
 {{define "run_now"}}
 <section class="card run-now" id="run-now"{{if .Polling}} hx-get="/run/status" hx-trigger="every 10s" hx-swap="outerHTML"{{end}}>
-  <h2>Run now</h2>
-  {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+  <div class="card-head"><h2>Run now</h2></div>
+  <div class="card-body stack-sm">
+  {{if .Message}}<div class="alert {{if .Error}}alert-stop{{else}}alert-info{{end}}" role="{{if .Error}}alert{{else}}status{{end}}"><div><p class="alert-text">{{.Message}}</p></div></div>{{end}}
   {{$c := .Card}}
   {{if $c.Actions}}
   <ul class="run-list">
@@ -10,14 +11,14 @@
       {{if eq .Action "preview"}}
       {{if ne .State "unavailable"}}
       <form method="post" action="/run/preview" hx-post="/run/preview" hx-target="#run-now" hx-swap="outerHTML">
-        <button type="submit" class="primary">Show results now</button>
+        <button type="submit" class="btn btn-primary">Show results now</button>
       </form>
       {{end}}
       <p class="hint">Rechecks and ranks what is already collected. Usually a minute or two; longer while LinkedIn is busy. No email.</p>
       {{else if eq .Action "fetch"}}
       {{if ne .State "unavailable"}}
       <form method="post" action="/run/fetch" hx-post="/run/fetch" hx-target="#run-now" hx-swap="outerHTML">
-        <button type="submit">Fetch new jobs, then show</button>
+        <button type="submit" class="btn btn-secondary">Fetch new jobs, then show</button>
       </form>
       {{end}}
       <p class="hint">Reads LinkedIn for new jobs, scores them, then shows the results. A few minutes.</p>
@@ -27,7 +28,7 @@
       {{else}}
       {{if ne .State "unavailable"}}
       <form method="post" action="/run/brief" hx-post="/run/brief" hx-target="#run-now" hx-swap="outerHTML">
-        <button type="submit">Send today's email now</button>
+        <button type="submit" class="btn btn-secondary">Send today's email now</button>
       </form>
       {{end}}
       <p class="hint">Sends this morning's email early; the 07:50 timer then skips today.</p>
@@ -35,11 +36,11 @@
       {{else if eq .Action "ats"}}
       {{if ne .State "unavailable"}}
       <details>
-        <summary>Run the nightly ATS collect now…</summary>
+        <summary class="btn btn-secondary btn-sm">Run the nightly ATS collect now…</summary>
         <form method="post" action="/run/ats" hx-post="/run/ats" hx-target="#run-now" hx-swap="outerHTML">
           <p class="hint">It reads every board, which takes about two hours, and scoring can take up to two hours more. It shares the server with live services and uses the day's scoring budget.</p>
-          <p class="confirm-line"><input type="checkbox" id="ats-confirm" name="confirm" value="yes" required> <label for="ats-confirm">I understand, run it now</label></p>
-          <button type="submit" class="primary">Run the ATS collect</button>
+          <label class="inline-check" for="ats-confirm"><input class="check" type="checkbox" id="ats-confirm" name="confirm" value="yes" required> I understand, run it now</label>
+          <button type="submit" class="btn btn-primary">Run the ATS collect</button>
         </form>
       </details>
       {{else}}
@@ -54,5 +55,6 @@
   {{else}}
   <p class="muted">Run now is not available on this server.</p>
   {{end}}
+  </div>
 </section>
 {{end}}

@@ -225,8 +225,8 @@ func TestRunCardRows(t *testing.T) {
 		`action="/run/preview" hx-post="/run/preview" hx-target="#run-now" hx-swap="outerHTML"`, "Show results now",
 		`action="/run/fetch"`, "Fetch new jobs, then show",
 		`action="/run/brief"`, "Send today's email now", "the 07:50 timer then skips today",
-		"<summary>Run the nightly ATS collect now…</summary>", "about two hours",
-		`<input type="checkbox" id="ats-confirm" name="confirm" value="yes" required>`, "I understand, run it now",
+		">Run the nightly ATS collect now…</summary>", "about two hours",
+		`<input class="check" type="checkbox" id="ats-confirm" name="confirm" value="yes" required>`, "I understand, run it now",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %q", want)

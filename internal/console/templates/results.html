@@ -1,90 +1,110 @@
 {{define "content"}}
 {{$v := .Data}}
+<div class="page">
 <div class="page-head">
-  <h1>Results</h1>
-  {{if $v.Found}}<p class="muted">as of {{when $v.Results.MadeAt}}</p>{{end}}
+  <div>
+    <h1>Results</h1>
+    {{if $v.Found}}<p class="page-sub">as of {{when $v.Results.MadeAt}}</p>{{end}}
+  </div>
 </div>
 {{if $v.Found}}
 {{$r := $v.Results}}
 {{if $r.RecheckOff}}<p class="hint">Not rechecked against LinkedIn (live is off).</p>{{end}}
 {{if $r.Health}}
-<section class="card">
-  <h2>Health</h2>
-  <ul class="health">{{range $r.Health}}<li>{{health .}}</li>{{end}}</ul>
+<section class="card mt-2" aria-label="Health">
+  <div class="card-head"><h2>Health</h2></div>
+  <ul class="list card-body-flush">{{range $r.Health}}<li class="list-item"><span class="list-main">{{health .}}</span></li>{{end}}</ul>
 </section>
 {{end}}
 
-<section class="results-group">
-  <h2>Apply</h2>
-  {{if $r.Apply}}<div class="jobs">{{range $r.Apply}}{{template "result_job" .}}{{end}}</div>
-  {{else}}<p class="empty">Nothing to apply to right now.</p>{{end}}
+<section class="section mt-3" aria-label="Apply">
+  <div class="section-head"><h2>Apply</h2></div>
+  {{if $r.Apply}}<div class="stack-sm">{{range $r.Apply}}{{template "result_job" .}}{{end}}</div>
+  {{else}}<div class="card"><div class="empty empty-compact"><p class="empty-title">Nothing to apply to right now</p><p class="empty-text">Strong matches land here after the next search.</p></div></div>{{end}}
 </section>
 
-<section class="results-group">
-  <h2>Your call</h2>
-  {{if $r.YourCall}}<div class="jobs">{{range $r.YourCall}}{{template "result_job" .}}{{end}}</div>
-  {{else}}<p class="empty">Nothing waits for your call.</p>{{end}}
+<section class="section mt-3" aria-label="Your call">
+  <div class="section-head"><h2>Your call</h2></div>
+  {{if $r.YourCall}}<div class="stack-sm">{{range $r.YourCall}}{{template "result_job" .}}{{end}}</div>
+  {{else}}<div class="card"><div class="empty empty-compact"><p class="empty-title">Nothing waits for your call</p><p class="empty-text">Jobs with unclear criteria show up here.</p></div></div>{{end}}
 </section>
 
 {{with $r.RunnerUp}}
-<section class="results-group">
-  <h2>Runner-up</h2>
+<section class="section mt-3" aria-label="Runner-up">
+  <div class="section-head"><h2>Runner-up</h2></div>
   {{with $r.RunnerUpWhy}}<p class="muted">Missed on: {{.}}</p>{{end}}
-  <div class="jobs">{{template "result_job" .}}</div>
+  <div class="stack-sm">{{template "result_job" .}}</div>
 </section>
 {{end}}
 
-{{if or $r.Unreachable $r.Unscored}}<p class="muted">{{plural $r.Unreachable "job" "jobs"}} unreachable · {{plural $r.Unscored "job" "jobs"}} not scored yet.</p>{{end}}
+{{if or $r.Unreachable $r.Unscored}}<p class="muted mt-3">{{plural $r.Unreachable "job" "jobs"}} unreachable · {{plural $r.Unscored "job" "jobs"}} not scored yet.</p>{{end}}
 {{else}}
-<p class="empty">No results yet. Press Show results now on the dashboard.</p>
+<div class="card">
+  <div class="empty">
+    <p class="empty-title">No results to show</p>
+    <p class="empty-text">No results yet. Press Show results now on the dashboard.</p>
+    <a class="btn btn-secondary btn-sm" href="/jobs/home">Open Jobs home</a>
+  </div>
+</div>
 {{end}}
+</div>
 {{end}}
 
 {{define "result_job"}}
-<article class="job tracked" id="result-{{.JobID}}">
-  <div class="job-main">
-    <h3 class="job-title"><a href="/jobs/{{.JobID}}">{{.Title}}</a></h3>
-    <p class="job-company">{{.Company}}{{with .Location}} · {{.}}{{end}}{{if and .ListingStatus (ne .ListingStatus "open")}} <span class="tag">listing {{.ListingStatus}}</span>{{end}}</p>
-    <p class="job-meta">{{with .PostedAt}}Posted {{when .}}{{end}}{{with .ApplicantCount}}{{if $.PostedAt}} · {{end}}{{plural . "applicant" "applicants"}}{{end}}{{with .ApplyType}}{{if or $.PostedAt $.ApplicantCount}} · {{end}}{{.}}{{end}}</p>
-    {{if .Criteria}}<ul class="verdicts">{{range .Criteria}}<li>{{.Name}} <span class="verdict verdict-{{.Verdict}}">{{.Verdict}}</span></li>{{end}}</ul>{{end}}
-    {{with .URL}}<p class="job-meta"><a href="{{.}}" rel="noreferrer noopener" target="_blank">Open posting</a></p>{{end}}
+<article class="card card-body stack-sm" id="result-{{.JobID}}">
+  <div class="list-item">
+    <div class="list-main">
+      <h3 class="list-title"><a href="/jobs/{{.JobID}}">{{.Title}}</a></h3>
+      <p class="list-meta">{{.Company}}{{with .Location}} · {{.}}{{end}}{{if and .ListingStatus (ne .ListingStatus "open")}} <span class="tag">listing {{.ListingStatus}}</span>{{end}}</p>
+      <p class="list-meta">{{with .PostedAt}}Posted {{when .}}{{end}}{{with .ApplicantCount}}{{if $.PostedAt}} · {{end}}{{plural . "applicant" "applicants"}}{{end}}{{with .ApplyType}}{{if or $.PostedAt $.ApplicantCount}} · {{end}}{{.}}{{end}}</p>
+      {{if .Criteria}}<ul class="verdicts">{{range .Criteria}}<li>{{.Name}} <span class="verdict verdict-{{.Verdict}}">{{.Verdict}}</span></li>{{end}}</ul>{{end}}
+      {{with .URL}}<p class="list-meta"><a href="{{.}}" rel="noreferrer noopener" target="_blank">Open posting</a></p>{{end}}
+    </div>
+    {{if .Status}}<span class="status status-{{.Status}}">{{.Status}}</span>{{end}}
   </div>
-  {{if .Status}}<span class="status status-{{.Status}}">{{.Status}}</span>{{end}}
   <div class="actions">
     <form method="post" action="/jobs/track">
       <input type="hidden" name="ref" value="job:{{.JobID}}">
       <input type="hidden" name="back" value="results">
       <input type="hidden" name="action" value="applied">
-      <button type="submit" class="primary">Applied</button>
+      <button type="submit" class="btn btn-primary btn-sm">Applied</button>
     </form>
     <details>
-      <summary>Maybe</summary>
+      <summary class="btn btn-secondary btn-sm">Maybe</summary>
       <form method="post" action="/jobs/track">
         <input type="hidden" name="ref" value="job:{{.JobID}}">
         <input type="hidden" name="back" value="results">
         <input type="hidden" name="action" value="maybe">
-        <label for="maybe-reason-{{.JobID}}">Note (optional)</label>
-        <input id="maybe-reason-{{.JobID}}" name="reason" maxlength="500">
-        <button type="submit">Save maybe</button>
+        <div class="field">
+          <label class="label" for="maybe-reason-{{.JobID}}">Note (optional)</label>
+          <input class="input" id="maybe-reason-{{.JobID}}" name="reason" maxlength="500">
+        </div>
+        <button type="submit" class="btn btn-secondary btn-sm">Save maybe</button>
       </form>
     </details>
     <details>
-      <summary>Skip</summary>
+      <summary class="btn btn-secondary btn-sm">Skip</summary>
       <form method="post" action="/jobs/track">
         <input type="hidden" name="ref" value="job:{{.JobID}}">
         <input type="hidden" name="back" value="results">
         <input type="hidden" name="action" value="skip">
-        <label for="skip-reason-{{.JobID}}">Reason</label>
-        <input id="skip-reason-{{.JobID}}" name="reason" maxlength="500">
-        <label for="skip-field-{{.JobID}}">Also skip future jobs whose</label>
-        <select id="skip-field-{{.JobID}}" name="rule_field">
-          <option value="">(no rule)</option>
-          {{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}
-        </select>
-        <label for="skip-pattern-{{.JobID}}">matches (pattern)</label>
-        <input id="skip-pattern-{{.JobID}}" name="rule_pattern" maxlength="500" aria-describedby="skip-pattern-hint-{{.JobID}}">
-        <p id="skip-pattern-hint-{{.JobID}}" class="hint">A regular expression; case is ignored.</p>
-        <button type="submit">Skip</button>
+        <div class="field">
+          <label class="label" for="skip-reason-{{.JobID}}">Reason</label>
+          <input class="input" id="skip-reason-{{.JobID}}" name="reason" maxlength="500">
+        </div>
+        <div class="field">
+          <label class="label" for="skip-field-{{.JobID}}">Also skip future jobs whose</label>
+          <select class="select" id="skip-field-{{.JobID}}" name="rule_field">
+            <option value="">(no rule)</option>
+            {{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label class="label" for="skip-pattern-{{.JobID}}">matches (pattern)</label>
+          <input class="input" id="skip-pattern-{{.JobID}}" name="rule_pattern" maxlength="500" aria-describedby="skip-pattern-hint-{{.JobID}}">
+          <p id="skip-pattern-hint-{{.JobID}}" class="hint">A regular expression; case is ignored.</p>
+        </div>
+        <button type="submit" class="btn btn-secondary btn-sm">Skip</button>
       </form>
     </details>
   </div>

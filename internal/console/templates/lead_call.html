@@ -1,10 +1,13 @@
 {{define "content"}}
 {{$v := .Data}}{{$c := $v.C}}
+<div class="page">
 <div class="page-head">
-  <h1>Call {{or $c.OrgName "this lead"}}</h1>
-  <p><a href="/leads/today">Back to Today</a>{{if $c.LeadID}} · <a href="/leads/{{$c.LeadID}}">Lead page</a>{{end}}</p>
+  <div>
+    <p class="eyebrow">Call</p>
+    <h1>Call {{or $c.OrgName "this lead"}}</h1>
+    <p class="page-sub"><a href="/leads/today">Back to Today</a>{{if $c.LeadID}} · <a href="/leads/{{$c.LeadID}}">Lead page</a>{{end}}</p>
+  </div>
 </div>
-{{template "leads_tabs" (leadsTab "today" false)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 {{if $c.Done}}<p class="notice call-done" role="note"><strong>Done: {{with $c.Latest}}{{outcomeWords .Outcome}} · {{when .At}}{{else}}recorded{{end}}.</strong> The sequence has moved on, so another outcome can't be recorded.</p>
 {{else}}
@@ -14,54 +17,61 @@
 {{end}}
 
 <article class="card record call-card" id="call-{{$c.MessageID}}">
-  {{if $c.Shadow}}<p><span class="tag">shadow batch</span> <span class="hint">Practice: no email from this batch leaves the server.</span></p>{{end}}
+  <div class="card-body">
+  {{if $c.Shadow}}<p><span class="badge">shadow batch</span> <span class="hint">Practice: no email from this batch leaves the server.</span></p>{{end}}
   <p class="call-number-row">
     {{with telHref $c.Dial}}<a class="call-number" href="tel:{{.}}">{{or $c.Number .}}</a>{{else}}<span class="call-number">{{or $c.Number "No number on file"}}</span>{{end}}
   </p>
-  <dl class="fields">
-    <div><dt>Where it came from</dt><dd>{{if $c.FoundByResearch}}Found by research{{with $c.SourceURL}}: {{template "call_link" .}}{{end}}{{else if $c.SourceURL}}Read on {{template "call_link" $c.SourceURL}}{{with $c.SourceReadAt}} · {{when .}}{{end}}{{else}}not on file{{end}}</dd></div>
-    <div><dt>Line</dt><dd>{{lineKind $c.LineKind}}</dd></div>
-    <div><dt>Screening</dt><dd>{{or $c.Screening "not checked yet"}}</dd></div>
-    {{if not $c.Done}}{{with $c.Due}}<div><dt>Due</dt><dd>{{when .}}</dd></div>{{end}}{{end}}
-    {{with $c.Latest}}<div><dt>Last outcome</dt><dd>{{outcomeWords .Outcome}} · {{when .At}}{{if .EmailConsent}} · agreed to get an email{{end}}{{with .Note}}<br><span class="muted">{{.}}</span>{{end}}</dd></div>{{end}}
+  <dl class="fields kv mt-2">
+    <dt>Where it came from</dt><dd>{{if $c.FoundByResearch}}Found by research{{with $c.SourceURL}}: {{template "call_link" .}}{{end}}{{else if $c.SourceURL}}Read on {{template "call_link" $c.SourceURL}}{{with $c.SourceReadAt}} · {{when .}}{{end}}{{else}}not on file{{end}}</dd>
+    <dt>Line</dt><dd>{{lineKind $c.LineKind}}</dd>
+    <dt>Screening</dt><dd>{{or $c.Screening "not checked yet"}}</dd>
+    {{if not $c.Done}}{{with $c.Due}}<dt>Due</dt><dd>{{when .}}</dd>{{end}}{{end}}
+    {{with $c.Latest}}<dt>Last outcome</dt><dd>{{outcomeWords .Outcome}} · {{when .At}}{{if .EmailConsent}} · agreed to get an email{{end}}{{with .Note}}<br><span class="muted">{{.}}</span>{{end}}</dd>{{end}}
   </dl>
+  </div>
 
-  <section class="call-opener" aria-labelledby="call-opener-title">
-    <h2 id="call-opener-title">Before you dial</h2>
-    <p><strong>Say who you are and why you're calling. Your number must be shown.</strong></p>
+  <section class="call-opener alert alert-info" aria-labelledby="call-opener-title">
+    <div>
+      <h2 id="call-opener-title" class="alert-title">Before you dial</h2>
+      <p class="alert-text"><strong>Say who you are and why you're calling. Your number must be shown.</strong></p>
+    </div>
   </section>
 
-  <section aria-labelledby="call-points-title">
+  <section class="card-body" aria-labelledby="call-points-title">
     <h2 id="call-points-title">What to say</h2>
     {{if $c.TalkingPoints}}<ol class="talking-points">{{range $c.TalkingPoints}}<li>{{.}}</li>{{end}}</ol>
     {{else}}<p class="muted">No talking points drafted for this call.</p>{{end}}
   </section>
 
-  <section aria-labelledby="call-outcome-title">
+  <section class="card-body" aria-labelledby="call-outcome-title">
     <h2 id="call-outcome-title">What happened</h2>
-    <form method="post" action="/leads/calls/{{$c.MessageID}}/outcome" class="outcome-form">
+    <form method="post" action="/leads/calls/{{$c.MessageID}}/outcome" class="outcome-form stack">
       <input type="hidden" name="back" value="{{$v.Back}}">
-      <div class="outcome-field">
-        <label for="call-note">Note (optional, up to {{maxText}} characters)</label>
-        <input id="call-note" name="note" maxlength="{{maxText}}" value="{{$v.Note}}" autocomplete="off">
+      <div class="outcome-field field">
+        <label class="label" for="call-note">Note (optional, up to {{maxText}} characters)</label>
+        <input class="input" id="call-note" name="note" maxlength="{{maxText}}" value="{{$v.Note}}" autocomplete="off">
       </div>
       <fieldset class="outcome-consent">
         <legend>If you got through</legend>
-        <div class="checks"><label><input type="checkbox" name="consent" value="yes"> They agreed to get an email</label></div>
-        <label for="consent-address">Their email address (leave empty to use the one on file)</label>
-        <input id="consent-address" name="consent_address" type="email" maxlength="254" autocomplete="off">
+        <div class="checks"><label class="inline-check"><input class="check" type="checkbox" name="consent" value="yes"> They agreed to get an email</label></div>
+        <div class="field mt-1">
+          <label class="label" for="consent-address">Their email address (leave empty to use the one on file)</label>
+          <input class="input" id="consent-address" name="consent_address" type="email" maxlength="254" autocomplete="off">
+        </div>
       </fieldset>
-      <div class="outcome-buttons" role="group" aria-label="What happened on the call">
-        {{range $v.Outcomes}}<button type="submit" name="outcome" value="{{.}}" title="{{outcomeHelp .}}"{{if or $c.NotDue $c.Done}} disabled{{end}}>{{outcomeWords .}}</button>{{end}}
+      <div class="outcome-buttons btn-row" role="group" aria-label="What happened on the call">
+        {{range $v.Outcomes}}<button type="submit" class="btn btn-secondary" name="outcome" value="{{.}}" title="{{outcomeHelp .}}"{{if or $c.NotDue $c.Done}} disabled{{end}}>{{outcomeWords .}}</button>{{end}}
       </div>
       {{if $c.Done}}<p class="hint call-done-why">The buttons are off: this call's outcome is recorded and the sequence has moved on.</p>{{end}}
     </form>
-    <details class="call-help">
+    <details class="call-help mt-2">
       <summary>What each outcome does next</summary>
       <dl>{{range $v.Outcomes}}<div><dt>{{outcomeWords .}}</dt><dd>{{outcomeHelp .}}</dd></div>{{end}}</dl>
     </details>
   </section>
 </article>
+</div>
 {{end}}
 
 {{/* call_link shows a URL: a link only when it is http or https, else plain text. */}}

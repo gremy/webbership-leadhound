@@ -69,7 +69,7 @@ func TestControlsPage(t *testing.T) {
 		`notice notice-warn sending-why`, "Shadow mode: LEADHOUND_OUTREACH is not live",
 		"Morning batch", "What Morning batch does", "Off since", "held for the holidays", "(set by the system)",
 		"Every morning at 07:00", "timer enabled, next run", "timer not enabled", "no timer of its own", "Never switched", "Never run",
-		"Last run", `<span class="bad">Stopped: it was blocked</span>`,
+		"Last run", `<span class="text-bad">Stopped: it was blocked</span>`,
 		"The New batch button on the Leads page still works while this is off.",
 		"Sending reads replies itself before every run, so replies and opt-outs are never missed.",
 		"The timers could not be read from the server",

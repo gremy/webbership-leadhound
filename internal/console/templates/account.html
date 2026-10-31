@@ -1,10 +1,17 @@
 {{define "content"}}
+<div class="page">
 <div class="page-head">
-  <h1>Account</h1>
+  <div>
+    <h1>Account</h1>
+    <p class="page-sub">The operator of this console.</p>
+  </div>
 </div>
-<section class="card">
-  <h2>Signed in</h2>
-  {{with .Shell.Operator}}<p>{{.}}</p>{{else}}<p class="muted">The operator of this console.</p>{{end}}
-  <form method="post" action="/logout"><button type="submit">Sign out</button></form>
+<section class="card" aria-labelledby="signed-in-h">
+  <div class="card-head"><h2 id="signed-in-h">Signed in</h2></div>
+  <div class="card-body stack">
+    {{with .Shell.Operator}}<dl class="kv"><dt>Email</dt><dd>{{.}}</dd></dl>{{else}}<p class="muted">The operator of this console.</p>{{end}}
+    <form method="post" action="/logout"><button type="submit" class="btn btn-secondary">Sign out</button></form>
+  </div>
 </section>
+</div>
 {{end}}

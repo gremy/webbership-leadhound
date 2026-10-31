@@ -1,7 +1,14 @@
 {{define "content"}}
 {{$d := .Data}}
-{{template "home_head" $d}}
-{{template "home_jobs" $d}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>{{if $d.Day.IsZero}}Today{{else}}{{day $d.Day}}{{end}}</h1>
+    <p class="page-sub">Everything across Leads and Jobs.</p>
+  </div>
+</div>
 {{template "home_leads" $d}}
+{{template "home_jobs" $d}}
 {{template "home_runs" $d}}
+</div>
 {{end}}

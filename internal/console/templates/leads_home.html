@@ -1,11 +1,21 @@
 {{define "content"}}
 {{$d := .Data}}
-{{template "home_head" $d}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>Leads</h1>
+    <p class="page-sub">{{if $d.Day.IsZero}}Today{{else}}{{day $d.Day}}{{end}}</p>
+  </div>
+</div>
 {{if $d.Leads}}{{template "home_leads" $d}}{{else}}
-<section class="card">
-  <h2>Leads</h2>
-  <p class="empty">Leads are not set up on this server yet.</p>
-  <p><a href="/leads/outreach">Outreach</a></p>
+<section class="card" aria-labelledby="leads-h">
+  <div class="card-head"><h2 id="leads-h">Leads</h2></div>
+  <div class="empty">
+    <p class="empty-title">Leads are not set up on this server yet</p>
+    <p class="empty-text">Outreach shows what is needed to start.</p>
+    <a class="btn btn-secondary btn-sm" href="/leads/outreach">Open outreach</a>
+  </div>
 </section>
 {{end}}
+</div>
 {{end}}

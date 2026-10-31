@@ -1,14 +1,18 @@
 {{define "content"}}
 {{$cs := .Data}}
+<div class="page">
 <div class="page-head">
-  <h1>Campaigns</h1>
+  <div>
+    <h1>Campaigns</h1>
+    <p class="page-sub">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server. The mailboxes each campaign sends from are chosen here.</p>
+  </div>
 </div>
-{{template "leads_tabs" (leadsTab "campaigns" true)}}
-<p class="lede">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server. The mailboxes each campaign sends from are chosen here.</p>
 {{if $cs}}
+<div class="stack">
 {{range $cs}}{{$c := .}}
 <section class="card settings-section campaign" id="campaign-{{.Slug}}" aria-labelledby="campaign-{{.Slug}}-title">
-  <h2 id="campaign-{{.Slug}}-title">{{or .Name .Slug}}{{if .Retired}} <span class="tag">retired</span>{{end}}</h2>
+  <div class="card-head"><h2 id="campaign-{{.Slug}}-title">{{or .Name .Slug}}{{if .Retired}} <span class="tag">retired</span>{{end}}</h2></div>
+  <div class="card-body">
   <dl class="fields">
     <div><dt>Short name</dt><dd><code>{{.Slug}}</code></dd></div>
     <div><dt>Version</dt><dd>{{with .SpecSHA}}<code>{{shortSHA .}}</code>{{else}}none registered{{end}}{{if not .SpecAt.IsZero}} · {{when .SpecAt}}{{end}}{{if eq .SpecSource "console"}} · changed in the console{{else if eq .SpecSource "file"}} · from its file{{end}}</dd></div>
@@ -23,14 +27,14 @@
   <ul class="item-list settings-readonly">
     {{range .Countries}}<li><span class="item-head">{{or .Label .Code}}</span> <span class="item-meta">email {{if .Email}}on{{else}}off{{end}} · calls {{if .Call}}on{{else}}off{{end}}{{with .Language}} · writes in {{.}}{{end}}</span></li>{{end}}
   </ul>
-  {{else}}<p class="empty">No countries: this campaign reaches no one.</p>{{end}}
+  {{else}}<div class="empty empty-compact"><p class="empty-title">No countries</p><p class="empty-text">This campaign reaches no one.</p></div>{{end}}
 
   <h3>Steps</h3>
   {{if .Steps}}
   <ol class="item-list settings-readonly campaign-steps">
     {{range .Steps}}<li><span class="item-head">Step {{add .Step 1}}: {{if eq .Type "call"}}a phone call{{else if eq .Type "email"}}an email{{else}}{{.Type}}{{end}}</span> <span class="item-meta">{{if eq .Step 0}}first{{else if .AfterBusinessDays}}{{plural .AfterBusinessDays "business day" "business days"}} after the step before{{else}}straight after the step before{{end}}{{with stepWhen .When}} · {{.}}{{end}}</span></li>{{end}}
   </ol>
-  {{else}}<p class="empty">No steps.</p>{{end}}
+  {{else}}<div class="empty empty-compact"><p class="empty-title">No steps</p></div>{{end}}
 
   {{with .Mailboxes}}{{$m := .}}
   <h3 id="campaign-{{$c.Slug}}-mailboxes">Mailboxes</h3>
@@ -38,7 +42,7 @@
   {{if .Rows}}
   <form method="post" action="/leads/campaigns/{{$c.Slug}}/mailboxes" class="settings-form">
     <fieldset>
-      <legend>Mailboxes that send for this campaign</legend>
+      <legend class="label">Mailboxes that send for this campaign</legend>
       <div class="checks stacked">
         {{range .Rows}}
         <div>
@@ -51,13 +55,19 @@
       </div>
       <p class="hint">Ticked mailboxes send this campaign's emails; an unticked one sends none of them. {{if $m.SiteHost}}Each domain is followed to where it sends a visitor, which should be {{$m.SiteHost}}.{{else}}This campaign names no site, so where each domain sends a visitor is not compared.{{end}}</p>
     </fieldset>
-    <button type="submit">Save mailboxes</button>
+    <div class="form-actions"><button type="submit" class="btn btn-primary">Save mailboxes</button></div>
   </form>
-  {{else}}<p class="empty">No mailbox yet. <a href="/mailboxes">Add one on the Mailboxes page</a>.</p>{{end}}
+  {{else}}<div class="empty empty-compact"><p class="empty-text">No mailbox yet. <a href="/mailboxes">Add one on the Mailboxes page</a>.</p></div>{{end}}
   {{end}}
+  </div>
 </section>
 {{end}}
+</div>
 {{else}}
-<p class="empty">No campaigns yet. The first one is registered from its file when LeadHound next builds leads.</p>
+<div class="card"><div class="empty">
+  <p class="empty-title">No campaigns yet.</p>
+  <p class="empty-text">The first one is registered from its file when LeadHound next builds leads.</p>
+</div></div>
 {{end}}
+</div>
 {{end}}

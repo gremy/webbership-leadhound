@@ -1,32 +1,53 @@
 {{define "content"}}
-<h1>Rules</h1>
-<details class="card">
-  <summary>Add a rule</summary>
-  <form method="post" action="/rules" class="stack">
-    <label for="rule-kind">Kind</label>
-    <select id="rule-kind" name="kind"><option value="skip">skip: leave matching jobs out</option><option value="flag">flag: mark matching jobs unclear</option></select>
-    <label for="rule-field">Field</label>
-    <select id="rule-field" name="field">{{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}</select>
-    <label for="rule-pattern">Pattern</label>
-    <input id="rule-pattern" name="pattern" required maxlength="500" aria-describedby="rule-pattern-hint">
-    <p id="rule-pattern-hint" class="hint">A regular expression; case is ignored.</p>
-    <label for="rule-reason">Reason</label>
-    <input id="rule-reason" name="reason" required maxlength="500">
-    <button type="submit" class="primary">Add the rule</button>
-  </form>
-</details>
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>Rules</h1>
+    <p class="page-sub">Patterns that leave jobs out or flag them as unclear.</p>
+  </div>
+</div>
+<section class="card" aria-label="Add a rule">
+  <details class="card-body">
+    <summary class="btn btn-secondary btn-sm">Add a rule</summary>
+    <form method="post" action="/rules" class="mt-2">
+      <div class="form-grid">
+        <div class="field">
+          <label class="label" for="rule-kind">Kind</label>
+          <select class="select" id="rule-kind" name="kind"><option value="skip">skip: leave matching jobs out</option><option value="flag">flag: mark matching jobs unclear</option></select>
+        </div>
+        <div class="field">
+          <label class="label" for="rule-field">Field</label>
+          <select class="select" id="rule-field" name="field">{{range ruleFields}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+        </div>
+        <div class="field">
+          <label class="label" for="rule-pattern">Pattern</label>
+          <input class="input" id="rule-pattern" name="pattern" required maxlength="500" aria-describedby="rule-pattern-hint">
+          <p id="rule-pattern-hint" class="hint">A regular expression; case is ignored.</p>
+        </div>
+        <div class="field">
+          <label class="label" for="rule-reason">Reason</label>
+          <input class="input" id="rule-reason" name="reason" required maxlength="500">
+        </div>
+      </div>
+      <div class="form-actions"><button type="submit" class="btn btn-primary">Add the rule</button></div>
+    </form>
+  </details>
+</section>
 {{if .Data}}
-<ul class="item-list narrow-only">
+<section class="card mt-2" aria-label="Rules">
+<ul class="list card-body-flush item-list narrow-only">
   {{range .Data}}
-  <li{{if .DisabledAt}} class="disabled"{{end}}>
-    <span class="item-head">#{{.ID}} · {{.Kind}} · {{.Field}}: <code>{{.Pattern}}</code></span>
-    <span class="item-meta">{{if .Reason}}{{.Reason}} · {{end}}{{with .FromJobID}}from job:{{.}} · {{end}}added {{when .CreatedAt}} · {{if .DisabledAt}}disabled {{when .DisabledAt}}{{else}}active{{end}}{{if .DisabledReason}} · {{.DisabledReason}}{{end}}</span>
-    {{if not .DisabledAt}}{{template "rule_disable" (ruleIn "n" .)}}{{end}}
+  <li class="list-item{{if .DisabledAt}} disabled{{end}}">
+    <span class="list-main">
+      <span class="list-title">#{{.ID}} · {{.Kind}} · {{.Field}}: <code>{{.Pattern}}</code></span>
+      <span class="list-meta">{{if .Reason}}{{.Reason}} · {{end}}{{with .FromJobID}}from job:{{.}} · {{end}}added {{when .CreatedAt}} · {{if .DisabledAt}}disabled {{when .DisabledAt}}{{else}}active{{end}}{{if .DisabledReason}} · {{.DisabledReason}}{{end}}</span>
+      {{if not .DisabledAt}}{{template "rule_disable" (ruleIn "n" .)}}{{end}}
+    </span>
   </li>
   {{end}}
 </ul>
-<div class="table-wrap wide-only">
-<table>
+<div class="table-wrap card-body-flush wide-only">
+<table class="table">
   <thead><tr><th scope="col">#</th><th scope="col">Kind</th><th scope="col">Field</th><th scope="col">Pattern</th><th scope="col">Reason</th><th scope="col">From job</th><th scope="col">Added</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Disable</span></th></tr></thead>
   <tbody>
   {{range .Data}}
@@ -38,25 +59,34 @@
     <td>{{.Reason}}</td>
     <td>{{with .FromJobID}}job:{{.}}{{end}}</td>
     <td>{{when .CreatedAt}}</td>
-    <td>{{if .DisabledAt}}disabled {{when .DisabledAt}}{{else}}active{{end}}{{if .DisabledReason}} · {{.DisabledReason}}{{end}}</td>
+    <td>{{if .DisabledAt}}<span class="badge">disabled {{when .DisabledAt}}</span>{{else}}<span class="badge badge-good">active</span>{{end}}{{if .DisabledReason}} {{.DisabledReason}}{{end}}</td>
     <td>{{if not .DisabledAt}}{{template "rule_disable" (ruleIn "w" .)}}{{end}}</td>
   </tr>
   {{end}}
   </tbody>
 </table>
 </div>
+</section>
 {{else}}
-<p class="empty">No rules yet.</p>
+<div class="card mt-2">
+  <div class="empty">
+    <p class="empty-title">No rules yet</p>
+    <p class="empty-text">Add a rule above, or skip a job and tick a pattern to make one from it.</p>
+  </div>
+</div>
 {{end}}
+</div>
 {{end}}
 
 {{define "rule_disable"}}
 <details class="inline">
-  <summary>Disable</summary>
-  <form method="post" action="/rules/{{.Rule.ID}}/disable">
-    <label for="disable-reason-{{.Where}}-{{.Rule.ID}}">Reason</label>
-    <input id="disable-reason-{{.Where}}-{{.Rule.ID}}" name="reason" required maxlength="500">
-    <button type="submit">Disable rule {{.Rule.ID}}</button>
+  <summary class="btn btn-secondary btn-sm">Disable</summary>
+  <form method="post" action="/rules/{{.Rule.ID}}/disable" class="mt-1">
+    <div class="field">
+      <label class="label" for="disable-reason-{{.Where}}-{{.Rule.ID}}">Reason</label>
+      <input class="input" id="disable-reason-{{.Where}}-{{.Rule.ID}}" name="reason" required maxlength="500">
+    </div>
+    <button type="submit" class="btn btn-danger btn-sm mt-1">Disable rule {{.Rule.ID}}</button>
   </form>
 </details>
 {{end}}

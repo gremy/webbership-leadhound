@@ -1,23 +1,27 @@
 {{define "content"}}
 {{$v := .Data}}{{$b := $v.Data}}
+<div class="page">
 <div class="page-head">
-  <h1>Batch {{$b.ID}}{{if $b.Shadow}} <span class="tag">shadow</span>{{end}}</h1>
-  <p><a href="/leads/outreach">Back to outreach</a></p>
+  <div>
+    <span class="eyebrow"><a href="/leads/outreach">Outreach</a> / Batch {{$b.ID}}</span>
+    <h1>Batch {{$b.ID}}{{if $b.Shadow}} <span class="badge">shadow</span>{{end}}</h1>
+    <p class="page-sub">{{plural (len $b.Items) "lead" "leads"}} · made {{when $b.CreatedAt}} ·
+      {{if $b.ApprovedAt}}approved {{when $b.ApprovedAt}}{{else if $b.DiscardedAt}}discarded {{when $b.DiscardedAt}}{{else}}waiting for your approval{{end}}</p>
+  </div>
 </div>
-{{template "leads_tabs" (leadsTab "outreach" false)}}
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
-<p class="lede">{{plural (len $b.Items) "lead" "leads"}} · made {{when $b.CreatedAt}} ·
-  {{if $b.ApprovedAt}}approved {{when $b.ApprovedAt}}{{else if $b.DiscardedAt}}discarded {{when $b.DiscardedAt}}{{else}}waiting for your approval{{end}}</p>
 {{if and (not $b.ApprovedAt) (not $b.DiscardedAt)}}<p>Read each lead's finding and every message. Approve the batch at the bottom, leaving out any lead you do not want written to.</p>{{end}}
 {{if $b.Shadow}}<p class="muted">A shadow batch: nothing in it is sent, and its leads stay new.</p>{{end}}
 
+<div class="stack mt-2">
 {{range $b.Items}}
 <article class="card lead-item" id="item-{{.N}}">
-  <h2>{{.N}}. {{.Domain}}</h2>
-  <p class="muted">{{.Kind}} · {{.Channel}}{{with .Route}} · {{.}}{{end}}</p>
+  <div class="card-head"><h2>{{.N}}. {{.Domain}}</h2></div>
+  <div class="card-body">
+  <p class="muted small">{{.Kind}} · {{.Channel}}{{with .Route}} · {{.}}{{end}}</p>
   {{if .Finding}}<ul class="evidence">{{range .Finding}}<li>{{.}}</li>{{end}}</ul>{{end}}
   {{range .Messages}}
-  <section class="message">
+  <section class="message mt-2">
     <h3>{{.Label}}{{if .State}} · {{.State}}{{with .CancelReason}} ({{.}}){{end}}{{end}}{{if .Claude}} <span class="tag call-tag">Written by Claude</span>{{end}}</h3>
     {{with .From}}{{if .Address}}<p class="message-head">From: {{if .Name}}{{.Name}} &lt;{{.Address}}&gt;{{else}}{{.Address}}{{end}}</p>{{end}}{{end}}
     {{with .To}}<p class="message-head">To: {{.}}</p>{{end}}
@@ -33,30 +37,42 @@
   </section>
   {{end}}
   {{if and $b.HashPrefix (not $b.Changed)}}
-  <p class="skip-item"><input type="checkbox" id="skip-{{.N}}" name="skip" value="{{.N}}" form="approve-form"> <label for="skip-{{.N}}">Leave out item {{.N}}</label></p>
+  <p class="skip-item mt-2"><label class="inline-check" for="skip-{{.N}}"><input class="check" type="checkbox" id="skip-{{.N}}" name="skip" value="{{.N}}" form="approve-form"> Leave out item {{.N}}</label></p>
   {{end}}
+  </div>
 </article>
 {{else}}
-<p class="empty">This batch has no messages.</p>
+<div class="card"><div class="empty">
+  <span class="empty-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 7l-10 6L2 7"/></svg></span>
+  <p class="empty-title">This batch has no messages</p>
+  <p class="empty-text">Nothing was drafted for it, so there is nothing to approve.</p>
+</div></div>
 {{end}}
+</div>
 
 {{if $b.Changed}}
-<p class="notice notice-error" role="alert">This batch changed since it was drafted: its messages no longer match what was written, so it cannot be approved. Discard it and make a new one.</p>
+<p class="notice notice-error mt-2" role="alert">This batch changed since it was drafted: its messages no longer match what was written, so it cannot be approved. Discard it and make a new one.</p>
 {{else if $b.HashPrefix}}
-<section class="card approve">
-  <h2>Approve</h2>
+<section class="card approve mt-2">
   <form method="post" action="/leads/batches/{{$b.ID}}/approve" id="approve-form">
-    <p class="muted">Content hash {{$b.HashPrefix}}. Items ticked above are left out.</p>
-    <input type="hidden" name="hash" value="{{$b.HashPrefix}}">
-    <button type="submit" class="primary">{{approveWords $b.Shadow}}</button>
+    <div class="card-head"><h2>Approve</h2></div>
+    <div class="card-body">
+      <p class="muted">Content hash {{$b.HashPrefix}}. Items ticked above are left out.</p>
+      <input type="hidden" name="hash" value="{{$b.HashPrefix}}">
+    </div>
+    <div class="confirm-foot">
+      <span class="muted small">Approving keeps the schedule.</span>
+      <span class="btn-row"><button type="submit" class="btn btn-primary">{{approveWords $b.Shadow}}</button></span>
+    </div>
   </form>
 </section>
 {{end}}
 
 {{if and (not $b.ApprovedAt) (not $b.DiscardedAt)}}
-<form method="post" action="/leads/batches/{{$b.ID}}/discard">
-  <button type="submit">Discard this batch</button>
-  <p class="hint">Its leads go back to the queue; nothing in it is sent.</p>
+<form method="post" action="/leads/batches/{{$b.ID}}/discard" class="mt-2">
+  <button type="submit" class="btn btn-secondary">Discard this batch</button>
+  <p class="hint mt-1">Its leads go back to the queue; nothing in it is sent.</p>
 </form>
 {{end}}
+</div>
 {{end}}

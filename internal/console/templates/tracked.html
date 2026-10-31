@@ -1,27 +1,36 @@
 {{define "content"}}
-<h1>Tracked</h1>
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>Tracked</h1>
+    <p class="page-sub">Jobs you have acted on, by stage.</p>
+  </div>
+</div>
 {{template "tracked_list" .Data}}
+</div>
 {{end}}
 
 {{define "tracked_list"}}
 <section id="tracked-list">
-  <nav class="filters" aria-label="Status">
-    <ul>
+  <nav class="mb-0" aria-label="Status">
+    <ul class="tabs">
       {{range .Filters}}<li><a href="/tracked{{if .Path}}?status={{.Path}}{{end}}"{{if eq .Path $.Status}} aria-current="true"{{end}}>{{.Label}}</a></li>{{end}}
     </ul>
   </nav>
-  {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}
+  {{if .Message}}<div class="alert {{if .Error}}alert-stop{{else}}alert-info{{end}} mt-2" role="{{if .Error}}alert{{else}}status{{end}}"><div><p class="alert-text">{{.Message}}</p></div></div>{{end}}
   {{if .Rows}}
-  {{if gt .Total (len .Rows)}}<p class="muted">Showing {{thousands (len .Rows)}} of {{thousands .Total}}, the latest changes first.</p>{{end}}
-  <div class="jobs">
+  {{if gt .Total (len .Rows)}}<p class="muted mt-2">Showing {{thousands (len .Rows)}} of {{thousands .Total}}, the latest changes first.</p>{{end}}
+  <div class="stack-sm mt-2">
     {{range .Rows}}
-    <article class="job tracked" id="tracked-{{.JobID}}">
-      <div class="job-main">
-        <h2 class="job-title"><a href="/jobs/{{.JobID}}">{{.Title}}</a></h2>
-        <p class="job-company">{{.Company}}</p>
-        <p class="job-meta">Since {{when .Since}}{{if .Reason}} · {{.Reason}}{{end}}</p>
+    <article class="card card-body stack-sm" id="tracked-{{.JobID}}">
+      <div class="list-item">
+        <div class="list-main">
+          <h2 class="list-title"><a href="/jobs/{{.JobID}}">{{.Title}}</a></h2>
+          <p class="list-meta">{{.Company}}</p>
+          <p class="list-meta">Since {{when .Since}}{{if .Reason}} · {{.Reason}}{{end}}</p>
+        </div>
+        <span class="status status-{{.Status}}">{{.Status}}</span>
       </div>
-      <span class="status status-{{.Status}}">{{.Status}}</span>
       <div class="actions">
         {{$id := .JobID}}
         {{range laterThan .Status}}
@@ -29,7 +38,7 @@
           <input type="hidden" name="ref" value="job:{{$id}}">
           <input type="hidden" name="action" value="{{.}}">
           <input type="hidden" name="status" value="{{$.Status}}">
-          <button type="submit">{{.}}</button>
+          <button type="submit" class="btn btn-secondary btn-sm">{{.}}</button>
         </form>
         {{end}}
       </div>
@@ -37,7 +46,13 @@
     {{end}}
   </div>
   {{else}}
-  <p class="empty">No jobs with this status.</p>
+  <div class="card mt-2">
+    <div class="empty">
+      <p class="empty-title">No jobs with this status</p>
+      <p class="empty-text">Mark a job as applied, maybe or skipped and it shows up here.</p>
+      <a class="btn btn-secondary btn-sm" href="/jobs">Browse jobs</a>
+    </div>
+  </div>
   {{end}}
 </section>
 {{end}}

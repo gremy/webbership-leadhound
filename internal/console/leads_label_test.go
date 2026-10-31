@@ -40,10 +40,10 @@ func TestLeadCallBlock(t *testing.T) {
 		"Jev says Northwind Trading.",
 		`<form method="post" action="/leads/5/label" class="call-form">`,
 		`<input type="hidden" name="back" value="/leads/5">`,
-		`<button type="submit" name="band" value="strong" title="Help for strong &amp; more.">Strong</button>`,
-		`<button type="submit" name="band" value="likely" title="Help for likely &amp; more." class="is-current" aria-current="true">Likely</button>`,
-		`<button type="submit" name="band" value="no" title="Help for no &amp; more.">No</button>`,
-		`<button type="submit" name="band" value="clear" class="call-clear">Clear</button>`,
+		`<button type="submit" name="band" value="strong" title="Help for strong &amp; more." class="btn btn-secondary">Strong</button>`,
+		`<button type="submit" name="band" value="likely" title="Help for likely &amp; more." class="btn btn-secondary is-current" aria-current="true">Likely</button>`,
+		`<button type="submit" name="band" value="no" title="Help for no &amp; more." class="btn btn-secondary">No</button>`,
+		`<button type="submit" name="band" value="clear" class="btn btn-ghost call-clear">Clear</button>`,
 		`<dt>Unlikely</dt><dd>Help for unlikely &amp; more.</dd>`,
 		"Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least 30 leads.",
 		`12 of 30 labelled · <a href="/leads?to_label=1">Leads to label</a>`,
@@ -53,13 +53,13 @@ func TestLeadCallBlock(t *testing.T) {
 		}
 	}
 	// The call sits by its evidence: after what was found on their site, before the rest.
-	if i, j, k := strings.Index(body, "<h2>From their site</h2>"), strings.Index(body, `<section class="lead-call" id="your-call"`),
+	if i, j, k := strings.Index(body, "<h2>From their site</h2>"), strings.Index(body, `<section class="card lead-call" id="your-call"`),
 		strings.Index(body, "<h2>Agency page</h2>"); i < 0 || j < i || k < j {
 		t.Errorf("Your call is not between From their site and the agency page: %d %d %d", i, j, k)
 	}
 	// Clear sits on a row of its own, so the bands keep their widths once a call is made.
 	if !strings.Contains(body, `</div>
-      <div class="call-clear-row"><button type="submit" name="band" value="clear" class="call-clear">Clear</button></div>`) {
+      <div class="call-clear-row"><button type="submit" name="band" value="clear" class="btn btn-ghost call-clear">Clear</button></div>`) {
 		t.Error("Clear is not on its own row after the bands")
 	}
 
@@ -165,8 +165,8 @@ func TestToLabelList(t *testing.T) {
 	for _, want := range []string{
 		"<strong>7 of 30 labelled.</strong>", `<a href="/leads">Show every lead</a>`,
 		"These are 30 leads picked across kinds, Drupal versions and countries, plus every lead you have already labelled.",
-		`<th scope="col">Your call</th>`, `<td class="call-cell"><span class="tag call-tag">maybe</span></td>`, `title="x"`,
-		`Your call: <span class="tag call-tag">maybe</span>`,
+		`<th scope="col">Your call</th>`, `<td class="call-cell"><span class="badge badge-accent">maybe</span></td>`, `title="x"`,
+		`Your call: <span class="badge badge-accent">maybe</span>`,
 		`name="to_label" value="1" checked`, "Filters · 1 on", "to_label=1",
 	} {
 		if !strings.Contains(body, want) {

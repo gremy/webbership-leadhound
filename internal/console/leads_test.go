@@ -639,9 +639,9 @@ func TestSuppressionsCard(t *testing.T) {
 		"<summary>Lifted (1)</summary>",
 		"#1 domain domain.example · lifted Saturday 24 October (console) · quoted our opt-out line",
 		`action="/leads/suppressions/lift"`,
-		`<input id="lift-id" name="id" inputmode="numeric" required>`,
-		`<input id="lift-domain" name="domain" required maxlength="253" aria-describedby="lift-domain-hint">`,
-		`<input id="lift-reason" name="reason" required minlength="3" maxlength="300">`,
+		`<input class="input" id="lift-id" name="id" inputmode="numeric" required>`,
+		`<input class="input" id="lift-domain" name="domain" required maxlength="253" aria-describedby="lift-domain-hint">`,
+		`<input class="input" id="lift-reason" name="reason" required minlength="3" maxlength="300">`,
 		"the domain shown in the list, to confirm",
 		"Lift one only when it was recorded by mistake: the lift is kept with its reason, and a new opt-out suppresses again.",
 	} {
@@ -730,17 +730,17 @@ func TestLeadListPage(t *testing.T) {
 	body := h.do(get("/leads", h.session(t))).Body.String()
 	for _, want := range []string{
 		`<a href="/leads/home" aria-current="true">Leads</a>`,
-		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`, `<a href="/leads/settings">Settings</a>`,
+		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`,
 		`<form method="get" action="/leads" class="lead-filters">`,
-		`<ul class="item-list narrow-only">`, `<div class="table-wrap wide-only">`,
-		`<li id="lead-n-5">`, `<tr id="lead-w-5">`, `<a href="/leads/5">Northwind Trading</a>`,
+		`<ul class="list narrow-only">`, `<div class="table-wrap wide-only">`,
+		`<li class="list-item lead-item-narrow" id="lead-n-5">`, `<tr id="lead-w-5">`, `<a class="cell-main" href="/leads/5">Northwind Trading</a>`,
 		"email · phone", "number 3 in the outreach order", `<td class="num">3</td>`,
 		`<form method="post" action="/leads/5/unstar" class="star-form"><input type="hidden" name="back" value="/leads?page=2#lead-w-5">`,
 		`<input type="hidden" name="back" value="/leads?page=2#lead-n-5">`,
-		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="tag">small site</span>`,
+		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="badge">small site</span>`,
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
-		`<p class="hint">Northwind Trading</p>`,
-		`<span class="item-meta">Drupal end-of-life</span>`, `<td>Northwind Trading<span class="item-meta">Drupal end-of-life</span></td>`,
+		`<p class="hint mt-1">Northwind Trading</p>`,
+		`<span class="item-meta">Drupal end-of-life</span>`, `<td>Northwind Trading<span class="cell-sub">Drupal end-of-life</span></td>`,
 		`<a href="/leads/campaigns">Campaigns</a>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -758,13 +758,13 @@ func TestLeadListPage(t *testing.T) {
 	b.list = LeadListPage{}
 	eh := newHarness(t, b, false)
 	body = eh.do(get("/leads", eh.session(t))).Body.String()
-	if !strings.Contains(body, "No leads yet. Finding builds them: on the server it is off until <code>LEADHOUND_LEADS_TIMERS=on</code>.") ||
-		strings.Contains(body, "No leads match these filters.") || strings.Contains(body, "<table") {
+	if !strings.Contains(body, "No leads yet</p>") || !strings.Contains(body, "Finding builds them: on the server it is off until <code>LEADHOUND_LEADS_TIMERS=on</code>.") ||
+		strings.Contains(body, "No leads match these filters") || strings.Contains(body, "<table") {
 		t.Errorf("no leads at all: %s", body)
 	}
 	b.list = LeadListPage{TotalLeads: 4, Page: 1, PerPage: 50}
 	body = eh.do(get("/leads?kind=d10", eh.session(t))).Body.String()
-	if !strings.Contains(body, "No leads match these filters.") || strings.Contains(body, "No leads yet.") || strings.Contains(body, "<table") {
+	if !strings.Contains(body, "No leads match these filters</p>") || strings.Contains(body, "No leads yet") || strings.Contains(body, "<table") {
 		t.Errorf("no leads match: %s", body)
 	}
 
@@ -963,7 +963,6 @@ func TestOldLeadsLinksPointToOutreach(t *testing.T) {
 		"mailboxes":  h.do(get("/mailboxes", c)).Body.String(),
 		"not set up": oh.do(get("/leads/outreach", oh.session(t))).Body.String(),
 		"outreach":   h.do(get("/leads/outreach", c)).Body.String(),
-		"settings":   h.do(get("/leads/settings", c)).Body.String(),
 	} {
 		if !strings.Contains(body, `href="/leads/outreach"`) {
 			t.Errorf("%s has no link to /leads/outreach", name)
@@ -1256,7 +1255,7 @@ func TestLeadListFilterForm(t *testing.T) {
 	if strings.Contains(body, "Phone number</label>") || !strings.Contains(body, `name="has_phone" value="1"> Has a phone number`) {
 		t.Error("the phone filter is offered twice, or not at all")
 	}
-	for _, want := range []string{`<details class="filter-fold">`, "<summary>Filters</summary>", `<div class="filter-sort">`} {
+	for _, want := range []string{`<details class="filter-fold">`, "<summary>Filters</summary>", `<div class="field filter-sort">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/leads lacks %q", want)
 		}

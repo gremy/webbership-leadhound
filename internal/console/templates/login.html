@@ -1,13 +1,19 @@
 {{define "content"}}
-<section class="login card">
-  <h1>Sign in</h1>
-  <form method="post" action="/login">
+<div class="page">
+<section class="card login">
+  <div class="card-head"><h1>Sign in</h1></div>
+  <form class="card-body stack" method="post" action="/login">
     <input type="hidden" name="next" value="{{.Data.Next}}">
-    <label for="email">Email</label>
-    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
-    <label for="password">Password</label>
-    <input id="password" name="password" type="password" autocomplete="current-password" required>
-    <button type="submit" class="primary">Sign in</button>
+    <div class="field">
+      <label class="label" for="email">Email</label>
+      <input class="input" id="email" name="email" type="email" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label class="label" for="password">Password</label>
+      <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="form-actions"><button type="submit" class="btn btn-primary">Sign in</button></div>
   </form>
 </section>
+</div>
 {{end}}
