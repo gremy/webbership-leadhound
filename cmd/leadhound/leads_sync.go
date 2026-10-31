@@ -414,8 +414,10 @@ func checkBounceHealth(ctx context.Context, lq leadstore.Queries, cfg leadconfig
 	return true, nil
 }
 
-// classifyFetched classifies one peeked message and drops its text; it returns the record
-// and the domain to name when it is to be read (the lead's own domain when matched).
+// classifyFetched classifies one peeked message and drops its text, keeping only a matched
+// reply's opening words (mailbox.ReplySnippet: quotes and signature out, at most 300
+// characters) for the replies inbox; it returns the record and the domain to name when it
+// is to be read (the lead's own domain when matched).
 func classifyFetched(f mailbox.Fetched, match matcher) (leadstore.Incoming, string) {
 	in := leadstore.Incoming{UID: f.UID, Kind: mailbox.KindUnmatched}
 	h, err := mailbox.ParseHeader(f.Header, f.Report)
@@ -428,6 +430,9 @@ func classifyFetched(f mailbox.Fetched, match matcher) (leadstore.Incoming, stri
 	if in.Matched == nil && res.Kind != mailbox.KindAutoReply {
 		// Nothing of ours: a bounce or an answer we cannot place is just another message.
 		in.Kind = mailbox.KindUnmatched
+	}
+	if in.Kind == mailbox.KindReply && in.Matched != nil {
+		in.Snippet = mailbox.ReplySnippet(h, f.FirstText, match.ownLines)
 	}
 	domain := res.FromDomain
 	if in.Matched != nil {

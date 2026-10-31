@@ -1,0 +1,38 @@
+{{define "content"}}
+{{$v := .Data}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <span class="eyebrow"><a href="/leads/home">Leads</a> / Replies</span>
+    <h1>Replies</h1>
+    <p class="page-sub">The leads who answered and wait on you, newest first. Set where each one stands, or snooze it.</p>
+  </div>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+
+<section class="card" aria-labelledby="replies-title">
+  <div class="card-head"><h2 id="replies-title">Waiting on you{{with $v.Rows}} <span class="today-count">{{len .}}</span>{{end}}</h2><a class="card-link" href="/leads/pipeline">Pipeline</a></div>
+  {{if $v.Off}}
+  <div class="empty empty-compact"><p class="empty-title">Not on this server yet</p><p class="empty-text">The replies inbox arrives with the next update.</p></div>
+  {{else if $v.Rows}}
+  <ul class="list reply-list">
+    {{range $v.Rows}}{{$name := or .Name .Domain}}
+    <li class="list-item reply-row">
+      <span class="list-main">
+        <a class="list-title" href="/leads/{{.LeadID}}">{{$name}}</a>
+        <span class="list-meta">{{when .At}}{{with .Campaign}} · {{.}}{{end}}{{with .EffectiveStage}} · <span class="stage-text stage-{{.}}">{{stageWords .}}</span>{{end}}</span>
+        {{if .Snippet}}<span class="reply-snippet">“{{.Snippet}}”</span>{{else}}<span class="reply-snippet muted">No text kept for this reply; open the lead to read it in the mailbox.</span>{{end}}
+      </span>
+      <span class="reply-actions">
+        {{template "crm_stage_buttons" (stageBtns .LeadID .EffectiveStage "/leads/replies" $name)}}
+        {{template "crm_snooze" (stageBtns .LeadID .EffectiveStage "/leads/replies" $name)}}
+      </span>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <div class="empty empty-compact"><p class="empty-title">No replies waiting</p><p class="empty-text">When a lead answers, they show here with the first lines of what they said. A snoozed lead comes back when its snooze ends.</p></div>
+  {{end}}
+</section>
+</div>
+{{end}}

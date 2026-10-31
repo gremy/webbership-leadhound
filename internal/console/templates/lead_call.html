@@ -60,6 +60,11 @@
           <input class="input" id="consent-address" name="consent_address" type="email" maxlength="254" autocomplete="off">
         </div>
       </fieldset>
+      {{if $v.CallBack}}<div class="field outcome-field">
+        <label class="label" for="call-back-on">Call back on (optional)</label>
+        <input class="input input-date" id="call-back-on" name="call_back_on" type="date" min="{{$v.Today}}">
+        <p class="hint">The lead comes back to the call queue that day.</p>
+      </div>{{end}}
       <div class="outcome-buttons btn-row" role="group" aria-label="What happened on the call">
         {{range $v.Outcomes}}<button type="submit" class="btn btn-secondary" name="outcome" value="{{.}}" title="{{outcomeHelp .}}"{{if or $c.NotDue $c.Done}} disabled{{end}}>{{outcomeWords .}}</button>{{end}}
       </div>

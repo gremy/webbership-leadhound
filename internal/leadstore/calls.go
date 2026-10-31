@@ -121,28 +121,62 @@ type beginner interface {
 // actor is ActorGremy (stored as operator on the outcome) or ActorSystem.
 func (q Queries) RecordCallOutcome(ctx context.Context, accountID, messageID int64, outcome, note string,
 	consent *ConsentInput, actor string, now time.Time, cal campaign.Calendar) (CallRecorded, error) {
-	res, err := q.recordCallOutcomeTx(ctx, orAccount(accountID), messageID, outcome, note, consent, actor, now, cal)
+	return q.RecordCallOutcomeWithCallBack(ctx, accountID, messageID, outcome, note, consent, nil, actor, now, cal)
+}
+
+// RecordCallOutcomeWithCallBack is RecordCallOutcome that also stores callBackOn, the day the
+// operator means to call the lead again (call_outcome.call_back_on; nil: none). Only the
+// calendar date of callBackOn in its own location is kept, and it may not be before now's
+// date in that location. A call-back comes with any outcome but do_not_call and wrong_number
+// (there is no number to call back on); either refusal is ErrBadOutcome and writes nothing.
+// The call queue (CallQueue) lists the lead on that day while this outcome is its latest.
+func (q Queries) RecordCallOutcomeWithCallBack(ctx context.Context, accountID, messageID int64, outcome, note string,
+	consent *ConsentInput, callBackOn *time.Time, actor string, now time.Time, cal campaign.Calendar) (CallRecorded, error) {
+	res, err := q.recordCallOutcomeTx(ctx, orAccount(accountID), messageID, outcome, note, consent, callBackOn, actor, now, cal)
 	if err != nil {
 		return CallRecorded{}, fmt.Errorf("leadstore: record call outcome %d: %w", messageID, err)
 	}
 	return res, nil
 }
 
+// callBackDate checks callBackOn against outcome and now and returns the date to store
+// ("YYYY-MM-DD"; nil when none).
+func callBackDate(outcome string, callBackOn *time.Time, now time.Time) (*string, error) {
+	if callBackOn == nil {
+		return nil, nil
+	}
+	if outcome == campaign.OutcomeDoNotCall || outcome == campaign.OutcomeWrongNumber {
+		return nil, fmt.Errorf("%w: a call-back does not go with %s", ErrBadOutcome, outcome)
+	}
+	loc := callBackOn.Location()
+	y, m, d := callBackOn.Date()
+	ny, nm, nd := now.In(loc).Date()
+	if time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Before(time.Date(ny, nm, nd, 0, 0, 0, 0, time.UTC)) {
+		return nil, fmt.Errorf("%w: the call-back date is in the past", ErrBadOutcome)
+	}
+	s := time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
+	return &s, nil
+}
+
 func (q Queries) recordCallOutcomeTx(ctx context.Context, accountID, messageID int64, outcome, note string,
-	consent *ConsentInput, actor string, now time.Time, cal campaign.Calendar) (CallRecorded, error) {
+	consent *ConsentInput, callBackOn *time.Time, actor string, now time.Time, cal campaign.Calendar) (CallRecorded, error) {
 	if err := checkOutcomeInput(outcome, note, consent, actor, cal); err != nil {
+		return CallRecorded{}, err
+	}
+	back, err := callBackDate(outcome, callBackOn, now)
+	if err != nil {
 		return CallRecorded{}, err
 	}
 	b, ok := q.db.(beginner)
 	if !ok {
-		return q.recordCallOutcome(ctx, accountID, messageID, outcome, note, consent, actor, now, cal)
+		return q.recordCallOutcome(ctx, accountID, messageID, outcome, note, consent, back, actor, now, cal)
 	}
 	tx, err := b.Begin(ctx)
 	if err != nil {
 		return CallRecorded{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	res, err := NewQueries(tx).recordCallOutcome(ctx, accountID, messageID, outcome, note, consent, actor, now, cal)
+	res, err := NewQueries(tx).recordCallOutcome(ctx, accountID, messageID, outcome, note, consent, back, actor, now, cal)
 	if err != nil {
 		return CallRecorded{}, err
 	}
@@ -191,7 +225,7 @@ type callRow struct {
 }
 
 func (q Queries) recordCallOutcome(ctx context.Context, accountID, messageID int64, outcome, note string,
-	consent *ConsentInput, actor string, now time.Time, cal campaign.Calendar) (CallRecorded, error) {
+	consent *ConsentInput, callBack *string, actor string, now time.Time, cal campaign.Calendar) (CallRecorded, error) {
 	var leadID int64
 	err := q.db.QueryRow(ctx,
 		`SELECT m.lead_id FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
@@ -241,9 +275,9 @@ func (q Queries) recordCallOutcome(ctx context.Context, accountID, messageID int
 		return CallRecorded{}, err
 	}
 	if err := q.db.QueryRow(ctx,
-		`INSERT INTO call_outcome (message_id, outcome, note, email_consent, consent_address, actor, at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		messageID, outcome, note, consent != nil, consentAddr, storedActor, now).Scan(&res.OutcomeID); err != nil {
+		`INSERT INTO call_outcome (message_id, outcome, note, email_consent, consent_address, actor, at, call_back_on)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date) RETURNING id`,
+		messageID, outcome, note, consent != nil, consentAddr, storedActor, now, callBack).Scan(&res.OutcomeID); err != nil {
 		return CallRecorded{}, err
 	}
 	// A wrong number marks the dialled fact bad (also in a shadow batch: the operator really

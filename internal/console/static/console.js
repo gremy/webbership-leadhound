@@ -84,3 +84,16 @@
   }
   update();
 })();
+
+// The sub-nav scrolls sideways on a phone: bring the current page's link into view, so it is
+// never hidden past the edge.
+(function () {
+  "use strict";
+  var ul = document.querySelector(".subnav ul");
+  var cur = ul && ul.querySelector("a[aria-current]");
+  if (!cur || ul.scrollWidth <= ul.clientWidth) {
+    return;
+  }
+  var left = cur.getBoundingClientRect().left - ul.getBoundingClientRect().left + ul.scrollLeft;
+  ul.scrollLeft = Math.max(0, left - (ul.clientWidth - cur.offsetWidth) / 2);
+})();

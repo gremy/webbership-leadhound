@@ -177,7 +177,7 @@ func runCallsOutcome(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	line, err := recordCall(ctx, leadstore.NewQueries(s.Pool()), setup.leads, leadsNow(), loc, id, outcome, *note, agreed, *address)
+	line, err := recordCall(ctx, leadstore.NewQueries(s.Pool()), setup.leads, leadsNow(), loc, id, outcome, *note, agreed, *address, nil)
 	var r *callRefusalError
 	switch {
 	case errors.As(err, &r):
@@ -195,18 +195,19 @@ func runCallsOutcome(ctx context.Context, args []string) error {
 var errCallNotFound = errors.New("no such call")
 
 // callRefusalError is an outcome the store refused, in plain words; nothing was written.
-type callRefusalError struct{ words string }
+// field names the form field at fault when it is one the console marks (call_back_on), else "".
+type callRefusalError struct{ words, field string }
 
 func (e *callRefusalError) Error() string { return e.words }
 
 // recordCall records outcome on call id at now with the lead's own calendar (its country's
 // zone and the business hours), consent (connected only) at address ("" for the lead's own
-// email address), and returns the line saying what happens next, its times in the operator's
+// email address) and the call-back day callBackOn (nil: none), and returns the line saying what happens next, its times in the operator's
 // zone opLoc (as every other time the console and the CLI show). A refusal is a
 // *callRefusalError; a message that is no call of the account wraps errCallNotFound. It logs
 // ids and counts only, never the number or the note.
 func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, now time.Time, opLoc *time.Location,
-	id int64, outcome, note string, consent bool, address string) (string, error) {
+	id int64, outcome, note string, consent bool, address string, callBackOn *time.Time) (string, error) {
 	c, err := lq.CallByID(ctx, leadstore.DefaultAccountID, id)
 	if errors.Is(err, leadstore.ErrMessageNotFound) {
 		return "", fmt.Errorf("leads calls: message %d: %w", id, errCallNotFound)
@@ -222,17 +223,21 @@ func recordCall(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 				return "", err
 			}
 			if addr == "" {
-				return "", &callRefusalError{"There is no email address on file for this lead: type the address they gave. Nothing was saved."}
+				return "", &callRefusalError{words: "There is no email address on file for this lead: type the address they gave. Nothing was saved."}
 			}
 		}
 		in = &leadstore.ConsentInput{Address: addr, Wording: callConsentWording}
 	}
 	loc, bh := cfg.Policy(c.Country).Location(), cfg.SendingWindow()
 	cal := campaign.CalendarFunc(func(from time.Time, n int) time.Time { return outreach.FollowupDue(from, n, loc, bh) })
-	rec, err := lq.RecordCallOutcome(ctx, leadstore.DefaultAccountID, id, outcome, strings.TrimSpace(note), in, leadstore.ActorGremy, now, cal)
+	rec, err := lq.RecordCallOutcomeWithCallBack(ctx, leadstore.DefaultAccountID, id, outcome, strings.TrimSpace(note), in, callBackOn, leadstore.ActorGremy, now, cal)
 	if words := callRefusalWords(err); words != "" {
 		slog.Default().Info("leads calls outcome refused", "message", id, "outcome", outcome)
-		return "", &callRefusalError{words}
+		field := ""
+		if errors.Is(err, leadstore.ErrBadOutcome) && strings.Contains(err.Error(), "call-back") {
+			field = "call_back_on"
+		}
+		return "", &callRefusalError{words: words, field: field}
 	}
 	if err != nil {
 		return "", err
@@ -322,6 +327,10 @@ func callRefusalWords(err error) string {
 		return "That call is not waiting for an outcome (its batch is not approved, or it was left out). Nothing was saved."
 	case errors.Is(err, leadstore.ErrBadOutcome):
 		switch {
+		case strings.Contains(err.Error(), "call-back date is in the past"):
+			return "The call-back date is before today; give today or a later day. Nothing was saved."
+		case strings.Contains(err.Error(), "call-back"):
+			return "A call-back date does not fit that outcome; leave the date empty. Nothing was saved."
 		case strings.Contains(err.Error(), "note"):
 			return "The note is longer than 500 characters; shorten it. Nothing was saved."
 		case strings.Contains(err.Error(), "address"):

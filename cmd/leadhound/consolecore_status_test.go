@@ -195,8 +195,18 @@ func TestMailboxChecks(t *testing.T) {
 }
 
 func TestNeedsMeWords(t *testing.T) {
-	if needsMeWords(leadstore.NeedsReplied) != "Replied · nothing scheduled" || needsMeWords(leadstore.NeedsConnected) != "Connected on a call · no next step" {
-		t.Error("words")
+	for _, c := range []struct {
+		row  leadstore.NeedsMeRow
+		want string
+	}{
+		{leadstore.NeedsMeRow{What: leadstore.NeedsReplied}, "Replied · nothing scheduled"},
+		{leadstore.NeedsMeRow{What: leadstore.NeedsConnected}, "Connected on a call · no next step"},
+		{leadstore.NeedsMeRow{What: leadstore.NeedsNextAction, NextAction: "Send the proposal"}, "Next action due · Send the proposal"},
+		{leadstore.NeedsMeRow{What: leadstore.NeedsNextAction}, "Next action due"},
+	} {
+		if got := needsMeWords(c.row); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.row, got, c.want)
+		}
 	}
 }
 

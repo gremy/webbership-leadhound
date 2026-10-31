@@ -71,7 +71,7 @@ func TestLeadCallBlock(t *testing.T) {
 			t.Errorf("with no call, the lead page lacks %q", want)
 		}
 	}
-	for _, bad := range []string{`value="clear"`, "is-current", "You said"} {
+	for _, bad := range []string{`name="band" value="clear"`, "is-current", "You said"} {
 		if strings.Contains(body, bad) {
 			t.Errorf("with no call, the lead page has %q", bad)
 		}

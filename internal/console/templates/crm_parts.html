@@ -1,0 +1,105 @@
+{{/* crm_stage_buttons is one lead's quick stage buttons (Talking, Proposal, Won) and a link to the lead page's stage form for Lost, which needs a reason. The current stage's button is pressed. */}}
+{{define "crm_stage_buttons"}}<form method="post" action="/leads/{{.ID}}/crm" class="stage-buttons">
+  <input type="hidden" name="section" value="stage">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <div class="btn-row" role="group" aria-label="Stage for {{.Name}}">
+    {{range $s := quickStages}}{{if not (and $.Move (eq $s $.Stage))}}<button type="submit" name="stage" value="{{$s}}" class="btn btn-secondary btn-sm{{if eq $s $.Stage}} is-current{{end}}" aria-pressed="{{if eq $s $.Stage}}true{{else}}false{{end}}">{{stageWords $s}}<span class="visually-hidden"> {{$.Name}}</span></button>{{end}}{{end}}
+    {{if not (and .Move (eq .Stage "lost"))}}<a class="btn btn-ghost btn-sm" href="/leads/{{.ID}}#crm-stage">Lost…<span class="visually-hidden"> {{.Name}}: say why on the lead page</span></a>{{end}}
+  </div>
+</form>{{end}}
+
+{{/* crm_snooze is one lead's snooze buttons. */}}
+{{define "crm_snooze"}}<form method="post" action="/leads/{{.ID}}/snooze" class="snooze-buttons">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <div class="btn-row" role="group" aria-label="Snooze {{.Name}}">
+    <button type="submit" name="for" value="1d" class="btn btn-ghost btn-sm">Snooze 1 day<span class="visually-hidden"> {{.Name}}</span></button>
+    <button type="submit" name="for" value="1w" class="btn btn-ghost btn-sm">1 week<span class="visually-hidden"> snooze for {{.Name}}</span></button>
+  </div>
+</form>{{end}}
+
+{{/* crm_panels are the lead page's stage, deal, and note panels. */}}
+{{define "crm_panels"}}{{$p := .}}{{$c := $p.C}}{{$f := $p.F}}
+  <section class="card crm-panel" id="crm-stage" aria-labelledby="crm-stage-title">
+    <div class="card-head"><h2 id="crm-stage-title">Stage</h2>{{with $c.EffectiveStage}}<span class="badge stage-badge stage-{{.}}">{{stageWords .}}</span>{{end}}</div>
+    <form class="card-body stack" method="post" action="/leads/{{$p.LeadID}}/crm">
+      <input type="hidden" name="section" value="stage">
+      <input type="hidden" name="back" value="{{$p.Back}}">
+      {{if and (eq $f.Section "stage") $f.Refusal}}<div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0" id="crm-stage-error">{{$f.Refusal}}</p></div></div>{{end}}
+      {{if and (not $c.Stage) $c.EffectiveStage}}<p class="hint">No stage set: it shows as {{stageWords $c.EffectiveStage}} because they replied or a call got through.</p>{{end}}
+      <div class="field"><label class="label" for="crm-stage-select">Stage</label>
+        <select class="select" id="crm-stage-select" name="stage"{{if eq $f.Field "stage"}} aria-invalid="true" aria-describedby="crm-stage-error"{{end}}>
+          <option value=""{{if not $f.Stage}} selected{{end}}>No stage (follows replies and calls)</option>
+          {{range $p.Stages}}<option value="{{.}}"{{if eq . $f.Stage}} selected{{end}}>{{stageWords .}}</option>{{end}}
+        </select></div>
+      <div class="field"><label class="label" for="crm-lost-reason">Why it was lost (needed for Lost, up to 200 characters)</label>
+        <input class="input" id="crm-lost-reason" name="lost_reason" maxlength="200" value="{{$f.LostReason}}" autocomplete="off"{{if eq $f.Field "lost_reason"}} aria-invalid="true" aria-describedby="crm-stage-error"{{end}}></div>
+      <div class="field"><label class="label" for="crm-tenant-url">Their Webbership tenant (for Won, https://)</label>
+        <input class="input" id="crm-tenant-url" name="tenant_url" type="url" maxlength="500" value="{{$f.TenantURL}}" placeholder="https://cafe.example.com" autocomplete="off"{{if eq $f.Field "tenant_url"}} aria-invalid="true" aria-describedby="crm-stage-error"{{end}}></div>
+      {{if and (eq $c.Stage "won") $c.TenantURL}}<p class="small">Tenant: {{template "lead_link" $c.TenantURL}}</p>{{end}}
+      <div class="btn-row"><button type="submit" class="btn btn-primary">Save stage</button></div>
+    </form>
+    <div class="card-foot snooze-row">
+      <span class="small">{{if $p.Snoozed}}Snoozed until {{when $c.SnoozedUntil}}: hidden from Replies and Needs me.{{else}}Not snoozed.{{end}}</span>
+      <form method="post" action="/leads/{{$p.LeadID}}/snooze" class="snooze-buttons">
+        <input type="hidden" name="back" value="{{$p.Back}}">
+        <div class="btn-row" role="group" aria-label="Snooze this lead">
+          <button type="submit" name="for" value="1d" class="btn btn-ghost btn-sm">Snooze 1 day</button>
+          <button type="submit" name="for" value="1w" class="btn btn-ghost btn-sm">Snooze 1 week</button>
+          {{if $p.Snoozed}}<button type="submit" name="for" value="clear" class="btn btn-ghost btn-sm">Clear snooze</button>{{end}}
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card crm-panel" id="crm-deal" aria-labelledby="crm-deal-title">
+    <div class="card-head"><h2 id="crm-deal-title">Deal</h2>{{if $c.DealValueCents}}<span class="small muted">{{money $c.DealValueCents $c.Currency}}</span>{{end}}</div>
+    <form class="card-body stack" method="post" action="/leads/{{$p.LeadID}}/crm">
+      <input type="hidden" name="section" value="deal">
+      <input type="hidden" name="back" value="{{$p.Back}}">
+      {{if and (eq $f.Section "deal") $f.Refusal}}<div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0" id="crm-deal-error">{{$f.Refusal}}</p></div></div>{{end}}
+      <div class="deal-fields">
+        <div class="field field-grow"><label class="label" for="crm-value">Deal value (empty for none)</label>
+          <input class="input" id="crm-value" name="value" inputmode="decimal" value="{{$f.Value}}" placeholder="2400" autocomplete="off"{{if eq $f.Field "value"}} aria-invalid="true" aria-describedby="crm-deal-error"{{end}}></div>
+        <div class="field"><label class="label" for="crm-currency">Currency</label>
+          <select class="select input-narrow" id="crm-currency" name="currency"{{if eq $f.Field "currency"}} aria-invalid="true" aria-describedby="crm-deal-error"{{end}}>
+            {{range $p.Currencies}}<option value="{{.}}"{{if eq . $f.Currency}} selected{{end}}>{{.}}</option>{{end}}
+          </select></div>
+      </div>
+      <p class="hint">The pipeline weighs it by stage for the expected revenue. Sums stay per currency.</p>
+      <div class="btn-row"><button type="submit" class="btn btn-primary">Save deal</button></div>
+    </form>
+  </section>
+
+  <section class="card crm-panel" id="crm-note" aria-labelledby="crm-note-title">
+    <div class="card-head"><h2 id="crm-note-title">Note and next action</h2></div>
+    <form class="card-body stack" method="post" action="/leads/{{$p.LeadID}}/crm">
+      <input type="hidden" name="section" value="note">
+      <input type="hidden" name="back" value="{{$p.Back}}">
+      {{if and (eq $f.Section "note") $f.Refusal}}<div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0" id="crm-note-error">{{$f.Refusal}}</p></div></div>{{end}}
+      <div class="field"><label class="label" for="crm-note-text">Note (up to 2,000 characters)</label>
+        <textarea class="input textarea" id="crm-note-text" name="note" maxlength="2000" rows="4"{{if eq $f.Field "note"}} aria-invalid="true" aria-describedby="crm-note-error"{{end}}>{{$f.Note}}</textarea></div>
+      <div class="deal-fields">
+        <div class="field field-grow"><label class="label" for="crm-next">Next action</label>
+          <input class="input" id="crm-next" name="next_action" maxlength="200" value="{{$f.NextAction}}" placeholder="Call back about the second site" autocomplete="off"{{if eq $f.Field "next_action"}} aria-invalid="true" aria-describedby="crm-note-error"{{end}}></div>
+        <div class="field"><label class="label" for="crm-next-on">On</label>
+          <input class="input" id="crm-next-on" name="next_action_on" type="date" value="{{$f.NextActionOn}}"{{if eq $f.Field "next_action_on"}} aria-invalid="true" aria-describedby="crm-note-error"{{end}}></div>
+      </div>
+      <p class="hint">A next action due today or earlier shows under Needs me; a later one keeps the lead off it until then.</p>
+      <div class="btn-row"><button type="submit" class="btn btn-primary">Save note</button></div>
+    </form>
+  </section>
+{{end}}
+
+{{/* crm_timeline is the lead page's timeline, newest first. */}}
+{{define "crm_timeline"}}
+  <section class="card crm-panel" id="crm-timeline" aria-labelledby="crm-timeline-title">
+    <div class="card-head"><h2 id="crm-timeline-title">Timeline</h2></div>
+    <div class="card-body">
+    {{if .}}
+    <ol class="timeline crm-timeline">
+      {{range .}}<li class="{{timelineDot .Kind}}"><time datetime="{{.At.Format "2006-01-02T15:04:05Z07:00"}}">{{when .At}}</time>{{.Line}}{{with .CostMicros}} · {{usd .}}{{end}}{{with .Detail}}<span class="tl-detail">{{.}}</span>{{end}}</li>{{end}}
+    </ol>
+    {{else}}<p class="muted">Nothing has happened to this lead yet. Emails, replies, calls and stage changes show here as they happen.</p>{{end}}
+    </div>
+  </section>
+{{end}}

@@ -1,0 +1,45 @@
+{{define "content"}}
+{{$v := .Data}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <span class="eyebrow"><a href="/leads/home">Leads</a> / Calls</span>
+    <h1>Calls</h1>
+    <p class="page-sub">The calls due today and the call-backs you asked for. Record what happened right here, or open a call for its talking points.</p>
+  </div>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+
+<section class="card" aria-labelledby="calls-title">
+  <div class="card-head"><h2 id="calls-title">To call today{{with $v.Rows}} <span class="today-count">{{len .}}</span>{{end}}</h2><a class="card-link" href="/leads/today">Today</a></div>
+  {{if $v.Off}}
+  <div class="empty empty-compact"><p class="empty-title">Not on this server yet</p><p class="empty-text">The call queue arrives with the next update. Calls due today are on <a href="/leads/today">Today</a>.</p></div>
+  {{else if $v.Rows}}
+  <ul class="list call-queue">
+    {{range $v.Rows}}{{$row := .}}{{$name := or .Name "A lead"}}
+    <li class="list-item call-row" id="call-row-{{.MessageID}}">
+      <span class="list-main">
+        {{if .MessageID}}<a class="list-title" href="/leads/calls/{{.MessageID}}">{{$name}}</a>{{else}}<a class="list-title" href="/leads/{{.LeadID}}">{{$name}}</a>{{end}}
+        <span class="list-meta">{{with telHref .Dial}}<a href="tel:{{.}}">{{or $row.Number .}}</a>{{else}}{{or .Number "No number on file"}}{{end}}{{with .CallBackOn}} · <span class="badge badge-accent">call-back {{date .}}</span>{{else}}{{with .Due}} · due {{when .}}{{end}}{{end}}{{if .Shadow}} · shadow batch{{end}} · <a href="/leads/{{.LeadID}}">Lead page</a></span>
+        {{if not .Callable}}{{with .BlockedReason}}<span class="list-meta call-blocked-line">Not callable now: {{afterColon .}}</span>{{end}}{{end}}
+      </span>
+      {{if and .MessageID (not .Done)}}
+      <form method="post" action="/leads/calls/{{.MessageID}}/outcome" class="call-row-form">
+        <input type="hidden" name="back" value="/leads/calls">
+        <div class="field call-back-field"><label class="label" for="cb-{{.MessageID}}">Call back on (optional)</label>
+          <input class="input input-date" id="cb-{{.MessageID}}" name="call_back_on" type="date" min="{{$v.Today}}"></div>
+        <div class="btn-row" role="group" aria-label="What happened on the call to {{$name}}">
+          {{range $v.Outcomes}}<button type="submit" class="btn btn-secondary btn-sm" name="outcome" value="{{.}}" title="{{outcomeHelp .}}">{{outcomeWords .}}<span class="visually-hidden"> {{$name}}</span></button>{{end}}
+        </div>
+      </form>
+      {{else}}<p class="hint call-row-done">Already called: <a href="/leads/{{.LeadID}}">open the lead</a> to plan the call-back.</p>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  <div class="card-foot">Got through and they agreed to an email? Open the call to record their consent and address.</div>
+  {{else}}
+  <div class="empty empty-compact"><p class="empty-title">No calls today</p><p class="empty-text">Nothing to ring today. Calls come due a few business days after a lead's emails; call-backs come back on the day you set.</p></div>
+  {{end}}
+</section>
+</div>
+{{end}}

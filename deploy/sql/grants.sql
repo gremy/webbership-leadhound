@@ -251,5 +251,10 @@ BEGIN
   IF to_regclass('public.send_override') IS NOT NULL THEN
     REVOKE UPDATE ON public.send_override FROM leadhound_app;
   END IF;
+  -- The CRM (00028): stage changes are append-only; lead_crm keeps table-wide UPDATE (every
+  -- column a pointer).
+  IF to_regclass('public.lead_stage_event') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_stage_event FROM leadhound_app;
+  END IF;
 END
 $$;

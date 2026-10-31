@@ -111,6 +111,10 @@ var routes = []route{
 	{"GET /leads/campaigns", "/leads/campaigns", false, (*server).leadsCampaigns},
 	{"GET /leads/today", "/leads/today", false, (*server).leadsToday},
 	{"GET /leads/drafts", "/leads/drafts", false, (*server).leadsDrafts},
+	{"GET /leads/replies", "/leads/replies", false, (*server).leadsReplies},
+	{"GET /leads/pipeline", "/leads/pipeline", false, (*server).leadsPipeline},
+	{"GET /leads/calls", "/leads/calls", false, (*server).leadsCalls},
+	{"GET /leads/reports", "/leads/reports", false, (*server).leadsReports},
 	{"GET /leads/calls/{message}", "/leads/calls/9", false, (*server).leadCall},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
 	{"GET /leads/reports/{id}", "/leads/reports/5", false, (*server).leadReport},
@@ -136,6 +140,11 @@ var routes = []route{
 	{"POST /leads/send-now/{id}/check-email", "/leads/send-now/7/check-email", false, (*server).sendNowCheckEmail},
 	// Every literal /leads/... POST above is more specific than this pattern, so it wins.
 	{"POST /leads/{id}/{action}", "/leads/5/star", false, (*server).leadAct},
+	// The CRM writes go through the same pattern (leadAct dispatches them): POST /leads/{id}/crm
+	// would conflict with POST /leads/settings/{section}. New registers each pattern once; these
+	// rows put their samples through every route sweep.
+	{"POST /leads/{id}/{action}", "/leads/5/crm", false, (*server).leadAct},
+	{"POST /leads/{id}/{action}", "/leads/5/snooze", false, (*server).leadAct},
 	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
 	{"GET /mailboxes/new", "/mailboxes/new", false, (*server).newMailbox},
 	{"POST /mailboxes", "/mailboxes", false, (*server).addMailbox},
@@ -267,7 +276,12 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 	s.pages = s.parseTemplates()
 
 	mux := http.NewServeMux()
+	registered := make(map[string]bool)
 	for _, rt := range routes {
+		if registered[rt.pattern] {
+			continue
+		}
+		registered[rt.pattern] = true
 		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { rt.handle(s, w, r) })
 		if rt.public {
 			mux.Handle(rt.pattern, h)
@@ -293,11 +307,12 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
-		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html"))
+		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html", "templates/crm_parts.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
-		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status", "send_confirm"} {
+		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status", "send_confirm",
+		"leads_replies", "leads_pipeline", "leads_calls", "leads_reports"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
@@ -458,6 +473,26 @@ func (s *server) funcs() template.FuncMap {
 				m = max(m, r.Sent)
 			}
 			return m
+		},
+		// The CRM pages.
+		"stageWords":  StageWords,
+		"money":       func(c any, currency string) string { return moneyOf(c, currency) },
+		"moneyLine":   moneyLine,
+		"replyRate":   replyRate,
+		"costPer":     costPer,
+		"timelineDot": timelineDot,
+		"stageBtns": func(id int64, stage, back, name string) stageBtnView {
+			return stageBtnView{ID: id, Stage: stage, Back: back, Name: name}
+		},
+		"stageMove": func(id int64, stage, back, name string) stageBtnView {
+			return stageBtnView{ID: id, Stage: stage, Back: back, Name: name, Move: true}
+		},
+		"quickStages": func() []string { return Stages[:3] },
+		"date": func(t *time.Time) string {
+			if t == nil {
+				return ""
+			}
+			return t.Format("Mon 2 Jan")
 		},
 		"laterThan": func(status string) []string {
 			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })

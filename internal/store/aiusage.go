@@ -126,6 +126,39 @@ func (q Queries) ClaudeSpendForLead(ctx context.Context, leadID int64, purpose s
 	return n, nil
 }
 
+// ClaudeSpendByLead sums the cost in micro-dollars Claude (provider anthropic only) has cost
+// per lead since since (by when each row was recorded, created_at), for purpose (an empty
+// purpose sums every purpose: drafting, research and drafts_eval are the Claude purposes;
+// "leads" is Jev's and costs nothing here). leadIDs narrows it to those leads; nil or empty
+// reads every lead with spend. Rows with no lead never count, and a lead with no spend is
+// absent from the map (empty, never nil). The leads and their campaigns live in the leads
+// schema set, so the caller maps lead ids to campaigns there (leadstore.LeadCampaigns): no
+// query joins the two migration sets.
+func (q Queries) ClaudeSpendByLead(ctx context.Context, leadIDs []int64, since time.Time, purpose string) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	rows, err := q.db.Query(ctx,
+		`SELECT lead_id, sum(cost_micros)::bigint FROM ai_usage
+		 WHERE provider = $1 AND lead_id IS NOT NULL AND created_at >= $2
+		   AND ($3::text = '' OR purpose = $3::text)
+		   AND (coalesce(cardinality($4::bigint[]), 0) = 0 OR lead_id = ANY($4::bigint[]))
+		 GROUP BY lead_id`, claude.Provider, since, purpose, leadIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: claude spend by lead %q: %w", purpose, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("store: claude spend by lead %q: %w", purpose, err)
+		}
+		out[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: claude spend by lead %q: %w", purpose, err)
+	}
+	return out, nil
+}
+
 // RecordClaudeUsage inserts one ai_usage row for one billed Claude call (calls = 1, provider
 // anthropic). A LeadID of 0 stores no lead. An account below 1 or a negative cost is refused
 // before the insert, so a call is never recorded against nobody or for less than nothing.

@@ -172,7 +172,7 @@ func TestCallCard(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		"<h1>Call Northwind Trading</h1>", `<a href="/leads/today" aria-current="true">Today</a>`,
+		"<h1>Call Northwind Trading</h1>", `<a href="/leads/calls" aria-current="true">Calls</a>`,
 		`href="tel:&#43;442079460000"`, "&#43;44 (0)20 7946 0000</a>",
 		`Read on <a href="https://northwind.example/contact" rel="noopener noreferrer nofollow">`,
 		"<dt>Line</dt><dd>a direct line</dd>",

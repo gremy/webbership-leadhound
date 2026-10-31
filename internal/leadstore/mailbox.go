@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -184,6 +185,30 @@ type Incoming struct {
 	FromDomain  string   // the registrable domain only
 	Matched     *SentRef // the message of ours it answers or reports on; nil when none
 	At          time.Time
+	// Snippet is the reply's first plain-text lines (quoted history and signature already
+	// stripped by the reader). It is stored only for a reply that matched a lead, cut to
+	// MaxReplySnippet characters; for anything else it is dropped.
+	Snippet string
+}
+
+// MaxReplySnippet is the longest reply snippet ApplyIncomingFor stores, in characters
+// (mailbox_event_snippet_check).
+const MaxReplySnippet = 300
+
+// replySnippet is what in stores as its snippet: nil unless it is a reply that matched a lead
+// and has text, else its trimmed text cut to MaxReplySnippet characters (valid UTF-8 kept whole).
+func replySnippet(in Incoming) *string {
+	if in.Kind != mailbox.KindReply || in.Matched == nil {
+		return nil
+	}
+	s := strings.TrimSpace(strings.ToValidUTF8(in.Snippet, ""))
+	if s == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(s) > MaxReplySnippet {
+		s = strings.TrimSpace(string([]rune(s)[:MaxReplySnippet]))
+	}
+	return &s
 }
 
 // Applied is what ApplyIncomingFor did.
@@ -209,7 +234,8 @@ type Applied struct {
 // The event and the cursor record the mailbox, and a suppression's source is
 // mailbox:<id>:<folder>:<uid>. Matching stays global: in.Matched may have gone from any
 // mailbox. A message already recorded (the same mailbox, folder, UIDVALIDITY and UID) changes nothing
-// but the cursor. mailbox_event keeps the registrable From domain only: no address, no body.
+// but the cursor. mailbox_event keeps the registrable From domain only: no address, no body
+// beyond a matched reply's snippet (replySnippet).
 func (q Queries) ApplyIncomingFor(ctx context.Context, mailboxID int64, in Incoming) (Applied, error) {
 	if mailboxID == 0 {
 		return Applied{}, fmt.Errorf("leadstore: apply incoming: %w", errNoMailbox)
@@ -220,10 +246,10 @@ func (q Queries) ApplyIncomingFor(ctx context.Context, mailboxID int64, in Incom
 		msgID, leadID = &in.Matched.ID, &in.Matched.LeadID
 	}
 	tag, err := q.db.Exec(ctx,
-		`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at, mailbox_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`INSERT INTO mailbox_event (mailbox, uidvalidity, uid, kind, from_domain, matched_message_id, lead_id, seen_at, mailbox_id, snippet)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 ON CONFLICT (mailbox_id, mailbox, uidvalidity, uid) DO NOTHING`,
-		in.Mailbox, int64(in.UIDValidity), int64(in.UID), string(in.Kind), in.FromDomain, msgID, leadID, in.At, mailboxID)
+		in.Mailbox, int64(in.UIDValidity), int64(in.UID), string(in.Kind), in.FromDomain, msgID, leadID, in.At, mailboxID, replySnippet(in))
 	if err != nil {
 		return Applied{}, fmt.Errorf("leadstore: apply incoming: %w", err)
 	}

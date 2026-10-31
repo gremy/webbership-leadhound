@@ -1260,3 +1260,224 @@ type PlanChangedError struct {
 func (*PlanChangedError) Error() string {
 	return "Something changed since you looked; check the warnings again."
 }
+
+// CRMBackend is what carries a lead past its first reply: the stage it is at, the operator's
+// note and next action, the deal's value, a snooze, and the pages built on them (the replies
+// inbox, the pipeline, the call queue and the campaign report). It is optional: New finds it
+// on the Backend with a type assertion, and a backend without it shows the CRM pages as not
+// on this server yet. Like the leads backend, every method returns ErrLeadsNotSetUp when this
+// server has no usable leads settings, ErrNotFound for no such lead or call, and a refusal the
+// operator can fix as a *CRMRefused (or any error wrapping ErrUserFixable) with one plain
+// sentence; a refused write saves nothing. The console never imports the store: these are its
+// own types.
+type CRMBackend interface {
+	// LeadCRM is one lead's stage, note, next action, deal and snooze. A lead with nothing
+	// stored is a zero LeadCRM with its EffectiveStage worked out. It never writes.
+	LeadCRM(ctx context.Context, leadID int64) (LeadCRM, error)
+	// LeadTimeline is everything that happened to one lead, newest first: lead events, sent
+	// messages, replies (with their snippet), calls, email checks and stage changes. It never
+	// writes.
+	LeadTimeline(ctx context.Context, leadID int64) ([]TimelineItem, error)
+	// SetLeadStage sets (or, with Stage "", clears) a lead's stage. It returns the line to
+	// show ("" for the console's own).
+	SetLeadStage(ctx context.Context, c StageChange) (string, error)
+	// SetLeadNote saves a lead's note and next action (each "" to clear).
+	SetLeadNote(ctx context.Context, c NoteChange) (string, error)
+	// SetLeadDeal saves a lead's deal value and currency (ValueCents nil to clear the value).
+	SetLeadDeal(ctx context.Context, c DealChange) (string, error)
+	// SnoozeLead hides a lead from the replies inbox and Needs me until until; nil clears the
+	// snooze.
+	SnoozeLead(ctx context.Context, leadID int64, until *time.Time) (string, error)
+	// RepliesInbox is the leads that replied and wait on the operator, newest reply first;
+	// snoozed leads are left out. It never writes.
+	RepliesInbox(ctx context.Context) ([]ReplyRow, error)
+	// Pipeline is every lead with an effective stage, in the order each column shows them.
+	// The console groups them by stage and sums them per currency. It never writes.
+	Pipeline(ctx context.Context) ([]PipelineCard, error)
+	// CallQueue is the calls due on day (a date in the console's zone, at midnight) or before
+	// and not made, and the call-backs due on day or before, in the order to make them. It
+	// never writes.
+	CallQueue(ctx context.Context, day time.Time) ([]CallQueueRow, error)
+	// CampaignReport is one row per campaign for what was sent from since on. It never writes.
+	CampaignReport(ctx context.Context, since time.Time) ([]CampaignReportRow, error)
+	// LeadCallOutcomeOn is CallsBackend.LeadCallOutcome with a call-back date: the console
+	// calls it instead whenever a CRM backend is present. Its answers are LeadCallOutcome's.
+	LeadCallOutcomeOn(ctx context.Context, req CallOutcomeRequest) (string, error)
+}
+
+// The pipeline stages, in the order the pipeline shows them (Stages).
+const (
+	StageTalking  = "talking"
+	StageProposal = "proposal"
+	StageWon      = "won"
+	StageLost     = "lost"
+)
+
+// Stages lists the stages, in the pipeline's order.
+var Stages = []string{StageTalking, StageProposal, StageWon, StageLost}
+
+// Currencies are the currencies a deal may be in, the first the default. Sums are kept per
+// currency and never converted.
+var Currencies = []string{"GBP", "EUR", "RON", "USD"}
+
+// LeadCRM is one lead's CRM fields. Stage is the stored stage ("" when none is stored);
+// EffectiveStage is what the pipeline shows: Stage, or StageTalking for a lead that replied
+// or had a connected call with no stage stored, or "" for neither.
+type LeadCRM struct {
+	Stage, EffectiveStage string
+	LostReason            string // set only when Stage is StageLost
+	Note                  string
+	NextAction            string
+	NextActionOn          *time.Time // a date (midnight in the console's zone); nil when none
+	DealValueCents        *int64     // nil when no value is entered
+	Currency              string     // one of Currencies
+	TenantURL             string     // the won lead's Webbership tenant, https; "" when none
+	SnoozedUntil          *time.Time // nil, or a time in the past, when not snoozed
+}
+
+// The kinds of timeline item (TimelineItem.Kind); the console marks each kind's dot.
+const (
+	TimelineEvent = "event" // a lead event (state change, star, label, research)
+	TimelineEmail = "email" // a message sent (or shadow-sent)
+	TimelineReply = "reply" // a reply received
+	TimelineCall  = "call"  // a call outcome recorded
+	TimelineCheck = "check" // an email check
+	TimelineStage = "stage" // a pipeline stage change
+)
+
+// TimelineItem is one thing that happened to a lead. Line is one plain sentence with no
+// internal codes ("Email sent · step 1"); Detail is optional extra text (a reply's snippet, a
+// call note, a lost reason), shown escaped; CostMicros is the Claude spend it carried (0 for
+// none).
+type TimelineItem struct {
+	At         time.Time
+	Kind       string
+	Line       string
+	Detail     string
+	CostMicros int64
+}
+
+// StageChange is the lead page's stage form or a stage button. LostReason (at most
+// MaxLostReason characters) is required with StageLost and empty otherwise; TenantURL (https,
+// at most MaxTenantURL characters) is allowed only with StageWon.
+type StageChange struct {
+	LeadID     int64
+	Stage      string // one of Stages, or "" to clear the stored stage
+	LostReason string
+	TenantURL  string
+}
+
+// NoteChange is the lead page's note form. Note is at most MaxNote characters, NextAction at
+// most MaxNextAction; NextActionOn needs NextAction.
+type NoteChange struct {
+	LeadID       int64
+	Note         string
+	NextAction   string
+	NextActionOn *time.Time
+}
+
+// DealChange is the lead page's deal form: the value in cents (nil clears it) and its
+// currency, one of Currencies.
+type DealChange struct {
+	LeadID     int64
+	ValueCents *int64
+	Currency   string
+}
+
+// The CRM fields' limits, as the store's checks hold them.
+const (
+	MaxLostReason = 200
+	MaxNote       = 2000
+	MaxNextAction = 200
+	MaxTenantURL  = 500
+	MaxDealCents  = 100_000_000_00 // 100 million in any currency
+)
+
+// CRMRefused is a CRM write the backend refused: Field is the form field at fault ("stage",
+// "lost_reason", "tenant_url", "note", "next_action", "next_action_on", "value", "currency";
+// "" for none) and Sentence the plain words to show. errors.Is(err, ErrUserFixable) holds.
+type CRMRefused struct {
+	Field, Sentence string
+}
+
+func (e *CRMRefused) Error() string { return ErrUserFixable.Error() + ": " + e.Sentence }
+
+// Unwrap makes a CRMRefused an ErrUserFixable.
+func (e *CRMRefused) Unwrap() error { return ErrUserFixable }
+
+// ReplyRow is one lead of the replies inbox: its latest reply's first lines (Snippet, at most
+// 300 characters, quoted history and signature already stripped; "" when none was kept) and
+// when it came.
+type ReplyRow struct {
+	LeadID         int64
+	Name, Domain   string
+	Campaign       string // the campaign's name; "" when none
+	Snippet        string
+	At             time.Time
+	EffectiveStage string // as LeadCRM.EffectiveStage
+}
+
+// PipelineCard is one lead on the pipeline. ExpectedCents is DealValueCents weighted by the
+// stage (the backend's weights; 0 with no value); NextAction and NextActionOn show on open
+// cards, LostReason on lost ones, TenantURL on won ones.
+type PipelineCard struct {
+	LeadID         int64
+	Name, Domain   string
+	Stage          string // the effective stage, one of Stages
+	DealValueCents *int64
+	Currency       string
+	ExpectedCents  int64
+	NextAction     string
+	NextActionOn   *time.Time
+	LostReason     string
+	TenantURL      string
+}
+
+// CallQueueRow is one call of the call queue. MessageID is the call's row (its card and the
+// outcome form); CallBackOn is set when the row is a call-back the operator asked for. Done
+// means an outcome is already recorded and the sequence has moved on (a call-back of a call
+// already made): the row links to the lead page and offers no outcome buttons. Callable and
+// BlockedReason are CallCard's.
+type CallQueueRow struct {
+	MessageID, LeadID int64
+	Name              string
+	Number            string // as found, shown as text
+	Dial              string // the tel: number, as CallCard.Dial; "" when none
+	Due               *time.Time
+	CallBackOn        *time.Time
+	Callable          bool
+	BlockedReason     string
+	Done              bool
+	Shadow            bool
+}
+
+// Money is an amount in one currency, in cents.
+type Money struct {
+	Currency string
+	Cents    int64
+}
+
+// CampaignReportRow is one campaign's funnel and cost over the report's days. Contacted is
+// the leads sent a first message; Revenue the won deals' values, one entry per currency.
+// ClaudeMicros is the Claude spend on the campaign's leads; CostPerLeadMicros and
+// CostPerReplyMicros divide it by Contacted and Replied (0 when the divisor is 0).
+// EmailChecks counts the email checks run, with no price put on them.
+type CampaignReportRow struct {
+	Campaign                              string
+	Sent, Contacted, Replied, Positive    int
+	Won                                   int
+	Revenue                               []Money
+	ClaudeMicros                          int64
+	CostPerLeadMicros, CostPerReplyMicros int64
+	EmailChecks                           int
+}
+
+// CallOutcomeRequest is the call outcome form with its optional call-back date: the fields of
+// CallsBackend.LeadCallOutcome, plus CallBackOn (a date, today or later; nil for none).
+type CallOutcomeRequest struct {
+	MessageID      int64
+	Outcome, Note  string
+	Consent        bool
+	ConsentAddress string
+	CallBackOn     *time.Time
+}

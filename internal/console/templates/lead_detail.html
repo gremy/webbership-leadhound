@@ -125,8 +125,12 @@
     </div>
   </section>
 
+  {{with $v.CRM}}{{template "crm_timeline" .Timeline}}{{end}}
+
 </div>
 <div class="stack">
+
+  {{with $v.CRM}}{{template "crm_panels" .}}{{end}}
 
   <section class="card">
     <div class="card-head"><h2>Details</h2></div>

@@ -703,12 +703,12 @@ func (b *backend) dashboardLeads(ctx context.Context, now time.Time, d *console.
 		return
 	}
 	lq := b.lq()
-	if rows, total, err := lq.NeedsMe(ctx, dashboardNeedsMe); err != nil {
+	if rows, total, err := lq.NeedsMeAt(ctx, dashboardNeedsMe, now, b.loc); err != nil {
 		slog.Default().Warn("console dashboard: needs me", "err", err.Error())
 	} else {
 		d.NeedsMeTotal = total
 		for _, r := range rows {
-			d.NeedsMe = append(d.NeedsMe, console.NeedsMeRow{LeadID: r.LeadID, Name: r.Name, What: needsMeWords(r.What), At: r.At})
+			d.NeedsMe = append(d.NeedsMe, console.NeedsMeRow{LeadID: r.LeadID, Name: r.Name, What: needsMeWords(r), At: r.At})
 		}
 	}
 	if rows, err := lq.CampaignFunnel(ctx, now.AddDate(0, 0, -30)); err != nil {
@@ -733,10 +733,17 @@ func (b *backend) dashboardLeads(ctx context.Context, now time.Time, d *console.
 // dashboardNeedsMe is how many waiting leads the dashboard lists.
 const dashboardNeedsMe = 5
 
-// needsMeWords is what a waiting lead's row says happened.
-func needsMeWords(what string) string {
-	if what == leadstore.NeedsConnected {
+// needsMeWords is what a waiting lead's row says happened: a reply or a connected call with
+// nothing scheduled, or the operator's own next action fallen due.
+func needsMeWords(r leadstore.NeedsMeRow) string {
+	switch r.What {
+	case leadstore.NeedsConnected:
 		return "Connected on a call · no next step"
+	case leadstore.NeedsNextAction:
+		if r.NextAction == "" {
+			return "Next action due"
+		}
+		return "Next action due · " + r.NextAction
 	}
 	return "Replied · nothing scheduled"
 }

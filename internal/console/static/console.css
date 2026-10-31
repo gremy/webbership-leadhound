@@ -4159,3 +4159,224 @@ a[aria-current="true"] .count {
     padding-top: 0;
   }
 }
+
+/* ---------- CRM (replies inbox, pipeline, call queue, reports, the lead page's panels) ---------- */
+/* Each stage has one colour, from the state tokens, so it follows the theme. */
+.stage-talking {
+  --stage: var(--accent);
+}
+.stage-proposal {
+  --stage: var(--warn);
+}
+.stage-won {
+  --stage: var(--good);
+}
+.stage-lost {
+  --stage: var(--grey);
+}
+.stage-text {
+  color: var(--stage, var(--muted));
+  font-weight: 600;
+}
+.stage-dot {
+  background: var(--stage, var(--grey));
+  margin-right: 6px;
+}
+.stage-badge {
+  color: var(--stage, var(--muted));
+  border-color: currentColor;
+}
+.stage-buttons,
+.snooze-buttons {
+  margin: 0;
+}
+.btn.is-current {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  border-color: var(--accent);
+}
+
+/* Replies inbox: the snippet under the name, the buttons beside it (under it on a phone). */
+.reply-row {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.reply-row .list-main {
+  flex: 1 1 320px;
+}
+.reply-snippet {
+  display: block;
+  margin-top: var(--sp-half);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.reply-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-half);
+}
+
+/* Pipeline: four columns side by side, stacked on a phone. */
+.kanban.pipeline {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow-x: visible;
+}
+.kanban-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0;
+  padding: var(--sp-half) var(--sp-half) var(--sp-half);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+.kanban-head > span:first-child {
+  display: inline-flex;
+  align-items: center;
+}
+.kanban-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.kanban-total {
+  margin: 0 var(--sp-half) var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-half);
+  min-width: 0;
+}
+.kanban-name {
+  font-weight: 650;
+  color: var(--text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.kanban-name:hover {
+  text-decoration: underline;
+}
+.kanban-value {
+  font-variant-numeric: tabular-nums;
+}
+.kanban-line {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.pipeline-card .btn-row {
+  gap: var(--sp-half);
+  margin-top: var(--sp-half);
+}
+.pipeline-tally dd {
+  font-size: var(--fs-lg);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 899px) {
+  .kanban.pipeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 639px) {
+  .kanban.pipeline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .reply-actions {
+    align-items: flex-start;
+    width: 100%;
+  }
+}
+
+/* Call queue: the outcome buttons and the call-back date under each call. */
+.call-row {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.call-row .list-main {
+  flex: 1 1 260px;
+}
+.call-row-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  flex: 1 1 100%;
+  margin: 0;
+}
+.call-row-done {
+  flex: 1 1 100%;
+  margin: 0;
+}
+.call-back-field {
+  width: 11rem;
+}
+.input-date {
+  width: 11rem;
+  max-width: 100%;
+}
+.call-blocked-line {
+  color: var(--warn);
+}
+
+/* Reports */
+.report-table .cell-main {
+  font-weight: 600;
+}
+.report-note {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* The lead page's panels and timeline. */
+.textarea {
+  min-height: 96px;
+  padding: var(--sp-1) 12px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.deal-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+.snooze-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+}
+.crm-timeline .tl-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.crm-timeline li.tl-reply::before {
+  background: var(--good);
+}
+.crm-timeline li.tl-call::before {
+  background: var(--warn);
+}
+.crm-timeline li.tl-stage::before {
+  background: var(--accent-soft-text);
+}
+.crm-timeline li.tl-check::before,
+.crm-timeline li.tl-event::before {
+  background: var(--grey);
+}
+
+/* The sub-nav scrolls sideways inside itself on a phone; the fade at the edge says there is more. */
+@media (max-width: 639px) {
+  .subnav ul {
+    padding-right: var(--sp-3);
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--sp-3)), transparent);
+  }
+}

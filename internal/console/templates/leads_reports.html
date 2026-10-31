@@ -1,0 +1,45 @@
+{{define "content"}}
+{{$v := .Data}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <span class="eyebrow"><a href="/leads/home">Leads</a> / Reports</span>
+    <h1>Reports</h1>
+    <p class="page-sub">Which campaign earns replies and money: the last {{$v.Days}} days, from {{$v.Since.Format "2 Jan"}}.</p>
+  </div>
+</div>
+
+<section class="card" aria-labelledby="report-title">
+  <div class="card-head"><h2 id="report-title">Campaigns</h2></div>
+  {{if $v.Off}}
+  <div class="empty empty-compact"><p class="empty-title">Not on this server yet</p><p class="empty-text">The campaign report arrives with the next update.</p></div>
+  {{else if $v.Rows}}
+  <div class="table-wrap card-body-flush">
+    <table class="table report-table">
+      <caption class="visually-hidden">Each campaign's funnel, revenue and cost over the last {{$v.Days}} days</caption>
+      <thead><tr><th scope="col">Campaign</th><th scope="col" class="num">Sent</th><th scope="col" class="num">Replied</th><th scope="col" class="num">Positive</th><th scope="col" class="num">Won</th><th scope="col" class="num">Reply rate</th><th scope="col" class="num">Revenue</th><th scope="col" class="num">Cost per lead</th><th scope="col" class="num">Cost per reply</th><th scope="col" class="num">Email checks</th></tr></thead>
+      <tbody>
+      {{range $v.Rows}}
+        <tr>
+          <td class="cell-main">{{.Campaign}}</td>
+          <td class="num">{{thousands .Sent}}</td>
+          <td class="num">{{thousands .Replied}}</td>
+          <td class="num">{{thousands .Positive}}</td>
+          <td class="num">{{thousands .Won}}</td>
+          <td class="num">{{replyRate .Replied .Sent}}</td>
+          <td class="num">{{or (moneyLine .Revenue) "—"}}</td>
+          <td class="num">{{costPer .CostPerLeadMicros .Contacted}}</td>
+          <td class="num">{{costPer .CostPerReplyMicros .Replied}}</td>
+          <td class="num">{{thousands .EmailChecks}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty empty-compact"><p class="empty-title">Nothing sent in the last {{$v.Days}} days</p><p class="empty-text">Each campaign's sends, replies, wins and cost show here once its first emails go out.</p></div>
+  {{end}}
+  <div class="card-foot report-note">Costs are Claude only: the drafting and research spent on each campaign's leads. Email checks are a count; no price is put on them.</div>
+</section>
+</div>
+{{end}}

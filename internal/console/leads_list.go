@@ -54,8 +54,9 @@ type leadDetailView struct {
 	Back    string
 	Message string
 	Error   bool
-	AtCall  bool     // Message is about the call: it shows inside the "Your call" block, not at the top
-	Seq     []seqRow // the lead's sequence, worded
+	AtCall  bool      // Message is about the call: it shows inside the "Your call" block, not at the top
+	Seq     []seqRow  // the lead's sequence, worded
+	CRM     *crmPanel // the stage, note, deal and timeline panels; nil when the backend has no CRM
 }
 
 // callAnchor is the "Your call" block's id: a call goes back to it.
@@ -110,6 +111,12 @@ func (s *server) leadDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, id int64, msg string, isErr, atCall bool) {
+	s.renderDetailCRM(w, r, code, id, msg, isErr, atCall, nil)
+}
+
+// renderDetailCRM is renderDetail with the CRM section posted (and refused) kept in its form;
+// nil shows the stored values.
+func (s *server) renderDetailCRM(w http.ResponseWriter, r *http.Request, code int, id int64, msg string, isErr, atCall bool, posted *crmForm) {
 	d, err := s.b.LeadDetail(r.Context(), id)
 	if s.leadsRead(w, r, code, err) {
 		return
@@ -118,10 +125,14 @@ func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, 
 	if s.leadsRead(w, r, code, err) {
 		return
 	}
+	crm, err := s.crmPanelFor(r, id, posted)
+	if s.leadsRead(w, r, code, err) {
+		return
+	}
 	title := cmp.Or(d.Name, d.Domain, "Lead "+strconv.FormatInt(id, 10))
 	s.render(w, r, code, "lead_detail", page{Title: title, Active: leadsPath, SignedIn: true,
 		Data: leadDetailView{Data: d, Fetches: signalFetches(d.Signals), Back: leadsPath + "/" + strconv.FormatInt(id, 10),
-			Message: msg, Error: isErr, AtCall: atCall, Seq: s.sequenceRows(seq)}})
+			Message: msg, Error: isErr, AtCall: atCall, Seq: s.sequenceRows(seq), CRM: crm}})
 }
 
 // leadAct is POST /leads/{id}/{action}: star, unstar, up, down, top, defer, skip or clear
@@ -130,6 +141,16 @@ func (s *server) renderDetail(w http.ResponseWriter, r *http.Request, code int, 
 func (s *server) leadAct(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	do := r.PathValue("action")
+	// The CRM writes share this pattern: POST /leads/{id}/crm would conflict with
+	// POST /leads/settings/{section} in the mux, so they are dispatched from here.
+	switch {
+	case ok && do == "crm":
+		s.leadCRM(w, r, id)
+		return
+	case ok && do == "snooze":
+		s.leadSnooze(w, r, id)
+		return
+	}
 	if !ok || !slices.Contains(leadActions, do) {
 		http.NotFound(w, r)
 		return

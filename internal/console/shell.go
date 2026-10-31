@@ -13,15 +13,20 @@ type shellLink struct {
 	Under             []string
 }
 
-// leadsNav is the Leads product's sub-nav. Batches, Calls and Reports have no list page of
-// their own yet: a batch sits under Outreach, a call under Today, a report under List.
+// leadsNav is the Leads product's sub-nav. Batches have no list page of their own yet: a
+// batch sits under Outreach. A call card sits under Calls; a lead's report download under
+// List (Reports is the campaign report).
 var leadsNav = []shellLink{
 	{Label: "Home", Path: "/leads/home"},
 	{Label: "List", Path: "/leads", Under: []string{"/leads/"}},
 	{Label: "Outreach", Path: "/leads/outreach", Under: []string{"/leads/batches/"}},
-	{Label: "Today", Path: "/leads/today", Under: []string{"/leads/calls/"}},
+	{Label: "Today", Path: "/leads/today"},
+	{Label: "Replies", Path: "/leads/replies"},
+	{Label: "Pipeline", Path: "/leads/pipeline"},
+	{Label: "Calls", Path: "/leads/calls", Under: []string{"/leads/calls/"}},
 	{Label: "Drafts", Path: "/leads/drafts"},
 	{Label: "Campaigns", Path: "/leads/campaigns"},
+	{Label: "Reports", Path: "/leads/reports"},
 }
 
 // jobsNav is the Jobs product's sub-nav.

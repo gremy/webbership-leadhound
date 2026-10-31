@@ -21,9 +21,10 @@ const leadsForgetUsage = "usage: leadhound leads forget org ID --reason TEXT"
 // tables), in one transaction, it suppresses the org's domain and numbers (hashed) so it is
 // never collected, researched or called again, deletes its phone facts, phone research and
 // screenings, blanks its call notes, empties its kept page bodies and deletes its
-// description and social facts. It prints counts only, never a number or a page. Run again
-// (after a backup restore, say) it finds nothing left and counts zero; its log line keeps
-// the org id, so the erasures to re-apply can be listed.
+// description and social facts, and erases its lead's CRM (reply snippets, note, deal and
+// stage history). It prints counts only, never a number or a page. Run again (after a
+// backup restore, say) it finds nothing left and counts zero; its log line keeps the org id,
+// so the erasures to re-apply can be listed.
 func runLeadsForget(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "org" {
 		return usageError(leadsForgetUsage)
@@ -61,7 +62,7 @@ func runLeadsForget(ctx context.Context, args []string) error {
 	}
 	slog.Default().Info("leads forget org", "org", id, "phone_facts", f.PhoneFacts, "screenings", f.Screenings,
 		"research", f.PhoneResearch, "notes", f.NotesBlanked, "places", f.PlacesBlanked, "consents", f.Consents, "consents_blanked", f.ConsentsBlanked, "suppressions", f.Suppressions,
-		"bodies", p.BodiesBlanked, "other_facts", p.OtherFacts)
+		"bodies", p.BodiesBlanked, "other_facts", p.OtherFacts, "snippets", f.SnippetsBlanked, "crm_rows", f.CRMRows, "stage_events", f.StageEvents)
 	_, _ = fmt.Fprintln(stdout, forgetWords(id, f, p))
 	return nil
 }
@@ -96,6 +97,10 @@ func forgetWords(id int64, f leadstore.Forgotten, p leadstore.ForgottenPages) st
 	}
 	if f.Consents > 0 || f.ConsentsBlanked > 0 {
 		places += ", " + plural(int(max(f.Consents, f.ConsentsBlanked)), "email consent and its address", "email consents and their addresses") + " erased"
+	}
+	if f.SnippetsBlanked > 0 || f.CRMRows > 0 || f.StageEvents > 0 {
+		places += fmt.Sprintf(", %s emptied, %s and %s deleted", plural(int(f.SnippetsBlanked), "reply snippet", "reply snippets"),
+			plural(int(f.CRMRows), "CRM record", "CRM records"), plural(int(f.StageEvents), "stage change", "stage changes"))
 	}
 	return fmt.Sprintf("Org %d forgotten: %s, %s, %s, %s blanked, %s emptied, %s deleted%s; %s written (%s moved to suppressed, %s cancelled).",
 		id, plural(int(f.PhoneFacts), "phone fact", "phone facts"), plural(int(f.PhoneResearch), "research row", "research rows"),

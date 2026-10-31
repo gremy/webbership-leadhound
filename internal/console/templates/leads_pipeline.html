@@ -1,0 +1,56 @@
+{{define "content"}}
+{{$v := .Data}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <span class="eyebrow"><a href="/leads/home">Leads</a> / Pipeline</span>
+    <h1>Pipeline</h1>
+    <p class="page-sub">Every lead past its first reply, by where it stands. Move one with its buttons; Lost asks for a reason on the lead page.</p>
+  </div>
+</div>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+
+{{if $v.Off}}
+<section class="card"><div class="empty empty-compact"><p class="empty-title">Not on this server yet</p><p class="empty-text">The pipeline arrives with the next update.</p></div></section>
+{{else}}
+<section class="card" aria-labelledby="pipe-sum">
+  <div class="card-head"><h2 id="pipe-sum">Open deals</h2></div>
+  <div class="card-body">
+    <dl class="confirm-tally pipeline-tally">
+      <div><dt>Open</dt><dd>{{$v.Open}}</dd></div>
+      <div><dt>Pipeline</dt><dd>{{or (moneyLine $v.OpenSum) "—"}}</dd></div>
+      <div><dt>Expected</dt><dd>{{or (moneyLine $v.Expected) "—"}}</dd></div>
+      <div><dt>Won</dt><dd>{{or (moneyLine $v.WonSum) "—"}}</dd></div>
+    </dl>
+    <p class="hint mt-1 mb-0">Expected is each open deal's value weighted by its stage. Sums stay per currency, never converted.</p>
+  </div>
+</section>
+
+{{if $v.Empty}}
+<section class="card mt-2"><div class="empty empty-compact"><p class="empty-title">Nothing in the pipeline yet</p><p class="empty-text">A lead joins as Talking once they reply or a call gets through. Set a stage on its lead page, or from Replies.</p></div></section>
+{{end}}
+
+<div class="kanban pipeline mt-2">
+  {{range $v.Columns}}{{$col := .}}
+  <section class="kanban-col" aria-labelledby="col-{{.Stage}}">
+    <h2 class="kanban-head" id="col-{{.Stage}}"><span><span class="dot stage-dot stage-{{.Stage}}"></span>{{stageWords .Stage}}</span><span class="kanban-count">{{len .Cards}}</span></h2>
+    {{with .Totals}}<p class="kanban-total">{{moneyLine .}}</p>{{end}}
+    {{range .Cards}}{{$name := or .Name .Domain}}
+    <article class="kanban-card pipeline-card">
+      <a class="kanban-name" href="/leads/{{.LeadID}}">{{$name}}</a>
+      {{if .DealValueCents}}<span class="kanban-value">{{money .DealValueCents .Currency}}{{if and .ExpectedCents (ne .Stage "won")}} <span class="muted">· expected {{money .ExpectedCents .Currency}}</span>{{end}}</span>{{end}}
+      {{if eq .Stage "lost"}}{{with .LostReason}}<span class="kanban-line">{{.}}</span>{{end}}
+      {{else if eq .Stage "won"}}{{with .TenantURL}}<span class="kanban-line">{{template "pipe_link" .}}</span>{{end}}
+      {{else if .NextAction}}<span class="kanban-line">{{.NextAction}}{{with .NextActionOn}} · {{date .}}{{end}}</span>{{end}}
+      {{template "crm_stage_buttons" (stageMove .LeadID .Stage "/leads/pipeline" $name)}}
+    </article>
+    {{else}}<p class="kanban-empty">None {{if eq $col.Stage "won"}}won{{else if eq $col.Stage "lost"}}lost{{else}}here{{end}} yet</p>
+    {{end}}
+  </section>
+  {{end}}
+</div>
+{{end}}
+</div>
+{{end}}
+
+{{define "pipe_link"}}{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow">Tenant</a>{{else}}{{.}}{{end}}{{end}}

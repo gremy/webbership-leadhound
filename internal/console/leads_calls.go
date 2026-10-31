@@ -237,6 +237,8 @@ type callView struct {
 	Message  string
 	Error    bool
 	Note     string
+	CallBack bool   // the form offers a call-back date (the backend has the CRM)
+	Today    string // YYYY-MM-DD, the call-back field's earliest day
 }
 
 // messageID reads the {message} path segment as a positive id, or reports false.
@@ -271,7 +273,7 @@ func (s *server) renderCall(w http.ResponseWriter, r *http.Request, code int, id
 	title := cmp.Or(c.OrgName, "Call "+strconv.FormatInt(id, 10))
 	s.render(w, r, code, "lead_call", page{Title: "Call " + title, Active: leadsPath, SignedIn: true,
 		Data: callView{C: c, Outcomes: campaign.Outcomes, Back: leadCallPath + strconv.FormatInt(id, 10),
-			Message: msg, Error: isErr, Note: note}})
+			Message: msg, Error: isErr, Note: note, CallBack: s.hasCRM(), Today: s.today().Format(time.DateOnly)}})
 }
 
 // leadCallOutcome is POST /leads/calls/{message}/outcome: outcome (one of the six), an
@@ -315,11 +317,28 @@ func (s *server) leadCallOutcome(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	callBack, refusal := s.callBackDay(r.PostForm.Get("call_back_on"), outcome)
+	crm, hasCRM := s.crmBackend()
+	if refusal == "" && callBack != nil && !hasCRM {
+		refusal = callBackNoCRM
+	}
+	if refusal != "" {
+		s.leadsLog(do, "refused")
+		s.renderCall(w, r, http.StatusUnprocessableEntity, id, refusal, true, note)
+		return
+	}
 	back := leadCallPath + strconv.FormatInt(id, 10)
 	if b := r.PostForm.Get("back"); b != "" {
 		back = leadsBack(b)
 	}
-	msg, err := s.b.LeadCallOutcome(r.Context(), id, outcome, note, consent, address)
+	var msg string
+	var err error
+	if hasCRM {
+		msg, err = crm.LeadCallOutcomeOn(r.Context(), CallOutcomeRequest{MessageID: id, Outcome: outcome, Note: note,
+			Consent: consent, ConsentAddress: address, CallBackOn: callBack})
+	} else {
+		msg, err = s.b.LeadCallOutcome(r.Context(), id, outcome, note, consent, address)
+	}
 	switch {
 	case errors.Is(err, ErrLeadsNotSetUp):
 		s.leadsLog(do, "not set up")
@@ -341,6 +360,9 @@ func (s *server) leadCallOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.leadsLog(do, "ok")
+	if msg == "" && callBack != nil {
+		msg = "Saved: " + OutcomeWords(outcome) + ". Call back on " + callBack.Format("Mon 2 Jan") + "."
+	}
 	s.setFlash(w, cmp.Or(msg, "Saved: "+OutcomeWords(outcome)+"."))
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }

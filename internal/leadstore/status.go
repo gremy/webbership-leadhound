@@ -299,8 +299,9 @@ func (q Queries) EmailChecksOn(ctx context.Context, from, to time.Time) (EmailCh
 
 // What a NeedsMeRow says happened.
 const (
-	NeedsReplied   = "replied"
-	NeedsConnected = "connected"
+	NeedsReplied    = "replied"
+	NeedsConnected  = "connected"
+	NeedsNextAction = "next_action"
 )
 
 // NeedsMeRow is one lead waiting on the operator.
@@ -308,27 +309,50 @@ type NeedsMeRow struct {
 	LeadID int64
 	Name   string // as the Leads list names it: the site's name, else the org's, else its domain
 	Domain string
-	What   string // NeedsReplied or NeedsConnected
-	At     time.Time
+	What   string // NeedsReplied, NeedsConnected or NeedsNextAction
+	// At is when it happened: the reply or the connected call; for a next action, the start
+	// of the local day it fell due.
+	At         time.Time
+	NextAction string // the operator's next action (lead_crm.next_action); "" when none
 }
 
 // needsMeLimitMax is the most rows NeedsMe returns.
 const needsMeLimitMax = 100
 
-// NeedsMe returns the leads waiting on the operator, newest first (then by lead id), at most
-// limit (1..100; out of range is clamped), and how many there are in all. The rule:
+// NeedsMe is NeedsMeAt at the clock's now in the machine's local zone. It is kept for the
+// Dashboard until it moves to NeedsMeAt, which takes now and the operator's zone, so the day a
+// next action falls due is the operator's.
+func (q Queries) NeedsMe(ctx context.Context, limit int) ([]NeedsMeRow, int, error) {
+	return q.NeedsMeAt(ctx, limit, time.Now(), time.Local)
+}
+
+// NeedsMeAt returns the leads waiting on the operator at now, at most limit (1..100; out of
+// range is clamped), and how many there are in all. Today is now's calendar day in loc (nil:
+// time.Local). The rule:
 //
+//   - next_action: the lead's next action date (lead_crm.next_action_on) is today or earlier,
+//     whatever its state, carrying the next action's text;
 //   - replied: the lead's state is replied (the mailbox matched a reply to it), at the time
 //     it entered that state;
 //   - connected: the lead's state is contacted and the latest outcome of one of its call
 //     steps in a live batch is connected, at the latest such outcome;
 //
-// and in either case nothing is scheduled ahead for it: no message of a live batch that is
-// not discarded is still draft, approved (an email or a call, whatever its due time) or
-// sending. Selftest leads never count. A lead the operator has moved on (closed, skipped,
-// opted out, ...) is no longer replied or contacted, so it drops off.
-func (q Queries) NeedsMe(ctx context.Context, limit int) ([]NeedsMeRow, int, error) {
+// and for replied and connected, nothing is scheduled ahead for it (no message of a live
+// batch that is not discarded is still draft, approved (an email or a call, whatever its due
+// time) or sending) and its next action is not set for a later day: the operator has already
+// said when they will come back to it. A lead is listed once, as next_action when it has one
+// due. A lead snoozed past now (lead_crm.snoozed_until) is left out whatever it waits on, and
+// selftest leads never count. A lead the operator has moved on (closed, skipped, opted out,
+// ...) is no longer replied or contacted, so it drops off unless a next action is due.
+//
+// Order: the due next actions first, the longest overdue first; then the rest newest first
+// (then by lead id).
+func (q Queries) NeedsMeAt(ctx context.Context, limit int, now time.Time, loc *time.Location) ([]NeedsMeRow, int, error) {
 	limit = min(max(limit, 1), needsMeLimitMax)
+	if loc == nil {
+		loc = time.Local
+	}
+	today := now.In(loc).Format(time.DateOnly)
 	rows, err := q.db.Query(ctx,
 		`WITH cand AS (
 		   SELECT l.id, 'replied' AS what, l.state_at AS at FROM lead l
@@ -342,25 +366,44 @@ func (q Queries) NeedsMe(ctx context.Context, limit int) ([]NeedsMeRow, int, err
 		   ) co ON co.outcome = 'connected'
 		   WHERE l.state = 'contacted' AND l.kind <> 'selftest'
 		   GROUP BY l.id
+		 ), waiting AS (
+		   SELECT c.id, c.what, c.at, 1 AS prio FROM cand c
+		   WHERE NOT EXISTS (
+		     SELECT 1 FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
+		     WHERE m.lead_id = c.id AND NOT b.shadow AND b.discarded_at IS NULL
+		       AND m.state IN ('draft', 'approved', 'sending'))
+		   AND NOT EXISTS (SELECT 1 FROM lead_crm k WHERE k.lead_id = c.id AND k.next_action_on > $3::date)
+		   UNION ALL
+		   SELECT k.lead_id, 'next_action', NULL::timestamptz, 0 FROM lead_crm k JOIN lead l ON l.id = k.lead_id
+		   WHERE k.next_action_on <= $3::date AND l.kind <> 'selftest'
+		 ), one AS (
+		   SELECT DISTINCT ON (w.id) w.id, w.what, w.at, w.prio FROM waiting w ORDER BY w.id, w.prio
 		 )
 		 SELECT c.id, coalesce(nullif(p.site_name, ''), nullif(o.name, ''), o.domain), o.domain, c.what, c.at,
-		   count(*) OVER ()
-		 FROM cand c JOIN lead l ON l.id = c.id JOIN org o ON o.id = l.org_id
+		   coalesce(k.next_action, ''), k.next_action_on, count(*) OVER ()
+		 FROM one c JOIN lead l ON l.id = c.id JOIN org o ON o.id = l.org_id
 		 LEFT JOIN site_probe p ON p.id = l.probe_id
-		 WHERE NOT EXISTS (
-		   SELECT 1 FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
-		   WHERE m.lead_id = c.id AND NOT b.shadow AND b.discarded_at IS NULL
-		     AND m.state IN ('draft', 'approved', 'sending'))
-		 ORDER BY c.at DESC, c.id DESC
-		 LIMIT $1`, limit)
+		 LEFT JOIN lead_crm k ON k.lead_id = c.id
+		 WHERE k.snoozed_until IS NULL OR k.snoozed_until <= $2
+		 ORDER BY c.prio, CASE WHEN c.prio = 0 THEN k.next_action_on END NULLS LAST, c.at DESC, c.id DESC
+		 LIMIT $1`, limit, now, today)
 	if err != nil {
 		return nil, 0, fmt.Errorf("leadstore: needs me: %w", err)
 	}
 	var out []NeedsMeRow
 	total := 0
 	var r NeedsMeRow
-	if _, err := pgx.ForEachRow(rows, []any{&r.LeadID, &r.Name, &r.Domain, &r.What, &r.At, &total}, func() error {
-		out = append(out, r)
+	var at, on *time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&r.LeadID, &r.Name, &r.Domain, &r.What, &at, &r.NextAction, &on, &total}, func() error {
+		row := r
+		switch {
+		case row.What == NeedsNextAction && on != nil:
+			y, m, d := on.Date()
+			row.At = time.Date(y, m, d, 0, 0, 0, 0, loc)
+		case at != nil:
+			row.At = *at
+		}
+		out = append(out, row)
 		return nil
 	}); err != nil {
 		return nil, 0, fmt.Errorf("leadstore: needs me: %w", err)
@@ -375,6 +418,14 @@ type CampaignFunnelRow struct {
 	Sent       int // live emails sent, maybe sent or sending since (selftests left out)
 	Replied    int // its leads that entered replied since
 	Positive   int // orgs that agreed on a connected call to get its email since
+	// Contacted counts its leads reached since: a live email sent (as Sent counts them) or a
+	// call outcome recorded on a call step of a live batch, selftests left out. The divisor of
+	// cost per lead.
+	Contacted int
+	Won       int // its leads moved to stage won since that are still won
+	// Revenue sums the deal values of those won leads, in cents, per currency (never
+	// converted); a won lead with no value adds nothing. Empty, never nil.
+	Revenue map[string]int64
 }
 
 // CampaignFunnel returns, per campaign of every account (by id), what it did since since;
@@ -387,6 +438,11 @@ type CampaignFunnelRow struct {
 //   - Positive counts the orgs with an email_consent for it given at or after since, on a
 //     call of a live batch: the one thing the schema records as a lead saying yes. A reply's
 //     tone is not recorded, so a reply alone never counts as positive.
+//   - Contacted counts its leads (the batch's campaign) with a live email sent since or a call
+//     outcome at or after since on a live batch's call step, selftests left out.
+//   - Won counts its leads (the lead's campaign) with a lead_stage_event into won at or after
+//     since whose stage is still won, selftests left out; Revenue sums their deal values per
+//     currency.
 func (q Queries) CampaignFunnel(ctx context.Context, since time.Time) ([]CampaignFunnelRow, error) {
 	rows, err := q.db.Query(ctx,
 		`WITH sent AS (
@@ -405,21 +461,56 @@ func (q Queries) CampaignFunnel(ctx context.Context, since time.Time) ([]Campaig
 		   JOIN outreach_message m ON m.id = co.message_id JOIN outreach_batch b ON b.id = m.batch_id
 		   WHERE ec.at >= $1 AND NOT b.shadow
 		   GROUP BY ec.campaign_id
+		 ), contacted AS (
+		   SELECT x.campaign_id, count(DISTINCT x.lead_id) AS n FROM (
+		     SELECT b.campaign_id, m.lead_id FROM outreach_message m
+		     JOIN outreach_batch b ON b.id = m.batch_id
+		     WHERE NOT b.shadow AND m.channel = 'email' AND m.state IN `+liveSentStates+` AND m.sent_at >= $1
+		     UNION ALL
+		     SELECT b.campaign_id, m.lead_id FROM call_outcome co
+		     JOIN outreach_message m ON m.id = co.message_id JOIN outreach_batch b ON b.id = m.batch_id
+		     WHERE NOT b.shadow AND co.at >= $1
+		   ) x JOIN lead l ON l.id = x.lead_id
+		   WHERE l.kind <> 'selftest'
+		   GROUP BY x.campaign_id
+		 ), wonl AS (
+		   SELECT DISTINCT l.campaign_id, l.id, k.currency, k.deal_value_cents FROM lead_stage_event e
+		   JOIN lead l ON l.id = e.lead_id JOIN lead_crm k ON k.lead_id = l.id
+		   WHERE e.stage = 'won' AND e.at >= $1 AND k.stage = 'won' AND l.kind <> 'selftest'
+		 ), won AS (
+		   SELECT campaign_id, count(*) AS n FROM wonl GROUP BY campaign_id
+		 ), revenue AS (
+		   SELECT campaign_id, jsonb_object_agg(currency, cents) AS money FROM (
+		     SELECT campaign_id, currency, sum(deal_value_cents)::bigint AS cents FROM wonl
+		     WHERE deal_value_cents IS NOT NULL GROUP BY campaign_id, currency
+		   ) y GROUP BY campaign_id
 		 )
-		 SELECT c.id, c.slug, c.name, coalesce(s.n, 0), coalesce(r.n, 0), coalesce(p.n, 0)
+		 SELECT c.id, c.slug, c.name, coalesce(s.n, 0), coalesce(r.n, 0), coalesce(p.n, 0),
+		   coalesce(ct.n, 0), coalesce(w.n, 0), coalesce(rv.money, '{}'::jsonb)
 		 FROM campaign c
 		 LEFT JOIN sent s ON s.campaign_id = c.id
 		 LEFT JOIN replied r ON r.campaign_id = c.id
 		 LEFT JOIN positive p ON p.campaign_id = c.id
-		 WHERE s.n IS NOT NULL OR r.n IS NOT NULL OR p.n IS NOT NULL
+		 LEFT JOIN contacted ct ON ct.campaign_id = c.id
+		 LEFT JOIN won w ON w.campaign_id = c.id
+		 LEFT JOIN revenue rv ON rv.campaign_id = c.id
+		 WHERE s.n IS NOT NULL OR r.n IS NOT NULL OR p.n IS NOT NULL OR ct.n IS NOT NULL OR w.n IS NOT NULL
 		 ORDER BY c.id`, since)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: campaign funnel: %w", err)
 	}
 	var out []CampaignFunnelRow
 	var r CampaignFunnelRow
-	if _, err := pgx.ForEachRow(rows, []any{&r.CampaignID, &r.Slug, &r.Name, &r.Sent, &r.Replied, &r.Positive}, func() error {
-		out = append(out, r)
+	var money map[string]int64
+	if _, err := pgx.ForEachRow(rows, []any{&r.CampaignID, &r.Slug, &r.Name, &r.Sent, &r.Replied, &r.Positive,
+		&r.Contacted, &r.Won, &money}, func() error {
+		row := r
+		row.Revenue = map[string]int64{}
+		for k, v := range money {
+			row.Revenue[k] = v
+		}
+		money = nil
+		out = append(out, row)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("leadstore: campaign funnel: %w", err)

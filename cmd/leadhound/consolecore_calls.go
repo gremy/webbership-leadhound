@@ -313,15 +313,33 @@ func callCard(c leadstore.CallRow, vd callVerdict) console.CallCard {
 }
 
 // LeadCallOutcome records what happened on call messageID (recordCall) and returns its
-// "Saved. …" line; a refusal wraps console.ErrUserFixable with its words.
+// "Saved. …" line; a refusal wraps console.ErrUserFixable with its words. It is
+// LeadCallOutcomeOn with no call-back date.
 func (b *backend) LeadCallOutcome(ctx context.Context, messageID int64, outcome, note string, consent bool, consentAddress string) (string, error) {
+	return b.LeadCallOutcomeOn(ctx, console.CallOutcomeRequest{MessageID: messageID, Outcome: outcome, Note: note,
+		Consent: consent, ConsentAddress: consentAddress})
+}
+
+// LeadCallOutcomeOn is LeadCallOutcome with req.CallBackOn, the day to call the lead again
+// (its date in the console's zone; nil for none), stored with the outcome. A call-back date
+// the store refuses (in the past, or with an outcome that ends calling) is a
+// *console.CRMRefused on the call_back_on field; every other answer is LeadCallOutcome's.
+func (b *backend) LeadCallOutcomeOn(ctx context.Context, req console.CallOutcomeRequest) (string, error) {
 	setup, err := b.leadsSetup(ctx, leadsForOutreach)
 	if err != nil {
 		return "", err
 	}
-	line, err := recordCall(ctx, b.lq(), setup.leads, b.now(), b.loc, messageID, outcome, note, consent, consentAddress)
+	var callBack *time.Time
+	if req.CallBackOn != nil {
+		d := req.CallBackOn.In(b.loc) // the store keeps its calendar date in its own zone
+		callBack = &d
+	}
+	line, err := recordCall(ctx, b.lq(), setup.leads, b.now(), b.loc, req.MessageID, req.Outcome, req.Note, req.Consent,
+		req.ConsentAddress, callBack)
 	var r *callRefusalError
 	switch {
+	case errors.As(err, &r) && r.field != "":
+		return "", &console.CRMRefused{Field: r.field, Sentence: r.words}
 	case errors.As(err, &r):
 		return "", refused("%s", r.words)
 	case errors.Is(err, errCallNotFound):

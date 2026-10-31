@@ -29,6 +29,10 @@ var shellProduct = map[string]string{
 	"/leads/campaigns":  "leads",
 	"/leads/today":      "leads",
 	"/leads/drafts":     "leads",
+	"/leads/replies":    "leads",
+	"/leads/pipeline":   "leads",
+	"/leads/calls":      "leads",
+	"/leads/reports":    "leads",
 	"/leads/calls/9":    "leads",
 	"/leads/batches/3":  "leads",
 	"/leads/5":          "leads",
@@ -97,14 +101,18 @@ func TestEveryPageRendersTheShell(t *testing.T) {
 }
 
 // TestShellCurrentLink: the sub-nav and gear mark the page itself "page" and a page inside a
-// link (a lead under List, a batch under Outreach, a call under Today) "true".
+// link (a lead under List, a batch under Outreach, a call under Calls) "true".
 func TestShellCurrentLink(t *testing.T) {
 	for _, tt := range []struct{ path, label, want string }{
 		{"/leads/home", "Home", "page"},
 		{"/leads", "List", "page"},
 		{"/leads/5", "List", "true"},
 		{"/leads/batches/3", "Outreach", "true"},
-		{"/leads/calls/9", "Today", "true"},
+		{"/leads/calls/9", "Calls", "true"},
+		{"/leads/calls", "Calls", "page"},
+		{"/leads/replies", "Replies", "page"},
+		{"/leads/pipeline", "Pipeline", "page"},
+		{"/leads/reports", "Reports", "page"},
 		{"/leads/reports/5", "List", "true"},
 		{"/jobs/42", "Jobs", "true"},
 		{"/jobs/home", "Home", "page"},

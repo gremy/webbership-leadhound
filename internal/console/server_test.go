@@ -102,6 +102,7 @@ type fakeBackend struct {
 
 	statusFake
 	sendNowFake
+	crmFake
 }
 
 func (f *fakeBackend) count(name string) {
@@ -294,6 +295,7 @@ func richBackend(text string) *fakeBackend {
 		},
 		statusFake:  statusFake{status: richStatus(text)},
 		sendNowFake: sendNowFake{plan: richSendPlan(text)},
+		crmFake:     richCRM(text),
 		brief:       BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
 		tracked:     []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
 		runs:        []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},

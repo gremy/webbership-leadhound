@@ -461,6 +461,9 @@ type Forgotten struct {
 	Cancelled       int64 // pending messages cancelled by them
 	Consents        int64 // email_consent rows of the org deleted (the address they gave is theirs)
 	ConsentsBlanked int64 // call outcomes on its leads' calls whose consent and address were cleared (the rows stay)
+	SnippetsBlanked int64 // reply snippets of its lead's mailbox events emptied (the rows stay; 00028)
+	CRMRows         int64 // lead_crm rows of its lead deleted (note, next action, deal, tenant link)
+	StageEvents     int64 // lead_stage_event rows of its lead deleted
 }
 
 // ForgetOrg erases org orgID's phone data, for `leads forget` (run on the owner's
@@ -476,7 +479,9 @@ type Forgotten struct {
 // the call outcomes on its leads' messages, keeping the rows, deletes its email_consent
 // rows and clears the consent and consent address of those call outcomes (the address a
 // person gave on a call is theirs), and empties the map-listing phones and emails of its
-// places (00021), keeping the rows. A screening of a number
+// places (00021), keeping the rows, and erases its lead's CRM (00028): the reply snippets of
+// its mailbox events are emptied (the rows stay), its lead_crm row and its stage changes are
+// deleted. A screening of a number
 // another org shares goes too: that org must be screened again (the safe side).
 //
 // reason says why (at most MaxForgetReason characters, no line break, no @: never a
@@ -574,6 +579,11 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 			   (SELECT m.id FROM outreach_message m JOIN lead l ON l.id = m.lead_id WHERE l.org_id = $1)`, []any{orgID}},
 			{&res.PlacesBlanked, `UPDATE place SET phones = '[]'::jsonb, emails = '[]'::jsonb
 			   WHERE org_id = $1 AND (phones <> '[]'::jsonb OR emails <> '[]'::jsonb)`, []any{orgID}},
+			// A reply's opening lines and the operator's notes on the lead may name a person.
+			{&res.SnippetsBlanked, `UPDATE mailbox_event SET snippet = NULL WHERE snippet IS NOT NULL
+			   AND lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
+			{&res.CRMRows, `DELETE FROM lead_crm WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
+			{&res.StageEvents, `DELETE FROM lead_stage_event WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
 		} {
 			tag, err := tq.db.Exec(ctx, step.sql, step.args...)
 			if err != nil {

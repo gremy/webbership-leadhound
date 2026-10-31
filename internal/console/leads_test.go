@@ -1012,15 +1012,19 @@ func TestLeadsRoutesDoNotShadow(t *testing.T) {
 		{"/leads/today", "LeadsToday", http.StatusOK, ""},
 		{"/leads/calls/9", "LeadCall", http.StatusOK, ""},
 		{"/leads/calls/9/outcome", "", http.StatusMethodNotAllowed, ""},
-		{"/leads/calls", "", http.StatusNotFound, ""},
+		{"/leads/calls", "CallQueue", http.StatusOK, ""},
+		{"/leads/replies", "RepliesInbox", http.StatusOK, ""},
+		{"/leads/pipeline", "Pipeline", http.StatusOK, ""},
+		{"/leads/reports", "CampaignReport", http.StatusOK, ""},
+		{"/leads/5/crm", "", http.StatusMethodNotAllowed, ""},
 		{"/leads/next", "", http.StatusSeeOther, ""},
 		{"/leads/batches", "", http.StatusNotFound, ""},
 		{"/leads/settings/who", "", http.StatusMethodNotAllowed, ""},
 		{"/leads/5/star", "", http.StatusMethodNotAllowed, ""},
 	}
 	// more is the reads a page makes beyond its two: Campaigns also reads each campaign's
-	// mailboxes.
-	more := map[string]int{"/leads/campaigns": 1}
+	// mailboxes; a lead's page its CRM fields and timeline.
+	more := map[string]int{"/leads/campaigns": 1, "/leads/5": 2}
 	for _, c := range cases {
 		b := richBackend("x")
 		h := newHarness(t, b, false)
