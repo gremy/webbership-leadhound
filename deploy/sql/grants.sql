@@ -77,6 +77,10 @@ BEGIN
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
     GRANT UPDATE (approved_at, approved_hash, discarded_at) ON public.outreach_batch TO leadhound_app;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'outreach_batch' AND column_name = 'manual') THEN
+      GRANT UPDATE (manual) ON public.outreach_batch TO leadhound_app;
+    END IF;
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
@@ -238,6 +242,14 @@ BEGIN
   -- The email check results (00025) are append-only.
   IF to_regclass('public.email_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.email_check FROM leadhound_app;
+  END IF;
+  -- Manual send (00027): a send request moves used_at only; the overrides are append-only.
+  IF to_regclass('public.send_request') IS NOT NULL THEN
+    REVOKE UPDATE ON public.send_request FROM leadhound_app;
+    GRANT UPDATE (used_at) ON public.send_request TO leadhound_app;
+  END IF;
+  IF to_regclass('public.send_override') IS NOT NULL THEN
+    REVOKE UPDATE ON public.send_override FROM leadhound_app;
   END IF;
 END
 $$;

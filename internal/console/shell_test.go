@@ -32,6 +32,7 @@ var shellProduct = map[string]string{
 	"/leads/calls/9":    "leads",
 	"/leads/batches/3":  "leads",
 	"/leads/5":          "leads",
+	"/leads/send-now/7": "leads",
 	"/mailboxes":        "",
 	"/mailboxes/new":    "",
 	"/mailboxes/1":      "",

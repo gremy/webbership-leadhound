@@ -99,7 +99,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // (00020; the owner alone deletes from them, to erase an org); place_import and place are
 // append-only (00021), whose new org.region column is fixed at insert; job_switch (00023) and
 // campaign_mailbox (00024) are append-only, and mailbox_check gains landing_url as a result
-// column (00024); email_check is append-only (00025). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// column (00024); email_check is append-only (00025); outreach_batch gains the manual pointer, send_request
+// takes UPDATE on used_at only and send_override is append-only (00027). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -139,6 +140,10 @@ BEGIN
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
     GRANT UPDATE (approved_at, approved_hash, discarded_at) ON public.outreach_batch TO leadhound_app;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+               AND table_name = 'outreach_batch' AND column_name = 'manual') THEN
+      GRANT UPDATE (manual) ON public.outreach_batch TO leadhound_app;
+    END IF;
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
@@ -269,6 +274,13 @@ BEGIN
   END IF;
   IF to_regclass('public.email_check') IS NOT NULL THEN
     REVOKE UPDATE ON public.email_check FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.send_request') IS NOT NULL THEN
+    REVOKE UPDATE ON public.send_request FROM leadhound_app;
+    GRANT UPDATE (used_at) ON public.send_request TO leadhound_app;
+  END IF;
+  IF to_regclass('public.send_override') IS NOT NULL THEN
+    REVOKE UPDATE ON public.send_override FROM leadhound_app;
   END IF;
 END
 $$`

@@ -9,6 +9,11 @@
   </div>
   <div class="btn-row">
     <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
+    <form method="post" action="/leads/send-now/preview" class="send-now-lead">
+      <input type="hidden" name="lead" value="{{$d.LeadID}}">
+      <input type="hidden" name="back" value="{{$v.Back}}">
+      <button type="submit" class="btn btn-primary"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Send now</button>
+    </form>
   </div>
 </div>
 {{if and $d.StarNote (not $d.Starred)}}<p class="hint star-note">{{$d.StarNote}}.</p>{{end}}

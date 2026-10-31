@@ -269,11 +269,12 @@ func (q Queries) LockBatchNew(ctx context.Context) error {
 
 // UnapprovedBatch returns the oldest batch of the given kind (shadow or live) that is
 // neither approved nor discarded, of account accountID (0: DefaultAccountID): the one a new
-// batch waits for. ok is false when none waits.
+// batch waits for. A manual batch never counts: it is confirmed or discarded on its own
+// (DiscardStaleManualBatches). ok is false when none waits.
 func (q Queries) UnapprovedBatch(ctx context.Context, accountID int64, shadow bool) (id int64, ok bool, err error) {
 	err = q.db.QueryRow(ctx,
 		`SELECT id FROM outreach_batch WHERE shadow = $1 AND approved_at IS NULL AND discarded_at IS NULL
-		   AND account_id = $2
+		   AND account_id = $2 AND NOT manual
 		 ORDER BY id LIMIT 1`, shadow, orAccount(accountID)).Scan(&id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -317,6 +318,11 @@ type Discard struct {
 // is set. An approved batch is ErrBatchApproved, a missing one ErrBatchNotFound; nothing
 // changes then. Run it in a transaction.
 func (q Queries) DiscardBatch(ctx context.Context, id int64) (Discard, error) {
+	return q.discardBatch(ctx, id, ActorGremy)
+}
+
+// discardBatch is DiscardBatch with the actor the lead moves are recorded under.
+func (q Queries) discardBatch(ctx context.Context, id int64, actor string) (Discard, error) {
 	var (
 		d         Discard
 		approved  bool
@@ -350,7 +356,7 @@ func (q Queries) DiscardBatch(ctx context.Context, id int64) (Discard, error) {
 	if !d.Shadow {
 		reason := fmt.Sprintf("batch %d discarded", id)
 		for _, l := range leadIDs {
-			moved, err := q.setLeadStateFrom(ctx, l, []string{LeadBatched}, LeadNew, reason, ActorGremy)
+			moved, err := q.setLeadStateFrom(ctx, l, []string{LeadBatched}, LeadNew, reason, actor)
 			if err != nil {
 				return Discard{}, fmt.Errorf("leadstore: discard batch: %w", err)
 			}

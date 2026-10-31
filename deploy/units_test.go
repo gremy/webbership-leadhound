@@ -189,7 +189,7 @@ var (
 	leadsSendingPaths = []string{"leadhound-leads-send-now.path"}
 	// leadsTriggered are the leads services the console starts through a watcher, with no
 	// timer: install.sh arms their watchers on every deploy, whatever the env switches say.
-	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-send-now.service"}
+	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-send-now.service", "leadhound-leads-verify-now.service"}
 	// leadsAlways are the leads services install.sh enables on every deploy, whatever the env
 	// switches say: the Reoon credits read for the Status page, which spends nothing.
 	leadsAlways = []string{"leadhound-leads-verify-balance.service"}
@@ -235,9 +235,17 @@ var triggered = map[string]struct {
 		after: []string{"network-online.target", "postgresql.service"},
 	},
 	// Send now: the console asks for one send that skips the sending window and nothing
-	// else; it runs the hourly send's command with --now, so it takes the same send lock.
+	// else, or a manual batch's send; the fixed command reads the request file
+	// (--from-request, which implies --now and --max 25), and takes the same send lock.
+	// Check email now, on a Send now confirm page: the console never holds the Reoon key, so
+	// the check runs in this job, which gets it; the fixed command reads the batch the request
+	// file names.
+	"leadhound-leads-verify-now": {
+		exec:  "/usr/bin/timeout --kill-after=1m 10m /opt/leadhound/bin/leadhound leads verify --from-request --max 25",
+		after: []string{"network-online.target", "postgresql.service"},
+	},
 	"leadhound-leads-send-now": {
-		exec:  "/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --now --max 25",
+		exec:  "/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --from-request",
 		after: []string{"network-online.target", "postgresql.service"},
 	},
 }
@@ -246,7 +254,7 @@ var triggered = map[string]struct {
 // research and Send now): each has
 // a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
 // starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now", "leads-verify-balance"}
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now", "leads-verify-balance", "leads-verify-now"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -996,6 +1004,7 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-mailbox-check":        {"600M", "450MiB"},
 	"leadhound-leads-research":       {"600M", "450MiB"},
 	"leadhound-leads-send-now":       {"600M", "450MiB"},
+	"leadhound-leads-verify-now":     {"600M", "450MiB"},
 	"leadhound-leads-verify-balance": {"600M", "450MiB"},
 }
 
@@ -1679,7 +1688,7 @@ var claudeWorkers = []string{"leadhound-leads-batch", "leadhound-leads-research"
 // reoonWorkers are the only services that call Reoon (leads verify, and its balance read for
 // the Status page), so the only ones handed the Reoon key, with an empty default for a server
 // without it (SetCredential=).
-var reoonWorkers = []string{"leadhound-leads-batch", "leadhound-leads-verify-balance"}
+var reoonWorkers = []string{"leadhound-leads-batch", "leadhound-leads-verify-balance", "leadhound-leads-verify-now"}
 
 const (
 	reoonCredential        = "reoon.key:/etc/leadhound/reoon.key"         //nolint:gosec // G101: a systemd credential name and path, not a credential
@@ -2260,7 +2269,8 @@ func TestResearchUnit(t *testing.T) {
 }
 
 // TestSendNowUnit (Task 4.2): Send now runs only when the console asks (its watcher, never a
-// timer), as the hourly send's twin: the same command with --now and the same --max, the same
+// timer), as the hourly send's twin: the same command with --from-request (--now and the same
+// --max 25 within it), the same
 // mailbox key and nothing else, the same limits, and the same send lock (the command's own
 // database lock, so no file lock either side).
 func TestSendNowUnit(t *testing.T) {
@@ -2273,8 +2283,9 @@ func TestSendNowUnit(t *testing.T) {
 		t.Errorf("%s.path watches %s", name, got)
 	}
 	nowExec, sendExec := now.one(t, name, "Service", "ExecStart"), send.one(t, "send", "Service", "ExecStart")
-	if strings.Replace(sendExec, "leads send ", "leads send --now ", 1) != nowExec {
-		t.Errorf("ExecStart %q is not the hourly send's %q with --now", nowExec, sendExec)
+	// --from-request implies --now and the hourly send's --max 25 (leads_send.go).
+	if strings.Replace(sendExec, "leads send --max 25", "leads send --from-request", 1) != nowExec {
+		t.Errorf("ExecStart %q is not the hourly send's %q with --from-request", nowExec, sendExec)
 	}
 	for _, key := range []string{"LoadCredential", "TimeoutStartSec", "MemoryMax", "Environment", "ReadWritePaths", "User", "EnvironmentFile"} {
 		if !slices.Equal(now["Service"][key], send["Service"][key]) {

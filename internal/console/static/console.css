@@ -4112,3 +4112,50 @@ a[aria-current="true"] .count {
 .page .message-head {
   overflow-wrap: anywhere;
 }
+
+/* ---------- Send now confirm (manual send: the confirm page and its buttons) ---------- */
+.send-confirm-notice {
+  max-width: 880px;
+  margin: 0 auto var(--sp-2);
+}
+.lead-list > .bulkbar {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.send-waiting .alert-text a {
+  font-weight: 600;
+}
+/* The Approve button's label is a whole sentence: it wraps instead of pushing the page sideways. */
+.approve .btn {
+  white-space: normal;
+  line-height: 1.35;
+  padding-block: 8px;
+  text-align: left;
+}
+/* The confirm page's leads table fits a phone: the result wraps under its dot, addresses break. */
+.send-leads .state {
+  white-space: normal;
+}
+.send-leads .cell-sub {
+  overflow-wrap: anywhere;
+}
+.send-leads .send-check {
+  display: flex;
+  width: fit-content;
+  margin-top: var(--sp-1);
+}
+@media (max-width: 639px) {
+  .send-leads thead {
+    display: none;
+  }
+  .send-leads tr,
+  .send-leads td {
+    display: block;
+  }
+  .send-leads td:first-child {
+    border-bottom: 0;
+    padding-bottom: 4px;
+  }
+  .send-leads td + td {
+    padding-top: 0;
+  }
+}

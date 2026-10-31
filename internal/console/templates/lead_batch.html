@@ -59,10 +59,14 @@
     <div class="card-body">
       <p class="muted">Content hash {{$b.HashPrefix}}. Items ticked above are left out.</p>
       <input type="hidden" name="hash" value="{{$b.HashPrefix}}">
+      <input type="hidden" name="back" value="/leads/batches/{{$b.ID}}">
     </div>
     <div class="confirm-foot">
-      <span class="muted small">Approving keeps the schedule.</span>
-      <span class="btn-row"><button type="submit" class="btn btn-primary">{{approveWords $b.Shadow}}</button></span>
+      <span class="muted small">Approve keeps the schedule. Approve and send now goes through the send check first.</span>
+      <span class="btn-row">
+        <button type="submit" class="btn btn-secondary">{{approveWords $b.Shadow}}</button>
+        <button type="submit" class="btn btn-primary" formaction="/leads/send-now/preview" name="batch" value="{{$b.ID}}"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Approve and send now</button>
+      </span>
     </div>
   </form>
 </section>

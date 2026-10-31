@@ -1,7 +1,21 @@
-# Send now: the console's Send now button. The same send as leadhound-leads-send.service, but
-# leads send --now skips the sending window (hours and days) for this one run and nothing else:
-# the sending switch, shadow mode, the reply sync first, the warm-up and domain caps, the
-# spacing, paused and unassigned mailboxes, suppressions and every due time still apply.
+# Send now: the console's Send now. The same send as leadhound-leads-send.service, run by
+# leads send --from-request, which reads the request file the console wrote,
+# /opt/leadhound/data/run/leads-send-now, and nothing else from the console:
+#   - a request time (RFC3339) or an empty file, as Controls' Send now writes it, is
+#     leads send --now: it skips the sending window (hours and days) for this one run and
+#     nothing else: the sending switch, shadow mode, the reply sync first, the warm-up and
+#     domain caps, the spacing, paused and unassigned mailboxes, suppressions and every due time
+#     still apply;
+#   - one JSON line {"batch_id":N,"at":"<time>"}, written at a manual send's confirm, sends
+#     that manual batch alone. The file is untrusted and names the batch only: the warning
+#     codes the operator overrode, the batch hash they confirmed and who they are come from the
+#     send_request row the console wrote, which the run claims once (no older than 15 minutes)
+#     and checks again (manual, approved, the hash, codes from the closed set). Every hard stop
+#     stays: suppressions, the email check, the mailbox's readiness and assignment, the hard
+#     daily ceilings, one recipient domain per run, the approved text. Each message sent past
+#     a warning leaves a send_override row.
+#   - anything else starting with "{" is refused, and nothing is sent.
+# The command line is fixed here: the console never chooses one.
 # Started by leadhound-leads-send-now.path when the console asks; it has no timer. It takes
 # the same database send lock as the hourly send, so the two never run at once: whichever
 # starts second says "Another send is running" and does nothing.
@@ -20,8 +34,9 @@ EnvironmentFile=/etc/leadhound/env
 # alone as a systemd credential: it opens the sealed passwords from
 # $CREDENTIALS_DIRECTORY/mailbox-key. Only send, sync and the mailbox check get it.
 LoadCredential=mailbox-key:/etc/leadhound/mailbox.key
-# timeout ends a send that hangs; 25 sends spaced up to 9 minutes apart fit inside it.
-ExecStart=/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --now --max 25
+# timeout ends a send that hangs; 25 sends spaced up to 9 minutes apart fit inside it
+# (--from-request sends at most 25, as the hourly send's --max 25).
+ExecStart=/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --from-request
 # Longer than the send's timeout and its kill grace together (3h50).
 TimeoutStartSec=4h
 Nice=10

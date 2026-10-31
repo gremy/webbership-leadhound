@@ -306,6 +306,16 @@ type NewBatchRequest struct {
 	// CampaignID is the campaign whose leads the batch drafts; 0 is the legacy Drupal
 	// campaign (leadstore.DefaultCampaignID).
 	CampaignID int64
+	// LeadIDs, when set, are the leads a manual Send now chose: the batch drafts those of
+	// them the queue still offers (manualQueue), in this order, instead of the next in the
+	// queue. A waiting batch and a day with no room do not refuse it (the confirm page warns
+	// instead), every lead gets a ready assigned mailbox whatever its room, and a lead whose
+	// address the email check has not answered yet is drafted all the same (the confirm page
+	// waits on its check). Every other check runs unchanged. Size is ignored.
+	LeadIDs []int64
+	// Manual marks the batch a manual one (leadstore.MarkBatchManual) in the transaction that
+	// creates it, so no batch new ever sees it unmarked.
+	Manual bool
 }
 
 // BatchCounts are a batch's first emails, contact forms and LinkedIn notes.
@@ -316,8 +326,12 @@ func (c BatchCounts) String() string {
 		plural(c.Forms, "contact form", "contact forms"), plural(c.LinkedIn, "LinkedIn note", "LinkedIn notes"))
 }
 
-// DroppedLead is a candidate whose drafts failed the checks.
-type DroppedLead struct{ Domain, Kind, Channel, Why string }
+// DroppedLead is a candidate whose drafts failed the checks. LeadID is set where the lead is
+// known (0 for a skip found by domain only).
+type DroppedLead struct {
+	Domain, Kind, Channel, Why string
+	LeadID                     int64
+}
 
 func (d DroppedLead) String() string {
 	return fmt.Sprintf("%s (%s, %s): %s", d.Domain, d.Kind, d.Channel, d.Why)
@@ -365,7 +379,8 @@ type NewBatchOutcome struct {
 // (runBatchNew runs them first). A shadow batch reads no readiness: every active mailbox
 // takes leads. While the Email check job is on, a live lead's email address must have a
 // sendable fresh answer (emailGate.route): a blocked one falls to the lead's next route or
-// is skipped, an unchecked one waits for a later batch.
+// is skipped, an unchecked one waits for a later batch. A manual batch (req.LeadIDs) differs
+// only where NewBatchRequest.LeadIDs says.
 func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, req NewBatchRequest) (NewBatchOutcome, error) {
 	out := NewBatchOutcome{Shadow: bs.shadow}
 	if bs.shadow && req.LiveOnly {
@@ -380,14 +395,20 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 		return out, err
 	}
 	campaignID := cmp.Or(req.CampaignID, leadstore.DefaultCampaignID)
-	if id, ok, err := lq.UnapprovedBatch(ctx, leadstore.DefaultAccountID, bs.shadow); err != nil {
-		return out, err
-	} else if ok {
-		return out, &LeadRefusal{Kind: RefuseBatchWaiting, BatchID: id}
+	manual := len(req.LeadIDs) > 0
+	if !manual {
+		if id, ok, err := lq.UnapprovedBatch(ctx, leadstore.DefaultAccountID, bs.shadow); err != nil {
+			return out, err
+		} else if ok {
+			return out, &LeadRefusal{Kind: RefuseBatchWaiting, BatchID: id}
+		}
 	}
 	n := req.Size
 	if n <= 0 {
 		n = bs.leads.Caps.BatchSize
+	}
+	if manual {
+		n = len(req.LeadIDs)
 	}
 	mbs, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, startOfDay(now, bs.loc))
 	if err != nil {
@@ -419,11 +440,24 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if err != nil {
 		return out, err
 	}
-	cands, opts, skipped, elsewhere, err := batchQueue(ctx, lq, bs, plan, campaignID, now)
+	var (
+		cands     []leadstore.Candidate
+		opts      leadstore.CandidateOptions
+		skipped   []DroppedLead
+		elsewhere map[int64]bool
+	)
+	if manual {
+		cands, skipped, err = manualQueue(ctx, lq, bs, plan, campaignID, now, req.LeadIDs)
+	} else {
+		cands, opts, skipped, elsewhere, err = batchQueue(ctx, lq, bs, plan, campaignID, now)
+	}
 	if err != nil {
 		return out, err
 	}
 	out.Skipped = skipped
+	if len(cands) == 0 && manual {
+		return out, nil
+	}
 	if len(cands) == 0 {
 		if opts.StarredOnly {
 			st, err := lq.StarredStatus(ctx, leadstore.StarredStatusOptions{CandidateOptions: opts, Countries: countryChannels(bs.leads)})
@@ -438,6 +472,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if bs.shadow {
 		for id := range byID {
 			room[id] = n * steps
+		}
+	} else if manual {
+		if room = manualRoom(bs, now, len(cands), steps, mbs, assigned); len(room) == 0 {
+			return out, notReadyRefusal(ctx, lq, slices.DeleteFunc(slices.Clone(mbs), func(m leadstore.MailboxStatus) bool { return !assigned[m.ID] }),
+				startOfDay(now, bs.loc))
 		}
 	} else {
 		z, r, err := liveSizing(ctx, lq, bs, now, n, steps, mbs, assigned)
@@ -514,11 +553,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 				if err != nil {
 					return out, err
 				}
-				switch res.kind {
-				case gateSkip:
-					out.Skipped = append(out.Skipped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: "email check: " + emailCheckWords(res.status)})
+				switch {
+				case res.kind == gateSkip:
+					out.Skipped = append(out.Skipped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: "email check: " + emailCheckWords(res.status), LeadID: c.LeadID})
 					continue
-				case gateWait:
+				case res.kind == gateWait && !manual:
 					out.EmailWaiting++
 					continue
 				}
@@ -546,13 +585,13 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 			if c.Channel == leadconfig.ChannelNone && seqName == "" {
 				// A lead with no route is offered only for a call-first country; this one is not.
 				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel,
-					Why: "no route, and email to this country needs no call first"})
+					Why: "no route, and email to this country needs no call first", LeadID: c.LeadID})
 				continue
 			}
 			if seqName != "" && phone == nil {
 				// Email to this country needs a yes won on a call: no call, no contact at all.
 				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel,
-					Why: "call first (email needs their yes on a call): " + cmp.Or(leftOut, callNoNumber)})
+					Why: "call first (email needs their yes on a call): " + cmp.Or(leftOut, callNoNumber), LeadID: c.LeadID})
 				continue
 			}
 			ds, err := drafter.draft(ctx, lq, leadPlan, c, ev[c.LeadID], bs.leads, phone, outreach.MessageIDDomain(mb.Address), rand.Reader)
@@ -560,7 +599,7 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 				return out, err
 			}
 			if err != nil {
-				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: err.Error()})
+				out.Dropped = append(out.Dropped, DroppedLead{Domain: c.Domain, Kind: c.Kind, Channel: c.Channel, Why: err.Error(), LeadID: c.LeadID})
 				continue
 			}
 			if leftOut != "" {
@@ -615,6 +654,11 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	meta := leadstore.BatchMeta{CampaignID: campaignID, Sequences: plan.sequences}
 	if out.BatchID, _, err = lq.CreateBatchFor(ctx, meta, bs.shadow, drafts, tsha); err != nil {
 		return out, err
+	}
+	if req.Manual {
+		if err := lq.MarkBatchManual(ctx, out.BatchID); err != nil {
+			return out, err
+		}
 	}
 	out.Counts = countDrafts(drafts)
 	return out, nil
@@ -1088,6 +1132,15 @@ type ApproveRequest struct {
 	ID         int64
 	HashPrefix string
 	Skip       []int
+	// DueNow is a manual Send now's approval: each first email is due at the approval's time,
+	// not at its next business slot (the confirm page warned about the hours).
+	DueNow bool
+	// before and after, when set, run in the approval's transaction, before it and after it
+	// (with what it did); an error from either rolls everything back. Manual Send now marks
+	// the batch manual before and writes its send_request row after, so the batch is never
+	// approved without them.
+	before func(leadstore.Queries) error
+	after  func(leadstore.Queries, leadstore.Approval) error
 }
 
 // ApproveOutcome is what approveBatch did.
@@ -1142,6 +1195,9 @@ func approveBatch(ctx context.Context, s *store.Store, cfg leadconfig.Config, no
 			return time.Time{}
 		}
 		d := outreach.NextSlot(locs[m.LeadID], cfg.SendingWindow(), t)
+		if req.DueNow {
+			d = t
+		}
 		if !d.IsZero() && (out.FirstDue.IsZero() || d.Before(out.FirstDue)) {
 			out.FirstDue = d
 		}
@@ -1149,8 +1205,16 @@ func approveBatch(ctx context.Context, s *store.Store, cfg leadconfig.Config, no
 	}
 	err = leadsInTx(ctx, s.Pool(), func(tq leadstore.Queries) error {
 		var err error
+		if req.before != nil {
+			if err := req.before(tq); err != nil {
+				return err
+			}
+		}
 		out.Approval, err = tq.ApproveBatch(ctx, req.ID, req.HashPrefix, req.Skip, due)
-		return err
+		if err != nil || req.after == nil {
+			return err
+		}
+		return req.after(tq, out.Approval)
 	})
 	refuse := func(k RefusalKind) (ApproveOutcome, error) {
 		return ApproveOutcome{BatchID: req.ID, Shadow: b.Shadow, Items: len(items)},

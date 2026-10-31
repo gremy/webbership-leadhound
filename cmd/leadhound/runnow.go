@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -525,8 +527,10 @@ func writeRunRequest(dataDir, action string, at time.Time) error {
 	return nil
 }
 
-// readRunRequest is the time in <dataDir>/run/<action>, nil when there is none. Text that
-// is not a time falls back to the file's mtime.
+// readRunRequest is the time in <dataDir>/run/<action>, nil when there is none: an RFC3339
+// time, or the "at" of a manual Send now request's JSON line (sendNowRequest). Anything else,
+// an empty file or JSON that does not parse included, falls back to the file's mtime; this
+// time is for the console's state only, never what a send acts on (readSendNowRequest).
 func readRunRequest(dataDir, action string) (*time.Time, error) {
 	path := filepath.Join(dataDir, runRequestDir, action)
 	b, err := os.ReadFile(path) // #nosec G304 -- action is one of console.RunActions
@@ -536,7 +540,14 @@ func readRunRequest(dataDir, action string) (*time.Time, error) {
 	if err != nil {
 		return nil, fmt.Errorf("run now: %w", err)
 	}
-	at, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b)))
+	text := strings.TrimSpace(string(b))
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil && strings.HasPrefix(text, "{") {
+		var req sendNowRequest
+		if jerr := json.Unmarshal([]byte(text), &req); jerr == nil && !req.At.IsZero() {
+			at, err = req.At, nil
+		}
+	}
 	if err != nil {
 		st, serr := os.Stat(path)
 		if serr != nil {
@@ -545,6 +556,69 @@ func readRunRequest(dataDir, action string) (*time.Time, error) {
 		at = st.ModTime()
 	}
 	return &at, nil
+}
+
+// sendNowRequest is a manual Send now request file's one JSON line, written by the console at
+// confirm: the batch to send and when it was asked. The file is untrusted (the console and
+// the send service run as one user), so it carries only the batch id; the override codes,
+// the batch hash and the operator come from the send_request row the console wrote at
+// confirm, which the send claims and checks again (leads send --from-request).
+type sendNowRequest struct {
+	BatchID int64     `json:"batch_id"`
+	At      time.Time `json:"at"`
+}
+
+// The kinds of Send now request readSendNowRequest reads.
+const (
+	// sendRequestLegacy: an RFC3339 time or an empty file, as Controls' Send now writes it:
+	// today's leads send --now.
+	sendRequestLegacy = "legacy"
+	// sendRequestManual: a JSON line naming a manual batch (sendNowRequest).
+	sendRequestManual = "manual"
+)
+
+// maxSendNowRequest is the most a Send now request file may hold; anything longer is refused.
+const maxSendNowRequest = 4096
+
+// readSendNowRequest reads <dataDir>/run/leads-send-now for the send service: a JSON line with
+// batch_id above 0 is a manual request for that batch; a time, an empty file or any other text
+// not starting with "{" is a legacy request (the old service never read the file, so a torn
+// write still means Send now). Text starting with "{" that does not parse as exactly
+// sendNowRequest, or names no batch, is refused, as is a missing or oversized file.
+func readSendNowRequest(dataDir string) (batchID int64, kind string, err error) {
+	if dataDir == "" {
+		return 0, "", errors.New("send now request: LEADHOUND_DATA_DIR is not set")
+	}
+	path := filepath.Join(dataDir, runRequestDir, sendNowAction)
+	f, err := os.Open(path) // #nosec G304 -- a fixed name under the data directory
+	if err != nil {
+		return 0, "", fmt.Errorf("send now request: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxSendNowRequest+1))
+	if err != nil {
+		return 0, "", fmt.Errorf("send now request: %w", err)
+	}
+	if len(b) > maxSendNowRequest {
+		return 0, "", fmt.Errorf("send now request: the file is over %d bytes", maxSendNowRequest)
+	}
+	text := strings.TrimSpace(string(b))
+	if !strings.HasPrefix(text, "{") {
+		return 0, sendRequestLegacy, nil
+	}
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.DisallowUnknownFields()
+	var req sendNowRequest
+	if err := dec.Decode(&req); err != nil {
+		return 0, "", fmt.Errorf("send now request: not a request line: %w", err)
+	}
+	if dec.More() {
+		return 0, "", errors.New("send now request: more than one request in the file")
+	}
+	if req.BatchID <= 0 {
+		return 0, "", fmt.Errorf("send now request: batch_id %d names no batch", req.BatchID)
+	}
+	return req.BatchID, sendRequestManual, nil
 }
 
 // runNowRead is the runs of the window and each action's request, a request older than
@@ -714,8 +788,11 @@ func resultJob(j preview.Job, sums map[int64]store.JobSummary) console.ResultJob
 // Send now: the Controls page (or the Leads page's Outreach list) asks for one send that
 // skips the sending window, through the same request-file road as Run now: the console
 // writes <data>/run/leads-send-now and leadhound-leads-send-now.path starts the fixed
-// leadhound-leads-send-now.service (leads send --now --max 25). The console gains no
-// privilege, and the run takes the same database send lock as the hourly send.
+// leadhound-leads-send-now.service (leads send --from-request). A time in the file is this
+// Send now (leads send --now --max 25); a JSON line from a manual send's confirm
+// (sendNowRequest) sends that batch alone with the overrides its send_request row holds. The
+// console gains no privilege, and the run takes the same database send lock as the hourly
+// send.
 
 // sendNowAction is Send now's request file under runRequestDir, and its watcher's name.
 const sendNowAction = "leads-send-now"

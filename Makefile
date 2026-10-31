@@ -154,7 +154,7 @@ test:
 ## test-integration: integration tests against the local test database; fails instead of skipping
 test-integration:
 	TEST_DB_REQUIRED=1 TEST_DB_DSN='$(TEST_DB_DSN)' TEST_MIGRATE_DSN='$(TEST_MIGRATE_DSN)' \
-		go test -tags integration -p 1 ./... -race
+		go test -tags integration -p 1 ./... -race -timeout 45m
 
 ## test-scale: time and memory budgets on the production-sized leadhound_scale database (seeded once, then reused;
 ## -count=1 so every run measures the database, never a cached result)

@@ -32,6 +32,7 @@ type Backend interface {
 	MailboxesBackend
 	ControlsBackend
 	StatusBackend
+	ManualSendBackend
 }
 
 // The Run now actions. Each name is the request file, the .path unit and the
@@ -1170,4 +1171,92 @@ type MailboxSendingView struct {
 	Landing   LandingView
 	Waiting   int
 	Why       SendingWhy
+}
+
+// ManualSendBackend is the console's manual Send now: a batch of chosen leads, previewed, then confirmed.
+// The console shows the plan, posts back exactly what it showed (the hash and the warning codes) and
+// the operator who pressed; the backend re-checks everything, approves the batch and asks the send
+// unit for the run. Hard stops are never codes: no input from the console lifts one. Like the leads
+// backend, every method returns ErrLeadsNotSetUp when this server has no usable leads settings, and
+// a refusal the operator can fix wraps ErrUserFixable with one plain sentence that carries its number.
+type ManualSendBackend interface {
+	// SendNowPreview builds (or reuses) a manual batch for the chosen leads or an existing batch and returns its plan.
+	// ErrNotFound when the batch or a lead does not exist.
+	SendNowPreview(ctx context.Context, req ManualSendRequest) (SendPlan, error)
+	// SendNowPlan re-reads the plan of a manual batch (the confirm page's GET and its htmx poll). It
+	// never writes. ErrNotFound for no such manual batch.
+	SendNowPlan(ctx context.Context, batchID int64) (SendPlan, error)
+	// SendNowConfirm approves and asks for the send; a plan that changed since the page was shown returns *PlanChangedError.
+	// Changed means: a different hash, a warning that is not in Codes, or a hard stop that is new.
+	SendNowConfirm(ctx context.Context, c ManualConfirm) (ControlOutcome, error)
+	// SendNowCheckEmail asks the email check to run now for the batch's unchecked addresses.
+	SendNowCheckEmail(ctx context.Context, batchID int64) (ControlOutcome, error)
+}
+
+// ManualSendRequest is what a Send now button asks for: chosen leads (the lead page, the list) or an
+// existing batch (the batch page). Exactly one is set; the console refuses the rest.
+type ManualSendRequest struct {
+	LeadIDs []int64 // each positive, no repeats, in the order chosen
+	BatchID int64
+}
+
+// SendPlan is a manual batch as the confirm page shows it.
+type SendPlan struct {
+	BatchID    int64
+	HashPrefix string // the batch's content hash as shown; confirm posts it back
+	Leads      []SendPlanLead
+	Warnings   []SendWarning // overridable, each with numbers
+	Notes      []string      // e.g. two leads share a domain so one goes in the next run; more than 25 must be split
+	Waiting    string        // non-empty while drafts are still being written (page polls)
+	CanSend    bool          // at least one lead OK and nothing waiting
+}
+
+// SendPlanLead is one chosen lead and what happens to it. At most one of OK, Stop and Waiting holds.
+type SendPlanLead struct {
+	LeadID              int64
+	Name, Domain, Email string
+	OK                  bool   // goes in this send
+	Stop                string // hard stop reason, never overridable; the lead is left out
+	Waiting             string // e.g. "Email not checked yet"; the lead is not in this send
+}
+
+// SendWarning is one overridable warning: its code (one of SendWarningCodes) and the sentence with
+// its numbers, e.g. "Mailbox 1 has sent 18 of 18 today (warm-up). This goes 1 over."
+type SendWarning struct {
+	Code     string
+	Sentence string
+}
+
+// The warning codes, a closed set. Anything else is never an override.
+const (
+	WarnWindow        = "window"         // outside the sending window
+	WarnBusinessHours = "business_hours" // a recipient outside business hours
+	WarnRamp          = "ramp"           // a mailbox's warm-up room is used (the 40 ceiling stays hard)
+	WarnDomainDaily   = "domain_daily"   // a sending domain's 50 a day (the 100 ceiling stays hard)
+	WarnSpacingJitter = "spacing_jitter" // no jitter between sends (the 60 s minimum stays)
+	WarnSchedule      = "schedule"       // sent before its due time or outside the batch schedule
+)
+
+// SendWarningCodes lists every warning code, in the order the confirm page shows them.
+var SendWarningCodes = []string{WarnWindow, WarnBusinessHours, WarnRamp, WarnDomainDaily, WarnSpacingJitter, WarnSchedule}
+
+// ManualConfirm is the confirm page's press: the batch, the hash and the warning codes it showed, and
+// the operator's sign-in email (Options.Operator). Codes are deduplicated and each is in
+// SendWarningCodes; the console has checked that the operator ticked "I have read" when Codes is not
+// empty.
+type ManualConfirm struct {
+	BatchID    int64
+	HashPrefix string
+	Codes      []string
+	Operator   string
+}
+
+// PlanChangedError is SendNowConfirm's answer when the plan is no longer the one the page showed;
+// Plan is the plan now, which the page shows again for a fresh look.
+type PlanChangedError struct {
+	Plan SendPlan
+}
+
+func (*PlanChangedError) Error() string {
+	return "Something changed since you looked; check the warnings again."
 }

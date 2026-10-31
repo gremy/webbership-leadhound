@@ -1,0 +1,108 @@
+{{define "content"}}
+{{$v := .Data}}{{$p := $v.Plan}}{{$nw := len $p.Warnings}}{{$path := $v.Path}}
+<div class="page">
+<div id="send-confirm"{{if $p.Waiting}} hx-get="{{$path}}" hx-trigger="every 3s" hx-select="#send-confirm" hx-target="this" hx-swap="outerHTML"{{end}}>
+{{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}} send-confirm-notice" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
+<form class="confirm" method="post" action="/leads/send-now/{{$p.BatchID}}/confirm" aria-labelledby="confirm-h">
+  <input type="hidden" name="hash" value="{{$p.HashPrefix}}">
+  {{range $p.Warnings}}<input type="hidden" name="code" value="{{.Code}}">{{end}}
+  {{with $v.Back}}<input type="hidden" name="back" value="{{.}}">{{end}}
+  <div class="confirm-head">
+    <span class="eyebrow">Manual batch {{$p.BatchID}} · {{plural (len $p.Leads) "lead" "leads"}} chosen</span>
+    <h1 id="confirm-h">{{if $v.ShowSend}}Send {{plural $v.SendNow "email" "emails"}} now?{{else if $p.Waiting}}Getting the send ready{{else}}Nothing can go now{{end}}</h1>
+    <p class="page-sub">{{if $v.ShowSend}}Leads with a hard stop are left out; {{if $nw}}the rest can go past the warnings below.{{else}}the rest go now.{{end}}{{else if $p.Waiting}}This page updates itself when it is ready.{{else}}Every chosen lead has a hard stop or is still waiting, so there is no send button.{{end}}</p>
+  </div>
+  <div class="confirm-body">
+    <dl class="confirm-tally">
+      <div><dt>Send now</dt><dd>{{$v.SendNow}}</dd></div>
+      <div><dt>Waiting</dt><dd>{{$v.WaitingN}}</dd></div>
+      <div><dt>Left out</dt><dd{{if $v.Stopped}} class="text-bad"{{end}}>{{$v.Stopped}}</dd></div>
+      <div><dt>Warnings</dt><dd>{{$nw}}</dd></div>
+    </dl>
+
+    {{with $p.Waiting}}
+    <section class="alert alert-info send-waiting" aria-labelledby="wait-h" aria-live="polite">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      <div>
+        <h2 id="wait-h" class="alert-title">Waiting</h2>
+        <p class="alert-text">{{.}}</p>
+        <p class="alert-text"><a href="{{$path}}">Refresh</a></p>
+      </div>
+    </section>
+    {{end}}
+
+    {{if $nw}}
+    <section class="alert alert-warn" aria-labelledby="warn-h">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <div>
+        <h2 id="warn-h" class="alert-title">{{plural $nw "warning" "warnings"}} you can go past</h2>
+        <p class="alert-text">Each one is recorded with its numbers when you send.</p>
+        <ul class="alert-list">
+          {{range $p.Warnings}}<li><span><span class="code-chip">{{.Code}}</span></span><span>{{.Sentence}}</span></li>{{end}}
+        </ul>
+      </div>
+    </section>
+    {{end}}
+
+    {{with $v.Stops}}
+    <section class="alert alert-stop" aria-labelledby="stop-h">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7.9 2h8.2L22 7.9v8.2L16.1 22H7.9L2 16.1V7.9z"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+      <div>
+        <h2 id="stop-h" class="alert-title">{{plural (len .) "lead" "leads"}} left out (hard stops)</h2>
+        <p class="alert-text">Hard stops cannot be overridden. These leads are not in this send.</p>
+        <ul class="alert-list">
+          {{range .}}<li><span class="who">{{or .Name .Domain}}</span><span>{{.Stop}}</span></li>{{end}}
+        </ul>
+        <p class="alert-text muted">Also never overridable: the ceilings of 40 per mailbox and 100 per domain each day, opt-outs, failed grounding and shadow mode.</p>
+      </div>
+    </section>
+    {{end}}
+
+    {{if $p.Leads}}
+    <section class="card" aria-labelledby="who-h">
+      <div class="card-head"><h2 id="who-h">Leads in this send</h2></div>
+      <div class="table-wrap card-body-flush">
+        <table class="table send-leads">
+          <thead><tr><th scope="col">Lead</th><th scope="col">Result</th></tr></thead>
+          <tbody>
+          {{range $p.Leads}}
+            <tr>
+              <td><a class="cell-main" href="/leads/{{.LeadID}}">{{or .Name .Domain}}</a><span class="cell-sub">{{or .Email .Domain}}</span></td>
+              <td>{{if .Stop}}<span class="state state-bad"><span class="dot dot-bad"></span>Left out · hard stop</span>
+                {{- else if .Waiting}}<span class="state state-grey"><span class="dot dot-grey"></span>Waiting · {{.Waiting}}</span>
+                {{- else if .OK}}<span class="state state-good"><span class="dot dot-good"></span>Sends now</span>
+                {{- else}}<span class="state state-grey"><span class="dot dot-grey"></span>Not in this send</span>{{end}}
+                {{if and .Waiting (not $p.Waiting)}}<button class="btn btn-secondary btn-sm send-check" type="submit" formaction="/leads/send-now/{{$p.BatchID}}/check-email" formnovalidate><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>Check email now<span class="visually-hidden"> for {{or .Name .Domain}}</span></button>{{end}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {{end}}
+
+    {{with $p.Notes}}
+    <div class="alert alert-info">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      <ul class="alert-list mt-0">
+        {{range .}}<li>{{.}}</li>{{end}}
+      </ul>
+    </div>
+    {{end}}
+
+    {{if and $v.ShowSend $nw}}
+    <label class="ack"><input type="checkbox" name="read" value="1" required> I have read the {{if eq $nw 1}}warning{{else}}{{$nw}} warnings{{end}} and want to send past {{if eq $nw 1}}it{{else}}them{{end}}.</label>
+    {{end}}
+  </div>
+  <div class="confirm-foot">
+    <a class="btn btn-ghost" href="{{$v.CancelTo}}">{{if $v.ShowSend}}Cancel{{else}}Back{{end}}</a>
+    {{if $v.ShowSend}}
+    <span class="btn-row">
+      <button class="btn btn-primary" type="submit"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>{{if $nw}}Send anyway{{else}}Send now{{end}} ({{$v.SendNow}})</button>
+    </span>
+    {{end}}
+  </div>
+</form>
+</div>
+</div>
+{{end}}

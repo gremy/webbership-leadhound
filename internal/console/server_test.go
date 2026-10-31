@@ -101,6 +101,7 @@ type fakeBackend struct {
 	mbSending   MailboxSendingView
 
 	statusFake
+	sendNowFake
 }
 
 func (f *fakeBackend) count(name string) {
@@ -291,11 +292,12 @@ func richBackend(text string) *fakeBackend {
 			ClaudeMonthMicros: 23_400_000,
 			ReoonChecksToday:  36, ReoonDailyLimit: 50,
 		},
-		statusFake: statusFake{status: richStatus(text)},
-		brief:      BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
-		tracked:    []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
-		runs:       []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
-		rules:      []RuleRow{{ID: 7, Kind: "skip", Field: "company", Pattern: text, Reason: text, FromJobID: &from, CreatedAt: testSent, DisabledReason: text}},
+		statusFake:  statusFake{status: richStatus(text)},
+		sendNowFake: sendNowFake{plan: richSendPlan(text)},
+		brief:       BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
+		tracked:     []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
+		runs:        []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
+		rules:       []RuleRow{{ID: 7, Kind: "skip", Field: "company", Pattern: text, Reason: text, FromJobID: &from, CreatedAt: testSent, DisabledReason: text}},
 		out: TrackOutcome{
 			Job:  BriefJob{N: 1, JobID: 42, Title: "Go Engineer", Company: "Acme", Status: "applied", URL: "https://jobs.example/42"},
 			From: "shortlisted", To: "applied", Message: "shortlisted → applied",
@@ -1260,7 +1262,7 @@ func TestNoInlineScriptOrStyle(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)
 	for _, p := range []string{"/login", "/", "/status", "/jobs/home", "/leads/home", "/jobs", "/tracked", "/runs", "/rules", "/results",
-		"/mailboxes", "/mailboxes/new", "/mailboxes/1", "/mailboxes/1/edit"} {
+		"/mailboxes", "/mailboxes/new", "/mailboxes/1", "/mailboxes/1/edit", "/leads/send-now/7", "/leads", "/leads/5", "/leads/batches/3"} {
 		cookies := []*http.Cookie{c}
 		if p == "/login" {
 			cookies = nil

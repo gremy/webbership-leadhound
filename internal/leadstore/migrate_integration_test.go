@@ -113,7 +113,7 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
 	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent",
 	"draft_generation", "draft_review", "draft_eval", "phone_screening", "phone_status", "phone_research",
-	"place_import", "place", "job_switch", "campaign_mailbox", "email_check"}
+	"place_import", "place", "job_switch", "campaign_mailbox", "email_check", "send_override"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -191,7 +191,7 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 var pointerColumns = map[string][2][]string{
 	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "finding_id", "channel", "route_id"},
 		{"org_id", "created_at", "campaign_id"}},
-	"outreach_batch": {{"approved_at", "approved_hash"},
+	"outreach_batch": {{"approved_at", "approved_hash", "manual"},
 		{"shadow", "created_at", "content_sha256", "templates_sha256", "account_id", "campaign_id", "sequence"}},
 	// 00016: a campaign's one pointer is retired_at; its owner, slug and name are fixed.
 	"campaign": {{"retired_at"}, {"account_id", "slug", "name", "created_at"}},

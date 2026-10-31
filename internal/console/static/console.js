@@ -25,3 +25,62 @@
     });
   });
 })();
+
+// The Leads list's Send now: count the chosen leads on the button and the bar, mark chosen rows,
+// and offer "choose every lead on this page". Without this file the ticked leads post all the same.
+(function () {
+  "use strict";
+  var form = document.getElementById("send-now-form");
+  if (!form) {
+    return;
+  }
+  var picks = document.querySelectorAll("input[data-send-pick]");
+  var all = document.querySelector("input[data-send-all]");
+  var count = form.querySelector("[data-send-count]");
+  var said = form.querySelector("[data-send-selected]");
+  var idle = said ? said.textContent : "";
+  function update() {
+    var chosen = {};
+    var n = 0;
+    picks.forEach(function (p) {
+      var row = p.closest("tr");
+      if (row) {
+        row.classList.toggle("is-selected", p.checked);
+      }
+      if (p.checked && !chosen[p.value]) {
+        chosen[p.value] = true;
+        n++;
+      }
+    });
+    if (count) {
+      count.textContent = n ? " (" + n + ")" : "";
+    }
+    if (said) {
+      said.textContent = n ? n + " selected" : idle;
+    }
+    if (all) {
+      var wide = document.querySelectorAll("tr input[data-send-pick]");
+      var on = 0;
+      wide.forEach(function (p) {
+        if (p.checked) {
+          on++;
+        }
+      });
+      all.checked = wide.length > 0 && on === wide.length;
+      all.indeterminate = on > 0 && on < wide.length;
+    }
+  }
+  picks.forEach(function (p) {
+    p.addEventListener("change", update);
+  });
+  if (all) {
+    all.hidden = false;
+    all.addEventListener("change", function () {
+      document.querySelectorAll("tr input[data-send-pick]").forEach(function (p) {
+        p.checked = all.checked;
+      });
+      update();
+    });
+  }
+  update();
+})();

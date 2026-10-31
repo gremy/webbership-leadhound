@@ -45,7 +45,51 @@ func DomainCap(cfg leadconfig.Config) int {
 // ascending mailbox id. A mailbox that is not Ready gets 0, though its sends still count
 // toward its domain. Every mailbox given has an entry.
 func RoomToday(cfg leadconfig.Config, mbs []MailboxLoad, day time.Time) map[int64]int {
-	return mailboxRoomOn(cfg, mbs, day, true, func(m MailboxLoad) *time.Time { return m.FirstSend })
+	return RoomTodayWith(cfg, mbs, day, nil)
+}
+
+// RoomTodayWith is RoomToday with the operator's overrides for a manual send. With neither
+// OverrideRamp nor OverrideDomainDaily it is RoomToday exactly. With either, every mailbox
+// first gets its RoomToday room, then the room the override lifts is handed out on top in
+// ascending mailbox id: OverrideRamp puts a mailbox's own cap at leadconfig.HardDailyCeiling
+// in place of its ramp, OverrideDomainDaily puts the domain's at
+// leadconfig.HardDomainDailyCeiling in place of DomainCap. So an override never takes room
+// from any mailbox, and the hard ceilings are never passed. A mailbox that is not Ready gets
+// 0 whatever the overrides.
+func RoomTodayWith(cfg leadconfig.Config, mbs []MailboxLoad, day time.Time, ov Overrides) map[int64]int {
+	out := mailboxRoomOn(cfg, mbs, day, true, func(m MailboxLoad) *time.Time { return m.FirstSend })
+	ramp, domain := ov.Has(OverrideRamp), ov.Has(OverrideDomainDaily)
+	if !ramp && !domain {
+		return out
+	}
+	domainCap := DomainCap(cfg)
+	if domain {
+		domainCap = leadconfig.HardDomainDailyCeiling
+	}
+	order := slices.Clone(mbs)
+	slices.SortStableFunc(order, func(a, b MailboxLoad) int { return cmp.Compare(a.ID, b.ID) })
+	left := map[string]int{}
+	for _, m := range order {
+		d := mailboxDomain(m.Domain)
+		if _, ok := left[d]; !ok {
+			left[d] = domainCap
+		}
+		left[d] -= m.SentToday + out[m.ID]
+	}
+	for _, m := range order {
+		if !m.Ready {
+			continue
+		}
+		own := CapOn(cfg, m.FirstSend, day)
+		if ramp {
+			own = leadconfig.HardDailyCeiling
+		}
+		d := mailboxDomain(m.Domain)
+		extra := max(0, min(own-m.SentToday-out[m.ID], left[d]))
+		left[d] -= extra
+		out[m.ID] += extra
+	}
+	return out
 }
 
 // RoomOver is each mailbox's room over the sizing window, as the batch sizing counts it:

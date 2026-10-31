@@ -523,6 +523,8 @@ type Batch struct {
 	CampaignID      int64      `db:"campaign_id"`
 	// Sequence is the frozen sequences JSON (BatchSequences); nil for a legacy batch.
 	Sequence json.RawMessage `db:"sequence"`
+	// Manual is a batch built from chosen leads to send now (00027, MarkBatchManual).
+	Manual bool `db:"manual"`
 }
 
 // Sequences decodes b.Sequence; nil for a legacy batch (NULL).
@@ -546,7 +548,7 @@ func decodeSequences(raw []byte) (BatchSequences, error) {
 func (q Queries) BatchByID(ctx context.Context, id int64) (Batch, error) {
 	b, err := collect(ctx, q.db, pgx.RowToStructByName[Batch],
 		`SELECT id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256, discarded_at,
-		   campaign_id, sequence
+		   campaign_id, sequence, manual
 		 FROM outreach_batch WHERE id = $1`, id)
 	if err != nil {
 		return Batch{}, fmt.Errorf("leadstore: batch by id: %w", err)

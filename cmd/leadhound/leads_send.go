@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 	"github.com/gremy/webbership-leadhound/internal/secretbox"
 	"github.com/gremy/webbership-leadhound/internal/store"
+	"github.com/gremy/webbership-leadhound/internal/verify"
 )
 
 func init() { leadsCommands["send"] = runLeadsSend }
@@ -65,11 +68,33 @@ const (
 	// noteSendNow marks a run started by Send now (leads send --now), which skipped the
 	// sending window, so Controls and the journal tell it from a timer run.
 	noteSendNow = "send now"
+	// noteNoRequest: a leads send --from-request found no confirmed manual request to claim.
+	noteNoRequest = "no request"
+	// noteRequestRefused: the Send now request, or the batch it names, did not pass its checks.
+	noteRequestRefused = "request refused"
+	// noteEmailCheck: a manual send held or refused a message on its email check.
+	noteEmailCheck = "email check"
+	// noteFirstGone: a first email was refused because its lead's first email already went in
+	// another batch.
+	noteFirstGone = "first email already went"
+	// noteOverride heads the override codes a manual send ran with ("override: ramp,window").
+	noteOverride = "override: "
 )
+
+// sendRequestMaxAge is how old a manual send's send_request row may be when its run claims it.
+const sendRequestMaxAge = 15 * time.Minute
+
+// sendRequestMax is --max for a run from the Send now request when none is given: the
+// hourly send's 25.
+const sendRequestMax = 25
 
 // holdMailbox holds a due message whose mailbox may not send in this run: paused, not
 // checked, its DNS or sync failed, its login refused, or no mailbox at all.
 const holdMailbox outreach.HoldReason = "mailbox"
+
+// holdEmailCheck holds a due message of a manual send whose address has no fresh passing
+// email check while the email check is on.
+const holdEmailCheck outreach.HoldReason = "email_check"
 
 // holdUnassigned holds a due live message whose mailbox is not (or no longer) assigned to
 // its batch's campaign. It keeps its mailbox: a thread is never moved to another address.
@@ -98,6 +123,49 @@ type sendOptions struct {
 	// domain caps, the spacing, mailbox readiness and campaign assignment, suppressions, max
 	// and every due time stay as they are (Send now).
 	now bool
+	// fromRequest reads the Send now request file (leads send --from-request, implies now): a
+	// legacy request (a time, or empty) is today's Send now; a manual one sends that batch alone
+	// with the overrides of the send_request row it claims (sendRun.claimRequest).
+	fromRequest bool
+}
+
+// manualSend is a manual batch's Send now as its run claimed and checked it: the batch, the
+// send_request row, its overrides and, per mailbox, the numbers outreach.CheckLimits gave at
+// the run's start (each send_override row's detail).
+type manualSend struct {
+	batch  leadstore.Batch
+	req    leadstore.SendRequest
+	ov     outreach.Overrides
+	detail map[int64]*limitDetail
+}
+
+// limitDetail is one mailbox's send_override detail: what CheckLimits said about it at the
+// run's start, for the sends planned from it, and what the confirm page showed (Shown).
+type limitDetail struct {
+	MailboxID int64           `json:"mailbox_id"`
+	Need      int             `json:"need"`
+	Room      int             `json:"room"`         // RoomTodayWith the run's overrides
+	RoomPlain int             `json:"room_without"` // RoomToday
+	Warnings  []limitWarnJSON `json:"warnings"`
+	Stops     []limitStopJSON `json:"stops"`
+	// Shown is the warnings with their numbers as the confirm page showed them, from the
+	// claimed send_request row (a JSON array).
+	Shown json.RawMessage `json:"shown"`
+}
+
+type limitWarnJSON struct {
+	Code    string `json:"code"`
+	Domain  string `json:"domain"`
+	Used    int    `json:"used"`
+	Allowed int    `json:"allowed"`
+	Over    int    `json:"over"`
+}
+
+type limitStopJSON struct {
+	Reason  string `json:"reason"`
+	Domain  string `json:"domain"`
+	Used    int    `json:"used"`
+	Allowed int    `json:"allowed"`
 }
 
 // sendReport is what one send run did; its note is the run row's note.
@@ -128,6 +196,9 @@ func (r *sendReport) note(word string) {
 	r.notes = append(r.notes, word)
 }
 
+// holdOrder is the order the run note and the printout name the held reasons in.
+var holdOrder = []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, outreach.HoldNotDue, holdMailbox, holdUnassigned, holdEmailCheck}
+
 // runNote is the run row's note: counts and note words only, never an address or a reply.
 func (r *sendReport) runNote(runErr error) string {
 	mode := "shadow"
@@ -138,7 +209,7 @@ func (r *sendReport) runNote(runErr error) string {
 		fmt.Sprintf("maybe_sent %d", len(r.maybe)), fmt.Sprintf("retry %d", r.retry),
 		fmt.Sprintf("cancelled %d", r.cancelled), fmt.Sprintf("skipped %d", r.skipped)}
 	var held []string
-	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, outreach.HoldNotDue, holdMailbox, holdUnassigned} {
+	for _, h := range holdOrder {
 		if n := r.held[h]; n > 0 {
 			held = append(held, fmt.Sprintf("%s %d", h, n))
 		}
@@ -185,11 +256,15 @@ func (r *sendReport) print(w io.Writer) {
 		p("%s cancelled (suppressed, or the lead moved on).\n", plural(int(r.cancelled), "pending message", "pending messages"))
 	}
 	var held []string
-	for _, h := range []outreach.HoldReason{outreach.HoldCap, outreach.HoldHours, outreach.HoldDomain, holdMailbox, holdUnassigned} {
+	for _, h := range holdOrder {
+		if h == outreach.HoldNotDue {
+			continue
+		}
 		if n := r.held[h]; n > 0 {
 			held = append(held, fmt.Sprintf("%s %d", map[outreach.HoldReason]string{
 				outreach.HoldCap: "today's cap", outreach.HoldHours: "outside business hours", outreach.HoldDomain: "one per domain per run",
 				holdMailbox: "its mailbox cannot send now", holdUnassigned: "mailbox not assigned to the campaign",
+				holdEmailCheck: "no passing email check yet",
 			}[h], n))
 		}
 	}
@@ -217,7 +292,7 @@ func idList(ids []int64) string {
 	return strings.Join(out, ", ")
 }
 
-// runLeadsSend is `leads send [--max N]`, or `leads send pause [--reason TEXT]` and
+// runLeadsSend is `leads send [--max N] [--now | --from-request]`, or `leads send pause [--reason TEXT]` and
 // `leads send resume`.
 func runLeadsSend(ctx context.Context, args []string) error {
 	if len(args) > 0 && (args[0] == "pause" || args[0] == "resume") {
@@ -226,6 +301,7 @@ func runLeadsSend(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads send", flag.ContinueOnError)
 	maxN := fs.Int("max", 0, "send at most this many messages")
 	now := fs.Bool("now", false, "send the due emails now, outside the sending window (this run only; every limit still applies)")
+	fromRequest := fs.Bool("from-request", false, "send what the console's Send now request asks (implies --now; the send-now unit's command)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -233,10 +309,14 @@ func runLeadsSend(ctx context.Context, args []string) error {
 	if len(pos) != 0 || *maxN < 0 {
 		return usageError("%s", sendUsage)
 	}
-	return leadsSendRun(ctx, stdout, sendOptions{max: *maxN, now: *now})
+	opts := sendOptions{max: *maxN, now: *now || *fromRequest, fromRequest: *fromRequest}
+	if opts.fromRequest && opts.max == 0 {
+		opts.max = sendRequestMax
+	}
+	return leadsSendRun(ctx, stdout, opts)
 }
 
-const sendUsage = "usage: leadhound leads send [--max N] [--now] | leads send pause [--reason TEXT] | leads send resume"
+const sendUsage = "usage: leadhound leads send [--max N] [--now | --from-request] | leads send pause [--reason TEXT] | leads send resume"
 
 // runLeadsSendPause is `leads send pause [--reason TEXT]` and `leads send resume`: the
 // operator's switch that every send run obeys before each message. Setting it to what it
@@ -324,6 +404,19 @@ type sendRun struct {
 	box   *mailbox.Outbox
 	opts  sendOptions
 	rep   *sendReport
+	runID int64
+
+	// The Send now request file as read before the lock (--from-request): its batch (0 for a
+	// legacy request) or why it was refused.
+	reqBatch int64
+	reqErr   error
+	// manual is the claimed manual send; nil for every other run.
+	manual *manualSend
+	// skipWindow plans outside the sending window; skipHours sends outside the recipient's
+	// business hours. A Send now (--now) sets both; a manual send only with its codes.
+	skipWindow, skipHours bool
+	// gate is a manual send's email check, read again at send time; nil for other runs.
+	gate *emailGate
 
 	// key opens the sealed passwords (live only; shadow never opens one).
 	key secretbox.PrivateKey
@@ -405,6 +498,17 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 			return err
 		}
 	}
+	// The request file names the batch only; what the run may do comes from the database row it
+	// claims under the lock (claimRequest).
+	var reqBatch int64
+	var reqErr error
+	if opts.fromRequest {
+		var kind string
+		reqBatch, kind, reqErr = readSendNowRequest(setup.dataDir)
+		if kind != sendRequestManual {
+			reqBatch = 0
+		}
+	}
 	lock, err := leadstore.TryLock(ctx, s.Pool(), leadstore.SendLockKey)
 	if errors.Is(err, leadstore.ErrLockHeld) {
 		_, _ = fmt.Fprintln(w, "Another send is running; this one did nothing.")
@@ -417,7 +521,8 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 
 	r := &sendRun{
 		w: w, s: s, lq: lq, setup: setup, loc: loc, live: live, opts: opts, selftestMB: selftestMB,
-		rep: &sendReport{live: live, held: map[outreach.HoldReason]int{}},
+		rep:      &sendReport{live: live, held: map[outreach.HoldReason]int{}},
+		reqBatch: reqBatch, reqErr: reqErr, skipWindow: opts.now, skipHours: opts.now,
 	}
 	command, source := commandLeadsSend, sourceOutreachShadow
 	if opts.selftestTo != "" {
@@ -432,6 +537,7 @@ func leadsSendRun(ctx context.Context, w io.Writer, opts sendOptions) error {
 	if err != nil {
 		return err
 	}
+	r.runID = runID
 	runErr := r.run(ctx)
 	if err := s.Q().FinishRun(context.WithoutCancel(ctx), runID,
 		store.RunResult{Note: r.rep.runNote(errors.Join(runErr, r.accountErr))}); err != nil && runErr == nil {
@@ -615,11 +721,28 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 	if r.opts.now {
 		r.rep.note(noteSendNow)
 	}
-	// 0. The operator's pause, before anything else (and before every message, sendOne).
+	// 0. The operator's pause, before anything else (and before every message, sendOne). It
+	// comes before the claim, so a paused run never uses up a manual request: once sending is
+	// resumed, the request still works within its 15 minutes.
 	if err := r.checkPaused(ctx, r.lq); err != nil {
 		return err
 	}
-	if r.opts.now {
+	// The Send now request: a manual one is claimed once and checked again before anything is
+	// planned, so a refused request sends nothing.
+	if r.opts.fromRequest {
+		if stop, err := r.claimRequest(ctx, now); stop || err != nil {
+			return err
+		}
+	}
+	switch {
+	case r.manual != nil:
+		over := "no warning is overridden"
+		if codes := r.manual.ov.Codes(); len(codes) > 0 {
+			over = "overriding " + strings.Join(codes, ", ")
+		}
+		r.printf("Send now: batch %d alone, %s; suppressions, the email check, paused and unassigned mailboxes, the hard daily ceilings, one email per recipient domain per run and due times still apply.\n",
+			r.manual.batch.ID, over)
+	case r.opts.now:
 		r.printf("Send now: this run skips the sending window only; the warm-up and domain limits, the spacing, paused and unassigned mailboxes, suppressions and due times still apply.\n")
 	}
 
@@ -713,8 +836,14 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 			continue
 		}
 		self := row.LeadKind == leadstore.LeadSelftest
-		// A selftest goes in its own run only; an ordinary run never sends one.
-		if (only != 0) != self || (only != 0 && row.ID != only) {
+		switch {
+		case r.manual != nil:
+			// A manual send sends its own batch alone, a selftest lead in it included.
+			if row.BatchID != r.manual.batch.ID {
+				continue
+			}
+		case (only != 0) != self || (only != 0 && row.ID != only):
+			// A selftest goes in its own run only; an ordinary run never sends one.
 			continue
 		}
 		mb := r.mbs[row.MailboxID]
@@ -760,14 +889,37 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		r.rep.cancelled += int64(n)
 	}
 	bh := r.setup.leads.SendingWindow()
-	if only != 0 {
-		// The operator's own address: no cap (it still counts) and no business hours.
+	selfOnly := false
+	if r.manual != nil {
+		var err error
+		if selfOnly, err = r.manualSelftest(items); err != nil {
+			return err
+		}
+	}
+	if only != 0 || selfOnly {
+		// The operator's own address: no cap (it still counts) and no business hours. A manual
+		// batch of selftest leads runs as the selftest does.
 		plan = items
-		defer r.cancelUnsentSelftest(ctx, only)
+		if only != 0 {
+			defer r.cancelUnsentSelftest(ctx, only)
+		}
+		if selfOnly {
+			for _, it := range items {
+				defer r.cancelUnsentSelftest(ctx, it.MessageID)
+			}
+		}
 	} else {
 		var held map[outreach.HoldReason]int
-		room := outreach.RoomToday(r.setup.leads, r.loads(), now.In(r.loc))
-		if r.opts.now {
+		// The overrides lift only the warm-up ramp and the domain's daily limit, never past the
+		// hard ceilings, and never for a mailbox that is not ready (RoomTodayWith).
+		var ov outreach.Overrides
+		loads, day := r.loads(), now.In(r.loc)
+		if r.manual != nil {
+			ov = r.manual.ov
+			r.manual.limits(r.setup.leads, loads, day, items)
+		}
+		room := outreach.RoomTodayWith(r.setup.leads, loads, day, ov)
+		if r.skipWindow {
 			plan, held = outreach.PlanMailboxesAnyHour(items, room, now)
 		} else {
 			plan, held = outreach.PlanMailboxes(items, room, now, bh)
@@ -802,7 +954,7 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 		// Business hours at the moment of sending (RA8): the spacing may have carried this
 		// recipient's zone past its window; other zones may still be open.
-		if !it.Selftest && !r.opts.now && !outreach.InBusinessHours(it.Loc, bh, leadsNow()) {
+		if !it.Selftest && !r.skipHours && !outreach.InBusinessHours(it.Loc, bh, leadsNow()) {
 			r.rep.held[outreach.HoldHours]++
 			continue
 		}
@@ -815,8 +967,12 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 			var minutes [2]int
 			copy(minutes[:], sp)
 			d := outreach.Spacing(leadsMail.rand, minutes)
+			if r.manual != nil && r.manual.ov.Has(outreach.OverrideSpacingJitter) {
+				// The jitter only: the run still waits the minimum between two sends.
+				d = outreach.MinSpacing
+			}
 			// Nothing left would be in its hours after the pause: stop now.
-			if !r.opts.now && !anyInHours(plan[i+1:], bh, leadsNow().Add(d)) {
+			if !r.skipHours && !anyInHours(plan[i+1:], bh, leadsNow().Add(d)) {
 				r.rep.held[outreach.HoldHours] += len(plan) - i - 1
 				return nil
 			}
@@ -827,6 +983,186 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// claimRequest reads what --from-request asks. A legacy request (a time, or an empty file) is
+// today's Send now and claims nothing. A manual one claims its batch's newest send_request row
+// no older than sendRequestMaxAge, once only, and checks it again: the batch is there, manual,
+// approved, not discarded and of this run's kind (live or shadow); the hash the operator
+// confirmed is its content hash, which its rows still hash to; every code is in the closed set.
+// stop is true when the run must end with nothing sent; a refusal is also an error, so the
+// unit fails where the operator sees it. It runs after the pause check, never before.
+func (r *sendRun) claimRequest(ctx context.Context, now time.Time) (stop bool, err error) {
+	refuse := func(format string, a ...any) (bool, error) {
+		why := fmt.Sprintf(format, a...)
+		r.rep.note(noteRequestRefused)
+		r.rep.stopped = true
+		r.printf("No sends: the Send now request is refused: %s.\n", why)
+		return true, fmt.Errorf("leads send: send now request refused: %s", why)
+	}
+	if r.reqErr != nil {
+		return refuse("%v", r.reqErr)
+	}
+	if r.reqBatch == 0 {
+		return false, nil
+	}
+	req, ok, err := r.lq.ClaimSendRequest(ctx, r.reqBatch, now.Add(-sendRequestMaxAge), now)
+	if err != nil {
+		return true, err
+	}
+	if !ok {
+		r.rep.note(noteNoRequest)
+		r.rep.stopped = true
+		r.printf("No sends: batch %d has no confirmed Send now waiting (it was sent already, or confirmed over %d minutes ago); confirm it again in the console.\n",
+			r.reqBatch, int(sendRequestMaxAge.Minutes()))
+		return true, nil
+	}
+	b, err := r.lq.BatchByID(ctx, req.BatchID)
+	switch {
+	case errors.Is(err, leadstore.ErrBatchNotFound):
+		return refuse("batch %d is not there", req.BatchID)
+	case err != nil:
+		return true, err
+	case !b.Manual:
+		return refuse("batch %d is not a manual batch", b.ID)
+	case b.DiscardedAt != nil:
+		return refuse("batch %d is discarded", b.ID)
+	case b.ApprovedAt == nil:
+		return refuse("batch %d is not approved", b.ID)
+	case b.Shadow == r.live:
+		return refuse("batch %d is a %s batch and sending is %s", b.ID, map[bool]string{true: "shadow", false: "live"}[b.Shadow],
+			map[bool]string{true: "live", false: "shadow"}[r.live])
+	}
+	prefix := strings.ToLower(strings.TrimSpace(req.HashPrefix))
+	if len(prefix) < leadstore.MinHashPrefix || !strings.HasPrefix(hex.EncodeToString(b.ContentSHA256), prefix) ||
+		!bytes.Equal(b.ApprovedHash, b.ContentSHA256) {
+		return refuse("batch %d is not the batch that was confirmed (its hash differs)", b.ID)
+	}
+	sum, err := r.lq.BatchContentSHA256(ctx, b.ID)
+	if err != nil {
+		return true, err
+	}
+	if !bytes.Equal(sum, b.ContentSHA256) {
+		return refuse("batch %d changed after it was written (its messages no longer hash to it)", b.ID)
+	}
+	ov, err := outreach.ParseOverrides(req.Codes)
+	if err != nil {
+		return refuse("%v", err)
+	}
+	gate, err := loadEmailGate(ctx, r.lq, batchSetup{leads: r.setup.leads, shadow: !r.live, loc: r.loc}, now)
+	if err != nil {
+		return true, err
+	}
+	r.manual = &manualSend{batch: b, req: req, ov: ov, detail: map[int64]*limitDetail{}}
+	r.gate = gate
+	r.skipWindow = ov.Has(outreach.OverrideWindow) || ov.Has(outreach.OverrideSchedule)
+	r.skipHours = ov.Has(outreach.OverrideBusinessHours)
+	if codes := ov.Codes(); len(codes) > 0 {
+		r.rep.note(noteOverride + strings.Join(codes, ","))
+	}
+	return false, nil
+}
+
+// manualSelftest reports whether a manual batch's due items are its selftest leads alone, which
+// then run as the selftest does. A batch mixing selftest and other leads is refused: nothing
+// of it is sent.
+func (r *sendRun) manualSelftest(items []outreach.PlanItem) (bool, error) {
+	self, other := 0, 0
+	for _, it := range items {
+		if it.Selftest {
+			self++
+		} else {
+			other++
+		}
+	}
+	if self > 0 && other > 0 {
+		r.rep.note(noteRequestRefused)
+		r.rep.stopped = true
+		r.printf("No sends: batch %d mixes selftest and other leads; send a selftest batch alone.\n", r.manual.batch.ID)
+		return false, fmt.Errorf("leads send: send now request refused: batch %d mixes selftest and other leads", r.manual.batch.ID)
+	}
+	return self > 0, nil
+}
+
+// limits keeps, per mailbox of items, what outreach.CheckLimits says about sending them all
+// now (the reasoning the confirm page showed), for the send_override rows.
+func (m *manualSend) limits(cfg leadconfig.Config, loads []outreach.MailboxLoad, day time.Time, items []outreach.PlanItem) {
+	need := map[int64]int{}
+	for _, it := range items {
+		if !it.Selftest {
+			need[it.MailboxID]++
+		}
+	}
+	warns, stops := outreach.CheckLimits(cfg, loads, day, need)
+	room, plain := outreach.RoomTodayWith(cfg, loads, day, m.ov), outreach.RoomToday(cfg, loads, day)
+	out := map[int64]*limitDetail{}
+	for id, n := range need {
+		out[id] = &limitDetail{MailboxID: id, Need: n, Room: room[id], RoomPlain: plain[id], Warnings: []limitWarnJSON{}, Stops: []limitStopJSON{}}
+	}
+	for _, w := range warns {
+		if d := out[w.MailboxID]; d != nil {
+			d.Warnings = append(d.Warnings, limitWarnJSON{Code: string(w.Code), Domain: w.Domain, Used: w.Used, Allowed: w.Allowed, Over: w.Over})
+		}
+	}
+	for _, s := range stops {
+		if d := out[s.MailboxID]; d != nil {
+			d.Stops = append(d.Stops, limitStopJSON{Reason: s.Reason, Domain: s.Domain, Used: s.Used, Allowed: s.Allowed})
+		}
+	}
+	maps.Copy(m.detail, out)
+}
+
+// recordOverride writes the send_override row of a message a manual send with overrides has
+// just sent (or, shadow, written to the outbox). It runs after the send is committed; a failure
+// stops the run, so nothing more goes without its record.
+func (r *sendRun) recordOverride(ctx context.Context, row leadstore.SendRow) error {
+	m := r.manual
+	if m == nil || len(m.ov.Codes()) == 0 {
+		return nil
+	}
+	d := limitDetail{MailboxID: row.MailboxID, Warnings: []limitWarnJSON{}, Stops: []limitStopJSON{}}
+	if got := m.detail[row.MailboxID]; got != nil {
+		d = *got
+	}
+	d.Shown = m.req.Shown
+	if len(d.Shown) == 0 {
+		d.Shown = json.RawMessage(`[]`)
+	}
+	detail, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	runID, msgID := r.runID, row.ID
+	o := leadstore.SendOverride{BatchID: row.BatchID, LeadID: row.LeadID, MessageID: &msgID, Codes: m.ov.Codes(),
+		Detail: detail, Operator: m.req.Operator}
+	if runID != 0 {
+		o.RunID = &runID
+	}
+	return r.lq.InsertSendOverride(ctx, o)
+}
+
+// emailCheck is a manual send's email check at the moment of sending: a fresh check that
+// blocks the address refuses the message (live or shadow, whether the check is on or off); while
+// the check is on, an address without a fresh passing check is held. ok is false when the
+// message must not go now. A selftest (the operator's own address) is never checked.
+func (r *sendRun) emailCheck(ctx context.Context, row leadstore.SendRow, to, label string) (ok bool, err error) {
+	if r.gate == nil || row.LeadKind == leadstore.LeadSelftest {
+		return true, nil
+	}
+	if err := r.gate.load(ctx, r.lq, to); err != nil {
+		return false, err
+	}
+	switch v := r.gate.verdict(to); {
+	case v.Decision == verify.Block:
+		r.rep.note(noteEmailCheck)
+		r.rep.refused = append(r.rep.refused, label+" (email check: "+v.Status+")")
+		return false, r.lq.MarkRefused(ctx, row.ID, "refused: email check "+v.Status)
+	case v.Decision != verify.Send && r.gate.on:
+		r.rep.note(noteEmailCheck)
+		r.rep.held[holdEmailCheck]++
+		return false, nil
+	}
+	return true, nil
 }
 
 // anyInHours reports whether any of items is inside its business hours at t.
@@ -913,6 +1249,8 @@ var (
 	errClaimPaused  = errors.New("the mailbox is paused")
 	// errClaimUnassigned: the mailbox was unassigned from the message's campaign during the run.
 	errClaimUnassigned = errors.New("the mailbox is not assigned to the campaign")
+	// errClaimFirstGone: the lead's first email already went (or is going) in another message.
+	errClaimFirstGone = errors.New("the lead's first email already went")
 )
 
 // mailboxState reads mailbox id's latest state through tq (the claim's transaction).
@@ -1006,6 +1344,10 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	if !canSend {
 		return false, r.cancel(ctx, row, leadstore.SkipLeadState+row.LeadState)
 	}
+	// A manual send checks the address once more (amendment 6).
+	if ok, err := r.emailCheck(ctx, row, to, label); err != nil || !ok {
+		return false, err
+	}
 	// Fixture names never get a live message (RA25).
 	if r.live && !leadsMail.allowReserved &&
 		(outreach.ReservedDomain(recipientDomain(to)) || outreach.ReservedDomain(row.OrgDomain)) {
@@ -1045,6 +1387,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		return false, r.lq.MarkRefused(ctx, row.ID, "refused: "+err.Error())
 	}
 	var claimed bool
+	var firstBatch int64 // the batch the lead's first email already went in
 	err = leadsInTx(ctx, r.s.Pool(), func(tq leadstore.Queries) error {
 		// The pause is read in the claim's transaction, the last moment before SMTP, and so
 		// is the state of the message's mailbox.
@@ -1067,6 +1410,18 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 				return errClaimUnassigned
 			}
 		}
+		// One first email per lead, whatever batches it is in: a lead in two batches (a manual
+		// one and another) never gets a second, live or shadow. Read in the claim's
+		// transaction, under the send lock, so no other send slips between.
+		if row.Step == 0 {
+			switch b, gone, err := tq.FirstEmailGone(ctx, row.LeadID, row.ID, row.Shadow); {
+			case err != nil:
+				return err
+			case gone:
+				firstBatch = b
+				return errClaimFirstGone
+			}
+		}
 		var err error
 		if claimed, err = tq.MarkSending(ctx, row.ID); err != nil || !claimed {
 			return err
@@ -1082,6 +1437,11 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	case errors.Is(err, errClaimUnassigned):
 		r.rep.held[holdUnassigned]++
 		return false, nil
+	case errors.Is(err, errClaimFirstGone):
+		why := fmt.Sprintf("its first email already went in batch %d", firstBatch)
+		r.rep.note(noteFirstGone)
+		r.rep.refused = append(r.rep.refused, label+" ("+why+")")
+		return false, r.lq.MarkRefused(ctx, row.ID, "refused: "+why)
 	case errors.Is(err, errClaimPaused):
 		r.block(mb, "it is paused; nothing is sent from it until the operator resumes it", noteMailboxPaused)
 		r.rep.held[holdMailbox]++
@@ -1109,7 +1469,7 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		}
 		r.rep.sent = append(r.rep.sent, domain)
 		r.followUp(ctx, row, now)
-		return true, nil
+		return true, r.recordOverride(ctx, row)
 	}
 
 	reply, sendErr := mb.sender.Send(ctx, from, to, raw)
@@ -1127,6 +1487,9 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 		r.rep.sent = append(r.rep.sent, domain)
 		r.followUp(wctx, row, now)
 		r.appendSent(ctx, mb, raw)
+		if err := r.recordOverride(wctx, row); err != nil {
+			return true, err
+		}
 	case mailbox.IsPolicyBlock(sendErr) && errors.As(sendErr, &se):
 		// Our domain, not this lead: every mailbox on the domain pauses until the operator
 		// resumes it. The message is refused (its address is not suppressed): kept approved,

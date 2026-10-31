@@ -119,6 +119,7 @@ func runServe(ctx context.Context, args []string) error {
 	// closes.
 	bctx, stopBuilds := context.WithCancel(ctx)
 	b := newBackend(bctx, s, prof, loc, cfg)
+	b.dev = *dev
 	defer func() { stopBuilds(); b.wait() }()
 
 	logger := slog.Default()
@@ -178,6 +179,10 @@ type backend struct {
 	pubErr error
 	// started is when the console started, for the Status page.
 	started time.Time
+	// dev is serve --dev: a manual Send now may run in shadow mode (it writes "would send").
+	dev bool
+	// manual is what the console remembers of each manual Send now batch (manualMemo).
+	manual manualMemo
 
 	// base ends every build: serve cancels it at shutdown. A request's own context
 	// never does.

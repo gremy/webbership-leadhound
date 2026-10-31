@@ -1,8 +1,10 @@
 # Send now: the console's Controls page (or the Leads page's Outreach list) checks that
 # sending is on, live, that emails are due and that today's warm-up limit has room, then writes
-# the request time to /opt/leadhound/data/run/leads-send-now, and this watcher starts
-# leadhound-leads-send-now.service, which runs leads send --now once. The console itself never
-# holds a mailbox password and never reaches a mail server.
+# the request time to /opt/leadhound/data/run/leads-send-now; a manual send's confirm writes
+# one JSON line naming its batch there instead (its codes and operator stay in the database).
+# This watcher then starts leadhound-leads-send-now.service, which runs
+# leads send --from-request once. The console itself never holds a mailbox password and never
+# reaches a mail server.
 # It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
 # console never gains a privilege to do it. A request while the service is already starting or
 # running is merged into that run by systemd.

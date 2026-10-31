@@ -7,7 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,7 +55,7 @@ const noReoonKeyNote = "no Reoon key"
 // emailCheckOffLine is what Controls and a batch say while the Email check job is off.
 const emailCheckOffLine = "Email check is off: addresses are not checked before sending."
 
-const leadsVerifyUsage = "usage: leadhound leads verify [--max N (at least 1)] [--balance-only]"
+const leadsVerifyUsage = "usage: leadhound leads verify [--max N (at least 1)] [--balance-only | --from-request]"
 
 // reoonClient is what leads verify asks Reoon through; tests swap newReoonClient for a fake,
 // so no test reaches Reoon.
@@ -278,11 +280,12 @@ func runLeadsVerify(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads verify", flag.ContinueOnError)
 	maxChecks := fs.Int("max", defaultVerifyMax, "most addresses checked in this run")
 	balanceOnly := fs.Bool("balance-only", false, "only read the credits left, for the Status page")
+	fromRequest := fs.Bool("from-request", false, "check the addresses of the batch the console's Check email now names")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 0 || *maxChecks < 1 {
+	if len(pos) != 0 || *maxChecks < 1 || (*balanceOnly && *fromRequest) {
 		return usageError(leadsVerifyUsage)
 	}
 	if *balanceOnly {
@@ -334,7 +337,18 @@ func runLeadsVerify(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	out, err := verifyRun(ctx, s, client, bs, leadsNow(), *maxChecks, dailyCap)
+	now := leadsNow()
+	queue := func(lq leadstore.Queries, limit int) ([]string, error) { return verifyQueue(ctx, lq, bs, now, limit) }
+	if *fromRequest {
+		batchID, err := readVerifyNowRequest(setup.dataDir)
+		if err != nil {
+			return err
+		}
+		queue = func(lq leadstore.Queries, limit int) ([]string, error) {
+			return batchVerifyQueue(ctx, lq, bs, now, batchID, limit)
+		}
+	}
+	out, err := verifyRun(ctx, s, client, bs, now, *maxChecks, dailyCap, queue)
 	if err != nil {
 		return err
 	}
@@ -347,10 +361,12 @@ func runLeadsVerify(ctx context.Context, args []string) error {
 }
 
 // verifyRun is one check run after the switch, live and key checks: the balance first (no
-// credit left: recorded, nothing checked), then the queue's addresses up to max, the day's cap
+// credit left: recorded, nothing checked), then queue's addresses up to max, the day's cap
 // and the credits, verifyParallel at a time, each answer stored as it comes. A check that
-// fails is counted and leaves its address unchecked. The run row carries the counts.
-func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batchSetup, now time.Time, maxChecks, dailyCap int) (verifyOutcome, error) {
+// fails is counted and leaves its address unchecked. The run row carries the counts. queue is
+// verifyQueue for the batch unit's run and batchVerifyQueue for Check email now.
+func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batchSetup, now time.Time, maxChecks, dailyCap int,
+	queue func(lq leadstore.Queries, limit int) ([]string, error)) (verifyOutcome, error) {
 	var out verifyOutcome
 	q := s.Q()
 	runID, err := q.StartRun(ctx, commandLeadsVerify, verify.Provider)
@@ -387,7 +403,7 @@ func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batch
 	if limit <= 0 {
 		return finish(nil)
 	}
-	addrs, err := verifyQueue(ctx, lq, bs, now, limit)
+	addrs, err := queue(lq, limit)
 	if err != nil {
 		return finish(err)
 	}
@@ -662,4 +678,82 @@ func emailCheckWords(status string) string {
 		return "catch-all"
 	}
 	return cmp.Or(strings.ReplaceAll(status, "_", " "), "not checked")
+}
+
+// maxVerifyNowRequest is the most a Check email now request file may hold.
+const maxVerifyNowRequest = 4096
+
+// readVerifyNowRequest is the batch a Check email now request names: <dataDir>/run/
+// leads-verify-now, one JSON line (verifyNowRequest) with batch_id above 0. The file is
+// untrusted (the console and this job run as one user), so it names a batch only; what is
+// checked is that batch's own addresses, read from the database (batchVerifyQueue).
+func readVerifyNowRequest(dataDir string) (int64, error) {
+	if dataDir == "" {
+		return 0, errors.New("check email now request: LEADHOUND_DATA_DIR is not set")
+	}
+	f, err := os.Open(filepath.Join(dataDir, runRequestDir, verifyNowAction)) // #nosec G304 -- a fixed name under the data directory
+	if err != nil {
+		return 0, fmt.Errorf("check email now request: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxVerifyNowRequest+1))
+	if err != nil {
+		return 0, fmt.Errorf("check email now request: %w", err)
+	}
+	if len(b) > maxVerifyNowRequest {
+		return 0, fmt.Errorf("check email now request: the file is over %d bytes", maxVerifyNowRequest)
+	}
+	dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(string(b))))
+	dec.DisallowUnknownFields()
+	var req verifyNowRequest
+	if err := dec.Decode(&req); err != nil {
+		return 0, fmt.Errorf("check email now request: not a request line: %w", err)
+	}
+	if dec.More() {
+		return 0, errors.New("check email now request: more than one request in the file")
+	}
+	if req.BatchID <= 0 {
+		return 0, fmt.Errorf("check email now request: batch_id %d names no batch", req.BatchID)
+	}
+	return req.BatchID, nil
+}
+
+// batchVerifyQueue is what Check email now checks: the first-email addresses of batch batchID,
+// once each and at most limit, that have no sendable or blocking answer yet (unchecked, or an
+// unknown due its next-day recheck). A batch approved, discarded or missing checks nothing.
+func batchVerifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, batchID int64, limit int) ([]string, error) {
+	b, err := lq.BatchByID(ctx, batchID)
+	if errors.Is(err, leadstore.ErrBatchNotFound) {
+		_, _ = fmt.Fprintf(stdout, "leads verify: batch %d does not exist; nothing to check\n", batchID)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if b.ApprovedAt != nil || b.DiscardedAt != nil || b.Shadow {
+		_, _ = fmt.Fprintf(stdout, "leads verify: batch %d is approved, discarded or shadow; nothing to check\n", batchID)
+		return nil, nil
+	}
+	msgs, err := lq.BatchMessages(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	gate, err := loadEmailGate(ctx, lq, bs, now)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, m := range msgs {
+		a := strings.ToLower(strings.TrimSpace(m.ToAddress))
+		if m.Step != 0 || m.Channel != leadstore.ChannelEmail || a == "" || slices.Contains(out, a) || len(out) >= limit {
+			continue
+		}
+		if err := gate.load(ctx, lq, a); err != nil {
+			return nil, err
+		}
+		if v := gate.verdict(a); v.Decision == verify.Unchecked || (v.Decision == verify.Wait && v.Recheck) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }

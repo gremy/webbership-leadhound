@@ -114,6 +114,7 @@ var routes = []route{
 	{"GET /leads/calls/{message}", "/leads/calls/9", false, (*server).leadCall},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
 	{"GET /leads/reports/{id}", "/leads/reports/5", false, (*server).leadReport},
+	{"GET /leads/send-now/{id}", "/leads/send-now/7", false, (*server).sendConfirm},
 	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
 	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
 	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
@@ -129,6 +130,10 @@ var routes = []route{
 	{"POST /leads/settings/{section}", "/leads/settings/who", false, (*server).saveLeadSettings},
 	{"POST /leads/calls/{message}/outcome", "/leads/calls/9/outcome", false, (*server).leadCallOutcome},
 	{"POST /leads/drafts/{id}/review", "/leads/drafts/4/review", false, (*server).reviewDraft},
+	// The manual Send now: the preview every button posts to, then one manual batch's confirm page.
+	{"POST /leads/send-now/preview", "/leads/send-now/preview", false, (*server).sendNowPreview},
+	{"POST /leads/send-now/{id}/confirm", "/leads/send-now/7/confirm", false, (*server).sendNowConfirm},
+	{"POST /leads/send-now/{id}/check-email", "/leads/send-now/7/check-email", false, (*server).sendNowCheckEmail},
 	// Every literal /leads/... POST above is more specific than this pattern, so it wins.
 	{"POST /leads/{id}/{action}", "/leads/5/star", false, (*server).leadAct},
 	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
@@ -292,7 +297,7 @@ func (s *server) parseTemplates() map[string]*template.Template {
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
-		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status"} {
+		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status", "send_confirm"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}

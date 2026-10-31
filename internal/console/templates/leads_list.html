@@ -113,12 +113,21 @@
 {{else}}
 <section class="card lead-list mt-2">
   <h2 class="visually-hidden">Leads</h2>
+  {{/* The row checkboxes join this form through their form attribute: each row holds forms of its own, and forms do not nest. */}}
+  <form method="post" action="/leads/send-now/preview" id="send-now-form" class="bulkbar" aria-label="Send now">
+    <input type="hidden" name="back" value="{{$v.Back}}">
+    <span><strong data-send-selected>Tick leads to send now</strong> <span class="muted">· a manual batch of the chosen leads</span></span>
+    <span class="btn-row">
+      <button class="btn btn-primary btn-sm" type="submit"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg><span>Send now<span data-send-count></span></span></button>
+    </span>
+  </form>
   <ul class="list narrow-only">
     {{range $p.Rows}}
     {{$back := printf "%s#lead-n-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
     <li class="list-item lead-item-narrow" id="lead-n-{{.LeadID}}">
       <div class="list-main">
       <div class="lead-card-head">
+        <input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick>
         {{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}
         <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}</span>
       </div>
@@ -137,6 +146,7 @@
   <table class="table lead-table">
     <caption class="visually-hidden">Leads</caption>
     <thead><tr>
+      <th scope="col" class="col-check"><input class="check" type="checkbox" aria-label="Choose every lead on this page" data-send-all hidden></th>
       <th scope="col" class="col-star"><span class="visually-hidden">Starred</span></th>
       <th scope="col">Lead</th><th scope="col">Country</th><th scope="col">Kind</th><th scope="col">Finding</th>
       <th scope="col">Reach by</th>
@@ -150,6 +160,7 @@
     {{range $p.Rows}}
     {{$back := printf "%s#lead-w-%d" $v.Back .LeadID}}{{$name := or .Name .Domain}}
     <tr id="lead-w-{{.LeadID}}">
+      <td class="col-check"><input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick></td>
       <td class="star-cell col-star">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
       <td class="lead-cell"><a class="cell-main" href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a><span class="cell-sub" title="{{.Domain}}">{{.Domain}}</span>{{if .SmallSite}} <span class="badge">small site</span>{{end}}</td>
       <td>{{.Country}}</td>
