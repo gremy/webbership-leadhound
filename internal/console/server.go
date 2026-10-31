@@ -275,6 +275,9 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 			s.next[rt.sample] = true
 		}
 	}
+	if opt.Dev {
+		mux.HandleFunc("GET /board/", board)
+	}
 	cop := http.NewCrossOriginProtection()
 	return s.headers(cop.Handler(capBody(mux)))
 }
