@@ -3,12 +3,124 @@
 <div class="page">
 <div class="page-head">
   <div>
-    <h1>{{if $d.Day.IsZero}}Today{{else}}{{day $d.Day}}{{end}}</h1>
-    <p class="page-sub">Everything across Leads and Jobs.</p>
+    <h1>{{$d.Greeting}}</h1>
+    <p class="page-sub">{{$d.Now.Format "Monday 2 January, 15:04"}} · everything across Leads and Jobs</p>
   </div>
 </div>
-{{template "home_leads" $d}}
-{{template "home_jobs" $d}}
-{{template "home_runs" $d}}
+
+<div class="grid">
+  <section class="card span-4" aria-labelledby="w-status">
+    <div class="card-head"><h2 id="w-status">Status</h2><a class="card-link" href="/status">Open status{{template "dash_arrow"}}</a></div>
+    <ul class="status-summary card-body-flush">
+      {{if $d.StatusFailed}}
+      <li><a href="/status"><span class="dot dot-grey"></span><span class="area">Status</span><span class="what">Status unavailable</span></a></li>
+      {{else}}
+      {{range $d.Areas}}<li><a href="/status#{{.ID}}"><span class="dot dot-{{.Level.Class}}"></span><span class="area">{{.Name}}</span><span class="what">{{.Line}}</span></a></li>
+      {{end}}
+      {{end}}
+    </ul>
+  </section>
+
+  <section class="card span-4" aria-labelledby="w-today">
+    <div class="card-head"><h2 id="w-today">Today in Leads</h2><a class="card-link" href="/leads/home">Leads{{template "dash_arrow"}}</a></div>
+    {{with $d.Leads}}
+    <div class="card-body">
+      <dl class="confirm-tally tally-2">
+        <div><dt>Due emails</dt><dd>{{thousands .DueEmails}}</dd></div>
+        <div><dt>Sent / room</dt><dd>{{thousands .SentToday}} <small>of {{thousands .CapToday}}</small></dd></div>
+        <div><dt>Replies</dt><dd>{{thousands .Replies}}</dd></div>
+        <div><dt>Calls due</dt><dd>{{thousands .CallsDue}}</dd></div>
+      </dl>
+      {{if .NoRoom}}<p class="hint mt-1 mb-0">{{.NoRoom}}{{if .NoRoomCheck}} {{if .NoRoomMailbox}}<a href="/mailboxes/{{.NoRoomMailbox}}">Open its mailbox</a>{{else}}<a href="/mailboxes">Open the mailboxes</a>{{end}}{{end}}</p>{{end}}
+    </div>
+    {{else}}
+    <div class="empty empty-compact">
+      <p class="empty-title">Leads are not set up on this server yet</p>
+      <p class="empty-text">The day's emails, replies and calls show here once they are.</p>
+    </div>
+    {{end}}
+  </section>
+
+  <section class="card span-4" aria-labelledby="w-needs">
+    <div class="card-head"><h2 id="w-needs">Needs me</h2>{{if $d.NeedsMeTotal}}<span class="badge badge-warn">{{thousands $d.NeedsMeTotal}}</span>{{end}}</div>
+    {{if $d.NeedsMe}}
+    <ul class="list card-body-flush">
+      {{range $d.NeedsMe}}<li class="list-item"><span class="list-main"><a class="list-title" href="/leads/{{.LeadID}}">{{.Name}}</a><span class="list-meta">{{.What}}{{if not .At.IsZero}} · {{ago .At $d.Now}}{{end}}</span></span></li>
+      {{end}}
+    </ul>
+    {{with $d.NeedsMeMore}}<p class="card-body small mb-0"><a href="/leads/today">{{plural . "more lead waits" "more leads wait"}} on Today</a></p>{{end}}
+    {{else}}
+    <div class="empty empty-compact">
+      <p class="empty-title">Nothing needs you</p>
+      <p class="empty-text">A reply with nothing scheduled, or a call with no next step, shows here.</p>
+    </div>
+    {{end}}
+  </section>
+
+  <section class="card span-6" aria-labelledby="w-funnel">
+    <div class="card-head"><h2 id="w-funnel">Campaign funnel · 30 days</h2><a class="card-link" href="/leads/campaigns">Campaigns{{template "dash_arrow"}}</a></div>
+    {{if $d.CampaignFunnel}}{{$top := maxSent $d.CampaignFunnel}}
+    <div class="card-body stack">
+      {{range $d.CampaignFunnel}}
+      <div>
+        <h3 class="small">{{.Campaign}}</h3>
+        <ul class="bars mt-1">
+          <li><span>Sent</span><span class="bar-track"><span class="bar-fill {{width .Sent $top}}"></span></span><span class="num">{{thousands .Sent}}</span></li>
+          <li><span>Replied</span><span class="bar-track"><span class="bar-fill {{width .Replied $top}}"></span></span><span class="num">{{thousands .Replied}}</span></li>
+          <li><span>Positive</span><span class="bar-track"><span class="bar-fill {{width .Positive $top}}"></span></span><span class="num">{{thousands .Positive}}</span></li>
+        </ul>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <div class="empty empty-compact">
+      <p class="empty-title">No emails sent in the last 30 days</p>
+      <p class="empty-text">Each campaign's sent, replied and positive show here once its emails go out.</p>
+    </div>
+    {{end}}
+  </section>
+
+  <section class="card span-3" aria-labelledby="w-spend">
+    <div class="card-head"><h2 id="w-spend">Spend this month</h2></div>
+    <div class="card-body">
+      <span class="stat-value">{{usd $d.ClaudeMonthMicros}}</span>
+      <span class="stat-note">Claude, since 1 {{$d.Now.Format "Jan"}}</span>
+      <div class="mt-2">
+        {{$l := spendLevel $d.ClaudeMicros $d.ClaudeCapMicros}}
+        <div class="meter-row">
+          <span class="meter-label">Today</span>
+          <span class="meter-value"><strong>{{usd $d.ClaudeMicros}}</strong>{{if $d.ClaudeCapMicros}} of {{usd $d.ClaudeCapMicros}}{{end}}</span>
+          {{if $d.ClaudeCapMicros}}<div class="meter" role="img" aria-label="Today: {{usd $d.ClaudeMicros}} of {{usd $d.ClaudeCapMicros}}"><span class="meter-fill {{width $d.ClaudeMicros $d.ClaudeCapMicros}}{{if ne $l 0}} is-{{$l.Class}}{{end}}"></span></div>{{end}}
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">Reoon checks today</span>
+          <span class="meter-value"><strong>{{thousands $d.ReoonChecksToday}}</strong>{{if $d.ReoonDailyLimit}} of {{thousands $d.ReoonDailyLimit}}{{end}}</span>
+          {{if $d.ReoonDailyLimit}}<div class="meter" role="img" aria-label="Reoon checks today: {{$d.ReoonChecksToday}} of {{$d.ReoonDailyLimit}}"><span class="meter-fill {{width $d.ReoonChecksToday $d.ReoonDailyLimit}}"></span></div>{{end}}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <a class="card span-3" href="/jobs/home" aria-labelledby="w-jobs">
+    <div class="card-head"><h2 id="w-jobs">Jobs</h2><span class="card-link">Jobs{{template "dash_arrow"}}</span></div>
+    <div class="card-body">
+      {{if $d.AsOf.IsZero}}
+      <span class="stat-value">—</span>
+      <span class="stat-note">The day's numbers are on their way.</span>
+      {{else}}
+      <span class="stat-value">{{thousands $d.NewToday}} <small>new today</small></span>
+      {{end}}
+      <dl class="kv mt-2">
+        <dt>Apply</dt><dd>{{thousands $d.ApplyNow}}</dd>
+        <dt>Your call</dt><dd>{{thousands $d.YourCallNow}}</dd>
+        <dt>Last brief</dt><dd>{{with $d.LastBrief}}{{clock .SentAt}}{{else}}None yet{{end}}</dd>
+      </dl>
+      {{if not $d.LastBrief}}<p class="hint mt-1">{{noBriefYet}}</p>{{end}}
+    </div>
+  </a>
+</div>
 </div>
 {{end}}
+
+{{/* dash_arrow is the arrow a card's link ends with. */}}
+{{define "dash_arrow"}}<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14M12 5l7 7-7 7"/></svg>{{end}}

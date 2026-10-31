@@ -187,11 +187,12 @@ done
 
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
-	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer
-# The Run now watchers, the mailbox check's and contact research's (Send now's goes with the send timer, in leads_timers): the console asks through
+	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer leadhound-leads-verify-balance.timer
+# The Run now watchers, the mailbox check's, contact research's and the Status page's Reoon
+# refresh (Send now's goes with the send timer, in leads_timers): the console asks through
 # these, and each starts only its own unit. Arming one never starts its service, and PathChanged= waits for a new write, so
 # a request file left from before cannot fire on a deploy.
-systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path
+systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path leadhound-leads-verify-balance.path
 # Once, before any sending timer can be enabled: the old env switch becomes the console's.
 send_switch_convert /etc/leadhound/env /etc/leadhound/send-switch-converted
 leads_timers /etc/leadhound/env

@@ -130,7 +130,7 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	srv := &http.Server{
 		Addr:              cfg.ConsoleAddr,
-		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger, Operator: cfg.ConsoleEmail.Reveal()}),
+		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger, Operator: cfg.ConsoleEmail.Reveal(), Now: b.now}),
 		ReadHeaderTimeout: serveReadHeaderTimeout,
 		ReadTimeout:       serveReadTimeout,
 		WriteTimeout:      serveWriteTimeout,
@@ -176,6 +176,8 @@ type backend struct {
 	// missing or broken, as pubErr says. The console never holds the private key.
 	pub    secretbox.PublicKey
 	pubErr error
+	// started is when the console started, for the Status page.
+	started time.Time
 
 	// base ends every build: serve cancels it at shutdown. A request's own context
 	// never does.
@@ -213,7 +215,7 @@ type snapshotView struct {
 var _ console.Backend = (*backend)(nil)
 
 func newBackend(base context.Context, s *store.Store, prof candidate.Config, loc *time.Location, cfg config.Config) *backend {
-	b := &backend{s: s, prof: prof, loc: loc, cfg: cfg, now: time.Now, base: base, waitFor: dashboardWaitFor}
+	b := &backend{s: s, prof: prof, loc: loc, cfg: cfg, now: time.Now, base: base, waitFor: dashboardWaitFor, started: time.Now()}
 	b.build = b.buildSnapshot
 	b.pub, b.pubErr = consolePublicKey(os.Getenv)
 	return b
@@ -398,8 +400,6 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		Updating:          v.updating && !v.at.IsZero(),
 		Building:          v.updating && v.at.IsZero(),
 		LastBuildFailedAt: v.failedAt,
-		JobsCallCap:       b.cfg.JevDailyCallCap,
-		LeadsCallCap:      b.cfg.JevLeadsDailyCallCap,
 	}
 	if !v.at.IsZero() {
 		in, f := v.snap.in, v.snap.funnel
@@ -409,22 +409,20 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		d.Funnel = console.Funnel{NewBySource: f.NewBySource, Gated: f.Gated, GateFailed: f.GateFailed, Scored: f.Scored}
 	}
 	q := b.s.Q()
-	local := now.In(b.loc)
-	u, err := q.AIUsageOn(ctx, local)
+	// The Jev and Claude figures come from the helpers the Status page reads (jevToday,
+	// claudeFigures), so the two pages never disagree.
+	u, jobsCap, leadsCap, err := b.jevToday(ctx, now)
 	if err != nil {
 		return console.Dashboard{}, err
 	}
 	d.JobsCalls, d.LeadsCalls, d.AIInputTokens = u.JobsCalls, u.LeadsCalls, u.InputTokens
-	// The leads cap in force is the one leads rate runs under: the saved settings may lower
-	// the server's cap. Without leads set up here, the server's cap stands.
-	if setup, err := b.leadsSetup(ctx, leadsForProbe); err == nil {
-		d.LeadsCallCap = setup.jevLeadsDailyCap()
-	}
+	d.JobsCallCap, d.LeadsCallCap = jobsCap, leadsCap
 	d.AICostUSD = float64(u.InputTokens) * eval.CostPerMillionInput / 1e6
-	d.ClaudeCapMicros = b.cfg.ClaudeDailyCapMicros
-	if d.ClaudeMicros, d.ClaudeByPurpose, err = claudeSpendToday(ctx, q, local); err != nil {
+	cf, err := b.claudeFigures(ctx, now)
+	if err != nil {
 		return console.Dashboard{}, err
 	}
+	d.ClaudeMicros, d.ClaudeByPurpose, d.ClaudeCapMicros, d.ClaudeMonthMicros = cf.today, cf.byPurpose, cf.capMicros, cf.month
 	boards, err := q.CountBoards(ctx, store.BoardFilter{})
 	if err != nil {
 		return console.Dashboard{}, err
@@ -452,6 +450,7 @@ func (b *backend) Dashboard(ctx context.Context) (console.Dashboard, error) {
 		d.LastBrief = stamp
 	}
 	d.Leads = b.leadsSummary(ctx, now)
+	b.dashboardLeads(ctx, now, &d)
 	// The Run now card is read live; a failure to read it is one logged line and an empty
 	// card, never a failed dashboard.
 	if d.RunNow, err = b.RunNowCard(ctx); err != nil {

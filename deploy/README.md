@@ -24,6 +24,7 @@ Every timer but the leads send and sync is persistent, so a run missed while the
 | `leadhound-prebrief.timer` | 07:30 | `canary linkedin` (once a day; a second start the same day does nothing) |
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
 | `leadhound-trim.timer` | 15:00 | `trim --max-duration 45m`, under `timeout 50m`: see [The trim](#the-trim) |
+| `leadhound-leads-verify-balance.timer` | every 30 minutes, up to 2 minutes late | `leads verify --balance-only`: see [The credits on the Status page](#the-credits-on-the-status-page) |
 
 The five leads timers are installed on every deploy but enabled only when `/etc/leadhound/env` allows them, and each job also has its own switch on the console's Controls page: see [Leads on the server](#leads-on-the-server).
 
@@ -108,7 +109,7 @@ sudo systemctl start leadhound-brief.path
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
 | `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` `leads-templates/` and `campaigns/` (root:leadhound 0640, from `make deploy-data`; see [Campaigns on the server](#campaigns-on-the-server)), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
-| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) and its contact research requests (`run/leads-research`), one file per action, read by the `leadhound-*.path` watchers |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) and the Status page's Reoon refresh (`run/leads-verify-balance`), one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
 | `/etc/leadhound/mailbox.key` | root, 0600 | the mailboxes' private key, made by the first deploy; see [Mailboxes](#mailboxes) |
 | `/etc/leadhound/anthropic.key` | root, 0600 | the Anthropic API key, placed by hand; see [The Anthropic key](#the-anthropic-key) |
@@ -771,7 +772,7 @@ The key is a file on the server, `/etc/leadhound/reoon.key` (`root:root 0600`), 
 
 - **Place it by hand**: make the key in your Reoon account (Dashboard, API), then on the server `sudo -e /etc/leadhound/reoon.key`, paste, save, `sudo chmod 0600 /etc/leadhound/reoon.key`.
   Never type it into a command line or paste it into a chat.
-- **Who reads it**: only `leadhound-leads-batch.service`, as the systemd credential `LoadCredential=reoon.key:/etc/leadhound/reoon.key`; no other unit, never the console, and it is never a line in `/etc/leadhound/env`.
+- **Who reads it**: only `leadhound-leads-batch.service` and `leadhound-leads-verify-balance.service` (the credits for the Status page, below), as the systemd credential `LoadCredential=reoon.key:/etc/leadhound/reoon.key`; no other unit, never the console, and it is never a line in `/etc/leadhound/env`.
   LeadHound reads it from `$CREDENTIALS_DIRECTORY/reoon.key` on the server, or locally from the file `LEADHOUND_REOON_KEY_FILE` names (made `0600`; a file others can read is refused).
 - **Without the key the batch still runs.**
   The unit also has `SetCredential=reoon.key:`, an empty default systemd uses when the file cannot be read, so the unit starts; `leads verify` reads the empty credential as no key, prints that nothing was checked because the key is not at `/etc/leadhound/reoon.key`, records its run, and Controls says the last run checked nothing for that reason.
@@ -803,6 +804,21 @@ While the Email check job is on, every address must pass a Reoon check before it
   A call-first lead's emails go to the address given on the call, so its route is not gated.
 - **Switched off**, batches draft exactly as before the check, and Controls says "Email check is off: addresses are not checked before sending."
 - Controls' Email check row shows the switch, the last run, today's checks (checked, may be sent, blocked) and the credits Reoon had left at the last run; each email address on a lead's page shows its latest answer and when.
+
+### The credits on the Status page
+
+The console holds no key, so the Status page reads Reoon's credits, and Claude's last refusal, from a database row (`service_status`) the jobs that hold the keys write.
+
+- **`leads verify --balance-only`** reads the credits and stores them, or Reoon's error in one line; it checks no address, spends no credit and writes no run row.
+  A Reoon error is a reading the Status page shows, so the command still exits 0; only a crash or an unreachable database fails it.
+  Without `LEADHOUND_LIVE=1` or without the key it calls nobody, records nothing and says so.
+  It does not read the Email check switch: the credits stay current while the check is off.
+- **`leadhound-leads-verify-balance.service`** runs it, with the Reoon key alone (the same `LoadCredential=`/`SetCredential=` pair as the batch unit) and the batch's sandbox.
+  `leadhound-leads-verify-balance.timer` starts it every 30 minutes, and `leadhound-leads-verify-balance.path` when the Status page's Refresh button writes `run/leads-verify-balance`; both are enabled on every deploy, whatever the leads switches say.
+  The morning batch's check run stores the credits too (both its balance reads), so the page is fresh after each batch.
+- **Claude** writes its row when a call is refused for money: a daily cap (of a purpose, or across all Claude work) refused it, or Anthropic answered that the account's spend limit or credit is used up.
+  A lead's own cap and a cap set to 0 are not written: the first is one lead's, the second a switch.
+- If Refresh stays "asked and not started", reset the watcher: `sudo systemctl reset-failed leadhound-leads-verify-balance.path leadhound-leads-verify-balance.service`, then `sudo systemctl start leadhound-leads-verify-balance.path`.
 
 ## Contact research
 

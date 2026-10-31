@@ -98,6 +98,15 @@ type LeadsSummary struct {
 	Replies, ManualWaiting           int
 	CheckByHand                      int
 	SentYesterday, Bounced, OptedOut int
+	// DueEmails are the emails due today; SentToday and CapToday today's sends against the
+	// day's ramp; CallsDue the calls due today. They feed the dashboard's Today in Leads.
+	DueEmails, SentToday, CapToday, CallsDue int
+	// NoRoom is why CapToday is 0 while a mailbox is active, in one sentence; "" otherwise.
+	// NoRoomCheck is true when it asks for a mailbox's Check now, and NoRoomMailbox is that
+	// mailbox when it is about one (0 when about several: the note links the list).
+	NoRoom        string
+	NoRoomCheck   bool
+	NoRoomMailbox int64
 }
 
 // LeadsPage is the leads overview.

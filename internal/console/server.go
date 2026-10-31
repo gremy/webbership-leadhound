@@ -87,6 +87,9 @@ var routes = []route{
 	{"GET /jobs/home", "/jobs/home", false, (*server).jobsHome},
 	{"GET /account", "/account", false, (*server).account},
 	{"GET /controls", "/controls", false, (*server).controls},
+	{"GET /status", "/status", false, (*server).status},
+	{"POST /status/refresh", "/status/refresh", false, (*server).refreshStatus},
+	{"POST /status/claude-topup", "/status/claude-topup", false, (*server).claudeTopup},
 	// Both literal /controls/... POSTs are more specific than {job}, so they win.
 	{"POST /controls/send-now", "/controls/send-now", false, (*server).sendNow},
 	{"POST /controls/window", "/controls/window", false, (*server).saveWindow},
@@ -289,7 +292,7 @@ func (s *server) parseTemplates() map[string]*template.Template {
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
-		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account"} {
+		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
@@ -401,6 +404,56 @@ func (s *server) funcs() template.FuncMap {
 			return leadActView{ID: id, Do: do, Label: label, Back: back, SR: sr}
 		},
 		"in": func(v string, list []string) bool { return slices.Contains(list, v) },
+		// The Status page and the dashboard's cards.
+		"ago": func(t any, now time.Time) string {
+			switch t := t.(type) {
+			case time.Time:
+				return ago(t, now)
+			case *time.Time:
+				if t != nil {
+					return ago(*t, now)
+				}
+			}
+			return ""
+		},
+		"updated": func(t *time.Time, now time.Time) string {
+			if t == nil {
+				return "Last updated never"
+			}
+			at, n, layout := t.In(s.opt.Location), now.In(s.opt.Location), "15:04"
+			if at.YearDay() != n.YearDay() || at.Year() != n.Year() {
+				layout = "Mon 2 Jan 15:04"
+			}
+			return "Last updated " + at.Format(layout) + " (" + ago(*t, now) + ")"
+		},
+		"width":        func(n, total any) string { return widthClass(int64Of(n), int64Of(total)) },
+		"usd":          USD,
+		"noBriefYet":   func() string { return noBriefYet },
+		"cents":        centsUSD,
+		"bytes":        bytesWords,
+		"pct":          pct,
+		"optional":     optional,
+		"uptime":       uptime,
+		"mbLevel":      mailboxLevel,
+		"mbState":      mailboxStateWords,
+		"checkWords":   checkWords,
+		"bounceWords":  bounceWords,
+		"unitLevel":    unitLevel,
+		"spendLevel":   spendLevel,
+		"dbLevel":      dbLevel,
+		"diskLevel":    diskLevel,
+		"diskFreePct":  diskFreePct,
+		"reoonLevel":   reoonLevel,
+		"jevLevel":     jevLevel,
+		"jevMeter":     func(label string, n, limit int) jevMeterView { return jevMeterView{label, n, limit} },
+		"purposeWords": purposeWords,
+		"maxSent": func(rows []CampaignFunnelRow) int {
+			m := 0
+			for _, r := range rows {
+				m = max(m, r.Sent)
+			}
+			return m
+		},
 		"laterThan": func(status string) []string {
 			return slices.DeleteFunc(slices.Clone(laterStatuses), func(s string) bool { return s == status })
 		},
@@ -739,17 +792,14 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// dashboard is GET /, with the line from the last Run now press, if one was.
+// dashboard is GET /: the widget cards, with the line from the last action, if one was.
 func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
-	s.renderDashboard(w, r, http.StatusOK, s.takeFlash(w, r), false)
-}
-
-func (s *server) renderDashboard(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
-	s.renderHome(w, r, code, "dashboard", page{Title: "Dashboard", Active: "/", Message: msg, Error: isErr})
+	s.renderHome(w, r, http.StatusOK, "dashboard", page{Title: "Dashboard", Active: "/", Message: s.takeFlash(w, r)})
 }
 
 // renderHome renders a page made of the dashboard's parts (the dashboard, Leads home, Jobs
-// home) with the dashboard's data.
+// home) with the dashboard's data. Only the dashboard reads the Status figures, and a failed
+// read of them leaves its status card grey rather than failing the page.
 func (s *server) renderHome(w http.ResponseWriter, r *http.Request, code int, name string, p page) {
 	d, err := s.b.Dashboard(r.Context())
 	if err != nil {
@@ -757,19 +807,57 @@ func (s *server) renderHome(w http.ResponseWriter, r *http.Request, code int, na
 		return
 	}
 	v := dashboardView{Dashboard: d}
-	if d.Leads != nil {
+	if d.Leads != nil && name != "dashboard" {
 		v.Why = s.sendingWhy(r)
+	}
+	if name == "dashboard" {
+		v.Now = s.now().In(s.opt.Location)
+		st, err := s.b.Status(r.Context())
+		if err != nil {
+			s.log.Error("console error", "route", r.Pattern, "read", "status", "err", err.Error())
+			v.StatusFailed = true
+		} else {
+			v.Areas = statusAreas(st, v.Now)
+		}
 	}
 	p.SignedIn, p.Data = true, v
 	s.render(w, r, code, name, p)
 }
 
-// dashboardView is the dashboard and, with leads set up, the sending sentence its leads
-// card leads with (nil when not read).
+// dashboardView is the dashboard and, on Leads home with leads set up, the sending sentence
+// its leads card leads with (nil when not read). On the dashboard, Areas is the status card
+// (statusAreas, worst first), StatusFailed true when the Status figures could not be read,
+// and Now the time it was judged at.
 type dashboardView struct {
 	Dashboard
-	Why *SendingWhy
+	Why          *SendingWhy
+	Areas        []statusArea
+	StatusFailed bool
+	Now          time.Time // in Options.Location
 }
+
+// Greeting is the dashboard's heading for the time of day.
+func (v dashboardView) Greeting() string {
+	switch h := v.Now.Hour(); {
+	case h < 5 || h >= 18:
+		return "Good evening"
+	case h < 12:
+		return "Good morning"
+	}
+	return "Good afternoon"
+}
+
+// NewToday is the day's new jobs, every source together.
+func (v dashboardView) NewToday() int {
+	n := 0
+	for _, c := range v.Funnel.NewBySource {
+		n += c
+	}
+	return n
+}
+
+// NeedsMeMore is how many leads wait on the operator beyond the ones listed.
+func (v dashboardView) NeedsMeMore() int { return max(v.NeedsMeTotal-len(v.NeedsMe), 0) }
 
 // jobs is GET /jobs: the latest sent brief's jobs under the numbers it used.
 func (s *server) jobs(w http.ResponseWriter, r *http.Request) {

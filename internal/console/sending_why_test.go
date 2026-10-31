@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// TestSendingWhyOnLeadsAndDashboard: the Outreach page and the dashboard's leads card lead
+// TestSendingWhyOnLeadsAndDashboard: the Outreach page and Leads home's leads card lead
 // with the sending sentence, amber when blocked and green when not, each linking to Controls.
 func TestSendingWhyOnLeadsAndDashboard(t *testing.T) {
-	for _, path := range []string{"/leads/outreach", "/"} {
+	for _, path := range []string{"/leads/outreach", "/leads/home"} {
 		for _, blocked := range []bool{true, false} {
 			b := richBackend("x")
 			b.dash.Leads = &LeadsSummary{}
@@ -34,7 +34,7 @@ func TestSendingWhyOnLeadsAndDashboard(t *testing.T) {
 // TestSendingWhyErrorKeepsPage: a failed read of the sentence leaves both pages up without
 // it, and is logged; leads not set up shows no sentence and no log.
 func TestSendingWhyErrorKeepsPage(t *testing.T) {
-	for _, path := range []string{"/leads/outreach", "/"} {
+	for _, path := range []string{"/leads/outreach", "/leads/home"} {
 		for _, err := range []error{errors.New("db gone"), ErrLeadsNotSetUp} {
 			b := richBackend("x")
 			b.dash.Leads = &LeadsSummary{}

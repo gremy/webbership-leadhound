@@ -53,3 +53,17 @@ func TestFreePercentMissingPath(t *testing.T) {
 		t.Fatalf("FreePercent(missing) ok = %v, err = %v; want true and an error", ok, err)
 	}
 }
+
+func TestSpace(t *testing.T) {
+	free, total, ok, err := Space(t.TempDir())
+	switch runtime.GOOS {
+	case "linux", "darwin":
+		if !ok || err != nil || total == 0 || free > total {
+			t.Fatalf("Space(temp dir) = %d, %d, %v, %v; want free <= total > 0, true, nil", free, total, ok, err)
+		}
+	default:
+		if ok || err != nil || free != 0 || total != 0 {
+			t.Fatalf("Space(temp dir) = %d, %d, %v, %v; want 0, 0, false, nil", free, total, ok, err)
+		}
+	}
+}

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
@@ -30,6 +31,7 @@ type fakeReoon struct {
 	bal      verify.Balance
 	checks   []string
 	balances int
+	balErr   error // when set, every balance read fails with it
 }
 
 func (f *fakeReoon) Check(_ context.Context, address string) (verify.Result, error) {
@@ -47,6 +49,9 @@ func (f *fakeReoon) Balance(context.Context) (verify.Balance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.balances++
+	if f.balErr != nil {
+		return verify.Balance{}, f.balErr
+	}
 	return f.bal, nil
 }
 
@@ -541,5 +546,85 @@ func TestVerifyOnlyCampaignsWithMailboxes(t *testing.T) {
 	mustRun(t, "leads", "verify")
 	if got := f.checked(); len(got) != 4 {
 		t.Errorf("assigned again, checked %v, want the 4 addresses", got)
+	}
+}
+
+// reoonStatusRow is the Reoon row of service_status: its reading, error and whether each is
+// set; ok is false when there is no row.
+func reoonStatusRow(t *testing.T) (data reoonReading, errLine string, fetched, failed, ok bool) {
+	t.Helper()
+	r, err := leadstoretest.Q(t).ServiceStatus(context.Background(), leadstore.ServiceReoon)
+	if errors.Is(err, leadstore.ErrServiceNotFound) {
+		return reoonReading{}, "", false, false, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Data != nil {
+		// Exactly the three fields the Status page reads, nothing more.
+		dec := json.NewDecoder(strings.NewReader(string(r.Data)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&data); err != nil {
+			t.Fatalf("reoon reading %s: %v", r.Data, err)
+		}
+	}
+	return data, r.Error, r.FetchedAt != nil, r.ErrorAt != nil, true
+}
+
+// TestVerifyRecordsBalance: every balance read, a check run's or --balance-only's, is stored
+// for the Status page as {"api_status","daily","instant"} or as the error's line; a Reoon
+// error under --balance-only exits 0; live off or no key records nothing; --balance-only
+// checks nothing and writes no run row.
+func TestVerifyRecordsBalance(t *testing.T) {
+	leadsScene(t)
+	goLive(t)
+	setVerify(t, true)
+	f := &fakeReoon{bal: verify.Balance{Daily: 18, Instant: 3}, status: map[string]string{
+		"info@northwind.example": verify.StatusSafe, "info@tailspin.example": verify.StatusSafe,
+		"office@litware.example": verify.StatusSafe, "hello@wingtip.example": verify.StatusSafe,
+	}}
+	useReoon(t, f)
+
+	t.Setenv("LEADHOUND_LIVE", "")
+	wantLines(t, "live off", mustRun(t, "leads", "verify", "--balance-only"), "no Reoon call made, nothing recorded")
+	t.Setenv("LEADHOUND_LIVE", "1")
+	saved := newReoonClient
+	newReoonClient = func(bool) (reoonClient, error) { return nil, verify.ErrNoKey }
+	wantLines(t, "no key", mustRun(t, "leads", "verify", "--balance-only"), "the Reoon key is not at /etc/leadhound/reoon.key", "nothing recorded")
+	newReoonClient = saved
+	if _, _, _, _, ok := reoonStatusRow(t); ok || f.balances != 0 {
+		t.Fatalf("live off or keyless: a row was recorded (%t) or Reoon was asked (%d)", ok, f.balances)
+	}
+
+	mustRun(t, "leads", "verify")
+	data, _, fetched, failed, _ := reoonStatusRow(t)
+	if data != (reoonReading{"active", 18, 3}) || !fetched || failed {
+		t.Errorf("after a check run: data %+v, fetched %t, failed %t", data, fetched, failed)
+	}
+
+	runs := batchCount(t, `SELECT count(*) FROM run WHERE command = 'leads-verify'`)
+	checks := len(f.checked())
+	f.bal = verify.Balance{Daily: 7, Instant: 0}
+	wantLines(t, "balance only", mustRun(t, "leads", "verify", "--balance-only"), "leads verify: credits left 7 today, 0 one-off")
+	if data, _, _, _, _ := reoonStatusRow(t); data != (reoonReading{"active", 7, 0}) {
+		t.Errorf("after --balance-only: data %+v", data)
+	}
+	if n := batchCount(t, `SELECT count(*) FROM run WHERE command = 'leads-verify'`); n != runs || len(f.checked()) != checks {
+		t.Errorf("--balance-only wrote %d run rows or checked %v", n-runs, f.checked()[checks:])
+	}
+
+	f.balErr = errors.New("verify: reoon balance: the API key is \"inactive\", not active")
+	wantLines(t, "balance error", mustRun(t, "leads", "verify", "--balance-only"), "the credits could not be read")
+	data, errLine, _, failed, _ := reoonStatusRow(t)
+	if errLine != `reoon balance: the API key is "inactive", not active` || !failed || data != (reoonReading{"active", 7, 0}) {
+		t.Errorf("after a failed read: error %q (%t), data %+v", errLine, failed, data)
+	}
+
+	// A check run whose balance read fails records it too (and fails as before; the batch
+	// unit ignores this step's exit status).
+	f.balErr = errors.New("verify: reoon /api/v1/check-account-balance/: HTTP 503")
+	leadsRun(t, "leads", "verify")
+	if _, errLine, _, _, _ := reoonStatusRow(t); errLine != "reoon /api/v1/check-account-balance/: HTTP 503" {
+		t.Errorf("after a failed check run: error %q", errLine)
 	}
 }

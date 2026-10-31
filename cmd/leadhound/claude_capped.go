@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -29,7 +30,9 @@ type claudeCampaignCaps struct {
 //
 // Like leads rate, it calls nothing unless LEADHOUND_LIVE=1: otherwise it prints one line
 // naming cmd and returns nil, nil, and the command stops with exit 0. A missing or unsafe
-// key is an error that never carries the key.
+// key is an error that never carries the key. A refusal for money's sake (a daily cap, or
+// the Anthropic account's spend limit or credit) is stored for the console's Status page
+// through claudeLimitRecorder.
 func claudeCapped(cmd string, q store.Queries, purpose string, own claudeCampaignCaps) (*claude.Capped, error) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -64,5 +67,17 @@ func claudeCapped(cmd string, q store.Queries, purpose string, own claudeCampaig
 		TotalCapMicros: caps.TotalMicros,
 		LeadCapMicros:  caps.LeadMicros,
 		Loc:            loc,
+		OnLimit:        claudeLimitRecorder(leadstore.NewQueries(q.DB()), cmd),
 	}, nil
+}
+
+// claudeLimitRecorder is claude.Capped's OnLimit for a command: it stores msg as Claude's last
+// error in service_status, the one way it reaches the console's Status page (the console holds
+// no key). A failed write is said and never stops the command.
+func claudeLimitRecorder(lq leadstore.Queries, cmd string) func(ctx context.Context, msg string) {
+	return func(ctx context.Context, msg string) {
+		if err := lq.RecordServiceError(ctx, leadstore.ServiceClaude, msg, time.Now()); err != nil {
+			_, _ = fmt.Fprintf(stdout, "%s: Claude's limit was not saved for the Status page: %v\n", cmd, err)
+		}
+	}
 }

@@ -58,7 +58,38 @@ var (
 	// connection or a context ended mid-call. The API may have billed it. It comes wrapped
 	// with ai.ErrUnavailable, or with the context's error.
 	ErrNoAnswer = errors.New("claude: request sent, no answer (may have been billed)")
+	// ErrSpendLimit is an answer saying the Anthropic account's spend (usage) limit is
+	// reached. It comes with ErrBadRequest (or ai.ErrUnavailable on a 429).
+	ErrSpendLimit = errors.New("claude: Anthropic spend limit reached")
+	// ErrCreditLow is an answer saying the Anthropic account's credit balance is too low,
+	// with ErrBadRequest (or ai.ErrUnavailable on a 429).
+	ErrCreditLow = errors.New("claude: Anthropic credit balance too low")
 )
+
+// accountLimitLine is err in one plain line for the Status page when the Anthropic account
+// itself refused the call (ErrSpendLimit, ErrCreditLow); "" for any other error.
+func accountLimitLine(err error) string {
+	switch {
+	case errors.Is(err, ErrSpendLimit):
+		return "Anthropic's spend limit is reached: Claude calls are refused until it is raised or resets"
+	case errors.Is(err, ErrCreditLow):
+		return "Anthropic's credit balance is too low: Claude calls are refused until it is topped up"
+	}
+	return ""
+}
+
+// accountLimit is the sentinel an API error body names, nil when none: the spend limit
+// (enforced_spend_limit_reached, or "usage limit" in the message) or a credit balance too low.
+func accountLimit(body string) error {
+	b := strings.ToLower(body)
+	switch {
+	case strings.Contains(b, "enforced_spend_limit_reached") || strings.Contains(b, "usage limit"):
+		return ErrSpendLimit
+	case strings.Contains(b, "credit balance"):
+		return ErrCreditLow
+	}
+	return nil
+}
 
 // Usage is what one call (with its continuations) was billed for.
 type Usage struct {
@@ -382,7 +413,8 @@ func collect(m *anthropic.Message, txt *strings.Builder, sources *[]Source) {
 // are ai.ErrUnavailable; other 4xx are ErrBadRequest; a request with no answer at all (a
 // transport failure, a timeout, the context ending mid-call) is ErrNoAnswer, with
 // ai.ErrUnavailable or the context's error. Callers check ctx before sending, so a context
-// already done here ended while the request was out. The SDK error is never wrapped, only
+// already done here ended while the request was out. A 4xx whose body says the account's spend
+// limit or credit is used up also carries ErrSpendLimit or ErrCreditLow. The SDK error is never wrapped, only
 // its scrubbed text kept, so the key cannot ride along.
 func (c *Client) mapErr(ctx context.Context, op string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -391,7 +423,16 @@ func (c *Client) mapErr(ctx context.Context, op string, err error) error {
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
 		code := apiErr.StatusCode
-		msg := c.snippet(apiErr.RawJSON())
+		raw := apiErr.RawJSON()
+		msg := c.snippet(raw)
+		if code < 500 {
+			if limit := accountLimit(raw); limit != nil {
+				if code == 429 {
+					return fmt.Errorf("claude: %s: status %d after retries: %s: %w: %w", op, code, msg, limit, ai.ErrUnavailable)
+				}
+				return fmt.Errorf("claude: %s: status %d: %s: %w: %w", op, code, msg, limit, ErrBadRequest)
+			}
+		}
 		switch {
 		case code == 429 || code >= 500:
 			return fmt.Errorf("claude: %s: status %d after retries: %s: %w", op, code, msg, ai.ErrUnavailable)

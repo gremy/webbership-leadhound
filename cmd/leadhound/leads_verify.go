@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -52,7 +53,7 @@ const noReoonKeyNote = "no Reoon key"
 // emailCheckOffLine is what Controls and a batch say while the Email check job is off.
 const emailCheckOffLine = "Email check is off: addresses are not checked before sending."
 
-const leadsVerifyUsage = "usage: leadhound leads verify [--max N (at least 1)]"
+const leadsVerifyUsage = "usage: leadhound leads verify [--max N (at least 1)] [--balance-only]"
 
 // reoonClient is what leads verify asks Reoon through; tests swap newReoonClient for a fake,
 // so no test reaches Reoon.
@@ -271,16 +272,21 @@ func (o verifyOutcome) note() string {
 // at most --max, the day's cap (LEADHOUND_REOON_DAILY_CAP, counted from today's checks) and
 // the credits left, two at a time, storing each answer. A missing key is said and exits 0, so
 // the batch unit goes on to draft (a smaller batch). Every run that reached Reoon is recorded
-// with its counts and the credits left.
+// with its counts and the credits left, and each balance read is stored for the Status page
+// (saveReoonBalance). --balance-only reads the credits and nothing else (runReoonBalance).
 func runLeadsVerify(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads verify", flag.ContinueOnError)
 	maxChecks := fs.Int("max", defaultVerifyMax, "most addresses checked in this run")
+	balanceOnly := fs.Bool("balance-only", false, "only read the credits left, for the Status page")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 0 || *maxChecks < 1 {
 		return usageError(leadsVerifyUsage)
+	}
+	if *balanceOnly {
+		return runReoonBalance(ctx)
 	}
 	s, setup, err := leadsOpen(ctx, leadsForOutreach)
 	if err != nil {
@@ -363,7 +369,9 @@ func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batch
 		}
 		return out, runErr
 	}
+	lq := leadstore.NewQueries(s.Pool())
 	bal, err := client.Balance(ctx)
+	recordReoonBalance(ctx, lq, bal, err)
 	if err != nil {
 		return finish(err)
 	}
@@ -371,7 +379,6 @@ func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batch
 	if bal.Empty() {
 		return finish(nil)
 	}
-	lq := leadstore.NewQueries(s.Pool())
 	today, err := lq.EmailChecksSince(ctx, leadstore.DefaultAccountID, startOfDay(now, bs.loc))
 	if err != nil {
 		return finish(err)
@@ -434,10 +441,84 @@ func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batch
 		return finish(storeErr)
 	}
 	// What the run spent; a failed read leaves the balance read first.
-	if b, err := client.Balance(ctx); err == nil {
+	b, err := client.Balance(ctx)
+	recordReoonBalance(ctx, lq, b, err)
+	if err == nil {
 		out.Balance = b
 	}
 	return finish(nil)
+}
+
+// reoonReading is the Reoon row of service_status as the console's Status page reads it: the
+// key's state and the credits left, today's and the one-off ones.
+type reoonReading struct {
+	APIStatus string `json:"api_status"`
+	Daily     int    `json:"daily"`
+	Instant   int    `json:"instant"`
+}
+
+// saveReoonBalance stores one balance read for the Status page (service_status): the credits
+// when readErr is nil, else the error's first line (the client's errors never carry the key
+// or the URL, which holds it). The console holds no key, so this row is the only way the
+// credits reach it.
+func saveReoonBalance(ctx context.Context, lq leadstore.Queries, bal verify.Balance, readErr error) error {
+	ctx = context.WithoutCancel(ctx)
+	at := leadsNow()
+	if readErr != nil {
+		return lq.RecordServiceError(ctx, leadstore.ServiceReoon, strings.TrimPrefix(readErr.Error(), "verify: "), at)
+	}
+	// A struct of a string and two ints always marshals.
+	data, _ := json.Marshal(reoonReading{APIStatus: "active", Daily: bal.Daily, Instant: bal.Instant})
+	return lq.RecordServiceOK(ctx, leadstore.ServiceReoon, data, at)
+}
+
+// recordReoonBalance is saveReoonBalance for a check run: a failed write is said and never
+// fails the run that read the balance.
+func recordReoonBalance(ctx context.Context, lq leadstore.Queries, bal verify.Balance, readErr error) {
+	if err := saveReoonBalance(ctx, lq, bal, readErr); err != nil {
+		_, _ = fmt.Fprintf(stdout, "leads verify: the Reoon credits were not saved for the Status page: %v\n", err)
+	}
+}
+
+// runReoonBalance is `leads verify --balance-only`: it reads the credits left and stores the
+// reading (or the error) for the console's Status page, and does nothing else: no address is
+// checked, no run row is written and the Email check switch is not read, as a balance read
+// costs no credit. Without LEADHOUND_LIVE, or without the key, it calls nobody, records nothing
+// and says so. A Reoon error is a reading, recorded for the Status page, so it exits 0: an
+// outage shows there, not as a failed unit every 30 minutes. Only a crash or a database that
+// cannot be reached or written fails it.
+func runReoonBalance(ctx context.Context) error {
+	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
+	if err != nil {
+		return err
+	}
+	if cfg.Live != config.LiveAll {
+		_, _ = fmt.Fprintf(stdout, "leads verify: %s (LEADHOUND_LIVE is %s); no Reoon call made, nothing recorded\n", liveOffMessage, cfg.Live)
+		return nil
+	}
+	client, err := newReoonClient(true)
+	if errors.Is(err, verify.ErrNoKey) {
+		_, _ = fmt.Fprintln(stdout, "leads verify: the credits were not read, because the Reoon key is not at /etc/leadhound/reoon.key (or LEADHOUND_REOON_KEY_FILE for a hand run); nothing recorded.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	bal, readErr := client.Balance(ctx)
+	if err := saveReoonBalance(ctx, leadstore.NewQueries(s.Pool()), bal, readErr); err != nil {
+		return err
+	}
+	if readErr != nil {
+		_, _ = fmt.Fprintf(stdout, "leads verify: the credits could not be read: %v\n", readErr)
+		return nil
+	}
+	_, _ = fmt.Fprintf(stdout, "leads verify: credits left %d today, %d one-off\n", bal.Daily, bal.Instant)
+	return nil
 }
 
 // verifyQueue is the addresses due a check, at most limit: for each active campaign with at

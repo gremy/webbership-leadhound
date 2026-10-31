@@ -722,7 +722,7 @@ func TestJobsFormKeepsItsBrief(t *testing.T) {
 	form.Set("action", "skip")
 	w = post(form)
 	body := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(body, oldLink) || strings.Contains(body, newLink) || !strings.Contains(body, "row-error") {
+	if w.Code != http.StatusOK || !strings.Contains(body, oldLink) || strings.Contains(body, newLink) || !strings.Contains(body, `<div class="alert alert-stop" role="alert">`) {
 		t.Errorf("refusal: %d %s", w.Code, body)
 	}
 }
@@ -1085,7 +1085,7 @@ func TestConsoleBatchPage(t *testing.T) {
 		t.Fatalf("batch page %d without the approve form for %s:\n%s", code, hash, page)
 	}
 	msgs := batchCount(t, `SELECT count(*)::int FROM outreach_message WHERE batch_id = 1`)
-	if n := strings.Count(page, `<section class="message">`); n != msgs {
+	if n := strings.Count(page, `<section class="message mt-2">`); n != msgs {
 		t.Errorf("%d messages shown, want %d", n, msgs)
 	}
 	if !strings.Contains(page, "Finding: ") {

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"bufio"
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -161,6 +162,12 @@ var schedule = map[string]struct {
 		false,
 		[]string{"/usr/bin/timeout --kill-after=5m 225m /opt/leadhound/bin/leadhound leads send --max 25"},
 	},
+	// The Reoon credits for the Status page: a read that spends nothing, on every deploy.
+	"leadhound-leads-verify-balance": {
+		[]string{"*-*-* *:00/30:00 Europe/Bucharest"},
+		true,
+		[]string{"/usr/bin/timeout --kill-after=30s 2m /opt/leadhound/bin/leadhound leads verify --balance-only"},
+	},
 	"leadhound-leads-sync": {
 		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
 		false,
@@ -183,7 +190,14 @@ var (
 	// leadsTriggered are the leads services the console starts through a watcher, with no
 	// timer: install.sh arms their watchers on every deploy, whatever the env switches say.
 	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-send-now.service"}
+	// leadsAlways are the leads services install.sh enables on every deploy, whatever the env
+	// switches say: the Reoon credits read for the Status page, which spends nothing.
+	leadsAlways = []string{"leadhound-leads-verify-balance.service"}
 )
+
+// timerDelay is each timer's RandomizedDelaySec where it is not 600: a 30-minute timer
+// spreads over two minutes, not a third of its period.
+var timerDelay = map[string]string{"leadhound-leads-verify-balance": "120"}
 
 // daemons are the services that run all the time rather than from a timer, with their
 // ExecStart line.
@@ -232,7 +246,7 @@ var triggered = map[string]struct {
 // research and Send now): each has
 // a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
 // starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now"}
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now", "leads-verify-balance"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -293,8 +307,9 @@ func TestTimers(t *testing.T) {
 				t.Errorf("%s: OnCalendar %q is not in Europe/Bucharest", path, c)
 			}
 		}
-		if got := u.one(t, path, "Timer", "RandomizedDelaySec"); got != "600" {
-			t.Errorf("%s: RandomizedDelaySec = %s, want 600", path, got)
+		wantDelay := cmp.Or(timerDelay[name], "600")
+		if got := u.one(t, path, "Timer", "RandomizedDelaySec"); got != wantDelay {
+			t.Errorf("%s: RandomizedDelaySec = %s, want %s", path, got, wantDelay)
 		}
 		if got := u.one(t, path, "Timer", "Persistent"); got != strconv.FormatBool(want.persistent) {
 			t.Errorf("%s: Persistent = %s, want %t", path, got, want.persistent)
@@ -965,22 +980,23 @@ func TestTimeoutsCoverWaits(t *testing.T) {
 // memory is each leadhound service's ceiling and its Go heap target: MemoryMax in systemd's
 // units (M and G are 1024-based) and GOMEMLIMIT in Go's.
 var memory = map[string]struct{ max, goLimit string }{
-	"leadhound-console":        {"300M", "200MiB"},
-	"leadhound-brief":          {"600M", "450MiB"},
-	"leadhound-prebrief":       {"600M", "450MiB"},
-	"leadhound-preview":        {"600M", "450MiB"},
-	"leadhound-fetch":          {"600M", "450MiB"},
-	"leadhound-collect":        {"1G", "850MiB"},
-	"leadhound-ats":            {"1200M", "900MiB"},
-	"leadhound-trim":           {"300M", "200MiB"},
-	"leadhound-leads-probe":    {"600M", "450MiB"},
-	"leadhound-leads-contacts": {"600M", "450MiB"},
-	"leadhound-leads-batch":    {"600M", "450MiB"},
-	"leadhound-leads-send":     {"600M", "450MiB"},
-	"leadhound-leads-sync":     {"600M", "450MiB"},
-	"leadhound-mailbox-check":  {"600M", "450MiB"},
-	"leadhound-leads-research": {"600M", "450MiB"},
-	"leadhound-leads-send-now": {"600M", "450MiB"},
+	"leadhound-console":              {"300M", "200MiB"},
+	"leadhound-brief":                {"600M", "450MiB"},
+	"leadhound-prebrief":             {"600M", "450MiB"},
+	"leadhound-preview":              {"600M", "450MiB"},
+	"leadhound-fetch":                {"600M", "450MiB"},
+	"leadhound-collect":              {"1G", "850MiB"},
+	"leadhound-ats":                  {"1200M", "900MiB"},
+	"leadhound-trim":                 {"300M", "200MiB"},
+	"leadhound-leads-probe":          {"600M", "450MiB"},
+	"leadhound-leads-contacts":       {"600M", "450MiB"},
+	"leadhound-leads-batch":          {"600M", "450MiB"},
+	"leadhound-leads-send":           {"600M", "450MiB"},
+	"leadhound-leads-sync":           {"600M", "450MiB"},
+	"leadhound-mailbox-check":        {"600M", "450MiB"},
+	"leadhound-leads-research":       {"600M", "450MiB"},
+	"leadhound-leads-send-now":       {"600M", "450MiB"},
+	"leadhound-leads-verify-balance": {"600M", "450MiB"},
 }
 
 // TestMemoryCeiling: the server is shared, so every leadhound unit but the backup has a
@@ -1163,7 +1179,7 @@ func TestTrimUnit(t *testing.T) {
 // done; the probe waits for the lock, so a wait that runs out fails its unit visibly.
 func TestLeadsUnits(t *testing.T) {
 	leads := units(t, "leadhound-leads-*.service")
-	if want := len(leadsFinding) + len(leadsSending) + len(leadsTriggered); len(leads) != want {
+	if want := len(leadsFinding) + len(leadsSending) + len(leadsTriggered) + len(leadsAlways); len(leads) != want {
 		t.Errorf("%d leads services, want %d", len(leads), want)
 	}
 	leads["leadhound-mailbox-check.service"] = readUnit(t, "leadhound-mailbox-check.service")
@@ -1660,9 +1676,10 @@ var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-send-now"
 // key, as a systemd credential. The drafts unit joins them when it is added.
 var claudeWorkers = []string{"leadhound-leads-batch", "leadhound-leads-research"}
 
-// reoonWorkers are the only services that call Reoon (leads verify), so the only ones handed
-// the Reoon key, with an empty default for a server without it (SetCredential=).
-var reoonWorkers = []string{"leadhound-leads-batch"}
+// reoonWorkers are the only services that call Reoon (leads verify, and its balance read for
+// the Status page), so the only ones handed the Reoon key, with an empty default for a server
+// without it (SetCredential=).
+var reoonWorkers = []string{"leadhound-leads-batch", "leadhound-leads-verify-balance"}
 
 const (
 	reoonCredential        = "reoon.key:/etc/leadhound/reoon.key"         //nolint:gosec // G101: a systemd credential name and path, not a credential

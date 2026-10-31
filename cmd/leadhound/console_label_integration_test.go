@@ -83,8 +83,8 @@ func TestConsoleLabel(t *testing.T) {
 		t.Errorf("the call's outcome is not in the call block: %d %d", i, j)
 	}
 	for _, want := range []string{
-		"You said <strong>likely</strong>", `value="likely" title=`, `class="is-current" aria-current="true">Likely</button>`,
-		`value="clear" class="call-clear">Clear</button>`, "1 of 30 labelled"} {
+		"You said <strong>likely</strong>", `value="likely" title=`, `class="btn btn-secondary is-current" aria-current="true">Likely</button>`,
+		`value="clear" class="btn btn-ghost call-clear">Clear</button>`, "1 of 30 labelled"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the lead's page after the call lacks %q", want)
 		}
@@ -255,7 +255,7 @@ func TestConsoleToLabel(t *testing.T) {
 		t.Errorf("with two calls outside the sample, to_label lists %d leads %v, want 32", len(got), got)
 	}
 	page := c.pages[len(c.pages)-1]
-	for _, want := range []string{"<strong>3 of 30 labelled.</strong>", `<th scope="col">Your call</th>`, `<span class="tag call-tag">maybe</span>`} {
+	for _, want := range []string{"<strong>3 of 30 labelled.</strong>", `<th scope="col">Your call</th>`, `<span class="badge badge-accent">maybe</span>`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("to_label page lacks %q", want)
 		}

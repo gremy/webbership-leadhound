@@ -36,8 +36,8 @@ type resultsView struct {
 }
 
 // runNow is POST /run/{action}. An htmx press gets the card back in place, with the
-// outcome or the refusal on it; a plain form gets a redirect to the dashboard with the
-// outcome in the one-time cookie, or the dashboard at 422 with the refusal.
+// outcome or the refusal on it; a plain form gets a redirect to Jobs home (where the card is)
+// with the outcome in the one-time cookie, or Jobs home at 422 with the refusal.
 func (s *server) runNow(w http.ResponseWriter, r *http.Request) {
 	action := r.PathValue("action")
 	if !slices.Contains(RunActions, action) {
@@ -65,7 +65,7 @@ func (s *server) runNow(w http.ResponseWriter, r *http.Request) {
 			s.renderRunNow(w, r, msg, true)
 			return
 		}
-		s.renderDashboard(w, r, http.StatusUnprocessableEntity, msg, true)
+		s.renderHome(w, r, http.StatusUnprocessableEntity, "jobs_home", page{Title: "Jobs", Active: jobsHomePath, Message: msg, Error: true})
 		return
 	case err != nil:
 		s.runLog(action, "failed")
@@ -78,7 +78,7 @@ func (s *server) runNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setFlash(w, out.Message)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, jobsHomePath, http.StatusSeeOther)
 }
 
 func (s *server) runLog(action, outcome string) {
@@ -86,10 +86,11 @@ func (s *server) runLog(action, outcome string) {
 }
 
 // runStatus is GET /run/status: the Run now card alone, which the card polls while
-// something is pending. A plain visit (a sign-in returning here) goes to the dashboard.
+// something is pending. A plain visit (a sign-in returning here) goes to Jobs home, where
+// the card is.
 func (s *server) runStatus(w http.ResponseWriter, r *http.Request) {
 	if !isHX(r) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, jobsHomePath, http.StatusSeeOther)
 		return
 	}
 	s.renderRunNow(w, r, "", false)

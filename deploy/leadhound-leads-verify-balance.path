@@ -1,0 +1,21 @@
+# Refresh: the console's Status page writes the request time to
+# /opt/leadhound/data/run/leads-verify-balance, and this watcher starts
+# leadhound-leads-verify-balance.service, which reads the Reoon credits once and stores them.
+# The console itself never holds the Reoon key and never reaches Reoon.
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A request while the service is already starting or
+# running is merged into that run by systemd.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset:
+#   systemctl reset-failed leadhound-leads-verify-balance.path leadhound-leads-verify-balance.service
+#   systemctl start leadhound-leads-verify-balance.path
+[Unit]
+Description=leadhound Reoon credits refresh request
+
+[Path]
+PathChanged=/opt/leadhound/data/run/leads-verify-balance
+
+[Install]
+WantedBy=paths.target

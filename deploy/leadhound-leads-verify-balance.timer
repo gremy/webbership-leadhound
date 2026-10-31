@@ -1,0 +1,13 @@
+# The Reoon credits for the Status page (leadhound-leads-verify-balance.service), every 30
+# minutes. Enabled by install.sh on every deploy: a balance read spends no credit. Persistent:
+# a read missed while the server was down runs once at the next boot.
+[Unit]
+Description=leadhound Reoon credits, every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/30:00 Europe/Bucharest
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

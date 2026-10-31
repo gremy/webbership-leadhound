@@ -216,7 +216,7 @@ func TestConsoleMailboxPages(t *testing.T) {
 
 	w := c.get("/mailboxes", false)
 	page := w.Body.String()
-	for _, want := range []string{testSenderDomain, testUser, "Sent today</dt><dd>0 of 50", "Mailboxes</dt><dd>1 of 2",
+	for _, want := range []string{testSenderDomain, testUser, `Sent today</span><span class="stat-value">0 of 50</span>`, `Mailboxes</span><span class="stat-value">1 of 2</span>`,
 		"Records for " + testSenderDomain + " (selector sel1), checked", "Ready", `href="/mailboxes/new"`} {
 		if w.Code != http.StatusOK || !strings.Contains(page, want) {
 			t.Fatalf("mailboxes page %d lacks %q:\n%s", w.Code, want, page)
@@ -529,7 +529,7 @@ func TestConsoleMailboxLongPassword(t *testing.T) {
 	_, logger := captureLogs(t)
 	c := newConsoleClient(t, leadsBackend(t), logger)
 	page := c.get("/mailboxes/new", false).Body.String()
-	i := strings.Index(page, `<input id="mb-password"`)
+	i := strings.Index(page, `<input class="input" id="mb-password"`)
 	if i < 0 {
 		t.Fatalf("no password field:\n%s", page)
 	}

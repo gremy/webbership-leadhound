@@ -284,13 +284,29 @@ func TestDashboardCountsJevPerPurpose(t *testing.T) {
 			t.Errorf("%s: jobs %d of %d, leads %d of %d, tokens %d; want jobs 7 of %d, leads 40 of %d, tokens 470", what,
 				d.JobsCalls, d.JobsCallCap, d.LeadsCalls, d.LeadsCallCap, d.AIInputTokens, b.cfg.JevDailyCallCap, leadsCap)
 		}
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.Header.Set("Cookie", cookie)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		get := func(path string) (int, string) {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			r.Header.Set("Cookie", cookie)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			return w.Code, w.Body.String()
+		}
+		// Jobs home's Scoring card says both purposes against their own caps.
 		want := fmt.Sprintf("Jev today: 7 of %s calls for jobs · 40 of %s for leads", thousandsOf(b.cfg.JevDailyCallCap), thousandsOf(leadsCap))
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
-			t.Errorf("%s: dashboard %d lacks %q", what, w.Code, want)
+		if code, page := get("/jobs/home"); code != http.StatusOK || !strings.Contains(page, want) {
+			t.Errorf("%s: jobs home %d lacks %q", what, code, want)
+		}
+		// The Status page's Jev section meters each purpose against its own cap.
+		code, page := get("/status")
+		for _, want := range []string{
+			fmt.Sprintf(`aria-label="Calls for jobs: 7 of %d"`, b.cfg.JevDailyCallCap),
+			fmt.Sprintf(`aria-label="Calls for leads: 40 of %d"`, leadsCap),
+			fmt.Sprintf("<strong>7</strong> of %s</span>", thousandsOf(b.cfg.JevDailyCallCap)),
+			fmt.Sprintf("<strong>40</strong> of %s</span>", thousandsOf(leadsCap)),
+		} {
+			if code != http.StatusOK || !strings.Contains(page, want) {
+				t.Errorf("%s: status page %d lacks %q", what, code, want)
+			}
 		}
 	}
 	check("the server's cap", b.cfg.JevLeadsDailyCallCap)

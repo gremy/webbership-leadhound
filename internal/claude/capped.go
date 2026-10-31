@@ -40,6 +40,13 @@ const (
 //
 // A zero DailyCapMicros or LeadCapMicros refuses every call it applies to. A failed usage
 // read or write is ai.ErrUsageStore and the caller must stop.
+//
+// OnLimit, when set, is told in one plain line each time Claude cannot be called for money's
+// sake: the daily cap of Purpose or the total cap refused a call, or the API answered that the
+// account's spend limit or credit is used up (ErrSpendLimit, ErrCreditLow). It is how such a
+// refusal reaches the console's Status page, which holds no key. A lead's own cap is not told
+// (the next lead may go), nor a zero cap (that is a purpose switched off, not a limit reached).
+// nil tells no one.
 type Capped struct {
 	Client         Caller
 	Store          UsageStore
@@ -50,6 +57,7 @@ type Capped struct {
 	LeadCapMicros  int64
 	Loc            *time.Location
 	Now            func() time.Time // time.Now when nil
+	OnLimit        func(ctx context.Context, msg string)
 
 	mu sync.Mutex
 }
@@ -148,8 +156,16 @@ func costOf(u Usage) (int64, error) {
 	return Cost(u)
 }
 
+// limitReached tells OnLimit msg, when it is set.
+func (c *Capped) limitReached(ctx context.Context, msg string) {
+	if c.OnLimit != nil {
+		c.OnLimit(context.WithoutCancel(ctx), msg)
+	}
+}
+
 // budget is what the caps leave for this call, read once under the lock.
 type budget struct {
+	ctx                    context.Context
 	c                      *Capped
 	day                    time.Time
 	purposeSpent, allSpent int64
@@ -161,10 +177,16 @@ type budget struct {
 func (b *budget) check(extra int64) error {
 	c := b.c
 	if b.purposeSpent+extra > c.DailyCapMicros {
+		if c.DailyCapMicros > 0 {
+			c.limitReached(b.ctx, fmt.Sprintf("Daily cap reached on %s: %s spent of %s today", c.Purpose,
+				dollars(b.purposeSpent), dollars(c.DailyCapMicros)))
+		}
 		return fmt.Errorf("claude: %s: %s spent of %s on %s, next call up to %s: %w", c.Purpose,
 			usd(b.purposeSpent), usd(c.DailyCapMicros), b.day.Format(time.DateOnly), usd(extra), ai.ErrSpendCap)
 	}
 	if c.TotalCapMicros > 0 && b.allSpent+extra > c.TotalCapMicros {
+		c.limitReached(b.ctx, fmt.Sprintf("Daily cap across all Claude work reached: %s spent of %s today",
+			dollars(b.allSpent), dollars(c.TotalCapMicros)))
 		return fmt.Errorf("claude: all purposes: %s spent of %s on %s, next call up to %s: %w",
 			usd(b.allSpent), usd(c.TotalCapMicros), b.day.Format(time.DateOnly), usd(extra), ai.ErrSpendCap)
 	}
@@ -176,6 +198,9 @@ func (b *budget) check(extra int64) error {
 }
 
 func usd(micros int64) string { return fmt.Sprintf("$%.4f", float64(micros)/1e6) }
+
+// dollars is micros in whole cents, for a line the operator reads.
+func dollars(micros int64) string { return fmt.Sprintf("$%.2f", float64(micros)/1e6) }
 
 // run checks the caps against worst(), then runs call, which returns the usage billed, the
 // worst case of the request in flight when it failed (recorded provisionally when the error
@@ -211,7 +236,7 @@ func (c *Capped) run(ctx context.Context, leadID int64, model string, worst func
 	// body returns only usage-store failures, so a locker keeps the recorded row whatever
 	// the call said.
 	body := func(st UsageStore) error {
-		b := &budget{c: c, day: day, lead: leadID != 0}
+		b := &budget{ctx: ctx, c: c, day: day, lead: leadID != 0}
 		var err error
 		if b.purposeSpent, err = st.ClaudeSpendOn(ctx, c.AccountID, c.Purpose, day); err != nil {
 			return fmt.Errorf("claude: capped: read usage: %w: %w", ai.ErrUsageStore, err)
@@ -231,6 +256,9 @@ func (c *Capped) run(ctx context.Context, leadID int64, model string, worst func
 		}
 		var inFlight int64
 		usage, inFlight, callErr = call(b)
+		if line := accountLimitLine(callErr); line != "" {
+			c.limitReached(ctx, line)
+		}
 		// Records outlive a cancelled context: the money was spent either way.
 		rctx := context.WithoutCancel(ctx)
 		if usage.billed() && usage.Model != FakeModel {

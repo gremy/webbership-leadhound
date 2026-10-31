@@ -99,6 +99,8 @@ type fakeBackend struct {
 	lastControl ControlAction
 	campaignMbs []CampaignMailboxes
 	mbSending   MailboxSendingView
+
+	statusFake
 }
 
 func (f *fakeBackend) count(name string) {
@@ -282,11 +284,18 @@ func richBackend(text string) *fakeBackend {
 			LastRuns:  []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
 			LastBrief: &BriefStamp{Day: testDay, SentAt: testSent, Listed: 1, Health: []string{"Health: " + text}},
 			RunNow:    richCard(text),
+
+			NeedsMe:           []NeedsMeRow{{LeadID: 5, Name: text, What: text, At: statusNow.Add(-26 * time.Hour)}},
+			NeedsMeTotal:      3,
+			CampaignFunnel:    []CampaignFunnelRow{{Campaign: text, Sent: 212, Replied: 19, Positive: 6}, {Campaign: "Loyalty pilot", Sent: 84, Replied: 9}},
+			ClaudeMonthMicros: 23_400_000,
+			ReoonChecksToday:  36, ReoonDailyLimit: 50,
 		},
-		brief:   BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
-		tracked: []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
-		runs:    []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
-		rules:   []RuleRow{{ID: 7, Kind: "skip", Field: "company", Pattern: text, Reason: text, FromJobID: &from, CreatedAt: testSent, DisabledReason: text}},
+		statusFake: statusFake{status: richStatus(text)},
+		brief:      BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
+		tracked:    []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
+		runs:       []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
+		rules:      []RuleRow{{ID: 7, Kind: "skip", Field: "company", Pattern: text, Reason: text, FromJobID: &from, CreatedAt: testSent, DisabledReason: text}},
 		out: TrackOutcome{
 			Job:  BriefJob{N: 1, JobID: 42, Title: "Go Engineer", Company: "Acme", Status: "applied", URL: "https://jobs.example/42"},
 			From: "shortlisted", To: "applied", Message: "shortlisted → applied",
@@ -348,7 +357,7 @@ func newHarness(t *testing.T, b *fakeBackend, dev bool) *harness {
 	t.Helper()
 	a, clock, calls := testAuth(t)
 	logs := &syncBuffer{}
-	h := New(b, a, Options{Dev: dev, Location: time.UTC, Logger: slog.New(slog.NewTextHandler(logs, nil))})
+	h := New(b, a, Options{Dev: dev, Location: time.UTC, Logger: slog.New(slog.NewTextHandler(logs, nil)), Now: func() time.Time { return statusNow }})
 	name := "__Host-lh_session"
 	if dev {
 		name = "lh_session"
@@ -1189,7 +1198,7 @@ func TestColdStart(t *testing.T) {
 	if strings.Contains(w.Body.String(), `action="/jobs/track"`) {
 		t.Error("the empty jobs page offers an action")
 	}
-	w = h.do(get("/", c))
+	w = h.do(get("/jobs/home", c))
 	for _, line := range []string{"Jev today: 0 calls for jobs · 0 for leads", "$0.00 · 0 input tokens"} {
 		if !strings.Contains(w.Body.String(), line) {
 			t.Errorf("cold dashboard lacks %q: %s", line, w.Body.String())
@@ -1211,7 +1220,7 @@ func TestEscaping(t *testing.T) {
 	c := h.session(t)
 
 	pages := map[string]*httptest.ResponseRecorder{}
-	for _, p := range []string{"/", "/jobs", "/tracked", "/tracked?status=all", "/runs", "/rules"} {
+	for _, p := range []string{"/", "/jobs/home", "/status", "/jobs", "/tracked", "/tracked?status=all", "/runs", "/rules"} {
 		pages[p] = h.do(get(p, c))
 	}
 	pages["track htmx"] = h.do(hx(post("/jobs/track", trackForm(), c)))
@@ -1250,7 +1259,7 @@ func TestExternalLinks(t *testing.T) {
 func TestNoInlineScriptOrStyle(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)
-	for _, p := range []string{"/login", "/", "/jobs", "/tracked", "/runs", "/rules", "/results",
+	for _, p := range []string{"/login", "/", "/status", "/jobs/home", "/leads/home", "/jobs", "/tracked", "/runs", "/rules", "/results",
 		"/mailboxes", "/mailboxes/new", "/mailboxes/1", "/mailboxes/1/edit"} {
 		cookies := []*http.Cookie{c}
 		if p == "/login" {
@@ -1284,7 +1293,7 @@ func TestDashboard(t *testing.T) {
 	b.dash.AsOf = time.Date(2026, 10, 24, 9, 12, 0, 0, time.UTC)
 	h := newHarness(t, b, false)
 	a := newHarnessIn(t, b, "Europe/Bucharest")
-	body := h.do(get("/", h.session(t))).Body.String()
+	body := h.do(get("/jobs/home", h.session(t))).Body.String()
 	for _, want := range []string{
 		"This morning's email", "Now", "as of 09:12",
 		"linkedin ok · 4 new · canary ok", "linkedin ok · 2 new · canary ok",
@@ -1301,7 +1310,7 @@ func TestDashboard(t *testing.T) {
 	if n := strings.Count(body, "as of "); n != 1 || strings.Index(body, "as of ") < strings.Index(body, "<h2>Now</h2>") {
 		t.Errorf("the as-of time is shown %d times, or outside the Now card", n)
 	}
-	body = a.do(get("/", a.session(t))).Body.String()
+	body = a.do(get("/jobs/home", a.session(t))).Body.String()
 	if !strings.Contains(body, "as of 12:12") {
 		t.Error("times are not shown in Options.Location")
 	}
@@ -1314,7 +1323,7 @@ func newHarnessIn(t *testing.T, b *fakeBackend, zone string) *harness {
 		t.Skip("no zone data:", err)
 	}
 	a, clock, calls := testAuth(t)
-	return &harness{h: New(b, a, Options{Location: loc}), b: b, a: a, clock: clock, calls: calls, logs: &syncBuffer{}, name: "__Host-lh_session"}
+	return &harness{h: New(b, a, Options{Location: loc, Now: func() time.Time { return statusNow }}), b: b, a: a, clock: clock, calls: calls, logs: &syncBuffer{}, name: "__Host-lh_session"}
 }
 
 func TestStaticFiles(t *testing.T) {
@@ -1493,7 +1502,7 @@ func TestDashboardSnapshotStates(t *testing.T) {
 			b.dash.AsOf = asOf
 			c.set(&b.dash)
 			h := newHarness(t, b, false)
-			body := h.do(get("/", h.session(t))).Body.String()
+			body := h.do(get("/jobs/home", h.session(t))).Body.String()
 			for _, w := range c.want {
 				if !strings.Contains(body, w) {
 					t.Errorf("lacks %q", w)
@@ -1520,7 +1529,7 @@ func TestDashboardNewToday(t *testing.T) {
 	b := richBackend("x")
 	b.dash.Funnel.NewBySource = map[string]int{"lever": 859, "greenhouse": 3519}
 	h := newHarness(t, b, false)
-	body := h.do(get("/", h.session(t))).Body.String()
+	body := h.do(get("/jobs/home", h.session(t))).Body.String()
 	gh := strings.Index(body, "<span class=\"list-title\">greenhouse</span></span><span class=\"list-end num\">3,519</span>")
 	lv := strings.Index(body, "<span class=\"list-title\">lever</span></span><span class=\"list-end num\">859</span>")
 	if !strings.Contains(body, "New today") || gh < 0 || lv < 0 || gh > lv {
@@ -1530,7 +1539,7 @@ func TestDashboardNewToday(t *testing.T) {
 		t.Error("per-source tiles are still shown")
 	}
 	b.dash.Funnel.NewBySource = nil
-	if body := h.do(get("/", h.session(t))).Body.String(); !strings.Contains(body, "No new jobs today.") {
+	if body := h.do(get("/jobs/home", h.session(t))).Body.String(); !strings.Contains(body, "No new jobs today.") {
 		t.Error("an empty funnel does not say so")
 	}
 }

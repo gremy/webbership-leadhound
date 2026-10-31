@@ -63,7 +63,7 @@
 {{end}}
 
 {{/* gear_icon is a gear-menu link's icon, by name. */}}
-{{define "gear_icon"}}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">{{if eq . "sliders"}}<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>{{else if eq . "power"}}<path d="M18.4 6.6a9 9 0 1 1-12.8 0M12 2v10"/>{{else if eq . "mail"}}<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 7l-10 6L2 7"/>{{else}}<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>{{end}}</svg>{{end}}
+{{define "gear_icon"}}<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">{{if eq . "sliders"}}<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>{{else if eq . "power"}}<path d="M18.4 6.6a9 9 0 1 1-12.8 0M12 2v10"/>{{else if eq . "mail"}}<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 7l-10 6L2 7"/>{{else if eq . "clock"}}<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>{{else}}<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>{{end}}</svg>{{end}}
 
 {{define "run_table"}}
 <ul class="item-list narrow-only">

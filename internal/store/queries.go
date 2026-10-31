@@ -24,6 +24,10 @@ type Queries struct {
 // NewQueries returns the query helpers over db.
 func NewQueries(db DBTX) Queries { return Queries{db: db} }
 
+// DB returns the DBTX q runs on, so another package's helpers (leadstore's) can run on the
+// same pool or transaction.
+func (q Queries) DB() DBTX { return q.db }
+
 // Q returns the query helpers over the pool.
 func (s *Store) Q() Queries { return Queries{db: s.pool} }
 

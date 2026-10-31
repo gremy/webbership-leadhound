@@ -31,6 +31,7 @@ type Backend interface {
 	DraftsBackend
 	MailboxesBackend
 	ControlsBackend
+	StatusBackend
 }
 
 // The Run now actions. Each name is the request file, the .path unit and the
@@ -111,6 +112,9 @@ type Options struct {
 	Logger   *slog.Logger
 	// Operator is the operator's sign-in email, shown in the gear menu and on Account.
 	Operator string
+	// Now is the clock the Status page and the dashboard's status card judge ages by; nil
+	// is time.Now.
+	Now func() time.Time
 }
 
 // Dashboard is the state the dashboard page shows. The health lines, the tiers
@@ -141,6 +145,32 @@ type Dashboard struct {
 	LastBrief                     *BriefStamp   // day, sent at, listed count; nil when none sent
 	Leads                         *LeadsSummary // nil when leads are not set up on this server
 	RunNow                        RunNowCard    // read live, outside the snapshot
+	// NeedsMe are the leads waiting on the operator (a reply with nothing scheduled, a call
+	// with no next step), the latest first and capped; NeedsMeTotal is how many there are in
+	// all, more than len(NeedsMe) when the list is capped.
+	NeedsMe      []NeedsMeRow
+	NeedsMeTotal int
+	// CampaignFunnel is each campaign's emails of the last 30 days: sent, replied, positive.
+	CampaignFunnel []CampaignFunnelRow
+	// ClaudeMonthMicros is the account's Claude spend this calendar month, in micro-dollars.
+	ClaudeMonthMicros int64
+	// ReoonChecksToday is today's email checks; ReoonDailyLimit the daily cap on them, 0 when
+	// unknown.
+	ReoonChecksToday, ReoonDailyLimit int
+}
+
+// NeedsMeRow is one lead waiting on the operator: what happened, and when.
+type NeedsMeRow struct {
+	LeadID int64
+	Name   string // the lead's name, or its domain
+	What   string // "Replied · nothing scheduled", "Connected on a call · no next step"
+	At     time.Time
+}
+
+// CampaignFunnelRow is one campaign's emails of the last 30 days.
+type CampaignFunnelRow struct {
+	Campaign                string // the campaign's name
+	Sent, Replied, Positive int
 }
 
 // PurposeSpend is one Claude purpose's spend in micro-dollars.

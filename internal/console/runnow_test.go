@@ -89,8 +89,8 @@ func TestRunNowPostsTheRequest(t *testing.T) {
 			h := newHarness(t, b, false)
 			c := h.session(t)
 			w := h.do(post("/run/"+tt.action, tt.form, c))
-			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
-				t.Fatalf("got %d to %q, want 303 to /", w.Code, w.Header().Get("Location"))
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/jobs/home" {
+				t.Fatalf("got %d to %q, want 303 to /jobs/home", w.Code, w.Header().Get("Location"))
 			}
 			if b.lastRun != tt.want {
 				t.Errorf("request %+v, want %+v", b.lastRun, tt.want)
@@ -102,9 +102,9 @@ func TestRunNowPostsTheRequest(t *testing.T) {
 			if flash == nil || flash.Value == "" {
 				t.Fatal("no flash cookie")
 			}
-			body := h.do(get("/", c, flash)).Body.String()
+			body := h.do(get("/jobs/home", c, flash)).Body.String()
 			if !strings.Contains(body, "Asked. Results usually in a minute or two.") {
-				t.Error("the dashboard does not show the outcome")
+				t.Error("Jobs home does not show the outcome")
 			}
 			logs := h.logs.String()
 			if !strings.Contains(logs, "console run now") || !strings.Contains(logs, "action="+tt.action) || !strings.Contains(logs, "outcome=ok") {
@@ -198,7 +198,7 @@ func TestRunCardPollsOnlyWhilePending(t *testing.T) {
 	c := h.session(t)
 	poll := `hx-get="/run/status" hx-trigger="every 10s" hx-swap="outerHTML"`
 
-	if body := h.do(get("/", c)).Body.String(); !strings.Contains(body, poll) {
+	if body := h.do(get("/jobs/home", c)).Body.String(); !strings.Contains(body, poll) {
 		t.Error("the dashboard card does not poll while fetch runs")
 	}
 	if body := h.do(hx(get("/run/status", c))).Body.String(); !strings.Contains(body, poll) {
@@ -207,7 +207,7 @@ func TestRunCardPollsOnlyWhilePending(t *testing.T) {
 
 	b.dash.RunNow = idleCard()
 	b.runCard = idleCard()
-	if body := h.do(get("/", c)).Body.String(); strings.Contains(body, "/run/status") {
+	if body := h.do(get("/jobs/home", c)).Body.String(); strings.Contains(body, "/run/status") {
 		t.Error("the dashboard card polls with nothing pending")
 	}
 	if body := h.do(hx(get("/run/status", c))).Body.String(); strings.Contains(body, "/run/status") {
@@ -220,7 +220,7 @@ func TestRunCardRows(t *testing.T) {
 	b.dash.RunNow = idleCard()
 	h := newHarness(t, b, false)
 	c := h.session(t)
-	body := h.do(get("/", c)).Body.String()
+	body := h.do(get("/jobs/home", c)).Body.String()
 	for _, want := range []string{
 		`action="/run/preview" hx-post="/run/preview" hx-target="#run-now" hx-swap="outerHTML"`, "Show results now",
 		`action="/run/fetch"`, "Fetch new jobs, then show",
@@ -241,7 +241,7 @@ func TestRunCardRows(t *testing.T) {
 
 	sent := testSent
 	b.dash.RunNow.BriefSentAt = &sent
-	body = h.do(get("/", c)).Body.String()
+	body = h.do(get("/jobs/home", c)).Body.String()
 	if strings.Contains(body, `action="/run/brief"`) || strings.Contains(body, "Send today's email now") {
 		t.Error("the send button is shown once today's email went")
 	}
@@ -253,7 +253,7 @@ func TestRunCardRows(t *testing.T) {
 	b.dash.RunNow.ResultsAt = &made
 	b.dash.RunNow.Actions[0] = RunNowAction{Action: RunPreview, State: "done", Line: "Last done at 04:50"}
 	b.dash.RunNow.Actions[3] = RunNowAction{Action: RunATS, State: "stuck", Line: "Asked at 04:50 and not started. See deploy/README.md, Run now"}
-	body = h.do(get("/", c)).Body.String()
+	body = h.do(get("/jobs/home", c)).Body.String()
 	if !strings.Contains(body, `<a href="/results">See the results (as of 04:50)</a>`) {
 		t.Error("a done preview does not link its results")
 	}
@@ -262,7 +262,7 @@ func TestRunCardRows(t *testing.T) {
 	}
 
 	b.dash.RunNow = RunNowCard{}
-	if body = h.do(get("/", c)).Body.String(); !strings.Contains(body, "Run now is not available") {
+	if body = h.do(get("/jobs/home", c)).Body.String(); !strings.Contains(body, "Run now is not available") {
 		t.Error("an empty card says nothing")
 	}
 }
@@ -281,8 +281,8 @@ func TestRunStatus(t *testing.T) {
 		}
 	}
 	w = h.do(get("/run/status", c))
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
-		t.Errorf("a plain visit: %d to %q, want 303 /", w.Code, w.Header().Get("Location"))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/jobs/home" {
+		t.Errorf("a plain visit: %d to %q, want 303 /jobs/home", w.Code, w.Header().Get("Location"))
 	}
 }
 

@@ -362,7 +362,7 @@ func TestLiveBatchReadiness(t *testing.T) {
 		_, err := makeBatch(ctx, ce.s, newBatchSetup(ce.setup, ce.loc), leadsNow(), NewBatchRequest{LiveOnly: true})
 		return err
 	}
-	notRun := "Today's domain check has not run for " + testSenderDomain + " yet: press Check on its mailbox, or wait for the morning batch."
+	notRun := "Today's domain check has not run for " + testSenderDomain + " yet: press Check now on its mailbox page, or wait for the morning batch."
 	if err := console(); err == nil || !strings.Contains(err.Error(), notRun) {
 		t.Errorf("console, no check today: %v", err)
 	}

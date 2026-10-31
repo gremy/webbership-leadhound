@@ -195,7 +195,8 @@ func (b *backend) lq() leadstore.Queries { return leadstore.NewQueries(b.s.Pool(
 // leadsSummary is the dashboard's leads card, nil when leads are not set up here or their
 // tables cannot be read; the jobs dashboard never fails for it.
 func (b *backend) leadsSummary(ctx context.Context, now time.Time) *console.LeadsSummary {
-	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
+	if err != nil {
 		return nil
 	}
 	sec, err := leadbrief.Load(ctx, b.s.Pool(), now, b.loc)
@@ -208,7 +209,77 @@ func (b *backend) leadsSummary(ctx context.Context, now time.Time) *console.Lead
 	if bt := sec.Batch; bt != nil {
 		sum.Batch = &console.WaitingBatch{ID: bt.ID, Shadow: bt.Shadow, Emails: bt.Emails, Forms: bt.Forms, LinkedIn: bt.LinkedIn}
 	}
+	b.leadsToday(ctx, setup, now, sum)
 	return sum
+}
+
+// leadsToday fills the leads card's Today figures from the reads the Leads page and the Today
+// tab make: the emails due today and the calls due (today's and overdue, every campaign) as
+// TodayView counts them, today's sends (SentSince) against the day's room (mailboxesSending's
+// cap). A failed read is one logged line and those figures zero; the dashboard never fails
+// for it.
+func (b *backend) leadsToday(ctx context.Context, setup leadsSetup, now time.Time, sum *console.LeadsSummary) {
+	lq := b.lq()
+	if t, err := lq.TodayView(ctx, leadstore.DefaultAccountID, 0, now.In(b.loc)); err != nil {
+		slog.Default().Warn("console leads summary: today", "err", err.Error())
+	} else {
+		sum.DueEmails, sum.CallsDue = t.EmailsDueCount, len(t.CallsDueNow)+len(t.CallsOverdue)
+	}
+	sent, err := lq.SentSince(ctx, startOfDay(now, b.loc))
+	if err != nil {
+		slog.Default().Warn("console leads summary: sent today", "err", err.Error())
+		return
+	}
+	capToday, _, _, err := mailboxesSending(ctx, lq, b.s.Pool(), setup.leads, b.loc, now)
+	if err != nil {
+		slog.Default().Warn("console leads summary: room today", "err", err.Error())
+		return
+	}
+	sum.SentToday, sum.CapToday = sent, capToday
+	if capToday == 0 {
+		sum.NoRoom, sum.NoRoomCheck, sum.NoRoomMailbox = b.noRoomWhy(ctx, lq, now)
+	}
+}
+
+// noRoomWords is why today has no room when an active mailbox is ready for new leads: its
+// warm-up gives it none today (before the ramp's day 0), or its domain's limit is 0.
+const noRoomWords = "No room today: the warm-up has not started for the mailboxes that are ready."
+
+// noRoomWhy is why today's room is 0 while a mailbox is active, in the words the batch
+// refusal uses (notReadyWords) when no active mailbox is ready for new leads, else
+// noRoomWords; "" when no mailbox is active or the mailboxes cannot be read (one logged
+// line). check is true when the words ask for a mailbox's Check now, and mailbox is the
+// one mailbox they are about (every active one is then not ready), 0 when several are.
+func (b *backend) noRoomWhy(ctx context.Context, lq leadstore.Queries, now time.Time) (why string, check bool, mailbox int64) {
+	today := startOfDay(now, b.loc)
+	mbs, err := lq.Mailboxes(ctx, leadstore.DefaultAccountID, today)
+	if err != nil {
+		slog.Default().Warn("console leads summary: no room", "err", err.Error())
+		return "", false, 0
+	}
+	var active []int64
+	ready := false
+	for _, m := range mbs {
+		if m.State == leadstore.MailboxActive {
+			active = append(active, m.ID)
+		}
+		ready = ready || readyForLeads(m)
+	}
+	switch {
+	case len(active) == 0:
+		return "", false, 0
+	case ready:
+		return noRoomWords, false, 0
+	}
+	why, err = notReadyWords(ctx, lq, mbs, today)
+	if err != nil {
+		slog.Default().Warn("console leads summary: no room", "err", err.Error())
+		return "", false, 0
+	}
+	if len(active) == 1 {
+		mailbox = active[0]
+	}
+	return why, true, mailbox
 }
 
 // Leads is the leads overview: the brief's leads section, the sending state, every batch

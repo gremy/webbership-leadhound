@@ -530,7 +530,7 @@ func (r *sendRun) refresh(ctx context.Context, now time.Time) error {
 		case m.State == leadstore.MailboxPaused:
 			r.block(mb, "it is paused; nothing is sent from it until the operator resumes it", "")
 		case r.live && (m.LastCheck == nil || m.LastCheck.Outcome != leadstore.CheckPassed):
-			r.block(mb, "its latest check has not passed: press Check on its mailbox", "")
+			r.block(mb, "its latest check has not passed: "+pressCheckNow, "")
 		}
 		r.order = append(r.order, m.ID)
 	}
@@ -601,7 +601,7 @@ func (r *sendRun) gateDNS(ctx context.Context, now time.Time) error {
 			checked[k] = res
 		}
 		if !res.OK() {
-			r.block(mb, fmt.Sprintf("its domain's DNS check failed (%s); fix the records, then press Check on its mailbox", dnsLine(res)), noteDNS)
+			r.block(mb, fmt.Sprintf("its domain's DNS check failed (%s); fix the records, then %s", dnsLine(res), pressCheckNow), noteDNS)
 		}
 	}
 	return nil

@@ -16,6 +16,7 @@ var shellProduct = map[string]string{
 	"/jobs/home":        "jobs",
 	"/account":          "",
 	"/controls":         "",
+	"/status":           "",
 	"/jobs":             "jobs",
 	"/tracked":          "jobs",
 	"/runs":             "jobs",

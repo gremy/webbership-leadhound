@@ -27,3 +27,15 @@ func FreePercent(path string) (pct float64, ok bool, err error) {
 	}
 	return pct, true, nil
 }
+
+// Space returns the bytes of the filesystem holding path that an unprivileged process can
+// still write (f_bavail, as FreePercent counts them) and its size in bytes. ok is true on
+// every platform this file builds for; err says why the filesystem could not be read.
+func Space(path string) (free, total uint64, ok bool, err error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		return 0, 0, true, fmt.Errorf("diskfree: statfs %s: %w", path, err)
+	}
+	bs := uint64(st.Bsize) // #nosec G115 -- a block size is never negative
+	return st.Bavail * bs, st.Blocks * bs, true, nil
+}

@@ -3325,6 +3325,18 @@ a.cell-main:hover {
   color: var(--subtle);
 }
 
+/* A field the server refused is red, focused or not: the alert-stop's border and ring. */
+.input[aria-invalid="true"],
+.select[aria-invalid="true"] {
+  border-color: var(--bad);
+}
+
+.input[aria-invalid="true"]:focus-visible,
+.select[aria-invalid="true"]:focus-visible {
+  outline-color: var(--bad);
+  box-shadow: 0 0 0 3px var(--bad-soft);
+}
+
 .input-narrow {
   width: 120px;
 }

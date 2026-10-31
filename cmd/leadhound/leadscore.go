@@ -891,6 +891,20 @@ func campaignAssigned(ctx context.Context, lq leadstore.Queries, campaignID int6
 // selector whose DNS check has not passed today, that today's check has not run, or what
 // today's latest check found missing; otherwise that no mailbox's latest check passed.
 func notReadyRefusal(ctx context.Context, lq leadstore.Queries, mbs []leadstore.MailboxStatus, today time.Time) error {
+	why, err := notReadyWords(ctx, lq, mbs, today)
+	if err != nil {
+		return err
+	}
+	return refused("%s", why)
+}
+
+// pressCheckNow is what the operator does to run a mailbox's check by hand, in the words of
+// the mailbox page's button, "Check now".
+const pressCheckNow = "press Check now on its mailbox page"
+
+// notReadyWords is notReadyRefusal's sentence, which the dashboard's leads card also shows
+// when today has no room.
+func notReadyWords(ctx context.Context, lq leadstore.Queries, mbs []leadstore.MailboxStatus, today time.Time) (string, error) {
 	var why []string
 	seen := map[string]bool{}
 	for _, m := range mbs {
@@ -904,18 +918,18 @@ func notReadyRefusal(ctx context.Context, lq leadstore.Queries, mbs []leadstore.
 		seen[key] = true
 		r, ok, err := lq.LatestSenderCheckSelector(ctx, leadstore.SenderDomainSHA256(m.Host()), m.DKIMSelector, today)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !ok {
-			why = append(why, fmt.Sprintf("Today's domain check has not run for %s yet: press Check on its mailbox, or wait for the morning batch.", m.Host()))
+			why = append(why, fmt.Sprintf("Today's domain check has not run for %s yet: %s, or wait for the morning batch.", m.Host(), pressCheckNow))
 			continue
 		}
 		why = append(why, fmt.Sprintf("Today's domain check failed for %s: %s.", m.Host(), missingRecords(r, m.DKIMSelector)))
 	}
 	if len(why) == 0 {
-		return refused("No mailbox is ready for new leads: its latest check has not passed. Press Check on its mailbox.")
+		return "No mailbox is ready for new leads: its latest check has not passed; " + pressCheckNow + ".", nil
 	}
-	return refused("%s", strings.Join(why, " "))
+	return strings.Join(why, " "), nil
 }
 
 // missingRecords names the records a failed DNS check did not find: "missing SPF, DKIM

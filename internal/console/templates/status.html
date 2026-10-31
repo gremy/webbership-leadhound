@@ -1,0 +1,255 @@
+{{define "content"}}
+{{$v := .Data}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <h1>Status</h1>
+    <p class="page-sub">Worst first. Grey means not checked yet, which is never a failure.</p>
+  </div>
+  <div class="legend" aria-label="Legend">
+    <span class="state"><span class="dot dot-good"></span>OK</span>
+    <span class="state"><span class="dot dot-warn"></span>Look soon</span>
+    <span class="state"><span class="dot dot-bad"></span>Act now</span>
+    <span class="state"><span class="dot dot-grey"></span>Not checked yet</span>
+  </div>
+</div>
+
+<div class="stack">
+{{range $v.Sections}}
+{{if eq .ID "mailboxes"}}{{template "st_mailboxes" .}}
+{{else if eq .ID "server"}}{{template "st_server" .}}
+{{else if eq .ID "claude"}}{{template "st_claude" .}}
+{{else if eq .ID "reoon"}}{{template "st_reoon" .}}
+{{else if eq .ID "jev"}}{{template "st_jev" .}}
+{{end}}
+{{end}}
+</div>
+</div>
+{{end}}
+
+{{/* st_chip is a section's state chip and its last update. Its data is a statusSection. */}}
+{{define "st_chip"}}<span class="state state-{{.Level.Class}}" title="{{.Line}}">{{.Level.Chip}}</span><span class="updated">{{updated .UpdatedAt .V.Now}}</span>{{end}}
+
+{{/* st_title is a section's heading with its dot. Its data is a statusSection. */}}
+{{define "st_title"}}<span class="dot dot-{{.Level.Class}}"></span>{{end}}
+
+{{define "st_mailboxes"}}
+{{$now := .V.Now}}{{$m := .V.Status.Mailboxes}}
+<section class="card panel" id="mailboxes" aria-labelledby="mailboxes-h">
+  <div class="status-section-head">
+    <h2 id="mailboxes-h">{{template "st_title" .}}Mailboxes</h2>
+    <span class="cluster">{{template "st_chip" .}}</span>
+  </div>
+  {{if $m.Rows}}
+  {{if ne .Level 0}}<p class="card-body small mb-0">{{.Line}}</p>{{end}}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th scope="col">Mailbox</th><th scope="col">State</th><th scope="col">Last check</th><th scope="col" class="num">Sent / ramp</th><th scope="col" class="num">Hard bounces 7d</th><th scope="col">Reply sync</th></tr></thead>
+      <tbody>
+        {{range $m.Rows}}{{$l := mbLevel . $now}}
+        <tr>
+          <td><a class="cell-main" href="/mailboxes/{{.ID}}">{{or .Name .Address}}</a>{{if .Name}}<span class="cell-sub">{{.Address}}</span>{{end}}</td>
+          <td><span class="state state-{{$l.Level.Class}}"><span class="dot dot-{{$l.Level.Class}}"></span>{{mbState .}}</span></td>
+          <td>{{checkWords .}}{{with .CheckedAt}}<span class="cell-sub">{{when .}}</span>{{end}}</td>
+          <td class="num">{{.SentToday}} / {{.RampToday}}</td>
+          <td class="num">{{bounceWords .}}</td>
+          <td>{{with .SyncedAt}}{{ago . $now}}{{else}}Never{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty empty-compact">
+    <span class="empty-icon">{{template "gear_icon" "mail"}}</span>
+    <p class="empty-title">No mailboxes yet</p>
+    <p class="empty-text">Each mailbox's checks, sends and reply sync show here once one is added.</p>
+    <a class="btn btn-secondary btn-sm" href="/mailboxes/new">Add a mailbox</a>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{define "st_reoon"}}
+{{$now := .V.Now}}{{$r := .V.Status.Reoon}}{{$v := .V}}
+<section class="card panel" id="reoon" aria-labelledby="reoon-h">
+  <div class="status-section-head">
+    <h2 id="reoon-h">{{template "st_title" .}}Reoon email checks</h2>
+    <span class="cluster">{{template "st_chip" .}}
+      <form method="post" action="/status/refresh#reoon"><button class="btn btn-secondary btn-sm" type="submit"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>Refresh</button></form>
+    </span>
+  </div>
+  {{/* A refusal while a refresh waits is the harmless "already asked": a notice, and it
+       replaces the "Refresh asked at" line rather than repeating it. */}}
+  {{if $v.Form.RefreshRefusal}}
+  {{if $r.RefreshAskedAt}}<div class="card-body"><div class="alert alert-info" role="status">{{template "gear_icon" "clock"}}<div><p class="alert-text mb-0">{{$v.Form.RefreshRefusal}}</p></div></div></div>
+  {{else}}<div class="card-body"><div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">{{$v.Form.RefreshRefusal}}</p></div></div></div>{{end}}
+  {{else}}{{with $r.RefreshAskedAt}}<p class="card-body small mb-0" role="status">Refresh asked at {{clock .}}; the balance updates once it has run.</p>{{end}}{{end}}
+  {{if $r.FetchedAt}}
+  <div class="card-body">
+    {{if $v.ReoonUnknown}}<p class="notice notice-warn" role="status">The last reading failed {{ago $r.LastErrorAt $now}}: {{$r.LastError}}. The figures below are from {{when $r.FetchedAt}}.</p>{{end}}
+    <div class="stats">
+      <div class="stat"><span class="stat-label">API</span><span class="stat-value">{{or $r.APIStatus "Unknown"}}</span></div>
+      {{$l := reoonLevel $r.DailyCredits}}
+      <div class="stat"><span class="stat-label">Daily credits left</span><span class="stat-value{{if ne $l 0}} text-{{$l.Class}}{{end}}">{{thousands $r.DailyCredits}}</span><span class="stat-note">amber under 20, red at none</span></div>
+      <div class="stat"><span class="stat-label">Instant credits left</span><span class="stat-value">{{thousands $r.InstantCredits}}</span></div>
+      <div class="stat"><span class="stat-label">Checks today</span><span class="stat-value">{{thousands $r.ChecksToday.Total}}</span><span class="stat-note">{{$r.ChecksToday.Valid}} valid · {{$r.ChecksToday.Invalid}} invalid · {{$r.ChecksToday.Other}} other</span></div>
+    </div>
+  </div>
+  {{else if $r.LastErrorAt}}
+  <div class="card-body">
+    <p class="notice notice-warn" role="status">No balance has been read yet. The last try failed {{ago $r.LastErrorAt $now}}: {{$r.LastError}}.</p>
+  </div>
+  {{else}}
+  <div class="empty empty-compact">
+    <p class="empty-title">No balance read yet</p>
+    <p class="empty-text">The credits left show here after the first balance check. {{if $r.RefreshAskedAt}}One has been asked for and shows here once the check runs.{{else}}Refresh asks for one now.{{end}}</p>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{define "st_server"}}
+{{$now := .V.Now}}{{$s := .V.Status.Server}}
+<section class="card panel" id="server" aria-labelledby="server-h">
+  <div class="status-section-head">
+    <h2 id="server-h">{{template "st_title" .}}Server and jobs</h2>
+    <span class="cluster">{{template "st_chip" .}}</span>
+  </div>
+  {{if $s.UpdatedAt}}
+  {{if ne .Level 0}}<p class="card-body small mb-0">{{.Line}}</p>{{end}}
+  {{if $s.Units}}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th scope="col">Unit</th><th scope="col">Last run</th><th scope="col">Result</th><th scope="col">Next</th><th scope="col">Switch</th></tr></thead>
+      <tbody>
+        {{range $s.Units}}{{$l := unitLevel .}}
+        <tr>
+          <td class="mono">{{.Name}}</td>
+          <td>{{with .LastRun}}{{when .}}{{else}}Never{{end}}</td>
+          <td><span class="state state-{{$l.Class}}"><span class="dot dot-{{$l.Class}}"></span>{{if eq .Result "ok"}}OK{{else if eq .Result "failed"}}Failed{{else if eq .Result "running"}}Running{{else}}Never ran{{end}}{{with .Note}} · {{.}}{{end}}</span></td>
+          <td>{{with .Next}}{{when .}}{{else}}None{{end}}</td>
+          <td>{{if eq .Switch "on"}}On{{else if eq .Switch "off"}}Off{{else}}—{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty empty-compact"><p class="empty-title">No units have run yet</p><p class="empty-text">Each unit's last run and next timer show here once one has run.</p></div>
+  {{end}}
+  <div class="card-body">
+    <div class="grid">
+      <div class="span-6"><div class="meter-row">
+        <span class="meter-label">Database</span>
+        {{$l := dbLevel $s}}
+        {{if $s.DBMaxBytes}}
+        <span class="meter-value"><strong>{{bytes $s.DBBytes}}</strong> of {{bytes $s.DBMaxBytes}}</span>
+        <div class="meter" role="img" aria-label="Database: {{bytes $s.DBBytes}} of {{bytes $s.DBMaxBytes}}"><span class="meter-fill {{width $s.DBBytes $s.DBMaxBytes}}{{if ne $l 0}} is-{{$l.Class}}{{end}}"></span></div>
+        {{else}}
+        <span class="meter-value"><strong>{{bytes $s.DBBytes}}</strong> · no limit set</span>
+        {{end}}
+      </div></div>
+      <div class="span-6"><div class="meter-row">
+        <span class="meter-label">Free disk</span>
+        {{$l := diskLevel $s}}
+        {{if $s.DiskTotalBytes}}
+        <span class="meter-value"><strong>{{bytes $s.DiskFreeBytes}}</strong> of {{bytes $s.DiskTotalBytes}} · floor {{pct $s.DiskFloorPct}}</span>
+        <div class="meter" role="img" aria-label="Free disk: {{bytes $s.DiskFreeBytes}} of {{bytes $s.DiskTotalBytes}}"><span class="meter-fill {{width $s.DiskFreeBytes $s.DiskTotalBytes}} is-{{$l.Class}}"></span></div>
+        {{else}}
+        <span class="meter-value">n/a</span>
+        {{end}}
+      </div></div>
+    </div>
+    <p class="hint mt-2">Load {{optional $s.Load 2 ""}} · memory {{optional $s.MemoryPct 0 "%"}} · console up {{uptime $s.Started $now}} · version {{or $s.Version "unknown"}}</p>
+  </div>
+  {{else}}
+  <div class="empty empty-compact">
+    <p class="empty-title">Not checked yet</p>
+    <p class="empty-text">The units, the database and the disk show here once the server has been read.</p>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{define "st_claude"}}
+{{$now := .V.Now}}{{$c := .V.Status.Claude}}{{$v := .V}}
+<section class="card panel" id="claude" aria-labelledby="claude-h">
+  <div class="status-section-head">
+    <h2 id="claude-h">{{template "st_title" .}}Claude</h2>
+    <span class="cluster">{{template "st_chip" .}}</span>
+  </div>
+  <div class="card-body">
+    {{if $v.ClaudeUnknown}}<p class="notice notice-warn" role="status">The last call failed {{ago $c.LastErrorAt $now}}: {{$c.LastError}}.</p>{{end}}
+    {{if $c.UpdatedAt}}
+    {{$l := spendLevel $c.TodayMicros $c.DailyCapMicros}}
+    <div class="stats">
+      <div class="stat"><span class="stat-label">Today</span><span class="stat-value{{if ne $l 0}} text-{{$l.Class}}{{end}}">{{usd $c.TodayMicros}}{{if $c.DailyCapMicros}} <small>of {{usd $c.DailyCapMicros}}</small>{{end}}</span><span class="stat-note">amber over 80%, red at the cap</span></div>
+      <div class="stat"><span class="stat-label">This month</span><span class="stat-value">{{usd $c.MonthMicros}}</span><span class="stat-note">no monthly cap</span></div>
+      <div class="stat"><span class="stat-label">Remaining credit</span>{{with $c.Topup}}<span class="stat-value">{{usd $v.Remaining}}</span><span class="stat-note">estimate · top-up {{cents .AmountCents}} on {{.At.Format "2 Jan"}}</span>{{else}}<span class="stat-value">—</span><span class="stat-note">record your last top-up below</span>{{end}}</div>
+      <div class="stat"><span class="stat-label">Last API error</span>{{with $c.LastErrorAt}}<span class="stat-value">{{ago . $now}}</span><span class="stat-note">{{$c.LastError}}</span>{{else}}<span class="stat-value">None</span>{{end}}</div>
+    </div>
+    {{if $c.ByPurpose}}
+    <div class="mt-2">
+      {{range $c.ByPurpose}}{{$pl := spendLevel .Micros .CapMicros}}
+      <div class="meter-row">
+        <span class="meter-label">{{purposeWords .Purpose}}</span>
+        <span class="meter-value"><strong>{{usd .Micros}}</strong>{{if .CapMicros}} of {{usd .CapMicros}}{{end}}</span>
+        {{if .CapMicros}}<div class="meter" role="img" aria-label="{{purposeWords .Purpose}}: {{usd .Micros}} of {{usd .CapMicros}}"><span class="meter-fill {{width .Micros .CapMicros}}{{if ne $pl 0}} is-{{$pl.Class}}{{end}}"></span></div>{{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+    {{else}}
+    <div class="empty empty-compact">
+      <p class="empty-title">No Claude spend yet</p>
+      <p class="empty-text">Today's spend against the cap, the month and the credit left show here after the first call.</p>
+    </div>
+    {{end}}
+    {{if not $c.Topup}}<p class="small mt-2">Remaining credit needs your last top-up: record it below, and the page counts down from it.</p>{{end}}
+    <p class="hint mt-2"><a href="{{$v.Billing}}" rel="noreferrer noopener" target="_blank">Open the billing page<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg></a> for the exact balance.</p>
+  </div>
+  {{$f := $v.Form}}
+  <form class="card-body" id="topup" method="post" action="/status/claude-topup#topup">
+    <h3 class="small">Record a top-up</h3>
+    <p class="small muted">The API has no balance endpoint, so remaining credit is an estimate: the last top-up minus spend since then.</p>
+    {{with $f.TopupRefusal}}<div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0" id="topup-error">{{.}}</p></div></div>{{end}}
+    <div class="form-grid{{if $f.TopupRefusal}} mt-2{{end}}">
+      <div class="field"><label class="label" for="topup-amount">Top-up amount (USD)</label><input class="input" id="topup-amount" name="amount" value="{{$f.Amount}}" inputmode="decimal" placeholder="50.00" required{{if eq $f.TopupField "amount"}} aria-invalid="true" aria-describedby="topup-error"{{end}}></div>
+      <div class="field"><label class="label" for="topup-date">Date</label><input class="input" id="topup-date" name="date" type="date" value="{{or $f.Date $v.Today}}" max="{{$v.Today}}" required{{if eq $f.TopupField "date"}} aria-invalid="true" aria-describedby="topup-error"{{end}}></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" type="submit">Save top-up</button></div>
+  </form>
+</section>
+{{end}}
+
+{{define "st_jev"}}
+{{$j := .V.Status.Jev}}
+<section class="card panel" id="jev" aria-labelledby="jev-h">
+  <div class="status-section-head">
+    <h2 id="jev-h">{{template "st_title" .}}Jev</h2>
+    <span class="cluster">{{template "st_chip" .}}</span>
+  </div>
+  {{if $j.UpdatedAt}}
+  <div class="card-body">
+    {{template "st_jev_meter" (jevMeter "Calls for jobs" $j.JobsCalls $j.JobsCap)}}
+    {{template "st_jev_meter" (jevMeter "Calls for leads" $j.LeadsCalls $j.LeadsCap)}}
+  </div>
+  {{else}}
+  <div class="empty empty-compact">
+    <span class="empty-icon">{{template "gear_icon" "clock"}}</span>
+    <p class="empty-title">No Jev calls yet</p>
+    <p class="empty-text">Calls today and the cap per purpose show here after the first job search or lead rating that uses Jev.</p>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{/* st_jev_meter is one purpose's calls today against its cap. */}}
+{{define "st_jev_meter"}}{{$l := jevLevel .N .Cap}}
+<div class="meter-row">
+  <span class="meter-label">{{.Label}}</span>
+  <span class="meter-value"><strong>{{thousands .N}}</strong>{{if .Cap}} of {{thousands .Cap}}{{else}} · no cap known{{end}}</span>
+  {{if .Cap}}<div class="meter" role="img" aria-label="{{.Label}}: {{.N}} of {{.Cap}}"><span class="meter-fill {{width .N .Cap}}{{if ne $l 0}} is-{{$l.Class}}{{end}}"></span></div>{{end}}
+</div>
+{{end}}

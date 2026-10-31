@@ -38,6 +38,7 @@ var jobsNav = []shellLink{
 var gearNav = []shellLink{
 	{Label: "Settings", Path: "/leads/settings", Icon: "sliders", Under: []string{"/leads/settings/"}},
 	{Label: "Controls", Path: "/controls", Icon: "power", Under: []string{"/controls/"}},
+	{Label: "Status", Path: "/status", Icon: "clock"},
 	{Label: "Mailboxes", Path: "/mailboxes", Icon: "mail", Under: []string{"/mailboxes/"}},
 	{Label: "Account", Path: "/account", Icon: "user"},
 }
@@ -63,7 +64,7 @@ type shellView struct {
 }
 
 // productOf is the product a path belongs to: "leads", "jobs", or "" for the dashboard
-// and the gear pages (Settings, Controls, Mailboxes, Account).
+// and the gear pages (Settings, Controls, Status, Mailboxes, Account).
 func productOf(p string) string {
 	under := func(prefix string) bool { return p == prefix || strings.HasPrefix(p, prefix+"/") }
 	switch {
@@ -131,8 +132,11 @@ func (s *server) leadsHome(w http.ResponseWriter, r *http.Request) {
 
 // jobsHome is GET /jobs/home: the job-hunt part of the dashboard.
 func (s *server) jobsHome(w http.ResponseWriter, r *http.Request) {
-	s.renderHome(w, r, http.StatusOK, "jobs_home", page{Title: "Jobs", Active: "/jobs/home", Message: s.takeFlash(w, r)})
+	s.renderHome(w, r, http.StatusOK, "jobs_home", page{Title: "Jobs", Active: jobsHomePath, Message: s.takeFlash(w, r)})
 }
+
+// jobsHomePath is Jobs home, where the Run now card is.
+const jobsHomePath = "/jobs/home"
 
 // account is GET /account: who is signed in, and signing out.
 func (s *server) account(w http.ResponseWriter, r *http.Request) {

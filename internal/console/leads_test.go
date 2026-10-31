@@ -958,7 +958,7 @@ func TestOldLeadsLinksPointToOutreach(t *testing.T) {
 	off.leadsErr = ErrLeadsNotSetUp
 	oh := newHarness(t, off, false)
 	for name, body := range map[string]string{
-		"dashboard":  h.do(get("/", c)).Body.String(),
+		"leads home": h.do(get("/leads/home", c)).Body.String(),
 		"batch":      h.do(get("/leads/batches/3", c)).Body.String(),
 		"mailboxes":  h.do(get("/mailboxes", c)).Body.String(),
 		"not set up": oh.do(get("/leads/outreach", oh.session(t))).Body.String(),
