@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/eval"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/scoring"
 )
 
@@ -30,34 +33,92 @@ func sampleInput() Input {
 		Channels: []string{"form", "email"}, HasPhone: true, SocialLinks: 3}
 }
 
+// sampleCafe is a fictional café lead with every café fact set.
+func sampleCafe() Input {
+	return Input{Kind: cafe.KindNoDigitalLoyalty, Country: "RO", SiteName: "Cafeneaua Lunii",
+		Description: "Specialty coffee and cake.", Channels: []string{"form", "email"}, HasPhone: true, SocialLinks: 2,
+		Cafe: &CafeFacts{Category: "coffee_shop", Locality: "Lunaville", Region: "Fictive County", OwnWebsite: true,
+			OrderingSeen: true, OrderingVendors: []string{"Order Bee", "Ant Delivery", "Order Bee"},
+			Instagram: true, Language: "ro"}}
+}
+
+// contactText is email- and phone-shaped text in every form clean removes.
+const contactText = "hello@northwind.example +44 20 7946 0123 sales [at] northwind [dot] example"
+
+// TestStateNeverCarriesContacts is an invariant sweep: contact-shaped text put into any
+// free-text field of either type's input never reaches the state, and neither Input nor
+// CafeFacts has a field that could hold an address or a number.
 func TestStateNeverCarriesContacts(t *testing.T) {
-	in := sampleInput()
-	in.SiteName = "Northwind hello@northwind.example"
-	in.Description = "Call +44 20 7946 0123 or (020) 7946 0456 or 020-7946-0789,\n" +
-		"write to sales@northwind.example, <info@northwind.example>, orders [at] northwind [dot] example " +
-		"or accounts at northwind dot example. Two numbers back to back: 020 7946 0111 020 7946 0222."
-	in.Version = "7.98 tel +44 20 7946 0999"
-	st := State(in)
-	for _, bad := range []string{"@", "7946", "northwind.example", "[at]", "sales", "orders", "accounts"} {
-		if strings.Contains(st, bad) {
-			t.Errorf("state carries %q:\n%s", bad, st)
+	type field struct {
+		name string
+		set  func(*Input)
+	}
+	shared := []field{
+		{"site name", func(in *Input) { in.SiteName = contactText }},
+		{"description", func(in *Input) { in.Description = contactText }},
+		{"country", func(in *Input) { in.Country = contactText }},
+		{"channel", func(in *Input) { in.Channels = []string{contactText} }},
+	}
+	sweeps := map[string]struct {
+		base   func() Input
+		fields []field
+	}{
+		"drupal": {sampleInput, append(slices.Clone(shared), field{"version", func(in *Input) { in.Version = contactText }})},
+		"cafe": {sampleCafe, append(slices.Clone(shared),
+			field{"category", func(in *Input) { in.Cafe.Category = contactText }},
+			field{"locality", func(in *Input) { in.Cafe.Locality = contactText }},
+			field{"region", func(in *Input) { in.Cafe.Region = contactText }},
+			field{"language", func(in *Input) { in.Cafe.Language = contactText }},
+			field{"loyalty vendor", func(in *Input) { in.Cafe.LoyaltyVendors = []string{contactText} }},
+			field{"ordering vendor", func(in *Input) { in.Cafe.OrderingVendors = []string{contactText} }},
+		)},
+	}
+	for ty, sw := range sweeps {
+		for _, f := range sw.fields {
+			in := sw.base()
+			f.set(&in)
+			st := State(in)
+			for _, bad := range []string{"@", "7946", "northwind", "[at]", "sales"} {
+				if strings.Contains(st, bad) {
+					t.Errorf("%s %s: state carries %q:\n%s", ty, f.name, bad, st)
+				}
+			}
 		}
 	}
-	// No line holds six or more digits with only phone separators between them.
-	digits := regexp.MustCompile(`\d(?:[ ().\-/+]*\d){5,}`)
-	for _, l := range strings.Split(st, "\n") {
-		if m := digits.FindString(l); m != "" {
-			t.Errorf("state line %q carries a digit run %q", l, m)
+	for _, ty := range []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[CafeFacts]()} {
+		for i := range ty.NumField() {
+			f := ty.Field(i)
+			n := strings.ToLower(f.Name)
+			if strings.Contains(n, "email") || strings.Contains(n, "mail") ||
+				(strings.Contains(n, "phone") && f.Type.Kind() != reflect.Bool) {
+				t.Errorf("%s has a contact field %s %s", ty.Name(), f.Name, f.Type)
+			}
 		}
 	}
-	// The Input type itself has no field for an address or a number, only whether a phone exists.
-	ty := reflect.TypeFor[Input]()
-	for i := range ty.NumField() {
-		f := ty.Field(i)
-		n := strings.ToLower(f.Name)
-		if strings.Contains(n, "email") || strings.Contains(n, "mail") ||
-			(strings.Contains(n, "phone") && f.Type.Kind() != reflect.Bool) {
-			t.Errorf("Input has a contact field %s %s", f.Name, f.Type)
+}
+
+// TestStateRemovesEveryContactForm: every contact form clean knows is gone from either
+// type's state, and no line keeps a run of digits.
+func TestStateRemovesEveryContactForm(t *testing.T) {
+	for _, base := range []func() Input{sampleInput, sampleCafe} {
+		in := base()
+		in.SiteName = "Northwind hello@northwind.example"
+		in.Description = "Call +44 20 7946 0123 or (020) 7946 0456 or 020-7946-0789,\n" +
+			"write to sales@northwind.example, <info@northwind.example>, orders [at] northwind [dot] example " +
+			"or accounts at northwind dot example. Two numbers back to back: 020 7946 0111 020 7946 0222."
+		in.Version = "7.98 tel +44 20 7946 0999"
+		st := State(in)
+		for _, bad := range []string{"@", "7946", "northwind.example", "[at]", "sales", "orders", "accounts"} {
+			if strings.Contains(st, bad) {
+				t.Errorf("%s: state carries %q:\n%s", in.Kind, bad, st)
+			}
+		}
+		// No line holds six or more digits with only phone separators between them.
+		digits := regexp.MustCompile(`\d(?:[ ().\-/+]*\d){5,}`)
+		for _, l := range strings.Split(st, "\n") {
+			if m := digits.FindString(l); m != "" {
+				t.Errorf("%s: state line %q carries a digit run %q", in.Kind, l, m)
+			}
 		}
 	}
 }
@@ -155,11 +216,90 @@ func TestHashChangesWithWording(t *testing.T) {
 	}
 }
 
+// TestCafeStateLayoutIsFixed: a café lead's state is its own fixed layout, the kind's own
+// label as its type, vendor names sorted and without repeats, and the same with no café
+// facts at all.
+func TestCafeStateLayoutIsFixed(t *testing.T) {
+	want := "Lead type: Café with a website and no digital loyalty\n" +
+		"Café name: Cafeneaua Lunii\n" +
+		"Place category: coffee_shop\n" +
+		"Town: Lunaville\n" +
+		"Region: Fictive County\n" +
+		"Country: RO\n" +
+		"Own website: yes\n" +
+		"Digital loyalty on the homepage: none seen\n" +
+		"Online ordering on the homepage: Ant Delivery, Order Bee\n" +
+		"Instagram linked: yes\n" +
+		"Site language: ro\n" +
+		"Description: Specialty coffee and cake.\n" +
+		"Contact channels: email, form\n" +
+		"Phone number listed: yes\n" +
+		"Social links: 2"
+	if got := State(sampleCafe()); got != want {
+		t.Errorf("café state:\n got %q\nwant %q", got, want)
+	}
+	for _, k := range cafe.Kinds {
+		st := State(Input{Kind: k.Kind})
+		if !strings.HasPrefix(st, "Lead type: "+k.Label+"\n") {
+			t.Errorf("%s: state does not open with its label:\n%s", k.Kind, st)
+		}
+		if n := strings.Count(st, "\n") + 1; n != 15 {
+			t.Errorf("%s with no facts gives %d lines, want 15", k.Kind, n)
+		}
+		if strings.Contains(st, "Drupal") {
+			t.Errorf("%s: café state names Drupal:\n%s", k.Kind, st)
+		}
+	}
+	in := sampleCafe()
+	in.Cafe.OrderingVendors = nil
+	in.Cafe.LoyaltySeen = true
+	in.Cafe.LoyaltyVendors = []string{"Stamp Two", "Stamp One", "Stamp Two"}
+	st := State(in)
+	for _, l := range []string{"Online ordering on the homepage: yes", "Digital loyalty on the homepage: Stamp One, Stamp Two"} {
+		if !strings.Contains(st, l) {
+			t.Errorf("state lacks %q:\n%s", l, st)
+		}
+	}
+	in.Cafe.OrderingSeen = false
+	if st := State(in); !strings.Contains(st, "Online ordering on the homepage: no") {
+		t.Errorf("no ordering not written as no:\n%s", st)
+	}
+}
+
+// TestCafeHashIsCafeQuestion: a café lead is hashed under the café question, so the same
+// facts under the Drupal question give another hash, and its question differs from the
+// Drupal one in name and wording.
+func TestCafeHashIsCafeQuestion(t *testing.T) {
+	in := sampleCafe()
+	got := InputHash("jev-1.13.0", in)
+	asDrupal := scoring.InputHash("jev-1.13.0", []ai.Question{AIQuestion(leadstore.TypeDrupal)}, State(in), 0,
+		map[string][]string{"question": {Question}})
+	if bytes.Equal(got, asDrupal) {
+		t.Error("a café lead hashes as the Drupal question")
+	}
+	want := scoring.InputHash("jev-1.13.0", []ai.Question{AIQuestion(leadstore.TypeCafe)}, State(in), 0,
+		map[string][]string{"question": {leadstore.QuestionCafe}})
+	if !bytes.Equal(got, want) {
+		t.Error("a café lead's hash is not the café question's encoding")
+	}
+	if QuestionFor(leadstore.TypeCafe) != leadstore.QuestionCafe || QuestionFor(leadstore.TypeDrupal) != Question || Question != "relevance@1" {
+		t.Errorf("questions: %s, %s", QuestionFor(leadstore.TypeCafe), QuestionFor(leadstore.TypeDrupal))
+	}
+	c, d := AIQuestion(leadstore.TypeCafe), AIQuestion(leadstore.TypeDrupal)
+	if c.Name != d.Name || c.Instructions == d.Instructions || strings.Contains(c.Instructions, "Drupal") {
+		t.Errorf("café question %+v", c)
+	}
+	in.Cafe.Instagram = false
+	if bytes.Equal(got, InputHash("jev-1.13.0", in)) {
+		t.Error("a changed café fact keeps the hash")
+	}
+}
+
 func TestHashMatchesScoringEncoding(t *testing.T) {
 	in := sampleInput()
 	h := sha256.New()
 	field := func(s string) { _, _ = fmt.Fprintf(h, "%d:%s", len(s), s) }
-	q := AIQuestion()
+	q := AIQuestion(leadstore.TypeDrupal)
 	field("jev-1.13.0")
 	field(q.Name)
 	field(q.Instructions)
@@ -229,7 +369,7 @@ func demoFake(t *testing.T, golden []Golden) *ai.Fake {
 				choice = b
 			}
 		}
-		f.ByState[State(g.Input)] = map[string]ai.Answer{AIQuestion().Name: {Choice: choice, Confidence: p[choice], Probabilities: p}}
+		f.ByState[State(g.Input)] = map[string]ai.Answer{AIQuestion(leadstore.TypeDrupal).Name: {Choice: choice, Confidence: p[choice], Probabilities: p}}
 	}
 	return f
 }
@@ -241,6 +381,11 @@ func TestDemoGoldenEval(t *testing.T) {
 	}
 	if len(golden) != 8 {
 		t.Fatalf("demo golden has %d lines, want 8", len(golden))
+	}
+	// The demo is all Drupal leads; a café line added later must be noticed, since the
+	// eval measures one type at a time.
+	if kept, skipped := FilterType(golden, leadstore.TypeDrupal); len(kept) != 8 || skipped != 0 {
+		t.Fatalf("demo golden: %d Drupal lines, %d of other types, want 8 and 0", len(kept), skipped)
 	}
 	for _, g := range golden {
 		if !strings.HasSuffix(g.ID, ".example") {
@@ -306,7 +451,7 @@ func (d *flipDecider) Decide(ctx context.Context, state string, qs []ai.Question
 	if state == d.state {
 		d.n++
 		if d.n%2 == 0 {
-			return map[string]ai.Answer{AIQuestion().Name: {Choice: "no", Probabilities: map[string]float64{"no": 1}}}, ai.Usage{InputTokens: 10}, nil
+			return map[string]ai.Answer{AIQuestion(leadstore.TypeDrupal).Name: {Choice: "no", Probabilities: map[string]float64{"no": 1}}}, ai.Usage{InputTokens: 10}, nil
 		}
 	}
 	return d.Fake.Decide(ctx, state, qs)
@@ -336,6 +481,10 @@ func TestEvaluateDisagreementsAndErrors(t *testing.T) {
 	none := []Golden{{ID: "a.example", Input: Input{Kind: "d10"}}}
 	if _, err := Evaluate(context.Background(), f, none, 1); !errors.Is(err, ErrNoLabels) {
 		t.Errorf("all unlabelled: err %v, want ErrNoLabels", err)
+	}
+	mixed := append(slices.Clone(golden), Golden{ID: "cafe.example", Input: sampleCafe(), Label: golden[0].Label})
+	if _, err := Evaluate(context.Background(), f, mixed, 1); !errors.Is(err, ErrMixedTypes) {
+		t.Errorf("mixed types: err %v, want ErrMixedTypes", err)
 	}
 	failing := &ai.Fake{Err: ai.ErrSpendCap}
 	if _, err := Evaluate(context.Background(), failing, golden, 1); !errors.Is(err, ai.ErrSpendCap) {
@@ -392,7 +541,72 @@ func TestLoadGoldenStrict(t *testing.T) {
 	}
 }
 
+// TestEvaluateCafe: café lines are asked the café question and the report names it.
+func TestEvaluateCafe(t *testing.T) {
+	strong := "strong"
+	golden := []Golden{{ID: "lunii.example", Input: sampleCafe(), Label: &strong}}
+	f := &ai.Fake{ByState: map[string]map[string]ai.Answer{State(sampleCafe()): {questionName: {Choice: "strong", Probabilities: map[string]float64{"strong": 1}}}}}
+	var asked []ai.Question
+	d := &recordDecider{Fake: f, asked: &asked}
+	rep, err := Evaluate(context.Background(), d, golden, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Type != leadstore.TypeCafe || rep.N != 1 || len(asked) != 1 || asked[0].Instructions != AIQuestion(leadstore.TypeCafe).Instructions {
+		t.Fatalf("report %+v, asked %+v", rep, asked)
+	}
+	var out strings.Builder
+	if err := rep.Write(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "question "+leadstore.QuestionCafe) {
+		t.Errorf("report does not name the café question:\n%s", out.String())
+	}
+}
+
+// recordDecider records the questions it is asked.
+type recordDecider struct {
+	*ai.Fake
+	asked *[]ai.Question
+}
+
+func (d *recordDecider) Decide(ctx context.Context, state string, qs []ai.Question) (map[string]ai.Answer, ai.Usage, error) {
+	*d.asked = append(*d.asked, qs...)
+	return d.Fake.Decide(ctx, state, qs)
+}
+
+func TestFilterType(t *testing.T) {
+	golden := []Golden{{ID: "a.example", Input: Input{Kind: "d10"}}, {ID: "b.example", Input: sampleCafe()},
+		{ID: "c.example", Input: Input{Kind: leadstore.LeadAgencyPartner}}, {ID: "d.example", Input: Input{Kind: cafe.KindNoWebsite}}}
+	kept, skipped := FilterType(golden, leadstore.TypeCafe)
+	if len(kept) != 2 || kept[0].ID != "b.example" || kept[1].ID != "d.example" || skipped != 2 {
+		t.Errorf("cafe: kept %+v, skipped %d", kept, skipped)
+	}
+	kept, skipped = FilterType(golden, leadstore.TypeDrupal)
+	if len(kept) != 2 || kept[0].ID != "a.example" || kept[1].ID != "c.example" || skipped != 2 {
+		t.Errorf("drupal: kept %+v, skipped %d", kept, skipped)
+	}
+}
+
 func TestInputJSONRoundTrip(t *testing.T) {
+	if b, err := sampleInput().MarshalJSON(); err != nil || strings.Contains(string(b), "cafe") {
+		t.Errorf("a Drupal input writes café facts: %s %v", b, err)
+	}
+	c := sampleCafe()
+	cb, err := c.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cback Input
+	if err := cback.UnmarshalJSON(cb); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cback, c) {
+		t.Errorf("café round trip: %+v, want %+v", cback, c)
+	}
+	if err := cback.UnmarshalJSON([]byte(`{"kind":"cafe_no_website","cafe":{"category":"cafe","phone":"x"}}`)); err == nil {
+		t.Error("an unknown café field was accepted")
+	}
 	in := sampleInput()
 	b, err := in.MarshalJSON()
 	if err != nil {

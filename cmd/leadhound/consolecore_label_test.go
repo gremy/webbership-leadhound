@@ -6,6 +6,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadrate"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
 // TestCallBandsAreLeadrates: the bands the console offers and checks are leadrate's, in its
@@ -15,7 +16,7 @@ func TestCallBandsAreLeadrates(t *testing.T) {
 		t.Errorf("console offers %v, leadrate has %v", console.LabelBands, leadrate.Bands())
 	}
 	for i, b := range callBands() {
-		if b.Value != leadrate.Bands()[i] || b.Help == "" || b.Help != leadrate.Describe(b.Value) || b.Label == "" {
+		if b.Value != leadrate.Bands()[i] || b.Help == "" || b.Help != leadrate.Describe(leadstore.TypeDrupal, b.Value) || b.Label == "" {
 			t.Errorf("band %d: %+v", i, b)
 		}
 	}

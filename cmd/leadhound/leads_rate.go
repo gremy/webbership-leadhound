@@ -186,7 +186,7 @@ func relevanceDecider(cfg config.Config, name, command string) (d ai.Decider, ki
 // relevanceFake is the keyless stand-in for the relevance question: every lead is a
 // "maybe", spread so its number is 50.
 func relevanceFake() *ai.Fake {
-	return &ai.Fake{Answers: map[string]ai.Answer{leadrate.AIQuestion().Name: {
+	return &ai.Fake{Answers: map[string]ai.Answer{leadrate.AIQuestion(leadstore.TypeDrupal).Name: {
 		Choice: leadstore.BandMaybe, Confidence: 0.4,
 		Probabilities: map[string]float64{
 			leadstore.BandStrong: 0.1, leadstore.BandLikely: 0.2, leadstore.BandMaybe: 0.4,
@@ -259,7 +259,7 @@ func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rat
 		}
 		todo = append(todo, due{lead: l, in: in, hash: h})
 	}
-	qs := []ai.Question{leadrate.AIQuestion()}
+	qs := []ai.Question{leadrate.AIQuestion(leadstore.TypeDrupal)}
 	wctx := context.WithoutCancel(ctx)
 	inARow := 0
 	defer func() { sum.Due = len(todo) - sum.Rated }() // a failed lead stays due
@@ -297,7 +297,7 @@ func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rat
 			}
 			continue
 		}
-		answer := answers[leadrate.AIQuestion().Name]
+		answer := answers[leadrate.AIQuestion(leadstore.TypeDrupal).Name]
 		score, band := leadrate.Score(answer)
 		if band == "" {
 			sum.Failures++ // an answer outside the bands; the decider checks its options, so never expected

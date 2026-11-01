@@ -283,7 +283,7 @@ func toLabelIDs(ctx context.Context, lq leadstore.Queries) ([]int64, error) {
 func callBands() []console.CallBand {
 	var out []console.CallBand
 	for _, name := range leadrate.Bands() {
-		out = append(out, console.CallBand{Value: name, Label: strings.ToUpper(name[:1]) + name[1:], Help: leadrate.Describe(name)})
+		out = append(out, console.CallBand{Value: name, Label: strings.ToUpper(name[:1]) + name[1:], Help: leadrate.Describe(leadstore.TypeDrupal, name)})
 	}
 	return out
 }

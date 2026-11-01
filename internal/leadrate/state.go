@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 )
@@ -32,6 +33,24 @@ type Input struct {
 	Channels    []string // the channels present, e.g. email, form
 	HasPhone    bool
 	SocialLinks int // how many social links the site has
+	// Cafe is a café lead's own facts; nil for a Drupal lead, and for a café call stored
+	// before café leads had their own question.
+	Cafe *CafeFacts
+}
+
+// CafeFacts is what the café question reads beyond the shared facts: the café's map
+// listing and what its homepage showed. Vendors are display names, never ids.
+type CafeFacts struct {
+	Category        string   `json:"category"` // the listing's place category
+	Locality        string   `json:"locality"` // the town
+	Region          string   `json:"region"`
+	OwnWebsite      bool     `json:"own_website"`
+	LoyaltySeen     bool     `json:"loyalty_seen"` // any digital loyalty on the homepage, a phrase included
+	LoyaltyVendors  []string `json:"loyalty_vendors"`
+	OrderingSeen    bool     `json:"ordering_seen"` // any online ordering on the homepage, a phrase included
+	OrderingVendors []string `json:"ordering_vendors"`
+	Instagram       bool     `json:"instagram"`
+	Language        string   `json:"language"` // the site's language, ISO 639-1; "" when unknown
 }
 
 // The longest site name and description State keeps, in runes.
@@ -43,12 +62,15 @@ const (
 // DateLayout is how a golden line writes the end-of-life date.
 const DateLayout = "2006-01-02"
 
-// State is the decider's whole view of a lead: a fixed English layout, one fact per line,
-// every line always present. Dates are written as dates ("9 December 2026"), never
+// State is the decider's whole view of a lead: a fixed English layout for its rating
+// type, one fact per line, every line always present. Dates are written as dates ("9 December 2026"), never
 // relative to today, so the state of an unchanged lead does not change as time passes.
 // Email- and phone-shaped text is removed from every free-text field, and channel names
 // are sorted, so the same facts always give the same state.
 func State(in Input) string {
+	if leadstore.TypeOf(in.Kind) == leadstore.TypeCafe {
+		return cafeState(in)
+	}
 	var b strings.Builder
 	line := func(label, value string) {
 		b.WriteString(label)
@@ -72,6 +94,69 @@ func State(in Input) string {
 	line("Phone number on the site", yesNo(in.HasPhone))
 	line("Social links", strconv.Itoa(max(in.SocialLinks, 0)))
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// cafeState is a café lead's state. The lead type is the café kind's own label; vendor
+// lists are sorted and without repeats.
+func cafeState(in Input) string {
+	var b strings.Builder
+	line := func(label, value string) {
+		b.WriteString(label)
+		b.WriteString(": ")
+		b.WriteString(value)
+		b.WriteByte('\n')
+	}
+	c := CafeFacts{}
+	if in.Cafe != nil {
+		c = *in.Cafe
+	}
+	line("Lead type", cafeKindWords(in.Kind))
+	line("Café name", orUnknown(clean(in.SiteName, MaxSiteName)))
+	line("Place category", orUnknown(clean(c.Category, 80)))
+	line("Town", orUnknown(clean(c.Locality, 80)))
+	line("Region", orUnknown(clean(c.Region, 80)))
+	line("Country", orUnknown(clean(in.Country, 40)))
+	line("Own website", yesNo(c.OwnWebsite))
+	line("Digital loyalty on the homepage", seenWords(c.LoyaltyVendors, c.LoyaltySeen, "none seen"))
+	line("Online ordering on the homepage", seenWords(c.OrderingVendors, c.OrderingSeen, "no"))
+	line("Instagram linked", yesNo(c.Instagram))
+	line("Site language", orUnknown(clean(c.Language, 40)))
+	line("Description", orUnknown(clean(in.Description, MaxDescription)))
+	line("Contact channels", channelWords(in.Channels))
+	line("Phone number listed", yesNo(in.HasPhone))
+	line("Social links", strconv.Itoa(max(in.SocialLinks, 0)))
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// cafeKindWords is a café kind's label from cafe.Kinds.
+func cafeKindWords(kind string) string {
+	for _, k := range cafe.Kinds {
+		if k.Kind == kind {
+			return k.Label
+		}
+	}
+	return orUnknown(clean(strings.ReplaceAll(kind, "_", " "), 40))
+}
+
+// seenWords lists the vendor names seen, sorted and without repeats; "yes" when something
+// was seen but no vendor named; none when nothing was.
+func seenWords(names []string, seen bool, none string) string {
+	var out []string
+	for _, n := range names {
+		n = clean(n, 60)
+		if n == "" || slices.Contains(out, n) {
+			continue
+		}
+		out = append(out, n)
+	}
+	if len(out) > 0 {
+		slices.Sort(out)
+		return strings.Join(out, ", ")
+	}
+	if seen {
+		return "yes"
+	}
+	return none
 }
 
 // kindWords is a lead kind in words.
@@ -158,32 +243,34 @@ func clean(s string, maxRunes int) string {
 
 // inputJSON is Input as a golden line writes it, with the date as a plain date.
 type inputJSON struct {
-	Kind        string   `json:"kind"`
-	Major       int      `json:"major"`
-	Version     string   `json:"version"`
-	EOL         string   `json:"eol"` // DateLayout, or "" when unknown
-	Country     string   `json:"country"`
-	ListRank    int      `json:"list_rank"`
-	SiteName    string   `json:"site_name"`
-	Description string   `json:"description"`
-	Channels    []string `json:"channels"`
-	HasPhone    bool     `json:"has_phone"`
-	SocialLinks int      `json:"social_links"`
+	Kind        string     `json:"kind"`
+	Major       int        `json:"major"`
+	Version     string     `json:"version"`
+	EOL         string     `json:"eol"` // DateLayout, or "" when unknown
+	Country     string     `json:"country"`
+	ListRank    int        `json:"list_rank"`
+	SiteName    string     `json:"site_name"`
+	Description string     `json:"description"`
+	Channels    []string   `json:"channels"`
+	HasPhone    bool       `json:"has_phone"`
+	SocialLinks int        `json:"social_links"`
+	Cafe        *CafeFacts `json:"cafe,omitempty"`
 }
 
 // MarshalJSON writes in as a golden line's "input", the date as 2006-01-02.
 func (in Input) MarshalJSON() ([]byte, error) {
 	j := inputJSON{Kind: in.Kind, Major: in.Major, Version: in.Version, Country: in.Country,
 		ListRank: in.ListRank, SiteName: in.SiteName, Description: in.Description,
-		Channels: in.Channels, HasPhone: in.HasPhone, SocialLinks: in.SocialLinks}
+		Channels: in.Channels, HasPhone: in.HasPhone, SocialLinks: in.SocialLinks, Cafe: in.Cafe}
 	if !in.EOL.IsZero() {
 		j.EOL = in.EOL.Format(DateLayout)
 	}
 	return json.Marshal(j)
 }
 
-// UnmarshalJSON reads a golden line's "input" strictly: an unknown field, a date not
-// written as 2006-01-02 or a negative count is an error.
+// UnmarshalJSON reads a golden line's "input" strictly: an unknown field (in the café
+// facts too), a date not written as 2006-01-02 or a negative count is an error. A line
+// with no café facts reads as it always did.
 func (in *Input) UnmarshalJSON(b []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -204,6 +291,6 @@ func (in *Input) UnmarshalJSON(b []byte) error {
 	}
 	*in = Input{Kind: j.Kind, Major: j.Major, Version: j.Version, EOL: eol, Country: j.Country,
 		ListRank: j.ListRank, SiteName: j.SiteName, Description: j.Description,
-		Channels: j.Channels, HasPhone: j.HasPhone, SocialLinks: j.SocialLinks}
+		Channels: j.Channels, HasPhone: j.HasPhone, SocialLinks: j.SocialLinks, Cafe: j.Cafe}
 	return nil
 }

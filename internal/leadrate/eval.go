@@ -11,6 +11,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/eval"
+	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
 // The trust gate (D9): the number may order the list only when the latest eval had at
@@ -25,9 +26,14 @@ const (
 // ErrNoLabels means the golden set has no labelled line, so there is nothing to measure.
 var ErrNoLabels = errors.New("leadrate: no labelled golden lines")
 
+// ErrMixedTypes means the golden set holds leads of more than one rating type; each type
+// is measured on its own question, so callers keep one type first (FilterType).
+var ErrMixedTypes = errors.New("leadrate: golden lines of more than one lead type")
+
 // Report is everything one eval measured. Shares are 0..1 and MAE is in points (0..100),
 // as lead_relevance_eval stores them.
 type Report struct {
+	Type          string // the leads' rating type, a leadstore Type*
 	Decider       string
 	Runs          int
 	N             int // labelled leads, the ones measured
@@ -52,7 +58,8 @@ type Result struct {
 }
 
 // Evaluate asks the decider about every labelled golden lead runs times (1 to
-// eval.MaxRuns) and measures the answers against the labels. Unlabelled lines are skipped
+// eval.MaxRuns), each on its rating type's question, and measures the answers against the
+// labels. Every line must be of one type, else ErrMixedTypes. Unlabelled lines are skipped
 // and never asked. It writes nothing anywhere and names leads by golden id only. A decider
 // error stops the eval; the report returned with it counts the tokens spent so far.
 //
@@ -65,8 +72,16 @@ func Evaluate(ctx context.Context, d ai.Decider, golden []Golden, runs int) (Rep
 	if d == nil {
 		return Report{}, errors.New("leadrate: eval: no decider")
 	}
-	rep := Report{Decider: d.Name(), Runs: runs}
-	qs := []ai.Question{AIQuestion()}
+	t := leadstore.TypeDrupal
+	for i, g := range golden {
+		gt := leadstore.TypeOf(g.Input.Kind)
+		if i > 0 && gt != t {
+			return Report{}, fmt.Errorf("leadrate: eval: lead %s is a %s lead, the others %s: %w", g.ID, gt, t, ErrMixedTypes)
+		}
+		t = gt
+	}
+	rep := Report{Type: t, Decider: d.Name(), Runs: runs}
+	qs := []ai.Question{AIQuestion(t)}
 	for _, g := range golden {
 		if g.Label == nil {
 			rep.Unlabelled++
@@ -171,7 +186,7 @@ func (r Report) untrusted() []string {
 func (r Report) Write(w io.Writer) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "relevance eval: %d labelled lead(s), %d unlabelled skipped · question %s · decider %s · %d run(s)\n",
-		r.N, r.Unlabelled, Question, r.Decider, r.Runs)
+		r.N, r.Unlabelled, QuestionFor(r.Type), r.Decider, r.Runs)
 	runs := make([]string, len(r.SpearmanRuns))
 	for i, v := range r.SpearmanRuns {
 		runs[i] = fmt.Sprintf("%.2f", v)

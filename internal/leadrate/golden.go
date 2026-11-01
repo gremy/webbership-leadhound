@@ -65,6 +65,19 @@ func LoadGolden(path string) ([]Golden, error) {
 	return out, nil
 }
 
+// FilterType keeps the golden lines whose lead is of rating type t, in order, and counts
+// the lines of other types it left out.
+func FilterType(golden []Golden, t string) (kept []Golden, skipped int) {
+	for _, g := range golden {
+		if leadstore.TypeOf(g.Input.Kind) == t {
+			kept = append(kept, g)
+		} else {
+			skipped++
+		}
+	}
+	return kept, skipped
+}
+
 func parseGolden(line string) (Golden, error) {
 	dec := json.NewDecoder(strings.NewReader(line))
 	dec.DisallowUnknownFields()

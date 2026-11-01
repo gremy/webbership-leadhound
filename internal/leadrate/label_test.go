@@ -3,6 +3,7 @@ package leadrate
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,15 +52,28 @@ func TestGoldenFromLabels(t *testing.T) {
 	}
 }
 
-// TestDescribe: every band has its plain description, the one the decider reads; anything
-// else has none.
+// TestDescribe: every band has its plain description in each type's question, the one the
+// decider reads; the café descriptions are the café question's own and name no Drupal; a
+// type that is not known reads as Drupal; a name that is not a band has none.
 func TestDescribe(t *testing.T) {
-	for _, b := range bands {
-		if Describe(b.name) != b.description || b.description == "" {
-			t.Errorf("%s: %q", b.name, Describe(b.name))
+	for i, b := range bands {
+		if Describe(leadstore.TypeDrupal, b.name) != b.description || b.description == "" {
+			t.Errorf("drupal %s: %q", b.name, Describe(leadstore.TypeDrupal, b.name))
+		}
+		c := Describe(leadstore.TypeCafe, b.name)
+		if c != cafeBands[i].description || c == "" || c == b.description || strings.Contains(c, "Drupal") {
+			t.Errorf("cafe %s: %q", b.name, c)
+		}
+		if cafeBands[i].name != b.name || cafeBands[i].weight != b.weight {
+			t.Errorf("cafe band %d is %s/%d, want %s/%d", i, cafeBands[i].name, cafeBands[i].weight, b.name, b.weight)
+		}
+		if Describe("no_such_type", b.name) != b.description {
+			t.Errorf("an unknown type does not read as drupal for %s", b.name)
 		}
 	}
-	if Describe("great") != "" {
-		t.Error("a name that is not a band has a description")
+	for _, ty := range leadstore.RatingTypes {
+		if Describe(ty, "great") != "" {
+			t.Errorf("%s: a name that is not a band has a description", ty)
+		}
 	}
 }
