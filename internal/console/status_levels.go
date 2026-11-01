@@ -48,9 +48,9 @@ func (l statusLevel) Chip() string {
 // statusThresholds are every number the Status colours turn on. They live in one value so
 // the Status page and the dashboard's status card cannot judge the same figure two ways.
 // The rules without a number: any paused mailbox is amber and every live one paused red; a
-// failed part of a mailbox's last check is amber; a unit whose last run failed is red; free
-// disk under the server's floor is red; Jev at or over a cap is amber; Claude's month to
-// date has no cap and never colours. An area never read is grey; one whose last error is
+// failed part of a mailbox's last check is amber; a unit whose last run failed is red, and a
+// rolling unit past its planned run with no start amber; free disk under the server's floor
+// is red; Jev at or over a cap is amber; Claude's month to date has no cap and never colours. An area never read is grey; one whose last error is
 // newer than its last good reading is unknown, amber, with the error.
 type statusThresholds struct {
 	SyncWarn, SyncBad time.Duration // a mailbox's reply sync older than this is amber, red
@@ -210,12 +210,16 @@ func mailboxesArea(ms MailboxesStatus, now time.Time) statusArea {
 	return a
 }
 
-// unitLevel is one unit's row on the Status page.
+// unitLevel is one unit's row on the Status page: red when its last run failed, amber when
+// its planned run is overdue (only then: a run not due yet never warns), grey when it never
+// ran.
 func unitLevel(u UnitStatus) statusLevel {
-	switch u.Result {
-	case UnitFailed:
+	switch {
+	case u.Result == UnitFailed:
 		return levelBad
-	case UnitNever, "":
+	case u.Planned != nil && u.Planned.Overdue:
+		return levelWarn
+	case u.Result == UnitNever || u.Result == "":
 		return levelGrey
 	}
 	return levelGood
@@ -229,8 +233,11 @@ func serverArea(sv ServerStatus) statusArea {
 	}
 	var fs []statusFinding
 	for _, u := range sv.Units {
-		if unitLevel(u) == levelBad {
+		switch unitLevel(u) {
+		case levelBad:
 			fs = append(fs, statusFinding{levelBad, u.Name + " failed"})
+		case levelWarn:
+			fs = append(fs, statusFinding{levelWarn, u.Name + " is overdue"})
 		}
 	}
 	if l := diskLevel(sv); l == levelBad {

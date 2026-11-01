@@ -138,6 +138,27 @@ func TestStatusThresholds(t *testing.T) {
 		}(), areaServer, levelBad, "over its"},
 		{"a failed unit is red", func() Status { st := richStatus("x"); st.Server.Units[1].Result = UnitFailed; return st }(), areaServer, levelBad, "jobs-search failed"},
 		{"a running unit is fine", func() Status { st := richStatus("x"); st.Server.Units[1].Result = UnitRunning; return st }(), areaServer, levelGood, ""},
+		{"a unit not due yet is fine", func() Status {
+			st := richStatus("x")
+			st.Server.Units[1].Planned = &PlannedRun{At: statusNow.Add(time.Hour), Line: "Next run planned at 15:32."}
+			return st
+		}(), areaServer, levelGood, "All units ran clean"},
+		{"an overdue unit is amber", func() Status {
+			st := richStatus("x")
+			st.Server.Units[1].Planned = &PlannedRun{At: statusNow.Add(-time.Hour), Line: "Overdue: planned at 13:32 and not started.", Overdue: true}
+			return st
+		}(), areaServer, levelWarn, "jobs-search is overdue"},
+		{"an overdue unit that never ran is amber", func() Status {
+			st := richStatus("x")
+			st.Server.Units[2].Planned = &PlannedRun{At: statusNow.Add(-time.Hour), Line: "Overdue.", Overdue: true}
+			return st
+		}(), areaServer, levelWarn, "leads-verify-balance is overdue"},
+		{"a failed unit stays red when also overdue", func() Status {
+			st := richStatus("x")
+			st.Server.Units[1].Result = UnitFailed
+			st.Server.Units[1].Planned = &PlannedRun{At: statusNow.Add(-time.Hour), Line: "Overdue.", Overdue: true}
+			return st
+		}(), areaServer, levelBad, "jobs-search failed"},
 
 		{"Jev under the cap is fine", func() Status { st := richStatus("x"); st.Jev.JobsCalls = 299; return st }(), areaJev, levelGood, "299 of 300 for jobs"},
 		{"Jev at the jobs cap is amber", func() Status { st := richStatus("x"); st.Jev.JobsCalls = 300; return st }(), areaJev, levelWarn, "Jobs at the cap: 300 of 300 calls"},
@@ -272,6 +293,42 @@ func TestStatusPageAndDashboardAgree(t *testing.T) {
 				t.Errorf("dashboard order %v, page order %v", dOrder, pOrder)
 			}
 		})
+	}
+}
+
+// TestStatusPagePlanned: a unit with a planned run shows its line instead of the timer's next
+// elapse; overdue is red there and the server area warns; a plan not due yet never warns.
+func TestStatusPagePlanned(t *testing.T) {
+	for _, overdue := range []bool{false, true} {
+		b := richBackend("x")
+		line := "Next run planned at 15:00, 24 hours after the run by hand at 15:02."
+		if overdue {
+			line = "Overdue: planned at 10:00 and not started. Check journalctl -u leadhound-leads-probe.service -g timer-guard."
+		}
+		b.status.Server.Units[0].Planned = &PlannedRun{At: statusNow, Line: line, Overdue: overdue}
+		h := newHarness(t, b, false)
+		body := h.do(get("/status", h.session(t))).Body.String()
+		cls := ""
+		if overdue {
+			cls = "text-bad"
+		}
+		if !strings.Contains(body, `<td><span class="`+cls+`">`+line+`</span></td>`) {
+			t.Errorf("overdue %t: the unit lacks its planned line", overdue)
+		}
+		if strings.Contains(body, "<td>14:40</td>") || strings.Contains(body, "<td>"+statusNow.Add(8*time.Minute).Format("15:04")) {
+			t.Errorf("overdue %t: the timer's next elapse still shows", overdue)
+		}
+		page := dots(sectionDot, body)
+		want := levelGood
+		if overdue {
+			want = levelWarn
+		}
+		if page[areaServer] != want.Class() {
+			t.Errorf("overdue %t: the server area is %q, want %q", overdue, page[areaServer], want.Class())
+		}
+		if overdue != strings.Contains(body, "leads-send is overdue") {
+			t.Errorf("overdue %t: the area's line is wrong", overdue)
+		}
 	}
 }
 

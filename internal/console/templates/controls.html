@@ -113,10 +113,25 @@
     <span class="list-title">{{.Name}} <span class="badge {{if .On}}badge-good{{else}}badge-warn{{end}}">{{if .On}}On{{else}}Off{{end}}</span></span>
     {{with .What}}<span class="list-meta">{{.}}</span>{{end}}
     <span class="list-meta">{{if .Since}}{{if .On}}On{{else}}Off{{end}} since {{when .Since}}{{with .Reason}}: {{.}}{{end}}{{if .BySystem}} (set by the system){{end}}{{else}}Never switched{{end}}</span>
-    <span class="list-meta">{{with .Schedule}}{{.}} · {{end}}{{if .Timer.Unit}}{{if .Timer.Enabled}}timer enabled{{with .Timer.Next}}, next run {{when .}}{{end}}{{else}}<span class="text-bad">timer not enabled</span>{{end}}{{else}}no timer of its own{{end}}</span>
+    <span class="list-meta">{{with .Schedule}}{{.}} · {{end}}{{if .Timer.Unit}}{{if .Timer.Enabled}}timer enabled{{with .Planned}}, <span class="{{if .Overdue}}text-bad{{end}}">{{.Line}}</span>{{else}}{{with .Timer.Next}}, next run {{when .}}{{end}}{{end}}{{else}}<span class="text-bad">timer not enabled</span>{{end}}{{else}}no timer of its own{{end}}</span>
     <span class="list-meta">{{with .LastRun}}Last run {{when .StartedAt}}: {{if .Failed}}<span class="text-bad">{{.Result}}</span>{{else}}{{.Result}}{{end}}{{else}}Never run{{end}}</span>
     {{range .Lines}}<span class="list-meta">{{.}}</span>{{end}}
     {{with controlNote .Job}}<span class="list-meta">{{.}}</span>{{end}}
+    {{with .RunNow}}
+    <div class="stack-sm mt-1" id="run-now-{{$.Job}}"{{if .Pending}} hx-get="/controls" hx-trigger="every 30s" hx-select="#run-now-{{$.Job}}" hx-target="this" hx-swap="outerHTML"{{end}}>
+      {{if .CanAsk}}
+      <details>
+        <summary class="btn btn-secondary btn-sm">Run now…</summary>
+        <form method="post" action="/controls/{{$.Job}}/run-now" class="stack-sm mt-1">
+          <p class="hint">{{.Confirm}}</p>
+          <label class="inline-check" for="run-confirm-{{$.Job}}"><input class="check" type="checkbox" id="run-confirm-{{$.Job}}" name="confirm" value="yes" required> I understand, run it now</label>
+          <button type="submit" class="btn btn-primary btn-sm">Run it now<span class="visually-hidden"> {{$.Name}}</span></button>
+        </form>
+      </details>
+      {{end}}
+      {{with .Line}}<p class="hint{{if or (eq $.RunNow.State "stuck") (eq $.RunNow.State "bad")}} text-bad{{end}}"{{if $.RunNow.Pending}} role="status"{{end}}>{{.}}</p>{{end}}
+    </div>
+    {{end}}
     {{if .Job}}
     {{if .On}}
     <details class="mt-1">

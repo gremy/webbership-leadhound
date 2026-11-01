@@ -42,7 +42,10 @@ const (
 
 // The units' limits. Each Wait mirrors the lock wait the unit's ExecStart takes (or, for
 // the fetch, the collect unit it is ordered after); each Run mirrors its TimeoutStartSec,
-// past which systemd has killed it and the run row never gets a finished_at.
+// past which systemd has killed it and the run row never gets a finished_at. The ATS and
+// collect units' TimeoutStartSec also covers their due-check (ExecCondition=, under timeout
+// 1m), which takes seconds; their Run stays the job's own budget, and timerguard.go adds the
+// minute back for the whole unit.
 const (
 	previewWait        = 30 * time.Minute             // leadhound-preview.service: flock --wait 1800
 	previewRunLimit    = time.Hour                    // leadhound-preview.service: TimeoutStartSec=1h
@@ -51,8 +54,8 @@ const (
 	briefWait          = 30 * time.Minute             // leadhound-brief.service: flock --wait 1800
 	briefRunLimit      = time.Hour                    // leadhound-brief.service: TimeoutStartSec=1h
 	atsWait            = 10 * time.Minute             // leadhound-ats.service takes no lock: it starts at once
-	atsRunLimit        = 8*time.Hour + 15*time.Minute // leadhound-ats.service: TimeoutStartSec=8h15min
-	collectUnitTimeout = 5*time.Hour + 30*time.Minute // leadhound-collect.service: TimeoutStartSec=5h30min
+	atsRunLimit        = 8*time.Hour + 15*time.Minute // leadhound-ats.service: TimeoutStartSec=8h16min, less the check's 1min
+	collectUnitTimeout = 5*time.Hour + 30*time.Minute // leadhound-collect.service: TimeoutStartSec=5h31min, less the check's 1min
 	// atsScoreWait mirrors leadhound-ats.service's score step, flock --wait 5400 on the
 	// score lock: past it (and the grace) after the last ATS collect, the score never started.
 	atsScoreWait = 5400 * time.Second
@@ -712,6 +715,9 @@ func (b *backend) RunNowCard(ctx context.Context) (console.RunNowCard, error) {
 		}
 		card.Actions = append(card.Actions, runNowState(a, reqs[a], runs, local, runNowLimits[a]))
 	}
+	if err := b.cardPlans(ctx, &card, now); err != nil {
+		return console.RunNowCard{}, err
+	}
 	if card.BriefSentAt, err = b.todaySentAt(ctx, now); err != nil {
 		return console.RunNowCard{}, err
 	}
@@ -720,6 +726,40 @@ func (b *backend) RunNowCard(ctx context.Context) (console.RunNowCard, error) {
 		card.ResultsAt = &at
 	}
 	return card, nil
+}
+
+// cardPlans sets Planned on the card's actions whose unit is a guarded job (ATS, and fetch,
+// which pulls in the LinkedIn collect), when systemd says that job's timer is enabled. Where
+// systemd cannot be asked (a machine without it) no plan is shown, as on Status.
+func (b *backend) cardPlans(ctx context.Context, card *console.RunNowCard, now time.Time) error {
+	keys := map[int]string{}
+	var timers []string
+	for i, a := range card.Actions {
+		if key, ok := guardKeyOfAction(a.Action); ok {
+			keys[i] = key
+			timers = append(timers, guardTimer(key))
+		}
+	}
+	if len(timers) == 0 {
+		return nil
+	}
+	out, err := systemctlShow(ctx, timers)
+	if err != nil {
+		return nil
+	}
+	units, err := parseSystemctlShow(out, timers)
+	if err != nil {
+		return nil
+	}
+	for i, key := range keys {
+		if !units[guardTimer(key)].Enabled {
+			continue
+		}
+		if card.Actions[i].Planned, err = b.plannedRun(ctx, key, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Results is the latest preview.json, each job with its live tracking and listing status.

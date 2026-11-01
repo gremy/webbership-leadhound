@@ -96,6 +96,10 @@ type fakeBackend struct {
 	ctlErr      error // returned by ControlAct
 	sendNowOut  ControlOutcome
 	sendNowErr  error // returned by SendNow
+	jobRunOut   ControlOutcome
+	jobRunErr   error // returned by JobRunNow
+	lastJobRun  string
+	jobRunConf  bool
 	lastControl ControlAction
 	campaignMbs []CampaignMailboxes
 	mbSending   MailboxSendingView
@@ -238,6 +242,14 @@ func (f *fakeBackend) ControlAct(_ context.Context, a ControlAction) (ControlOut
 func (f *fakeBackend) SendNow(context.Context) (ControlOutcome, error) {
 	f.count("SendNow")
 	return f.sendNowOut, f.sendNowErr
+}
+
+func (f *fakeBackend) JobRunNow(_ context.Context, job string, confirmed bool) (ControlOutcome, error) {
+	f.count("JobRunNow")
+	f.mu.Lock()
+	f.lastJobRun, f.jobRunConf = job, confirmed
+	f.mu.Unlock()
+	return f.jobRunOut, f.jobRunErr
 }
 
 func (f *fakeBackend) CampaignMailboxes(context.Context) ([]CampaignMailboxes, error) {
@@ -573,6 +585,9 @@ func TestNoWriteOnGet(t *testing.T) {
 	}
 	if n := h.b.n("RunNow"); n != 0 {
 		t.Errorf("a GET called RunNow %d times", n)
+	}
+	if n := h.b.n("JobRunNow"); n != 0 {
+		t.Errorf("a GET called JobRunNow %d times", n)
 	}
 }
 

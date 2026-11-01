@@ -128,7 +128,7 @@
           <td class="mono">{{.Name}}</td>
           <td>{{with .LastRun}}{{when .}}{{else}}Never{{end}}</td>
           <td><span class="state state-{{$l.Class}}"><span class="dot dot-{{$l.Class}}"></span>{{if eq .Result "ok"}}OK{{else if eq .Result "failed"}}Failed{{else if eq .Result "running"}}Running{{else}}Never ran{{end}}{{with .Note}} · {{.}}{{end}}</span></td>
-          <td>{{with .Next}}{{when .}}{{else}}None{{end}}</td>
+          <td>{{with .Planned}}<span class="{{if .Overdue}}text-bad{{end}}">{{.Line}}</span>{{else}}{{with .Next}}{{when .}}{{else}}None{{end}}{{end}}</td>
           <td>{{if eq .Switch "on"}}On{{else if eq .Switch "off"}}Off{{else}}—{{end}}</td>
         </tr>
         {{end}}

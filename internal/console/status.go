@@ -120,6 +120,9 @@ type UnitStatus struct {
 	Note    string     // a short note on the last run ("41 s", "2 sent"); "" for none
 	Next    *time.Time // the next timer; nil when it has none
 	Switch  string     // a Switch* state
+	// Planned is a guarded unit's next run on its rolling schedule, set when its timer is
+	// enabled; the page shows it instead of Next, and Overdue raises the unit to a warning.
+	Planned *PlannedRun
 }
 
 // ClaudeStatus is the Claude account's spend. UpdatedAt is its latest recorded spend; nil

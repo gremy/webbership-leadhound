@@ -190,7 +190,9 @@ func TestWhyNotNamesTheMailboxWithMost(t *testing.T) {
 // systemctlSample is systemctl show's output for controlUnits on a server whose finding
 // timers are on and sending timers off (systemd 255, --timestamp=unix): each block lists the
 // timer's own properties before the unit's, the research watcher has no next run, and a unit
-// systemd does not know is not-found.
+// systemd does not know is not-found. Of the Run now units, the contacts service is starting
+// and its watcher has failed (its service's start limit), the probe's watcher waits, and the
+// batch's is off with the sending timers.
 const systemctlSample = `NextElapseUSecRealtime=
 Id=leadhound-leads-batch.timer
 LoadState=loaded
@@ -224,6 +226,42 @@ Id=leadhound-leads-research.path
 LoadState=loaded
 ActiveState=active
 UnitFileState=enabled
+
+Id=leadhound-leads-batch.service
+LoadState=loaded
+ActiveState=inactive
+UnitFileState=static
+ExecMainStartTimestamp=
+Result=success
+
+Id=leadhound-leads-probe.service
+LoadState=loaded
+ActiveState=inactive
+UnitFileState=static
+ExecMainStartTimestamp=@1761814800
+Result=success
+
+Id=leadhound-leads-contacts.service
+LoadState=loaded
+ActiveState=activating
+UnitFileState=static
+ExecMainStartTimestamp=@1761904800
+Result=success
+
+Id=leadhound-leads-batch.path
+LoadState=loaded
+ActiveState=inactive
+UnitFileState=disabled
+
+Id=leadhound-leads-probe.path
+LoadState=loaded
+ActiveState=active
+UnitFileState=enabled
+
+Id=leadhound-leads-contacts.path
+LoadState=loaded
+ActiveState=failed
+UnitFileState=enabled
 `
 
 // TestTimerParseSystemctlShow: the sample reads unit by unit; the next run is the @seconds
@@ -246,6 +284,21 @@ func TestTimerParseSystemctlShow(t *testing.T) {
 	}
 	if st := got[unitResearch]; !st.Enabled || st.Next != nil {
 		t.Errorf("research %+v, want enabled with no next run", st)
+	}
+	if st := got[serviceContacts]; !st.Loaded || !st.Starting || st.Active || st.Failed || st.Enabled {
+		t.Errorf("contacts service %+v, want loaded and starting", st)
+	}
+	if st := got[serviceBatch]; st.Starting || st.LastStart != nil || st.LastBad {
+		t.Errorf("batch service %+v, want never started", st)
+	}
+	if st := got[watcherProbe]; !st.Enabled || !st.Active || st.Failed {
+		t.Errorf("probe watcher %+v, want enabled and active", st)
+	}
+	if st := got[watcherContacts]; !st.Enabled || st.Active || !st.Failed {
+		t.Errorf("contacts watcher %+v, want enabled and failed", st)
+	}
+	if st := got[watcherBatch]; !st.Loaded || st.Enabled || st.Active || st.Failed {
+		t.Errorf("batch watcher %+v, want loaded and off", st)
 	}
 	for _, bad := range []string{"", "Id=leadhound-leads-batch.timer\n", strings.Replace(systemctlSample, "UnitFileState=enabled", "garbage", 1),
 		strings.Replace(systemctlSample, "@1761901200", "@soon", 1), strings.Replace(systemctlSample, "leadhound-leads-sync.timer", "other.timer", 1)} {
@@ -331,7 +384,8 @@ func TestTimerFallback(t *testing.T) {
 			if r.fromSystemd || r.note != timersNotRead {
 				t.Fatalf("read %+v, want the fallback with its note", r)
 			}
-			for unit, want := range map[string]bool{unitProbe: true, unitContacts: true, unitBatch: false, unitSend: false, unitSync: false, unitResearch: true} {
+			for unit, want := range map[string]bool{unitProbe: true, unitContacts: true, unitBatch: false, unitSend: false, unitSync: false, unitResearch: true,
+				watcherProbe: true, watcherContacts: true, watcherBatch: false} {
 				if st := r.units[unit]; st.Enabled != want || st.Next != nil {
 					t.Errorf("%s %+v, want enabled %v and no next run", unit, st, want)
 				}
@@ -534,5 +588,38 @@ func TestControlsRampStart(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("start %s at %s: %q, want %q", tc.start, tc.now, got, tc.want)
 		}
+	}
+}
+
+// TestLastBadNeverReadsAGuardedService: a guarded service's Result and start move on every tick
+// its due-check passes over (Result=exec-condition), so LastBad and LastStart are read only
+// for the Status page's service units (serviceRun), and none of those is guarded; Controls
+// asks for the guarded leads services only for Starting.
+func TestLastBadNeverReadsAGuardedService(t *testing.T) {
+	for _, u := range statusUnits {
+		if u.service == "" {
+			continue
+		}
+		for key := range guardJobs {
+			if u.service == guardService(key) {
+				t.Errorf("Status reads %s's last run from systemd; a guarded service's Result moves on every passed-over tick", u.service)
+			}
+		}
+	}
+	ticked := strings.Replace(systemctlSample, "ExecMainStartTimestamp=@1761814800\nResult=success", "ExecMainStartTimestamp=@1761901200\nResult=exec-condition", 1)
+	got, err := parseSystemctlShow([]byte(ticked), controlUnits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[serviceProbe].LastBad {
+		t.Fatal("the passed-over tick did not reach the parse")
+	}
+	// The probe's Run now block from the same rows reads the same with and without the tick.
+	u := jobRunUnits[console.JobProbe]
+	now := time.Unix(1761901300, 0)
+	a, busyA := jobRunNowState(u, nil, nil, nil, got[serviceProbe].Starting, true, now)
+	b, busyB := jobRunNowState(u, nil, nil, nil, false, true, now)
+	if a != b || busyA != busyB {
+		t.Errorf("a passed-over tick changed the row: %+v %q vs %+v %q", a, busyA, b, busyB)
 	}
 }

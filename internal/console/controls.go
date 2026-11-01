@@ -130,6 +130,40 @@ func (s *server) sendNow(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
+// jobRunNow is POST /controls/{job}/run-now: one run of a scheduled job now, on the unit its
+// timer starts. A job not in RunNowJobs is no page at all; the confirm box is passed on, so
+// the backend refuses an unticked press with the words to show.
+func (s *server) jobRunNow(w http.ResponseWriter, r *http.Request) {
+	i := slices.Index(RunNowJobs, r.PathValue("job"))
+	if i < 0 {
+		http.NotFound(w, r)
+		return
+	}
+	job := RunNowJobs[i] // our own name, never the request's text, for the redirect below
+	if !leadsForm(w, r) {
+		return
+	}
+	confirmed := r.PostForm.Get("confirm") == "yes"
+	out, err := s.b.JobRunNow(r.Context(), job, confirmed)
+	switch {
+	case errors.Is(err, ErrLeadsNotSetUp):
+		s.controlsLog(job, "run-now", "not set up")
+		s.render(w, r, http.StatusUnprocessableEntity, "leads_off", page{Title: "Controls", Active: controlsPath, SignedIn: true})
+		return
+	case errors.Is(err, ErrUserFixable):
+		s.controlsLog(job, "run-now", "refused")
+		s.renderControls(w, r, http.StatusUnprocessableEntity, refusalWords(err), true)
+		return
+	case err != nil:
+		s.controlsLog(job, "run-now", "failed")
+		s.leadsFail(w, r, err)
+		return
+	}
+	s.controlsLog(job, "run-now", "ok")
+	s.setFlash(w, out.Message)
+	http.Redirect(w, r, controlsPath+"#control-"+job, http.StatusSeeOther)
+}
+
 // windowAnchor is the sending window's part of the Controls page.
 const windowAnchor = "#sending-window"
 

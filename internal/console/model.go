@@ -75,6 +75,8 @@ type RunNowAction struct {
 	Action, State, Line string
 	Since               *time.Time
 	Pending             bool
+	// Planned is a rolling job's next automatic run (set for ats and fetch); nil otherwise.
+	Planned *PlannedRun
 }
 
 // Results is the latest preview: the jobs part of the brief, made now.
@@ -1017,6 +1019,13 @@ type ControlsBackend interface {
 	// limit used, and otherwise writes the request file its watcher starts the Send now unit
 	// from. The console gains no privilege: systemd runs the send.
 	SendNow(ctx context.Context) (ControlOutcome, error)
+	// JobRunNow asks for one run of job (one of RunNowJobs) now: the same unit its schedule
+	// starts, unchanged. It refuses (ErrUserFixable, with the words to show) when systemd
+	// cannot be asked, while the job runs or a press waits, while the job is switched off,
+	// while its watcher is not armed or has stopped, while another job holds what this one
+	// needs, and until confirmed; otherwise it writes the request file its watcher starts the
+	// unit from. The console gains no privilege: systemd runs the job.
+	JobRunNow(ctx context.Context, job string, confirmed bool) (ControlOutcome, error)
 }
 
 // The writes ControlAction.Do names.
@@ -1040,6 +1049,31 @@ const (
 
 // ControlJobs lists the switched jobs in the order the Controls page shows them.
 var ControlJobs = []string{JobBatch, JobSync, JobProbe, JobContacts, JobResearch, JobVerify}
+
+// RunNowJobs are the Controls rows with a Run now block, in ControlJobs order.
+var RunNowJobs = []string{JobBatch, JobProbe, JobContacts}
+
+// JobRunNow is a Controls row's Run now block. State is idle, waiting, running, done, bad (the
+// asked run did not finish) or stuck; Line says it ("" for idle); Pending is true while a press
+// waits or the job runs, so the block refreshes itself; CanAsk is !Pending; Confirm is the
+// confirm box's sentence (what the run does and costs).
+type JobRunNow struct {
+	State   string
+	Line    string
+	Pending bool
+	CanAsk  bool
+	Confirm string
+}
+
+// PlannedRun is a rolling job's next automatic run: when, the sentence that says it and why
+// ("Next run planned at 15:00 tomorrow, 24 hours after the run by hand at 15:02."), and
+// whether it is overdue (past its plan by more than half an hour with no start; Line then
+// says so and names the journal to read).
+type PlannedRun struct {
+	At      time.Time
+	Line    string
+	Overdue bool
+}
 
 // ControlReasonMax is the longest reason a job switch keeps, on one line.
 const ControlReasonMax = 300
@@ -1140,6 +1174,11 @@ type ControlRow struct {
 	// Lines are the row's own plain lines beyond those (the Email check's: whether
 	// addresses go unchecked, today's checks, the credits left).
 	Lines []string
+	// RunNow is the row's Run now block; nil for a row without one (only RunNowJobs).
+	RunNow *JobRunNow
+	// Planned is the job's next automatic run on its rolling schedule; nil for a job on a
+	// fixed timer or a disabled one. When set, the page shows it instead of Timer.Next.
+	Planned *PlannedRun
 }
 
 // TimerState is a job's unit as systemd reports it (or, when systemd cannot be asked, as the

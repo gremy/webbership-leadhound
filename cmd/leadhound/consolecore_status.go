@@ -398,6 +398,12 @@ func (b *backend) unitsStatus(ctx context.Context, now time.Time, health []leads
 			case st.Loaded:
 				us.Switch = console.SwitchOff
 			}
+			// A guarded timer only ticks; its job's plan is the next run (the page prefers it).
+			if key, guarded := guardKeyOfTimer(u.unit); guarded && st.Enabled {
+				if us.Planned, err = b.plannedRun(ctx, key, now); err != nil {
+					return nil, err
+				}
+			}
 		}
 		out = append(out, us)
 	}

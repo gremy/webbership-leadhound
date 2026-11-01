@@ -48,6 +48,7 @@
       {{end}}
       {{end}}
       {{if and .Line (not (and (eq .Action "brief") $c.BriefSentAt))}}<p class="run-line{{if eq .State "stuck"}} bad{{end}}"{{if .Pending}} role="status"{{end}}>{{.Line}}</p>{{end}}
+      {{with .Planned}}<p class="run-line{{if .Overdue}} bad{{end}}">{{.Line}}</p>{{end}}
       {{if and (eq .State "done") (or (eq .Action "preview") (eq .Action "fetch")) $c.ResultsAt}}<p class="run-line"><a href="/results">See the results (as of {{clock $c.ResultsAt}})</a></p>{{end}}
     </li>
     {{end}}

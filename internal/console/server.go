@@ -90,9 +90,11 @@ var routes = []route{
 	{"GET /status", "/status", false, (*server).status},
 	{"POST /status/refresh", "/status/refresh", false, (*server).refreshStatus},
 	{"POST /status/claude-topup", "/status/claude-topup", false, (*server).claudeTopup},
-	// Both literal /controls/... POSTs are more specific than {job}, so they win.
+	// Both literal /controls/... POSTs are more specific than {job}, so they win; a job's
+	// run-now has three segments, so it never clashes with /controls/{job}.
 	{"POST /controls/send-now", "/controls/send-now", false, (*server).sendNow},
 	{"POST /controls/window", "/controls/window", false, (*server).saveWindow},
+	{"POST /controls/{job}/run-now", "/controls/contacts/run-now", false, (*server).jobRunNow},
 	{"POST /controls/{job}", "/controls/batch", false, (*server).controlAct},
 	{"GET /jobs", "/jobs", false, (*server).jobs},
 	{"POST /jobs/track", "/jobs/track", false, (*server).track},

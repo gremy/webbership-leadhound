@@ -210,7 +210,7 @@ func lastSlot(g guardJob, t time.Time) (time.Time, bool) {
 // The plan never only looks forward, so a deferred tick, a missed slot or a catch-up at boot is
 // due at once and never lost.
 func plannedNext(g guardJob, anchor *time.Time, now time.Time) time.Time {
-	if anchor == nil || now.Sub(*anchor) > 2*g.interval() {
+	if anchorLapsed(g, anchor, now) {
 		return nextSlot(g, now.Add(-tick/2))
 	}
 	var next time.Time
@@ -222,6 +222,12 @@ func plannedNext(g guardJob, anchor *time.Time, now time.Time) time.Time {
 	// Round works on absolute time; Bucharest's offsets are whole hours, so the 15-minute grid
 	// is the same in local time.
 	return next.Round(tick).In(planZone)
+}
+
+// anchorLapsed is plannedNext's first case: no anchor, or one older than two intervals, so the
+// plan is the next legacy slot (the console says "its usual time" for it).
+func anchorLapsed(g guardJob, anchor *time.Time, now time.Time) bool {
+	return anchor == nil || now.Sub(*anchor) > 2*g.interval()
 }
 
 // isStartRow is a start row the check wrote.

@@ -50,8 +50,21 @@ const (
 	unitResearch = "leadhound-leads-research.path"
 )
 
+// The services the three Run now rows start, and the watchers that start them from a press
+// (deploy/leadhound-leads-*.path). Of a service only Starting is read: its Result and its
+// timestamps move on every tick its due-check passes over.
+const (
+	serviceBatch    = "leadhound-leads-batch.service"
+	serviceProbe    = "leadhound-leads-probe.service"
+	serviceContacts = "leadhound-leads-contacts.service"
+	watcherBatch    = "leadhound-leads-batch.path"
+	watcherProbe    = "leadhound-leads-probe.path"
+	watcherContacts = "leadhound-leads-contacts.path"
+)
+
 // controlUnits are the units Controls asks systemd about, in one call.
-var controlUnits = []string{unitBatch, unitSync, unitProbe, unitContacts, unitSend, unitResearch}
+var controlUnits = []string{unitBatch, unitSync, unitProbe, unitContacts, unitSend, unitResearch,
+	serviceBatch, serviceProbe, serviceContacts, watcherBatch, watcherProbe, watcherContacts}
 
 // controlRow is what Controls shows of one switch beyond its state: its words, its unit and
 // the run commands whose latest run is its last run.
@@ -73,19 +86,21 @@ var controlSending = controlRow{
 // controlJobs are the switched jobs' rows, in console.ControlJobs order.
 var controlJobs = []controlRow{
 	{job: leadstore.JobBatch, what: "Drafts the morning batch of emails for you to approve.",
-		schedule: "Every day at 06:15 (Bucharest time).", unit: unitBatch, commands: []string{commandLeadsBatch}},
+		schedule: "Every 24 hours from its last run, by hand or timed; first run at 06:15 (Bucharest time).", unit: unitBatch,
+		commands: []string{commandLeadsBatch}},
 	{job: leadstore.JobSync, what: "Reads the mailboxes for replies, bounces and opt-outs.",
 		schedule: "Every 15 minutes.", unit: unitSync, commands: []string{commandLeadsSync}},
 	{job: leadstore.JobProbe, what: "Checks the listed sites for the Drupal version they run.",
-		schedule: "Every day at 13:00 (Bucharest time).", unit: unitProbe, commands: []string{commandLeadsSitesProbe}},
+		schedule: "Every 24 hours from its last run, by hand or timed; first run at 13:00 (Bucharest time).", unit: unitProbe,
+		commands: []string{commandLeadsSitesProbe}},
 	{job: leadstore.JobContacts, what: "Finds contact routes on the sites, reads their pages and rates the leads.",
-		schedule: "Every day at 10:00 (Bucharest time).", unit: unitContacts,
+		schedule: "Every 24 hours from its last run, by hand or timed; first run at 10:00 (Bucharest time).", unit: unitContacts,
 		commands: []string{commandLeadsContacts, commandLeadsEnrich, commandLeadsRate}},
 	{job: leadstore.JobResearch, what: "Looks for a contact for a starred lead that has none, with Claude.",
 		schedule: "When you star a lead with no contact, or press Look again.", unit: unitResearch,
 		commands: []string{commandLeadsResearch}},
 	{job: leadstore.JobVerify, what: "Checks each email address with Reoon before it can enter a live batch.",
-		schedule: "Every day at 06:15 (Bucharest time), just before the morning batch drafts, inside its run.", unit: unitBatch,
+		schedule: "Inside each Morning batch run, just before it drafts.", unit: unitBatch,
 		commands: []string{commandLeadsVerify}},
 }
 
@@ -97,9 +112,13 @@ type unitState struct {
 	// Starting is ActiveState activating: a oneshot service (the backup) is activating for
 	// as long as it runs, never active.
 	Starting bool
-	Next     *time.Time // a timer's next run; nil when none is planned
+	// Failed is ActiveState failed: a watcher stopped by its service's start limit.
+	Failed bool
+	Next   *time.Time // a timer's next run; nil when none is planned
 	// A service's last start (ExecMainStartTimestamp; nil when it never ran) and whether it
-	// ended badly (Result other than success).
+	// ended badly (Result other than success). Never read for a guarded service (guardJobs):
+	// every tick its due-check passes over sets Result=exec-condition and moves the start, so
+	// only the backup's are read (serviceRun; TestLastBadNeverReadsAGuardedService).
 	LastStart *time.Time
 	LastBad   bool
 }
@@ -161,14 +180,15 @@ func readTimers(ctx context.Context, getenv func(string) string) timerRead {
 }
 
 // inferredTimers is which leads units install.sh's leads_timers leaves enabled for the
-// server's settings: probe and contacts with LEADHOUND_LEADS_TIMERS=on; batch, send and sync
-// with that and LEADHOUND_OUTREACH=live. The research watcher is always enabled.
+// server's settings: probe and contacts, with their Run now watchers, with
+// LEADHOUND_LEADS_TIMERS=on; batch (and its watcher), send and sync with that and
+// LEADHOUND_OUTREACH=live. The research watcher is always enabled.
 func inferredTimers(getenv func(string) string) map[string]bool {
 	finding := strings.TrimSpace(getenv("LEADHOUND_LEADS_TIMERS")) == "on"
 	sending := finding && strings.TrimSpace(getenv("LEADHOUND_OUTREACH")) == leadconfig.OutreachLive
 	return map[string]bool{
-		unitProbe: finding, unitContacts: finding,
-		unitBatch: sending, unitSend: sending, unitSync: sending,
+		unitProbe: finding, unitContacts: finding, watcherProbe: finding, watcherContacts: finding,
+		unitBatch: sending, unitSend: sending, unitSync: sending, watcherBatch: sending,
 		unitResearch: true,
 	}
 }
@@ -215,6 +235,7 @@ func parseSystemctlShow(out []byte, units []string) (map[string]unitState, error
 			Enabled:  b["UnitFileState"] == "enabled" || b["UnitFileState"] == "enabled-runtime",
 			Active:   b["ActiveState"] == "active",
 			Starting: b["ActiveState"] == "activating",
+			Failed:   b["ActiveState"] == "failed",
 		}
 		next, err := parseSystemdTime(b["NextElapseUSecRealtime"])
 		if err != nil {
@@ -800,9 +821,21 @@ func (b *backend) Controls(ctx context.Context) (console.ControlsPage, error) {
 	for _, s := range sws {
 		byJob[s.Job] = s
 	}
+	now := b.now()
 	for _, r := range controlJobs {
 		s := byJob[r.job]
-		row := controlView(r, jobName(r.job), s.On, s.At, s.Reason, s.Actor, timers, last, b.now())
+		row := controlView(r, jobName(r.job), s.On, s.At, s.Reason, s.Actor, timers, last, now)
+		if slices.Contains(console.RunNowJobs, r.job) {
+			if row.RunNow, err = b.jobRunNowView(ctx, r.job, timers, now); err != nil {
+				return console.ControlsPage{}, err
+			}
+		}
+		// A guarded job's plan replaces its timer's next tick; a disabled timer has none.
+		if key, ok := guardKeyOfTimer(r.unit); ok && timers.units[r.unit].Enabled {
+			if row.Planned, err = b.plannedRun(ctx, key, now); err != nil {
+				return console.ControlsPage{}, err
+			}
+		}
 		if r.job == leadstore.JobVerify {
 			today, err := lq.EmailChecksSince(ctx, leadstore.DefaultAccountID, startOfDay(b.now(), b.loc))
 			if err != nil {
