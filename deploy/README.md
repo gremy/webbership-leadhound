@@ -13,20 +13,22 @@ The units' `MemoryMax` and `CPUQuota` caps were sized for the old shared 2-vCPU 
 ## What runs when
 
 All times are Europe/Bucharest.
-Each timer adds a random delay of up to 10 minutes.
+Each fixed timer adds a random delay of up to 10 minutes.
+The ATS collect, the LinkedIn collect and three leads jobs run on a rolling schedule instead: their timers tick every 15 minutes with no delay, and a due-check starts each job one interval after its last start (see [Run now and the rolling schedule](#run-now-and-the-rolling-schedule)).
 Every timer but the leads send and sync is persistent, so a run missed while the server was down happens at the next boot.
 
 | Timer | When | Runs |
 | --- | --- | --- |
-| `leadhound-ats.timer` | 01:00 | `collect ats`, then `score --max-duration 2h` |
+| `leadhound-ats.timer` | every 24 hours from its last start, first at 01:00 | `collect ats`, then `score --max-duration 2h` |
 | `leadhound-backup.timer` | 03:30 | `pg_dump -Fc` into `/var/backups/leadhound/`, newest 14 kept within 4 GiB together |
-| `leadhound-collect.timer` | 06:30 and 14:30 | `collect linkedin`, then `score --max-duration 45m` |
+| `leadhound-collect.timer` | every 12 hours from its last start, first at 06:30, then 18:30 | `collect linkedin`, then `score --max-duration 45m` |
 | `leadhound-prebrief.timer` | 07:30 | `canary linkedin` (once a day; a second start the same day does nothing) |
 | `leadhound-brief.timer` | 07:50 | `brief --send`, retried twice, 10 minutes apart, if the send fails |
 | `leadhound-trim.timer` | 15:00 | `trim --max-duration 45m`, under `timeout 50m`: see [The trim](#the-trim) |
 | `leadhound-leads-verify-balance.timer` | every 30 minutes, up to 2 minutes late | `leads verify --balance-only`: see [The credits on the Status page](#the-credits-on-the-status-page) |
 
 The five leads timers are installed on every deploy but enabled only when `/etc/leadhound/env` allows them, and each job also has its own switch on the console's Controls page: see [Leads on the server](#leads-on-the-server).
+The contacts, probe and batch services also have a Run now watcher each, armed with their timer.
 
 The console, `leadhound-console.service`, has no timer: it runs all the time once it is configured, and restarts five seconds after a crash, but never after bad config (exit 2).
 See [Console](#console).
@@ -50,7 +52,7 @@ The brief is ordered `After=` the collect and the canary, and the canary `After=
 `collect ats` runs under `timeout 4h` and `collect linkedin` under `timeout 2h`, so a hang never stops the `score` after it.
 Each `score` stops itself cleanly at its `--max-duration` budget, and runs under a `timeout` that ends a score that hangs (`140m` for the night's 2h, `1h` for the 45 minutes).
 The timeout sits 20 and 15 minutes over the budget because a stopped score still finishes its in-flight job, records the run and makes its summary pass over every stored job, which reads every description when a description rule is active.
-Each unit's `TimeoutStartSec` is longer than its lock waits and timeouts together: 8h15min for the ATS unit (4h05 + 1h30 + 2h22 = 7h57) and 5h30min for the LinkedIn one (30 minutes + 2h05 + 1h30 + 1h02 = 5h07).
+Each unit's `TimeoutStartSec` is longer than its due-check's minute, lock waits and timeouts together: 8h16min for the ATS unit (1 minute + 4h05 + 1h30 + 2h22 = 7h58) and 5h31min for the LinkedIn one (1 minute + 30 minutes + 2h05 + 1h30 + 1h02 = 5h08).
 
 The server is shared with other services, so every unit but the backup has a `MemoryMax`: past it the kernel kills leadhound, never a neighbour.
 No unit has `MemoryHigh`, because a unit throttled there does not fail but hangs, every request of the console included; a killed one shows in the journal, and the console restarts five seconds later.
@@ -89,6 +91,7 @@ A press while the same service is starting or running would be merged into that 
 `PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
 
 Check the watchers with `systemctl list-units 'leadhound-*.path'`: these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)), `leadhound-leads-research.path` (see [Contact research](#contact-research)), the Status page's `leadhound-leads-verify-balance.path` and Check email now's `leadhound-leads-verify-now.path` should all be `active` and `waiting`, and Send now's `leadhound-leads-send-now.path` too wherever the send timer is enabled (see [Send now](#send-now)).
+The leads jobs' Run now watchers go with their timers: `leadhound-leads-contacts.path` and `leadhound-leads-probe.path` wherever the finding timers are enabled, and `leadhound-leads-batch.path` wherever the batch timer is.
 Check a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
 The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
 
@@ -103,6 +106,68 @@ sudo systemctl reset-failed leadhound-brief.path leadhound-brief.service
 sudo systemctl start leadhound-brief.path
 ```
 
+### Run now and the rolling schedule
+
+Five jobs run on a rolling schedule: each keeps its rhythm, and its next automatic run is planned one interval after its last start, whoever started it.
+Press Contacts at 15:02 and the next automatic run is 15:00 tomorrow instead of 10:00; nothing is skipped and nothing runs twice.
+
+| Job | Service | Rhythm | First run with no history | On demand |
+| --- | --- | --- | --- | --- |
+| Contacts | `leadhound-leads-contacts.service` | every 24 hours | 10:00 | Run now on Controls → Contacts (`run/leads-contacts`) |
+| Site probe | `leadhound-leads-probe.service` | every 24 hours | 13:00 | Run now on Controls → Site probe (`run/leads-probe`) |
+| Morning batch | `leadhound-leads-batch.service` | every 24 hours | 06:15 | Run now on Controls → Morning batch (`run/leads-batch`) |
+| ATS collect | `leadhound-ats.service` | every 24 hours | 01:00 | Run the nightly ATS collect now (`run/ats`) |
+| LinkedIn collect | `leadhound-collect.service` | every 12 hours | 06:30, then 18:30 | Fetch new jobs, then show (`run/fetch`), which pulls the collect in |
+
+Every other timer keeps its fixed time: the brief and the prebrief belong to the morning email, the hourly send to the sending window, the sync and the Reoon balance run too often for a plan to mean anything, and the backup and the trim are maintenance.
+
+**How a run is planned.**
+The five timers only tick: `OnCalendar=*-*-* *:00/15:00 Europe/Bucharest`, with `RandomizedDelaySec=0` and `Persistent=true`.
+There is no random delay, because a tick late by more than half of it would move the rhythm.
+At each tick the service's first line, the due-check, decides whether the job starts:
+
+```ini
+ExecCondition=/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record <job>
+ExecStopPost=-/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record --ended <job>
+```
+
+The plan is the last start plus the interval, rounded to the nearest 15-minute tick, so a start a minute or two late never drifts the job.
+A run by hand counts at its start, so a press moves the rhythm.
+A timed run counts at its planned time, so a run that waited behind another job, or caught up after a reboot, keeps the job on its usual time.
+A daily job adds one calendar day, so it keeps its local time across the clock changes.
+With no history at all, the first run is at the job's old time.
+A job idle for more than two intervals (a timer switched back on after weeks, a long outage) resumes at its usual time, not the moment it is deployed.
+A tick that is missed, deferred or caught up at boot is due at once on the next tick, so a run is never lost.
+
+**The due-check** (`leadhound timer-guard`) lets a start through in two cases, and passes over the tick in every other.
+A press starts the job at once: a request file in `run/` newer than 20 minutes that no run has served yet.
+A due job starts when its plan has come, unless the job sharing its lock is running: Contacts and Site probe share the sites' fetch lock, so each waits while the other runs, a press included.
+That wait is never a skip: the next tick checks again, and the job starts once the lock is free.
+When in doubt, it waits: a database it cannot read, a crash or its own one-minute timeout passes over the tick, and the next tick tries again.
+So a broken check shows as an overdue run on the console, never as a job run every 15 minutes.
+The one exception is a fresh press, which runs even when the database cannot be read, so the job itself reports the database.
+`systemctl start` of a guarded service by hand is passed over too unless the job is due: use its button, or write its request file as the console does.
+
+**The rows.**
+Each start the check lets through opens one run row, `run-now` (note `asked at <time>`) or `scheduled` (note `planned <time>`), with the job as its source.
+The row stays open while the job runs, and the unit's `ExecStopPost=` closes it with systemd's own result (`· ended success`, `· ended timeout`, …), also after a failure or a kill.
+A row left open by a reboot is closed `· ended unrecorded` by the next check.
+These rows are the plan's anchor, and the console reads a run's state from them.
+They stay off the dashboard's latest runs; each step still records its own row as before.
+
+**The journal.**
+systemd logs about three info lines for every tick it passes over, so `systemctl list-timers` LAST and PASSED show the last tick, not the job's last run.
+The console shows the plan instead: Controls (each job's row), the dashboard's Run now card (ATS and fetch) and Status (each unit).
+Each says when the next run is planned and why, for example "Next run planned at 15:00 tomorrow, 24 hours after the run by hand at 15:02."
+While the job waits behind the other fetch-lock job, it says "Planned at 13:00; waiting while the contacts job runs."
+A timer that is not enabled shows no plan.
+
+**When a run is overdue** (more than 30 minutes past its plan, with no start and nothing holding its lock), Controls and Status say so and Status warns.
+Read the check's own lines with `journalctl -u <service> -g timer-guard`, or everything at warning and above with `journalctl -u <service> -p warning`.
+Then ask the check on the server: `make remote HOST=… ARGS='timer-guard <job>'` prints the verdict, the anchor and the plan, and writes nothing, so asking never moves the plan.
+The job names are `leads-contacts`, `leads-probe`, `leads-batch`, `ats` and `collect`.
+The batch unit holds the Anthropic key, which systemd loads before the check runs, so on a server without the key the batch unit fails at every tick until you place it (see [The Anthropic key](#the-anthropic-key)).
+
 ## Layout on the server
 
 | Path | Owner, mode | What |
@@ -110,7 +175,7 @@ sudo systemctl start leadhound-brief.path
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
 | `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` `leads-templates/` and `campaigns/` (root:leadhound 0640, from `make deploy-data`; see [Campaigns on the server](#campaigns-on-the-server)), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
-| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) the Status page's Reoon refresh (`run/leads-verify-balance`), Send now and the manual send (`run/leads-send-now`) and Check email now (`run/leads-verify-now`), one file per action, read by the `leadhound-*.path` watchers |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) the Status page's Reoon refresh (`run/leads-verify-balance`), Send now and the manual send (`run/leads-send-now`), Check email now (`run/leads-verify-now`) and the leads jobs' Run now on Controls (`run/leads-contacts`, `run/leads-probe`, `run/leads-batch`), one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
 | `/etc/leadhound/mailbox.key` | root, 0600 | the mailboxes' private key, made by the first deploy; see [Mailboxes](#mailboxes) |
 | `/etc/leadhound/anthropic.key` | root, 0600 | the Anthropic API key, placed by hand; see [The Anthropic key](#the-anthropic-key) |
@@ -222,15 +287,16 @@ Run these on the server as root, in order.
 
 ## Leads on the server
 
-Five timers run the leads; all times are Europe/Bucharest, each with up to 10 minutes of random delay.
+Five timers run the leads; all times are Europe/Bucharest.
+The probe, contacts and batch timers tick every 15 minutes and their due-check starts each job every 24 hours from its last start (see [Run now and the rolling schedule](#run-now-and-the-rolling-schedule)); the send and sync timers keep their fixed times, with up to 10 minutes of random delay.
 Every leads unit has the same sandbox as the other timed units, `MemoryMax=600M` with `GOMEMLIMIT=450MiB`, `Nice=10`, idle I/O and `CPUWeight=50`, and each command runs under a `timeout` that `TimeoutStartSec` covers.
 Business hours, spacing, daily caps, the warm-up ramp and the pause are the commands' own (`leads.yaml` and the console), never the units'.
 
 | Timer | When | Runs | Enabled when | Console switch |
 | --- | --- | --- | --- | --- |
-| `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` | Site probe (`probe`) |
-| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000` for `drupal-eol` and `leads rate --campaign cafes-loyalty --max 10000`, each under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=10h` | `LEADHOUND_LEADS_TIMERS=on` | Contacts (`contacts`): the contacts, enrich and rate steps; the build always runs |
-| `leadhound-leads-batch.timer` | 06:15 | `leads build`, under `timeout 20m`, then `leads verify --max 60`, under `timeout 50m`, then `leads batch new`, under `timeout 20m`, for the `drupal-eol` campaign; `TimeoutStartSec=2h`; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time, and the [Reoon key](#the-reoon-key) for the email check | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Morning batch (`batch`): `leads batch new`; Email check (`verify`): `leads verify`; the build always runs |
+| `leadhound-leads-probe.timer` | every 24 hours from its last start, first at 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=391min` | `LEADHOUND_LEADS_TIMERS=on` | Site probe (`probe`) |
+| `leadhound-leads-contacts.timer` | every 24 hours from its last start, first at 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000` for `drupal-eol` and `leads rate --campaign cafes-loyalty --max 10000`, each under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=10h1min` | `LEADHOUND_LEADS_TIMERS=on` | Contacts (`contacts`): the contacts, enrich and rate steps; the build always runs |
+| `leadhound-leads-batch.timer` | every 24 hours from its last start, first at 06:15 | `leads build`, under `timeout 20m`, then `leads verify --max 60`, under `timeout 50m`, then `leads batch new`, under `timeout 20m`, for the `drupal-eol` campaign; `TimeoutStartSec=2h1min`; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time, and the [Reoon key](#the-reoon-key) for the email check | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Morning batch (`batch`): `leads batch new`; Email check (`verify`): `leads verify`; the build always runs |
 | `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Sending (the send pause) |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Inbox sync (`sync`) |
 
@@ -238,7 +304,8 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
   They start unattended reads of public sites: up to 10,000 homepages a day, and up to 300 organisations searched for a published contact a day, each site's robots file read and honoured first.
   They share a fetch lock in the data directory, `/opt/leadhound/data/.leads-fetch.lock`.
   The contact search and the enrichment do not wait for it: a step that finds it held exits 75, which the contacts unit counts as done.
-  The probe waits for it, up to 11700 seconds (195 minutes), because the contacts unit can hold it for 190 minutes, until about 13:20, after the probe's timer has fired; a wait that runs out exits 75 and fails the probe unit, so a lost probe shows in `systemctl`.
+  The due-check already holds each back while the other runs, so neither starts into a held lock.
+  The probe still waits for it, up to 11700 seconds (195 minutes), because the contacts unit can hold it for 190 minutes; a wait that runs out exits 75 and fails the probe unit, so a lost probe shows in `systemctl`.
 - After the contact search, the contacts unit enriches organisations, rates leads for relevance, then runs `leads build`, which turns every organisation with a finding into a lead and reads no web page, so the console's Leads pages fill while only finding is on; the batch rebuilds the list again before drafting.
   Its steps, from `leadhound-leads-contacts.service`:
 
@@ -249,13 +316,13 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
   ExecStart=-/usr/bin/timeout --kill-after=5m 180m /opt/leadhound/bin/leadhound leads rate --campaign cafes-loyalty --max 10000
   ExecStart=/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build
   SuccessExitStatus=75
-  TimeoutStartSec=10h
+  TimeoutStartSec=10h1min
   ```
 
   Every step but the build is `ExecStart=-`, so a failed search, enrichment or rating never stops the build.
   The rating and the build read no web page, so they run outside the fetch lock.
   `leads rate` rates one campaign's leads, `drupal-eol` unless `--campaign` names another, so the café campaign has its own rate line, the second.
-  `TimeoutStartSec=10h` is longer than the five timeouts and their kill graces together (9h45).
+  `TimeoutStartSec=10h1min` is longer than the due-check's minute and the five timeouts and their kill graces together (9h46).
 - Before the batch drafts, `leads verify` checks with Reoon the email addresses that batch would draft (see [The email check](#the-email-check)); it is written `ExecStart=-`, so a Reoon outage or a missing key makes a smaller batch, never no batch.
 - The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
   While your saved settings no longer fit `leads.yaml` (so they are not applied), `leads batch new` makes none and exits 2, so the batch unit shows as failed in `systemctl`; fix or reset them in Leads → Settings.
@@ -268,18 +335,18 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 
 Every deploy installs the units and decides the timers from `/etc/leadhound/env`, the last line for each name counting, as for the units:
 
-- With `LEADHOUND_LEADS_TIMERS=on`, the probe and contacts timers are enabled; otherwise they are disabled and stopped.
-- With that and `LEADHOUND_OUTREACH=live`, the batch, send and sync timers are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch.
+- With `LEADHOUND_LEADS_TIMERS=on`, the probe and contacts timers and their Run now watchers are enabled; otherwise they are disabled and stopped.
+- With that and `LEADHOUND_OUTREACH=live`, the batch, send and sync timers, the batch's Run now watcher and Send now's are enabled; otherwise they are disabled and stopped, so the server never drafts a shadow batch.
   The mailboxes live in the database, not in this file: a run with no ready mailbox sends nothing and says so.
 - The deploy prints which leads timers are on, and for those that are off, which lines are missing.
 
 Whether an enabled timer does anything is the console's: see [Switches in the console](#switches-in-the-console).
-To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `sudo systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer` (or deploy).
-To turn sending on, first add a mailbox, assign it to its campaign and send its test, as [Mailboxes](#mailboxes) says; then, with `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` in the file, deploy (or run `sudo systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer` and `sudo systemctl restart leadhound-console.service`, so the console reads the new settings), and switch Sending on on the console's Controls page.
+To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `sudo systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-contacts.path leadhound-leads-probe.path` (or deploy).
+To turn sending on, first add a mailbox, assign it to its campaign and send its test, as [Mailboxes](#mailboxes) says; then, with `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` in the file, deploy (or run `sudo systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer leadhound-leads-batch.path leadhound-leads-send-now.path` and `sudo systemctl restart leadhound-console.service`, so the console reads the new settings), and switch Sending on on the console's Controls page.
 Without `LEADHOUND_LEADS_TIMERS=on` the next deploy disables the sending timers again, even with `LEADHOUND_OUTREACH=live` set.
 A unit reads the env file only when it starts.
 
-To stop everything, remove `LEADHOUND_LEADS_TIMERS=on` (or set it to anything but `on`) and run `sudo systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer`; the next deploy leaves them off.
+To stop everything, remove `LEADHOUND_LEADS_TIMERS=on` (or set it to anything but `on`) and run `sudo systemctl disable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer leadhound-leads-contacts.path leadhound-leads-probe.path leadhound-leads-batch.path leadhound-leads-send-now.path`; the next deploy leaves them off.
 A run already in progress finishes; `sudo systemctl stop leadhound-leads-<name>.service` ends it at once.
 
 ### Switches in the console
@@ -298,6 +365,16 @@ The same sentence, with a link to Controls, sits above the Outreach tab's list a
   Inbox sync switched off stops the sync timer's runs only: `leads send` reads every mailbox's replies itself before it sends, so replies and opt-outs are never missed.
 - **Research switched back on** starts what a star queued while it was off: it writes the research request file, the only thing that starts `leadhound-leads-research.service`.
   While Research is off, a star still queues its search, and its line ends "Research is switched off on the Controls page, so it will run once research is on."; only Look again is refused, with "Research is switched off on the Controls page."
+- **Run a job now**: the Contacts, Site probe and Morning batch rows each have a Run now block, so you can start the job without ssh.
+  Tick the box to confirm, because the run takes a while and spends credits, then press Run now.
+  The console writes the request file (`run/leads-contacts`, `run/leads-probe` or `run/leads-batch`), and the job's watcher starts its timed service unchanged.
+  It refuses, and says why, when the server's systemd cannot be read, while the job runs or a press already waits, while the job is switched off, while its watcher is not armed or has stopped, for Contacts while the site probe runs and for Site probe while the contacts job runs (they share the sites' fetch lock), for Morning batch while a batch waits for you to approve it, and while the box is not ticked.
+  The block then follows the run in a live line: waiting to start, running and which step, ended, did not finish, or stuck.
+  It refreshes itself every 30 seconds while something is pending.
+  "Ended" means the unit ended; each step's own result is in the row's Last run.
+  A press moves the next automatic run to one interval after it (see [Run now and the rolling schedule](#run-now-and-the-rolling-schedule)).
+  Switching a job back on never starts it: only a press does.
+  A press that stays "asked and not started" means its watcher stopped: reset it as for Run now, for example `sudo systemctl reset-failed leadhound-leads-contacts.path leadhound-leads-contacts.service`, then `sudo systemctl start leadhound-leads-contacts.path`.
 - From the command line: `leadhound leads switches list` prints Sending and every job (on or off, since when, the reason), and `leadhound leads switches set JOB on|off [--reason R]` switches one.
   `make remote HOST=… ARGS='leads switches list'` needs no `CONFIRM=1`; `set` does.
 
@@ -551,7 +628,7 @@ Production has never built a lead, so take these steps in order:
 4. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
 5. Add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` to turn finding on.
 6. Check the first contacts run: it searches for contacts, enriches, rates and builds, and the console's List fills.
-   To start it before 10:00, run `sudo systemctl start leadhound-leads-contacts.service`.
+   To start it before 10:00, press Run now on Controls → Contacts; a plain `systemctl start` is passed over by the due-check until the job is due.
 7. Rating is on by default and runs inside that unit once `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` are in the env file; turn it off in Settings if you do not want it.
    Then label 30 leads under To label and run the eval, as [Relevance](#relevance) says.
    Each type needs its own: 30 Drupal calls for `leads relevance eval --decider jev`, and 30 café calls for `leads relevance eval --type cafe --decider jev`.
@@ -868,7 +945,7 @@ The key is a file on the server, `/etc/leadhound/reoon.key` (`root:root 0600`), 
 - **Without the key the batch still runs.**
   The unit also has `SetCredential=reoon.key:`, an empty default systemd uses when the file cannot be read, so the unit starts; `leads verify` reads the empty credential as no key, prints that nothing was checked because the key is not at `/etc/leadhound/reoon.key`, records its run, and Controls says the last run checked nothing for that reason.
   While the Email check is on, a live batch then drafts no email lead whose address was never checked, so switch the Email check off on Controls until the key is in.
-  That default relies on systemd treating a `LoadCredential=` that cannot be read as not fatal when the same name has a `SetCredential=`; check it once on the server before you rely on it (place no key, `sudo systemctl start leadhound-leads-batch.service`, and read `journalctl -u leadhound-leads-batch.service` for the "no Reoon key" line).
+  That default relies on systemd treating a `LoadCredential=` that cannot be read as not fatal when the same name has a `SetCredential=`; check it once on the server before you rely on it (place no key, press Run now on Controls → Morning batch, and read `journalctl -u leadhound-leads-batch.service` for the "no Reoon key" line).
 - **Every deploy** makes the file `root:root 0600` again if it is there, and never creates, reads or prints it; until you place it, the deploy says `install: no Reoon key at /etc/leadhound/reoon.key`.
 - **Every check needs `LEADHOUND_LIVE=1`** as well as the key; without it `leads verify` prints one line saying no Reoon call was made and exits 0.
 - **To rotate**, make a new key in Reoon, replace the file's contents, and the next run uses it; then delete the old key in Reoon.

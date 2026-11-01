@@ -1,4 +1,6 @@
-# LinkedIn collect, then a score of what it stored. Started by leadhound-collect.timer.
+# LinkedIn collect, then a score of what it stored. Started by leadhound-collect.timer's
+# 15-minute ticks, through the due-check below, and by leadhound-fetch.service, which pulls it
+# in (Wants=) when the console's Fetch new jobs asks.
 #
 # Every subcommand exits 0 once it has recorded its outcome, a stop (throttled, budget,
 # parser_broke, spend_cap ...) included, and non-zero only for a crash or bad config.
@@ -14,6 +16,18 @@ User=leadhound
 Group=leadhound
 # root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
 EnvironmentFile=/etc/leadhound/env
+# The due-check, before any step: it starts the job for a Run now press at once, or when it is
+# due (one interval after its last start, by hand or timed), and opens the run's row, the
+# anchor of the next plan. Any doubt (not due, the job sharing its lock running, the database
+# unreadable, a crash, the 1-minute timeout) exits 1-254, so systemd passes over this tick
+# without a failure and the next tick tries again. --record is what lets it write, so a check
+# run by hand never moves the plan. No - prefix: it would turn every "not now" into a start. A
+# Fetch press reaches this unit only through leadhound-fetch.service's Wants=, never through a
+# watcher of its own: the console writes run/fetch before leadhound-fetch.path starts the
+# fetch, so when the fetch pulls this unit in, the check sees that fresh request and lets the
+# collect through as the press's run. A collect already running is joined, and the check counts
+# it as the press's.
+ExecCondition=/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record collect
 # Every LinkedIn step on this server (this collect, the canary, the brief's recheck) holds
 # /opt/leadhound/data/.linkedin.lock, so two never run at once. A collect that cannot get it within 30 minutes
 # exits 75 and is skipped (the - prefix); timeout ends one that hangs. Either way the score
@@ -25,9 +39,15 @@ ExecStart=-/usr/bin/flock --wait 1800 --conflict-exit-code 75 /opt/leadhound/dat
 # timeout leaves 15 minutes over the budget because a stopped score still finishes its
 # in-flight job, records the run and makes its summary pass over every stored job.
 ExecStart=/usr/bin/flock --wait 5400 /opt/leadhound/data/.score.lock /usr/bin/timeout --kill-after=2m 1h /opt/leadhound/bin/leadhound score --max-duration 45m
-# Longer than the LinkedIn lock wait, the collect's timeout, the score's lock wait and the
-# score's timeout together (5h07), so systemd never cuts the score short.
-TimeoutStartSec=5h30min
+# After the last step, whatever happened: closes the run's row with systemd's own result
+# ($SERVICE_RESULT, $EXIT_STATUS), also after a failure, a timeout or a kill. It does nothing
+# after a tick the due-check passed over. The - keeps a failed close from marking the run
+# failed; the next check closes a row left open.
+ExecStopPost=-/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record --ended collect
+# Longer than the due-check's minute, the LinkedIn lock wait, the collect's timeout, the
+# score's lock wait and the score's timeout together (5h08), so systemd never cuts the score
+# short.
+TimeoutStartSec=5h31min
 Nice=5
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a
 # neighbour. Past MemoryMax the unit is killed; there is no MemoryHigh, because a unit

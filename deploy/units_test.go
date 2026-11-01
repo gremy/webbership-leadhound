@@ -87,14 +87,16 @@ func units(t *testing.T, pattern string) map[string]unit {
 }
 
 // schedule is each timer's OnCalendar lines, whether it is persistent, and each service's
-// ExecStart lines: the run order the deploy promises (README.md).
+// ExecStart lines: the run order the deploy promises (README.md). The guarded jobs' timers
+// (guardJobs) only tick every 15 minutes; their due-check decides when the job runs
+// (TestDueChecks).
 var schedule = map[string]struct {
 	calendar   []string
 	persistent bool
 	exec       []string
 }{
 	"leadhound-ats": {
-		[]string{"*-*-* 01:00:00 Europe/Bucharest"},
+		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
 		true,
 		[]string{
 			"-/usr/bin/timeout --kill-after=5m 4h /opt/leadhound/bin/leadhound collect ats",
@@ -102,7 +104,7 @@ var schedule = map[string]struct {
 		},
 	},
 	"leadhound-collect": {
-		[]string{"*-*-* 06:30:00 Europe/Bucharest", "*-*-* 14:30:00 Europe/Bucharest"},
+		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
 		true,
 		[]string{
 			"-" + linkedinLock + "1800 --conflict-exit-code 75 " + linkedinLockPath +
@@ -131,12 +133,12 @@ var schedule = map[string]struct {
 		[]string{"/usr/bin/timeout --kill-after=2m 50m /opt/leadhound/bin/leadhound trim --max-duration 45m"},
 	},
 	"leadhound-leads-probe": {
-		[]string{"*-*-* 13:00:00 Europe/Bucharest"},
+		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
 		true,
 		[]string{leadsProbeLock + "/usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000"},
 	},
 	"leadhound-leads-contacts": {
-		[]string{"*-*-* 10:00:00 Europe/Bucharest"},
+		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
 		true,
 		[]string{
 			"-" + leadsFetchLock + "/usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300",
@@ -148,7 +150,7 @@ var schedule = map[string]struct {
 		},
 	},
 	"leadhound-leads-batch": {
-		[]string{"*-*-* 06:15:00 Europe/Bucharest"},
+		[]string{"*-*-* *:00/15:00 Europe/Bucharest"},
 		true,
 		[]string{
 			"-/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build",
@@ -186,9 +188,12 @@ var schedule = map[string]struct {
 var (
 	leadsFinding = []string{"leadhound-leads-contacts.timer", "leadhound-leads-probe.timer"}
 	leadsSending = []string{"leadhound-leads-batch.timer", "leadhound-leads-send.timer", "leadhound-leads-sync.timer"}
-	// leadsSendingPaths are the watchers that go with the sending timers: Send now's runs only
-	// where the hourly send does.
-	leadsSendingPaths = []string{"leadhound-leads-send-now.path"}
+	// leadsFindingPaths are the Run now watchers that go with the finding timers: contacts'
+	// and the probe's run only where their timed job does.
+	leadsFindingPaths = []string{"leadhound-leads-contacts.path", "leadhound-leads-probe.path"}
+	// leadsSendingPaths are the watchers that go with the sending timers: the morning batch's
+	// Run now and Send now's run only where the batch and the hourly send do.
+	leadsSendingPaths = []string{"leadhound-leads-batch.path", "leadhound-leads-send-now.path"}
 	// leadsTriggered are the leads services the console starts through a watcher, with no
 	// timer: install.sh arms their watchers on every deploy, whatever the env switches say.
 	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-send-now.service", "leadhound-leads-verify-now.service"}
@@ -198,8 +203,17 @@ var (
 )
 
 // timerDelay is each timer's RandomizedDelaySec where it is not 600: a 30-minute timer
-// spreads over two minutes, not a third of its period.
-var timerDelay = map[string]string{"leadhound-leads-verify-balance": "120"}
+// spreads over two minutes, not a third of its period, and a guarded job's 15-minute tick
+// has none, because it must land on the grid: a tick late by more than half of it would move
+// the job's rhythm (TestDueChecks).
+var timerDelay = map[string]string{
+	"leadhound-leads-verify-balance": "120",
+	"leadhound-leads-contacts":       "0",
+	"leadhound-leads-probe":          "0",
+	"leadhound-leads-batch":          "0",
+	"leadhound-ats":                  "0",
+	"leadhound-collect":              "0",
+}
 
 // daemons are the services that run all the time rather than from a timer, with their
 // ExecStart line.
@@ -253,10 +267,10 @@ var triggered = map[string]struct {
 }
 
 // runActions are the console's requests (the Run now actions, the mailbox check, contact
-// research and Send now): each has
+// research, Send now and the leads jobs' Run now on Controls): each has
 // a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
 // starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now", "leads-verify-balance", "leads-verify-now"}
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now", "leads-verify-balance", "leads-verify-now", "leads-contacts", "leads-probe", "leads-batch"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -962,7 +976,8 @@ func TestTimeoutsCoverWaits(t *testing.T) {
 	timeout := regexp.MustCompile(`/usr/bin/timeout (?:--kill-after=(\S+) )?(\S+) `)
 	for path, u := range units(t, "*.service") {
 		var sum time.Duration
-		for _, e := range u["Service"]["ExecStart"] {
+		// The due-check's ExecCondition= counts toward TimeoutStartSec too.
+		for _, e := range slices.Concat(u["Service"]["ExecCondition"], u["Service"]["ExecStart"]) {
 			if m := wait.FindStringSubmatch(e); m != nil {
 				n, _ := strconv.Atoi(m[1])
 				sum += time.Duration(n) * time.Second
@@ -1378,16 +1393,18 @@ func TestInstallLeadsTimers(t *testing.T) {
 		user = "LEADHOUND_OUTREACH_USER=outreach@mail.example\n"
 		imap = "LEADHOUND_IMAP_ADDR=mail.example:993\n"
 	)
-	all := slices.Concat(leadsFinding, leadsSending, leadsSendingPaths)
+	all := slices.Concat(leadsFinding, leadsFindingPaths, leadsSending, leadsSendingPaths)
+	// Each finding timer goes with its Run now watcher.
+	findingUnits := slices.Concat(leadsFinding, leadsFindingPaths)
 	for _, tc := range []struct {
 		name, env string
 		want      []string
 	}{
 		{"empty env", "", nil},
 		{"the env.example lines, empty", "LEADHOUND_LEADS_TIMERS=\nLEADHOUND_LEADS_SEND=\nLEADHOUND_OUTREACH=\nLEADHOUND_MAILBOX_PUBLIC_KEY=\nLEADHOUND_MAILBOX_KEY_FILE=\n", nil},
-		{"finding on only", finding, leadsFinding},
-		{"finding and send on, shadow", finding + send, leadsFinding},
-		{"finding and send on, shadow, old mailbox lines", finding + send + user + imap, leadsFinding},
+		{"finding on only", finding, findingUnits},
+		{"finding and send on, shadow", finding + send, findingUnits},
+		{"finding and send on, shadow, old mailbox lines", finding + send + user + imap, findingUnits},
 		{"everything", finding + send + live, all},
 		{"everything, no old mailbox lines needed", finding + send + live + "LEADHOUND_OUTREACH_USER=\nLEADHOUND_IMAP_ADDR=\n", all},
 		{"everything, old mailbox lines left in", finding + send + live + user + imap, all},
@@ -1399,7 +1416,7 @@ func TestInstallLeadsTimers(t *testing.T) {
 		{"finding switched off by a later line", finding + send + live + "LEADHOUND_LEADS_TIMERS=off\n", nil},
 		{"send switched off by a later line, not read any more", finding + send + live + "LEADHOUND_LEADS_SEND=\n", all},
 		{"not quite on", "LEADHOUND_LEADS_TIMERS=online\n" + send + live, nil},
-		{"not quite live", finding + send + "LEADHOUND_OUTREACH=lively\n", leadsFinding},
+		{"not quite live", finding + send + "LEADHOUND_OUTREACH=lively\n", findingUnits},
 		{"commented out", "#LEADHOUND_LEADS_TIMERS=on\n# " + send, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1610,27 +1627,35 @@ func TestPaths(t *testing.T) {
 
 // TestInstallArmsEveryPath: make deploy copies the watchers, install.sh installs them, creates
 // the request directory for the console's user before arming them, and arms every one on
-// every deploy, but Send now's, which leads_timers arms with the send timer.
+// every deploy, but the leads jobs' Run now watchers and Send now's, which leads_timers arms
+// with their jobs' timers (TestInstallLeadsTimers).
 func TestInstallArmsEveryPath(t *testing.T) {
 	steps := installSteps(t)
+	timed := slices.Concat(leadsFindingPaths, leadsSendingPaths)
+	slices.Sort(timed)
 	var watchers []string
 	for path := range units(t, "*.path") {
-		if name := filepath.Base(path); !slices.Contains(leadsSendingPaths, name) {
+		if name := filepath.Base(path); !slices.Contains(timed, name) {
 			watchers = append(watchers, name)
 		}
 	}
 	slices.Sort(watchers)
 	pathName := regexp.MustCompile(`leadhound-[a-z-]+\.path`)
+	// The always-armed line is the one that names no timed watcher: leads_timers' own enable
+	// lines come first in the file and name only those.
 	arm := slices.IndexFunc(steps, func(l string) bool {
-		return strings.HasPrefix(l, "systemctl enable --now ") && pathName.MatchString(l) && !strings.Contains(l, leadsSendingPaths[0])
+		if !strings.HasPrefix(l, "systemctl enable --now ") || !pathName.MatchString(l) {
+			return false
+		}
+		return !slices.ContainsFunc(timed, func(p string) bool { return strings.Contains(l, p) })
 	})
 	if arm < 0 {
 		t.Fatal("install.sh has no systemctl enable --now for the .path watchers")
 	}
 	inTimers := pathName.FindAllString(installFunc(t, "leads_timers"), -1)
 	slices.Sort(inTimers)
-	if inTimers = slices.Compact(inTimers); !slices.Equal(inTimers, leadsSendingPaths) {
-		t.Errorf("leads_timers arms %q, want only %q (every other watcher is armed on every deploy)", inTimers, leadsSendingPaths)
+	if inTimers = slices.Compact(inTimers); !slices.Equal(inTimers, timed) {
+		t.Errorf("leads_timers arms %q, want only %q (every other watcher is armed on every deploy)", inTimers, timed)
 	}
 	armed := pathName.FindAllString(steps[arm], -1)
 	slices.Sort(armed)
@@ -2296,5 +2321,89 @@ func TestSendNowUnit(t *testing.T) {
 	}
 	if strings.Contains(nowExec, "flock") || strings.Contains(sendExec, "flock") {
 		t.Error("a send unit takes a file lock; the send's database lock serialises them")
+	}
+}
+
+// guardedJobs are the units whose due-check decides when they run, by unit name and the job
+// name the check takes. It is the same list as guardJobs in cmd/leadhound/timerguard.go,
+// written out here because a deploy test cannot import package main.
+var guardedJobs = map[string]string{
+	"leadhound-leads-contacts": "leads-contacts",
+	"leadhound-leads-probe":    "leads-probe",
+	"leadhound-leads-batch":    "leads-batch",
+	"leadhound-ats":            "ats",
+	"leadhound-collect":        "collect",
+}
+
+// guardTick is the guarded timers' one calendar: a tick every 15 minutes, on the grid.
+const guardTick = "*-*-* *:00/15:00 Europe/Bucharest"
+
+// dueCheck and dueEnded are a guarded service's two timer-guard lines for job: the check
+// before its steps, which writes only with --record, and the close after them.
+func dueCheck(job string) string {
+	return "/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record " + job
+}
+
+func dueEnded(job string) string {
+	return "-/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record --ended " + job
+}
+
+// TestDueChecks: exactly the guarded services carry the due-check as their one
+// ExecCondition=, with no - prefix (a - would turn every "not now" into a start), and close
+// their run with the --ended line as their one ExecStopPost=; both write only with --record.
+// No other unit has either. Each guarded service's timer ticks every 15 minutes with no random
+// delay, and no other timer has a zero delay. The calendar alone is not theirs: the inbox sync
+// runs every 15 minutes on its own, with a random delay and no due-check.
+func TestDueChecks(t *testing.T) {
+	for path, u := range units(t, "*.service") {
+		name := base(path)
+		job, guarded := guardedJobs[name]
+		cond, stop := u["Service"]["ExecCondition"], u["Service"]["ExecStopPost"]
+		if !guarded {
+			if len(cond) > 0 {
+				t.Errorf("%s: ExecCondition = %q; only the guarded services have a due-check", path, cond)
+			}
+			for _, e := range stop {
+				if strings.Contains(e, "timer-guard") {
+					t.Errorf("%s: ExecStopPost %q; only the guarded services close a run with timer-guard", path, e)
+				}
+			}
+			continue
+		}
+		if want := []string{dueCheck(job)}; !slices.Equal(cond, want) {
+			t.Errorf("%s: ExecCondition = %q, want %q", path, cond, want)
+		}
+		if want := []string{dueEnded(job)}; !slices.Equal(stop, want) {
+			t.Errorf("%s: ExecStopPost = %q, want %q", path, stop, want)
+		}
+		for _, e := range slices.Concat(cond, stop) {
+			if !strings.Contains(e, " --record ") {
+				t.Errorf("%s: %q has no --record, so the check would write nothing (or wait at every tick)", path, e)
+			}
+		}
+		for _, e := range cond {
+			if strings.HasPrefix(e, "-") {
+				t.Errorf("%s: ExecCondition %q has a - prefix; every \"not now\" would start the job", path, e)
+			}
+		}
+	}
+	for name := range guardedJobs {
+		if _, err := os.Stat(name + ".service"); err != nil {
+			t.Errorf("guarded job %s has no service: %v", name, err)
+		}
+	}
+	for path, u := range units(t, "*.timer") {
+		name := base(path)
+		_, guarded := guardedJobs[name]
+		cal := u["Timer"]["OnCalendar"]
+		delay := u["Timer"]["RandomizedDelaySec"]
+		ticks := slices.Equal(cal, []string{guardTick})
+		noDelay := slices.Equal(delay, []string{"0"})
+		switch {
+		case guarded && (!ticks || !noDelay):
+			t.Errorf("%s: OnCalendar = %q, RandomizedDelaySec = %q; a guarded timer ticks on %q with no delay", path, cal, delay, guardTick)
+		case !guarded && noDelay:
+			t.Errorf("%s: RandomizedDelaySec = 0, but %s has no due-check", path, name)
+		}
 	}
 }

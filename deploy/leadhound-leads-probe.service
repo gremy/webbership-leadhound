@@ -1,7 +1,9 @@
 # The daily site probe: up to 10,000 listed sites read for their Drupal major (the homepage
-# and its robots file, public pages only). Started by leadhound-leads-probe.timer, which
-# install.sh enables only when /etc/leadhound/env has LEADHOUND_LEADS_TIMERS=on
-# (deploy/README.md, Leads on the server). Rate and concurrency come from the environment.
+# and its robots file, public pages only). Started by leadhound-leads-probe.timer's
+# 15-minute ticks, through the due-check below, and by leadhound-leads-probe.path when
+# Controls asks for a run now; install.sh enables both only when /etc/leadhound/env has
+# LEADHOUND_LEADS_TIMERS=on (deploy/README.md, Leads on the server). Rate and concurrency come
+# from the environment.
 [Unit]
 Description=leadhound leads site probe
 After=network-online.target postgresql.service
@@ -13,6 +15,15 @@ User=leadhound
 Group=leadhound
 # root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
 EnvironmentFile=/etc/leadhound/env
+# The due-check, before any step: it starts the job for a Run now press at once, or when it is
+# due (one interval after its last start, by hand or timed), and opens the run's row, the
+# anchor of the next plan. Any doubt (not due, the job sharing its lock running, the database
+# unreadable, a crash, the 1-minute timeout) exits 1-254, so systemd passes over this tick
+# without a failure and the next tick tries again. --record is what lets it write, so a check
+# run by hand never moves the plan. No - prefix: it would turn every "not now" into a start.
+# While the contacts job holds the sites' fetch lock, it waits: a probe started then would only
+# queue behind the lock.
+ExecCondition=/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record leads-probe
 # The probe, the contact search and the enrichment share one fetch lock in the data
 # directory, so two never read the public web at once. The contacts unit (10:00) can hold it
 # for its search and its enrichment, up to 190 minutes with their kill graces, so until about
@@ -20,8 +31,14 @@ EnvironmentFile=/etc/leadhound/env
 # A wait that runs out exits 75, which fails the unit, so a lost probe shows in systemctl.
 # timeout ends a probe that hangs.
 ExecStart=/usr/bin/flock --wait 11700 --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 3h /opt/leadhound/bin/leadhound leads sites probe --max 10000
-# Longer than the lock wait, the probe's timeout and its kill grace together (380 minutes).
-TimeoutStartSec=390min
+# After the last step, whatever happened: closes the run's row with systemd's own result
+# ($SERVICE_RESULT, $EXIT_STATUS), also after a failure, a timeout or a kill. It does nothing
+# after a tick the due-check passed over. The - keeps a failed close from marking the run
+# failed; the next check closes a row left open.
+ExecStopPost=-/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record --ended leads-probe
+# Longer than the due-check's minute, the lock wait, the probe's timeout and its kill grace
+# together (381 minutes).
+TimeoutStartSec=391min
 Nice=10
 IOSchedulingClass=idle
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a

@@ -1,0 +1,24 @@
+# Run now: the console's Controls row writes the request time to
+# /opt/leadhound/data/run/leads-contacts, and this watcher starts
+# leadhound-leads-contacts.service (the daily contact search, now). It starts only that one
+# fixed unit, unchanged (no Unit=: it defaults to the same-named service), and the console
+# never gains a privilege to do it. The service's due-check sees the fresh request and lets the
+# start through. A press while the service is already starting or running is merged into that
+# run by systemd, so the console refuses it first.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# install.sh's leads_timers arms it with the contacts timer, so only with
+# LEADHOUND_LEADS_TIMERS=on, and disarms it with that timer: where the timed job does not run,
+# Run now does not either.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset (deploy/README.md, Run now):
+#   systemctl reset-failed leadhound-leads-contacts.path leadhound-leads-contacts.service
+#   systemctl start leadhound-leads-contacts.path
+[Unit]
+Description=leadhound run now: leads contacts
+
+[Path]
+PathChanged=/opt/leadhound/data/run/leads-contacts
+
+[Install]
+WantedBy=paths.target

@@ -6,8 +6,10 @@
 # leads rate rates one campaign, drupal-eol unless --campaign names another), then the
 # lead list rebuilt from the findings and routes, so the console's leads keep up while only
 # finding is on.
-# Started by leadhound-leads-contacts.timer, which install.sh enables only when /etc/leadhound/env has
-# LEADHOUND_LEADS_TIMERS=on (deploy/README.md, Leads on the server).
+# Started by leadhound-leads-contacts.timer's 15-minute ticks, through the due-check below, and
+# by leadhound-leads-contacts.path when Controls asks for a run now; install.sh enables both
+# only when /etc/leadhound/env has LEADHOUND_LEADS_TIMERS=on (deploy/README.md, Leads on the
+# server).
 #
 # Every step but the last is written ExecStart=-..., so a failed search, enrichment or
 # rating never stops the build. While relevance rating is off in Leads → Settings the rating
@@ -23,6 +25,15 @@ User=leadhound
 Group=leadhound
 # root:root 0600; systemd reads it before dropping to leadhound (deploy/env.example).
 EnvironmentFile=/etc/leadhound/env
+# The due-check, before any step: it starts the job for a Run now press at once, or when it is
+# due (one interval after its last start, by hand or timed), and opens the run's row, the
+# anchor of the next plan. Any doubt (not due, the job sharing its lock running, the database
+# unreadable, a crash, the 1-minute timeout) exits 1-254, so systemd passes over this tick
+# without a failure and the next tick tries again. --record is what lets it write, so a check
+# run by hand never moves the plan. No - prefix: it would turn every "not now" into a start.
+# While the site probe holds the sites' fetch lock, it waits, a press included: the search and
+# the enrichment would find the lock held and skip, and the day's contacts would be lost.
+ExecCondition=/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record leads-contacts
 # The probe, the contact search and the enrichment share one fetch lock in the data
 # directory, so two never read the public web at once. A run that finds it held exits 75 at
 # once and counts as done (SuccessExitStatus); timeout ends one that hangs. The rating and
@@ -32,10 +43,15 @@ ExecStart=-/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data
 ExecStart=-/usr/bin/timeout --kill-after=5m 180m /opt/leadhound/bin/leadhound leads rate --max 10000
 ExecStart=-/usr/bin/timeout --kill-after=5m 180m /opt/leadhound/bin/leadhound leads rate --campaign cafes-loyalty --max 10000
 ExecStart=/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build
+# After the last step, whatever happened: closes the run's row with systemd's own result
+# ($SERVICE_RESULT, $EXIT_STATUS), also after a failure, a timeout or a kill. It does nothing
+# after a tick the due-check passed over. The - keeps a failed close from marking the run
+# failed; the next check closes a row left open.
+ExecStopPost=-/usr/bin/timeout 1m /opt/leadhound/bin/leadhound timer-guard --record --ended leads-contacts
 SuccessExitStatus=75
-# Longer than the search's, the enrichment's, the two ratings' and the build's timeouts and
-# kill graces together (9h45).
-TimeoutStartSec=10h
+# Longer than the due-check's minute and the search's, the enrichment's, the two ratings' and
+# the build's timeouts and kill graces together (9h46).
+TimeoutStartSec=10h1min
 Nice=10
 IOSchedulingClass=idle
 # The server is shared: a ceiling on memory, so the kernel stops leadhound and never a

@@ -1,12 +1,18 @@
-# The daily site probe (leadhound-leads-probe.service). Enabled by install.sh only with
-# LEADHOUND_LEADS_TIMERS=on. Persistent: a day missed while the server was down runs at the
-# next boot.
+# The daily site probe (leadhound-leads-probe.service), every 24 hours from its last start,
+# first at 13:00. Enabled by install.sh only with LEADHOUND_LEADS_TIMERS=on.
+# This timer only ticks, every 15 minutes. The service's due-check (timer-guard, its
+# ExecCondition=) starts the job for a Run now press, or when it is due: one interval after its
+# last start, by hand or timed, rounded to the tick (deploy/README.md, Run now and the rolling
+# schedule). Every other tick is passed over without a failure.
+# No random delay: a tick late by more than half of it would move the job's rhythm. Persistent:
+# a tick missed while the server was down fires at the next boot, and a run that fell due
+# meanwhile starts then.
 [Unit]
 Description=leadhound leads site probe
 
 [Timer]
-OnCalendar=*-*-* 13:00:00 Europe/Bucharest
-RandomizedDelaySec=600
+OnCalendar=*-*-* *:00/15:00 Europe/Bucharest
+RandomizedDelaySec=0
 Persistent=true
 
 [Install]
