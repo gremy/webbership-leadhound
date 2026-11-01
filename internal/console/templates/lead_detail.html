@@ -179,14 +179,17 @@
   </section>
   {{end}}
 
-  {{with $d.Place}}
+  {{if eq $d.RType "cafe"}}
   <section class="card">
     <div class="card-head"><h2>The place</h2></div>
     <div class="card-body">
+    {{if not $d.Place}}<p class="muted">No map listing on file.</p>{{end}}
     <dl class="kv">
+      {{with $d.Place}}
       {{with .Category}}<dt>Category</dt><dd>{{.}}</dd>{{end}}
       {{with .Address}}<dt>Address</dt><dd>{{.}}</dd>{{end}}
       <dt>Website</dt><dd>{{with .Website}}{{template "lead_link" .}}{{else}}none of its own{{end}}</dd>
+      {{end}}
       {{with or $d.OriginWords $d.Origin}}<dt>Found through</dt><dd>{{.}}</dd>{{end}}
       {{with $d.CountryPolicy}}<dt>Country</dt><dd>{{.}}</dd>{{end}}
     </dl>

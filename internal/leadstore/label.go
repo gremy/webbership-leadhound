@@ -103,7 +103,7 @@ func (q Queries) LatestLabels(ctx context.Context, leadIDs []int64) (map[int64]L
 }
 
 // labelTypeSQL keeps the leads (l) of rating type $1, or every lead when $1 is "".
-var labelTypeSQL = `($1::text = '' OR ` + typeSQL("l.kind") + ` = $1::text)`
+var labelTypeSQL = `($1::text = '' OR ` + typeSQL() + ` = $1::text)`
 
 // LabelledLeads returns every lead of rating type t ("": every type) whose latest call
 // names a band, by lead id: the answer key of type t's relevance eval, each with the input

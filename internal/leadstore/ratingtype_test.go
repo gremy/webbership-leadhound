@@ -48,7 +48,7 @@ func TestTypeOf(t *testing.T) {
 // TestTypeSQL: the SQL expressions name every café kind and the two types' values, quoted
 // as literals, so they agree with TypeOf and TypeQuestion.
 func TestTypeSQL(t *testing.T) {
-	ts, qs := typeSQL("l.kind"), typeQuestionSQL("l.kind")
+	ts, qs := typeSQL(), typeQuestionSQL("l.kind")
 	for _, k := range cafe.Kinds {
 		for _, s := range []string{ts, qs} {
 			if !strings.Contains(s, "'"+k.Kind+"'") {

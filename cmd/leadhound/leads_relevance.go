@@ -144,8 +144,13 @@ func runGoldenDraft(ctx context.Context, args []string) error {
 	for _, l := range picked {
 		kinds[l.Kind], majors[l.Major], countries[l.Country] = true, true, true
 	}
-	_, _ = fmt.Fprintf(stdout, "leads relevance golden-draft: %s · %d leads (of %d open) written to %s, mode 0600 · %d kinds · %d majors · %d countries\n",
-		leadstore.TypeWords(rt), len(picked), len(leads), path, len(kinds), len(majors), len(countries))
+	// Drupal majors mean nothing for a café lead, so the café summary leaves them out.
+	spread := fmt.Sprintf("%d kinds · %d majors · %d countries", len(kinds), len(majors), len(countries))
+	if rt == leadstore.TypeCafe {
+		spread = fmt.Sprintf("%d kinds · %d countries", len(kinds), len(countries))
+	}
+	_, _ = fmt.Fprintf(stdout, "leads relevance golden-draft: %s · %d leads (of %d open) written to %s, mode 0600 · %s\n",
+		leadstore.TypeWords(rt), len(picked), len(leads), path, spread)
 	_, _ = fmt.Fprintf(stdout, "  set each line's \"label\" to one of %s, then run leads relevance eval --type %s --golden %s\n",
 		strings.Join(leadrate.Bands(), ", "), rt, path)
 	return nil

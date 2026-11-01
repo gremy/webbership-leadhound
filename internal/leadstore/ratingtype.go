@@ -62,10 +62,10 @@ func cafeKindsSQL() string {
 	return strings.Join(lits, ", ")
 }
 
-// typeSQL is the SQL expression giving the rating type of the lead whose kind is in
-// kindCol, as TypeOf does.
-func typeSQL(kindCol string) string {
-	return "CASE WHEN " + kindCol + " IN (" + cafeKindsSQL() + ") THEN " + sqlLiteral(TypeCafe) +
+// typeSQL is the SQL expression giving the rating type of the lead l (its kind in
+// l.kind), as TypeOf does.
+func typeSQL() string {
+	return "CASE WHEN l.kind IN (" + cafeKindsSQL() + ") THEN " + sqlLiteral(TypeCafe) +
 		" ELSE " + sqlLiteral(TypeDrupal) + " END"
 }
 

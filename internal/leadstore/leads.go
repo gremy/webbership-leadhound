@@ -418,7 +418,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     sc.score,
 		     coalesce(st.action <> 'unstar', false) AS starred,
 		     CASE WHEN st.action <> 'unstar' THEN st.position END AS position,
-		     rv.score AS relevance, `+typeSQL("l.kind")+` AS rtype,
+		     rv.score AS relevance, `+typeSQL()+` AS rtype,
 		     lower(a.addr) AS laddr, lower(o.domain) AS ldom, lower(split_part(a.addr, '@', 2)) AS sdom, ad.adom
 		   FROM lead l
 		   CROSS JOIN (SELECT $2::jsonb AS pf) pf

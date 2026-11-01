@@ -528,10 +528,15 @@ func TestGoldenDraftByType(t *testing.T) {
 	setLeadKind(t, "proseware.example", cafe.KindNoDigitalLoyalty)
 	dir := t.TempDir()
 	cafePath, drupalPath := filepath.Join(dir, "cafe.jsonl"), filepath.Join(dir, "drupal.jsonl")
-	wantLines(t, "café draft", mustRun(t, "leads", "relevance", "golden-draft", "--type", "cafe", "--n", "30", "--out", cafePath),
-		"leads relevance golden-draft: Café leads · 2 leads (of 2 open)", "run leads relevance eval --type cafe --golden "+cafePath)
+	cafeOut := mustRun(t, "leads", "relevance", "golden-draft", "--type", "cafe", "--n", "30", "--out", cafePath)
+	if strings.Contains(cafeOut, "majors") {
+		t.Errorf("the café draft counts Drupal majors:\n%s", cafeOut)
+	}
+	wantLines(t, "café draft", cafeOut,
+		"leads relevance golden-draft: Café leads · 2 leads (of 2 open) written to "+cafePath+", mode 0600 · 1 kinds · 1 countries",
+		"run leads relevance eval --type cafe --golden "+cafePath)
 	wantLines(t, "Drupal draft", mustRun(t, "leads", "relevance", "golden-draft", "--n", "30", "--out", drupalPath),
-		"leads relevance golden-draft: Drupal leads · 6 leads (of 6 open)")
+		"leads relevance golden-draft: Drupal leads · 6 leads (of 6 open)", " majors · ")
 	for path, want := range map[string]string{cafePath: leadstore.TypeCafe, drupalPath: leadstore.TypeDrupal} {
 		lines, err := leadrate.LoadGolden(path)
 		if err != nil {

@@ -33,11 +33,6 @@ import (
 // list weighed by the profile in force and the relevance trust gate, and every row worded
 // with leadview. Both read live (D15): no snapshot.
 
-// relevanceQuestion is the Drupal relevance question, whose latest eval the Settings page
-// still reports as the trust gate (D9); the list, leads rate and the batch queue read each
-// type's own gate (trustedTypes).
-const relevanceQuestion = leadrate.Question
-
 // noteValueRunes is the most of one ignored value a note repeats.
 const noteValueRunes = 40
 

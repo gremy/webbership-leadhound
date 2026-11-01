@@ -1493,6 +1493,18 @@ func TestLeadDetailPageCafe(t *testing.T) {
 		t.Error("the café with no link and no website")
 	}
 	cafeSweep(t, "the café with no website", body)
+
+	// No place row in its campaign's imports: still the place card, saying so, never the
+	// site card or a list rank.
+	b.detail.Place = nil
+	body = h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{"<h2>The place</h2>", "No map listing on file.",
+		"<dt>Found through</dt><dd>a map listing (Overture)</dd>", "<dt>Country</dt><dd>United Kingdom: email, in English</dd>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the café with no place lacks %q", want)
+		}
+	}
+	cafeSweep(t, "the café with no place", body)
 }
 
 // cafeSweep fails when a café lead's page shows the upgrade-risk report, a list rank, the

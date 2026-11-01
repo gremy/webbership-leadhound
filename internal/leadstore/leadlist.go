@@ -305,7 +305,7 @@ func (r listRow) row() ListRow {
 var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
 	   cg.name AS campaign_name, o.domain,
 	   coalesce(nullif(p.site_name, ''), nullif(o.name, ''), o.domain) AS name,
-	   o.country, l.kind, ` + typeSQL("l.kind") + ` AS rtype, l.state, l.channel, l.probe_id,
+	   o.country, l.kind, ` + typeSQL() + ` AS rtype, l.state, l.channel, l.probe_id,
 	   l.agency_finding_id, l.finding_id, l.created_at,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'email') AS has_email,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'form') AS has_form,
