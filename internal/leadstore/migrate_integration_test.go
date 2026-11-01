@@ -802,6 +802,7 @@ func TestMigration00029DownUp(t *testing.T) {
 
 	p := leadsProvider(t)
 	t.Cleanup(func() { migrateAll(t) })
+	plain, _ := f.batch(t, false, leadD) // before the down: today's batch writes origin
 	if _, err := p.DownTo(ctx, leadOutreachVersion-1); err != nil {
 		t.Fatalf("down to %d: %v", leadOutreachVersion-1, err)
 	}
@@ -872,8 +873,6 @@ func TestMigration00029DownUp(t *testing.T) {
 		f.ownerRun(t, `INSERT INTO org_fact (org_id, kind, value, normalized, fetch_id, place_id, derived_by)
 			VALUES ($1, 'social', $2, $2, $3, $4, 'enrich@1')`, s.org, s.url, s.fetch, s.place)
 	}
-	plain, _ := f.batch(t, false, leadD)
-
 	if _, err := p.UpTo(ctx, leadOutreachVersion); err != nil {
 		t.Fatalf("up again: %v", err)
 	}

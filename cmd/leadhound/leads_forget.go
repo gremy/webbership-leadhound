@@ -21,8 +21,9 @@ const leadsForgetUsage = "usage: leadhound leads forget org ID --reason TEXT"
 // tables), in one transaction, it suppresses the org's domain and numbers (hashed) so it is
 // never collected, researched or called again, deletes its phone facts, phone research and
 // screenings, blanks its call notes, empties its kept page bodies and deletes its
-// description and social facts, and erases its lead's CRM (reply snippets, note, deal and
-// stage history). It prints counts only, never a number or a page. Run again (after a
+// description and social facts, erases its lead's CRM (reply snippets, note, deal and stage
+// history), and erases its people and what names them (their routes, emails' targets and
+// email checks, marks, edits, proposals, sectors and draft requests). It prints counts only, never a number or a page. Run again (after a
 // backup restore, say) it finds nothing left and counts zero; its log line keeps the org id,
 // so the erasures to re-apply can be listed.
 func runLeadsForget(ctx context.Context, args []string) error {
@@ -62,7 +63,11 @@ func runLeadsForget(ctx context.Context, args []string) error {
 	}
 	slog.Default().Info("leads forget org", "org", id, "phone_facts", f.PhoneFacts, "screenings", f.Screenings,
 		"research", f.PhoneResearch, "notes", f.NotesBlanked, "places", f.PlacesBlanked, "consents", f.Consents, "consents_blanked", f.ConsentsBlanked, "suppressions", f.Suppressions,
-		"bodies", p.BodiesBlanked, "other_facts", p.OtherFacts, "snippets", f.SnippetsBlanked, "crm_rows", f.CRMRows, "stage_events", f.StageEvents)
+		"bodies", p.BodiesBlanked, "other_facts", p.OtherFacts, "snippets", f.SnippetsBlanked, "crm_rows", f.CRMRows, "stage_events", f.StageEvents,
+		"marks", f.ContactMarks, "lead_routes", f.LeadRoutes, "person_pages", f.PersonPages, "email_checks", f.EmailChecks,
+		"person_emails", f.PersonEmails, "person_routes", f.PersonRoutes, "people", f.People, "edits", f.EditsBlanked,
+		"edited_emails", f.EditedEmails, "profile_targets", f.ProfileTargets, "proposals", f.Proposals,
+		"proposal_notes", f.ProposalNotes, "sectors", f.Sectors, "draft_requests", f.DraftRequests)
 	_, _ = fmt.Fprintln(stdout, forgetWords(id, f, p))
 	return nil
 }
@@ -101,6 +106,29 @@ func forgetWords(id int64, f leadstore.Forgotten, p leadstore.ForgottenPages) st
 	if f.SnippetsBlanked > 0 || f.CRMRows > 0 || f.StageEvents > 0 {
 		places += fmt.Sprintf(", %s emptied, %s and %s deleted", plural(int(f.SnippetsBlanked), "reply snippet", "reply snippets"),
 			plural(int(f.CRMRows), "CRM record", "CRM records"), plural(int(f.StageEvents), "stage change", "stage changes"))
+	}
+	for _, c := range []struct {
+		n         int64
+		one, many string
+	}{
+		{f.People, "person deleted", "people deleted"},
+		{f.PersonRoutes, "person's contact route deleted", "people's contact routes deleted"},
+		{f.LeadRoutes, "lead moved off a person's route", "leads moved off a person's route"},
+		{f.PersonPages, "page a person was read from emptied", "pages people were read from emptied"},
+		{f.EmailChecks, "email check of a person's address deleted", "email checks of people's addresses deleted"},
+		{f.PersonEmails, "email to a person's address had its target emptied", "emails to people's addresses had their targets emptied"},
+		{f.ContactMarks, "contact mark deleted", "contact marks deleted"},
+		{f.EditsBlanked, "draft edit emptied", "draft edits emptied"},
+		{f.EditedEmails, "edited email emptied", "edited emails emptied"},
+		{f.ProfileTargets, "form or LinkedIn target emptied", "form or LinkedIn targets emptied"},
+		{f.Proposals, "proposal erased", "proposals erased"},
+		{f.ProposalNotes, "proposal note blanked", "proposal notes blanked"},
+		{f.Sectors, "sector deleted", "sectors deleted"},
+		{f.DraftRequests, "draft request deleted", "draft requests deleted"},
+	} {
+		if c.n > 0 {
+			places += ", " + plural(int(c.n), c.one, c.many)
+		}
 	}
 	return fmt.Sprintf("Org %d forgotten: %s, %s, %s, %s blanked, %s emptied, %s deleted%s; %s written (%s moved to suppressed, %s cancelled).",
 		id, plural(int(f.PhoneFacts), "phone fact", "phone facts"), plural(int(f.PhoneResearch), "research row", "research rows"),

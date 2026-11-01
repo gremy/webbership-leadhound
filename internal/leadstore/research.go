@@ -36,8 +36,9 @@ const (
 
 // What a research attempt looks for (contact_research_want_check).
 const (
-	WantEmail = "email"
-	WantPhone = "phone"
+	WantEmail    = "email"
+	WantPhone    = "phone"
+	WantLinkedIn = "linkedin"
 )
 
 // ResearchWindow is how long after an attempt that ran another may run for the same org.
@@ -135,11 +136,22 @@ const researchCols = `cr.id, cr.org_id, cr.lead_id, cr.campaign_id, cr.trigger, 
 // queued row that never ran does not count.
 const researchCountsSQL = `cr.started_at IS NOT NULL AND cr.status <> 'capped'`
 
+// researchLinkedInSQL is true for a row of contact_research cr that looked for LinkedIn.
+const researchLinkedInSQL = `'linkedin' = ANY(cr.want)`
+
+// researchCountsForSQL is researchCountsSQL for a new request: when the SQL boolean
+// wantsLinkedIn is true, an attempt that did not look for LinkedIn does not count, because
+// LinkedIn is what it never searched. The new attempt looks for LinkedIn, so this frees an org
+// once: the next attempt then counts as usual.
+func researchCountsForSQL(wantsLinkedIn string) string {
+	return researchCountsSQL + ` AND (NOT ` + wantsLinkedIn + `::bool OR ` + researchLinkedInSQL + `)`
+}
+
 // normWant checks want and returns it sorted, each once.
 func normWant(want []string) ([]string, error) {
 	out := []string{}
 	for _, w := range want {
-		if w != WantEmail && w != WantPhone {
+		if w != WantEmail && w != WantPhone && w != WantLinkedIn {
 			return nil, fmt.Errorf("%w: want %q", ErrBadResearch, w)
 		}
 		if !slices.Contains(out, w) {
@@ -161,7 +173,8 @@ func normWant(want []string) ([]string, error) {
 //     (reapStaleResearch), and then counts as an attempt that ran.
 //   - An org with an attempt that ran within ResearchWindow gets none: a star returns the
 //     last attempt's id, created false and no error (the star itself must still succeed);
-//     button and cli get a *ResearchTooSoonError naming the date the next may run.
+//     button and cli get a *ResearchTooSoonError naming the date the next may run. When want
+//     has WantLinkedIn only an attempt that looked for LinkedIn counts (researchCountsForSQL).
 //   - A lead past new, suppressed (on its org's domain or its route's address, for its
 //     campaign's account) or deferred today gets none: a star returns 0, created false, no
 //     error; button and cli get ErrResearchBlocked.
@@ -222,8 +235,8 @@ func (q Queries) RequestResearch(ctx context.Context, leadID int64, trigger stri
 	var lastAt time.Time
 	err = q.db.QueryRow(ctx,
 		`SELECT cr.id, cr.started_at FROM contact_research cr
-		 WHERE cr.org_id = $1 AND `+researchCountsSQL+` AND cr.started_at > now() - make_interval(days => $2::int)
-		 ORDER BY cr.started_at DESC, cr.id DESC LIMIT 1`, orgID, researchWindowDays).Scan(&lastID, &lastAt)
+		 WHERE cr.org_id = $1 AND `+researchCountsForSQL("$3")+` AND cr.started_at > now() - make_interval(days => $2::int)
+		 ORDER BY cr.started_at DESC, cr.id DESC LIMIT 1`, orgID, researchWindowDays, slices.Contains(want, WantLinkedIn)).Scan(&lastID, &lastAt)
 	switch {
 	case err == nil:
 		if trigger == ResearchStar {
@@ -367,6 +380,9 @@ type LeadResearch struct {
 	// NextAt is the first time another attempt may run when one ran within ResearchWindow;
 	// nil when one may run now (or one is queued or looking: Latest says so).
 	NextAt *time.Time
+	// NextAtLinkedIn is NextAt for an attempt that wants LinkedIn, which only an attempt that
+	// looked for LinkedIn holds back (researchCountsForSQL).
+	NextAtLinkedIn *time.Time
 }
 
 // ResearchForLead returns lead leadID's LeadResearch. A lead that does not exist is
@@ -391,16 +407,20 @@ func (q Queries) ResearchForLead(ctx context.Context, leadID int64) (LeadResearc
 		return out, nil
 	}
 	out.Latest = &rows[0]
-	var last *time.Time
+	var last, lastLinkedIn *time.Time
 	if err := q.db.QueryRow(ctx,
-		`SELECT max(cr.started_at) FROM contact_research cr
+		`SELECT max(cr.started_at), max(cr.started_at) FILTER (WHERE `+researchLinkedInSQL+`) FROM contact_research cr
 		 WHERE cr.org_id = $1 AND `+researchCountsSQL+` AND cr.started_at > now() - make_interval(days => $2::int)`,
-		orgID, researchWindowDays).Scan(&last); err != nil {
+		orgID, researchWindowDays).Scan(&last, &lastLinkedIn); err != nil {
 		return LeadResearch{}, fmt.Errorf("leadstore: research for lead %d: %w", leadID, err)
 	}
 	if last != nil {
 		next := last.Add(ResearchWindow)
 		out.NextAt = &next
+	}
+	if lastLinkedIn != nil {
+		next := lastLinkedIn.Add(ResearchWindow)
+		out.NextAtLinkedIn = &next
 	}
 	return out, nil
 }

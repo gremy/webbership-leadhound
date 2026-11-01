@@ -554,6 +554,10 @@ type CallRow struct {
 	WaitsOnChannel string `db:"waits_on_channel" json:"waits_on_channel,omitempty"`
 }
 
+// callPhoneLiveSQL leaves out, over callRowSQL, a call whose number has been retired. CallByID
+// does not use it: a call's card keeps the number it was about.
+const callPhoneLiveSQL = ` AND coalesce((SELECT cm.mark FROM contact_mark cm WHERE cm.fact_id = f.id ORDER BY cm.id DESC LIMIT 1), '') <> 'retire'`
+
 const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign_id, o.id AS org_id, o.name AS org_name,
 	  o.domain AS org_domain, o.country, o.region, m.step, m.state, m.cancel_reason, m.due_at, b.shadow, m.subject,
 	  m.body_text AS card, m.phone_fact_id, coalesce(f.value, '') AS phone, coalesce(f.normalized, '') AS phone_normalized,
@@ -577,11 +581,11 @@ const callRowSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign
 
 // CallsDue returns the approved call steps of approved batches of account accountID (0:
 // DefaultAccountID) due at or before now, of campaign campaignID (0: every campaign), shadow
-// and live, oldest due first. Whether a call may be made now (the call window, the call rules)
+// and live, oldest due first, a retired number left out. Whether a call may be made now (the call window, the call rules)
 // is the caller's to judge.
 func (q Queries) CallsDue(ctx context.Context, accountID, campaignID int64, now time.Time) ([]CallRow, error) {
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[CallRow],
-		callRowSQL+` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND b.account_id = $1
+		callRowSQL+callPhoneLiveSQL+` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND b.account_id = $1
 		   AND ($2::bigint = 0 OR b.campaign_id = $2::bigint) AND m.due_at IS NOT NULL AND m.due_at <= $3
 		 ORDER BY m.due_at, m.id`, orAccount(accountID), campaignID, now)
 	if err != nil {
@@ -598,7 +602,7 @@ const TodayWaitingFew = 10
 // due time yet (they wait on an earlier step) or one still to come. The first limit, those
 // with a due time first (soonest first), then by id; and how many there are in all.
 func (q Queries) CallsWaiting(ctx context.Context, accountID, campaignID int64, now time.Time, limit int) ([]CallRow, int, error) {
-	const where = ` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND b.account_id = $1
+	const where = callPhoneLiveSQL + ` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND b.account_id = $1
 		   AND ($2::bigint = 0 OR b.campaign_id = $2::bigint) AND (m.due_at IS NULL OR m.due_at > $3)`
 	var n int
 	if err := q.db.QueryRow(ctx, `SELECT count(*) FROM (`+callRowSQL+where+`) x`, orAccount(accountID), campaignID, now).Scan(&n); err != nil {
@@ -698,12 +702,13 @@ func (q Queries) TodayView(ctx context.Context, accountID, campaignID int64, now
 		 ORDER BY l.state_at DESC, l.id`, accountID, campaignID); err != nil {
 		return Today{}, fmt.Errorf("leadstore: today: replies: %w", err)
 	}
-	const itemSQL = `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign_id, o.name AS org_name,
+	itemSQL := `SELECT m.id AS message_id, m.lead_id, m.batch_id, b.campaign_id, o.name AS org_name,
 	    o.domain AS org_domain, o.country, m.channel, m.step, m.due_at, b.shadow
 	   FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
 	   JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 	   WHERE m.state = 'approved' AND b.approved_at IS NOT NULL AND b.account_id = $1
-	     AND ($2::bigint = 0 OR b.campaign_id = $2::bigint) AND m.due_at IS NOT NULL AND m.due_at < $3`
+	     AND ($2::bigint = 0 OR b.campaign_id = $2::bigint) AND m.due_at IS NOT NULL AND m.due_at < $3
+	     AND NOT ` + MessageTargetRetiredSQL("m", "o.id")
 	if err := q.db.QueryRow(ctx,
 		`SELECT count(*) FROM (`+itemSQL+` AND m.channel = 'email') x`, accountID, campaignID, dayEnd).
 		Scan(&t.EmailsDueCount); err != nil {

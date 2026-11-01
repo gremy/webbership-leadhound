@@ -136,6 +136,29 @@ func TestReportRow(t *testing.T) {
 	}
 }
 
+// TestForgetWordsPeople: forget's line counts everything of a person it erased, and says nothing
+// of it when there was none.
+func TestForgetWordsPeople(t *testing.T) {
+	got := forgetWords(7, leadstore.Forgotten{People: 2, PersonRoutes: 4, LeadRoutes: 1, PersonPages: 1, EmailChecks: 1, PersonEmails: 3,
+		ContactMarks: 4, EditsBlanked: 2, EditedEmails: 1, ProfileTargets: 1, Proposals: 1, ProposalNotes: 1, Sectors: 2, DraftRequests: 1},
+		leadstore.ForgottenPages{})
+	for _, want := range []string{"2 people deleted", "4 people's contact routes deleted", "1 lead moved off a person's route",
+		"1 page a person was read from emptied", "1 email check of a person's address deleted",
+		"3 emails to people's addresses had their targets emptied", "4 contact marks deleted", "2 draft edits emptied",
+		"1 edited email emptied", "1 form or LinkedIn target emptied", "1 proposal erased", "1 proposal note blanked",
+		"2 sectors deleted", "1 draft request deleted"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q lacks %q", got, want)
+		}
+	}
+	if plain := forgetWords(7, leadstore.Forgotten{PhoneFacts: 1}, leadstore.ForgottenPages{}); strings.Contains(plain, "person") || strings.Contains(plain, "people") {
+		t.Errorf("no people: %q", plain)
+	}
+	if got := forgetWords(7, leadstore.Forgotten{EmailChecks: 1}, leadstore.ForgottenPages{}); strings.Contains(got, "nothing left") {
+		t.Errorf("an email check alone is something: %q", got)
+	}
+}
+
 // TestForgetWordsCRM: forget's line counts the CRM it erased, and says nothing of it when
 // there was none.
 func TestForgetWordsCRM(t *testing.T) {

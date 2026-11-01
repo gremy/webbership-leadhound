@@ -221,7 +221,19 @@ type BatchMeta struct {
 	// Sequences are the campaign's sequences frozen at batch time; nil stores NULL (legacy).
 	// Every row's SequenceName must name one of them; with nil, no row may name one.
 	Sequences BatchSequences
+	// Origin says what makes the batch (BatchOrigin*), fixed at insert; "" is BatchOriginBatch.
+	// A BatchOriginDraftIt batch is manual from its first moment.
+	Origin string
 }
+
+// What made a batch (outreach_batch_origin_check). A Send now batch is built with
+// CreateBatchFor and flipped with MarkBatchManual, so its row says BatchOriginBatch; only
+// batches from before 00029 say BatchOriginSendNow.
+const (
+	BatchOriginBatch   = "batch"
+	BatchOriginSendNow = "send_now"
+	BatchOriginDraftIt = "draft_it"
+)
 
 // CreateBatchFor is CreateBatch with the batch's campaign and frozen sequences. A call row
 // (Channel phone) must name a phone fact of its lead's org whose number no active phone
@@ -300,10 +312,11 @@ func (q Queries) CreateBatchFor(ctx context.Context, meta BatchMeta, shadow bool
 			return 0, nil, fmt.Errorf("leadstore: create batch: sequences: %w", err)
 		}
 	}
+	origin := cmp.Or(meta.Origin, BatchOriginBatch)
 	if err := q.db.QueryRow(ctx,
-		`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256, account_id, campaign_id, sequence)
-		 VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
-		shadow, contentSHA, templatesSHA, accounts[0], campaignID, seqJSON).Scan(&batchID); err != nil {
+		`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256, account_id, campaign_id, sequence, origin, manual)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8) RETURNING id`,
+		shadow, contentSHA, templatesSHA, accounts[0], campaignID, seqJSON, origin, origin == BatchOriginDraftIt).Scan(&batchID); err != nil {
 		return 0, nil, fmt.Errorf("leadstore: create batch: %w", err)
 	}
 	for _, d := range draftOrder(drafts, c) {
@@ -383,23 +396,26 @@ func (q Queries) batchCampaign(ctx context.Context, want int64, leadIDs []int64)
 	return want, nil
 }
 
-// checkCallRows refuses a call row whose phone fact is not a phone of its lead's org, or whose
-// number an active phone suppression of account accountID holds.
+// checkCallRows refuses a call row whose phone fact is not a phone of its lead's org, is retired,
+// or whose number an active phone suppression of account accountID holds.
 func (q Queries) checkCallRows(ctx context.Context, accountID int64, c []DraftRow) error {
 	for _, d := range c {
 		if d.Channel != ChannelPhone {
 			continue
 		}
-		var ok, suppressed bool
+		var ok, retired, suppressed bool
 		err := q.db.QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM org_fact f JOIN lead l ON l.org_id = f.org_id
 			     WHERE f.id = $1 AND l.id = $2 AND f.kind = 'phone'),
-			   `+phoneSuppressedSQL("$3::bigint", "$1::bigint"), d.PhoneFactID, d.LeadID, accountID).Scan(&ok, &suppressed)
+			   `+contactLatestMarkSQL("fact_id", "$1::bigint")+` IS NOT DISTINCT FROM 'retire',
+			   `+phoneSuppressedSQL("$3::bigint", "$1::bigint"), d.PhoneFactID, d.LeadID, accountID).Scan(&ok, &retired, &suppressed)
 		switch {
 		case err != nil:
 			return fmt.Errorf("lead %d step %d: phone fact: %w", d.LeadID, d.Step, err)
 		case !ok:
 			return fmt.Errorf("%w: lead %d step %d: fact %d is not a phone of its org", ErrBadDraft, d.LeadID, d.Step, d.PhoneFactID)
+		case retired:
+			return fmt.Errorf("lead %d step %d (phone retired): %w", d.LeadID, d.Step, ErrNotDraftable)
 		case suppressed:
 			return fmt.Errorf("lead %d step %d (phone suppressed): %w", d.LeadID, d.Step, ErrNotDraftable)
 		}
@@ -527,6 +543,8 @@ type Batch struct {
 	Sequence json.RawMessage `db:"sequence"`
 	// Manual is a batch built from chosen leads to send now (00027, MarkBatchManual).
 	Manual bool `db:"manual"`
+	// Origin is what made the batch (BatchOrigin*), fixed at insert (00029).
+	Origin string `db:"origin"`
 }
 
 // Sequences decodes b.Sequence; nil for a legacy batch (NULL).
@@ -550,7 +568,7 @@ func decodeSequences(raw []byte) (BatchSequences, error) {
 func (q Queries) BatchByID(ctx context.Context, id int64) (Batch, error) {
 	b, err := collect(ctx, q.db, pgx.RowToStructByName[Batch],
 		`SELECT id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256, discarded_at,
-		   campaign_id, sequence, manual
+		   campaign_id, sequence, manual, origin
 		 FROM outreach_batch WHERE id = $1`, id)
 	if err != nil {
 		return Batch{}, fmt.Errorf("leadstore: batch by id: %w", err)
@@ -809,7 +827,7 @@ type DueMessage struct {
 
 // DueMessages returns the approved messages of approved batches of the given kind (shadow
 // or live) due at or before now, by due time then id, call rows left out (CallsDue lists
-// those). Whatever the lead's state; send
+// those), and so is a message to a route retired since. Whatever the lead's state; send
 // refuses those whose lead has moved on (a maybe_sent message is never approved again, so
 // it never comes back).
 func (q Queries) DueMessages(ctx context.Context, now time.Time, shadow bool) ([]DueMessage, error) {
@@ -820,7 +838,7 @@ func (q Queries) DueMessages(ctx context.Context, now time.Time, shadow bool) ([
 		 JOIN lead l ON l.id = m.lead_id
 		 JOIN org o ON o.id = l.org_id
 		 WHERE m.state = 'approved' AND b.approved_at IS NOT NULL AND b.shadow = $2 AND m.channel <> 'phone'
-		   AND m.due_at IS NOT NULL AND m.due_at <= $1
+		   AND m.due_at IS NOT NULL AND m.due_at <= $1 AND NOT `+MessageTargetRetiredSQL("m", "o.id")+`
 		 ORDER BY m.due_at, m.id`, now, shadow)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: due messages: %w", err)

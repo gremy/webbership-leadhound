@@ -414,7 +414,7 @@ func TestBatchClaudeRefusalFallback(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("refused lead called %d times, want 2 (the retry)", calls)
 	}
-	gens, err := leadstoretest.Q(t).GenerationsForLead(context.Background(), lead, cid)
+	gens, err := leadstoretest.Q(t).GenerationsForLead(context.Background(), lead, cid, "email")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -552,7 +552,8 @@ func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch,
 }
 
 // manualItems is the approved contact forms and LinkedIn notes of live batches not yet
-// marked done, oldest first, with the form page for a contact form.
+// marked done, oldest first, with the form page for a contact form; one written to a route
+// retired since is left out.
 func manualItems(ctx context.Context, db store.DBTX) ([]console.ManualItem, error) {
 	rows, err := db.Query(ctx,
 		`SELECT m.id, m.batch_id, o.domain, m.channel, CASE WHEN m.channel = 'form' THEN coalesce(r.value, '') ELSE '' END
@@ -560,6 +561,7 @@ func manualItems(ctx context.Context, db store.DBTX) ([]console.ManualItem, erro
 		 JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 		 LEFT JOIN contact_route r ON r.id = l.route_id
 		 WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.state = 'approved' AND m.channel IN ('form', 'linkedin')
+		   AND NOT `+leadstore.MessageTargetRetiredSQL("m", "o.id")+`
 		 ORDER BY m.id LIMIT $1`, consoleListCap)
 	if err != nil {
 		return nil, fmt.Errorf("console: manual items: %w", err)

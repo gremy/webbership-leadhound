@@ -16,7 +16,7 @@ type ForgottenPages struct {
 
 // ForgetOrgPages is the second half of `leads forget` beside ForgetOrg: it empties the kept
 // page bodies of org orgID (the pages of its domain and its subdomains, and every page its
-// facts, routes, probes or source cite), so no copy of a number read from them is left, and
+// facts, routes, people, probes or source cite), so no copy of a number read from them is left, and
 // deletes its description and social facts. Run it on the owner's connection, like
 // ForgetOrg (the app role may not delete facts). The http_fetch rows themselves stay: other
 // rows reference them, and their URL, status, size and hash name no person. Idempotent: an
@@ -38,6 +38,7 @@ func (q Queries) ForgetOrgPages(ctx context.Context, orgID int64) (ForgottenPage
 			   SELECT o.source_fetch_id AS fetch_id FROM o WHERE o.source_fetch_id IS NOT NULL
 			   UNION SELECT f.fetch_id FROM org_fact f JOIN o ON f.org_id = o.id
 			   UNION SELECT r.fetch_id FROM contact_route r JOIN o ON r.org_id = o.id
+			   UNION SELECT p.fetch_id FROM org_person p JOIN o ON p.org_id = o.id
 			   UNION SELECT x.fetch_id FROM o JOIN lead l ON l.org_id = o.id JOIN site_probe p ON p.id = l.probe_id
 			     CROSS JOIN LATERAL unnest(p.fetch_ids) AS x(fetch_id)
 			   UNION SELECT x.fetch_id FROM o JOIN site s ON s.id = o.site_id JOIN site_probe p ON p.id = s.last_probe_id

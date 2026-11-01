@@ -167,7 +167,7 @@ type ExportRow struct {
 
 // ExportRoutes returns up to limit orgs that have a route (limit <= 0: all of them), by
 // their site's list rank (unranked last), then org id. Selftest orgs and orgs on the
-// reserved TLDs .example, .invalid, .test and .localhost are left out.
+// reserved TLDs .example, .invalid, .test and .localhost are left out, and so is a retired route.
 func (q Queries) ExportRoutes(ctx context.Context, limit int) ([]ExportRow, error) {
 	var lim *int
 	if limit > 0 {
@@ -186,6 +186,7 @@ func (q Queries) ExportRoutes(ctx context.Context, limit int) ([]ExportRow, erro
 		 ) af ON o.kind = 'agency'
 		 JOIN LATERAL (
 		   SELECT kind, value, mx_ok FROM contact_route c WHERE c.org_id = o.id
+		     AND `+contactLatestMarkSQL("route_id", "c.id")+` IS DISTINCT FROM 'retire'
 		   ORDER BY CASE WHEN c.kind = 'email' AND c.mx_ok THEN 0 WHEN c.kind = 'form' THEN 1 ELSE 2 END, c.id
 		   LIMIT 1
 		 ) r ON true

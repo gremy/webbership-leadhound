@@ -87,12 +87,14 @@ func (q Queries) MarkBatchManual(ctx context.Context, batchID int64) error {
 
 // DiscardStaleManualBatches discards every manual batch neither approved nor discarded that
 // was created before before, oldest first, as DiscardBatch does (its messages cancelled, its
-// leads back to new), with the lead moves recorded as the system's. It returns how many it
-// discarded. Run it in a transaction.
+// leads back to new), with the lead moves recorded as the system's. A Draft it batch is never
+// discarded here: it waits for the operator however old it is, and Send now rows keep origin
+// batch, so the filter names draft_it and not send_now. It returns how many it discarded. Run
+// it in a transaction.
 func (q Queries) DiscardStaleManualBatches(ctx context.Context, before time.Time) (int, error) {
 	ids, err := collect(ctx, q.db, pgx.RowTo[int64],
 		`SELECT id FROM outreach_batch
-		 WHERE manual AND approved_at IS NULL AND discarded_at IS NULL AND created_at < $1
+		 WHERE manual AND origin <> 'draft_it' AND approved_at IS NULL AND discarded_at IS NULL AND created_at < $1
 		 ORDER BY id`, before)
 	if err != nil {
 		return 0, fmt.Errorf("leadstore: discard stale manual batches: %w", err)

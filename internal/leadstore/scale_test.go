@@ -262,6 +262,11 @@ func TestScaleLeadList(t *testing.T) {
 		{"status contacted", leadstore.ListFilter{Status: leadstore.ListContacted}},
 		{"status all", leadstore.ListFilter{Status: leadstore.ListAll}},
 		{"sort newest", leadstore.ListFilter{Sort: leadstore.SortNewest}},
+		{"reach email", leadstore.ListFilter{Reach: leadstore.ReachEmail}},
+		{"reach manual", leadstore.ListFilter{Reach: leadstore.ReachManual}},
+		{"reach dead", leadstore.ListFilter{Reach: leadstore.ReachDead}},
+		{"reach contacted", leadstore.ListFilter{Reach: leadstore.ReachContacted}},
+		{"reach other", leadstore.ListFilter{Reach: leadstore.ReachOther}},
 		{"every filter at once", leadstore.ListFilter{Kinds: []string{leadstore.LeadUnsupported, leadstore.LeadD10}, Countries: []string{"GB", "DE"},
 			Channels: []string{leadstore.ListChannelEmail, leadstore.ListChannelPhone}, Starred: &no, HasPhone: true, MinRelevance: 20,
 			Status: leadstore.ListAll}},
@@ -281,6 +286,51 @@ func TestScaleLeadList(t *testing.T) {
 	if rows, total := list("LeadList(sort=order)", 200*time.Millisecond, leadstore.ListFilter{Sort: leadstore.SortOrder}, untrusted); len(rows) == 0 || total < 100 {
 		t.Errorf("outreach order: %d rows of %d, want the seed's starred leads", len(rows), total)
 	}
+}
+
+// TestScaleReachCounts: the List's tab counts, on the scale seed's 5,000 leads, within 300 ms
+// each, agreeing with the List's own totals; and one lead's next action within 150 ms.
+func TestScaleReachCounts(t *testing.T) {
+	q, s, _, _ := scaleLeads(t)
+	ctx := context.Background()
+	lc, _ := scaleListContext(t, q, false)
+	no := false
+	for _, c := range []struct {
+		name string
+		f    leadstore.ListFilter
+	}{
+		{"every lead", leadstore.ListFilter{}},
+		{"status open", leadstore.ListFilter{Status: leadstore.ListOpen}},
+		{"country GB", leadstore.ListFilter{Countries: []string{"GB"}}},
+		{"every filter at once", leadstore.ListFilter{Kinds: []string{leadstore.LeadUnsupported, leadstore.LeadD10}, Countries: []string{"GB", "DE"},
+			Channels: []string{leadstore.ListChannelEmail, leadstore.ListChannelPhone}, Starred: &no, HasPhone: true, MinRelevance: 20,
+			Status: leadstore.ListAll}},
+	} {
+		var got leadstore.ReachCounts
+		within(t, "ReachCounts("+c.name+")", 300*time.Millisecond, func() (err error) {
+			got, err = q.ReachCounts(ctx, c.f)
+			return err
+		})
+		if got.All() == 0 {
+			t.Errorf("%s: no lead counted, so the read proves little", c.name)
+		}
+		for b, n := range map[string]int{leadstore.ReachContacted: got.Contacted, leadstore.ReachEmail: got.Email,
+			leadstore.ReachManual: got.Manual, leadstore.ReachDead: got.Dead, leadstore.ReachOther: got.Other} {
+			one := c.f
+			one.Reach = b
+			if _, total, err := q.LeadList(ctx, one, lc); err != nil || total != n {
+				t.Errorf("%s: %s counts %d, the List has %d (%v)", c.name, b, n, total, err)
+			}
+		}
+	}
+	var leadID int64
+	if err := s.Pool().QueryRow(ctx, `SELECT id FROM lead WHERE channel = 'none' ORDER BY id LIMIT 1`).Scan(&leadID); err != nil {
+		t.Fatal(err)
+	}
+	within(t, "ReachOf", 150*time.Millisecond, func() error {
+		_, err := q.ReachOf(ctx, leadID, nil)
+		return err
+	})
 }
 
 // TestScaleLeadDetail: one lead in full, the one with the most messages, its bodies

@@ -96,8 +96,9 @@ func TestMigrationSendOverrideDownUp(t *testing.T) {
 	if _, err := p.UpTo(ctx, sendOverrideVersion); err != nil {
 		t.Fatalf("up again: %v", err)
 	}
-	if b, err := f.q.BatchByID(ctx, batch); err != nil || b.Manual {
-		t.Errorf("batch after down and up: %+v %v, want not manual", b, err)
+	// Read as the owner: this schema is older than what BatchByID reads today.
+	if n := ownerInt(t, owner, `SELECT count(*) FROM outreach_batch WHERE id = $1 AND NOT manual`, batch); n != 1 {
+		t.Error("batch after down and up: want not manual")
 	}
 }
 

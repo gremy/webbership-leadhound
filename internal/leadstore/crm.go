@@ -322,7 +322,18 @@ const (
 	TimelineCall       = "call"        // call_outcome: State (the outcome), Detail (the note), CallBackOn
 	TimelineEmailCheck = "email_check" // email_check: State (the status), Detail (the address checked)
 	TimelineStage      = "stage"       // lead_stage_event: State (the stage), Detail (the lost reason)
+	TimelineDraft      = "draft"       // outreach_message made: State (the batch's origin), Detail (claude | template), Step, Channel, Shadow
+	TimelineEdit       = "edit"        // message_edit: Step, Channel, Shadow
+	TimelineDone       = "done"        // form or LinkedIn message marked sent: Step, Channel, Shadow
+	TimelineContact    = "contact"     // the operator's route, fact or person (State TimelineAdded) or a contact_mark (State claim | retire): Channel (the route or fact kind, or person), Detail (the value, "old → new" on a replace), Note
+	TimelineResearch   = "research"    // contact_research finished: State (found | nothing | capped | error), Detail (what it wanted)
+	TimelineProposal   = "proposal"    // lead_proposal (State TimelineAdded) or lead_proposal_status (State the status, Note): Detail (the title)
+	TimelineSector     = "sector"      // org_sector, the operator's rows: State (the sector)
 )
+
+// TimelineAdded is the State of a TimelineContact or TimelineProposal item that is the row itself
+// being added, not a mark or a status on it.
+const TimelineAdded = "added"
 
 // TimelineItem is one thing that happened to a lead.
 type TimelineItem struct {
@@ -331,15 +342,19 @@ type TimelineItem struct {
 	At         time.Time
 	State      string
 	Detail     string
-	Step       int        // TimelineSent and TimelineCall: the 0-based step
-	Channel    string     // TimelineSent: email | form | linkedin
-	Shadow     bool       // TimelineSent and TimelineCall: from a shadow batch
-	MessageID  int64      // TimelineSent and TimelineCall: the message; TimelineMailbox: the one it matched (0: none)
+	Step       int        // the items on a message: the 0-based step
+	Channel    string     // the items on a message: email | form | linkedin; TimelineContact: email | form | linkedin | phone | person
+	Shadow     bool       // the items on a message: from a shadow batch
+	MessageID  int64      // the items on a message: the message; TimelineMailbox: the one it matched (0: none)
 	CallBackOn *time.Time // TimelineCall: the call-back day; nil when none
+	Note       string     // TimelineContact: the mark's note; TimelineProposal: the status's note
 }
 
 // timelineLimitMax is the most items LeadTimeline returns.
 const timelineLimitMax = 500
+
+// personLabelSQL names org_person p on the timeline: its name and its role, whichever it has.
+const personLabelSQL = `concat_ws(' · ', nullif(p.name, ''), nullif(p.role, ''))`
 
 // LeadTimeline returns what happened to lead leadID, newest first (then by kind and id), at
 // most limit items (1..500; out of range is clamped), in one query: every lead_event (state
@@ -347,29 +362,35 @@ const timelineLimitMax = 500
 // left to their outcomes), by when it went, shadow ones marked; every mailbox_event matched to
 // it (kind, and a reply's snippet); every call outcome on its calls (outcome, note, call-back
 // day); every email check of its addresses (its email route's and the addresses its emails
-// went to) in its campaign's account; and every stage change. A missing lead has none.
+// went to) in its campaign's account; every stage change; every message made (a call step has
+// no text to write, so none for those) and every edit of one; every form or LinkedIn message
+// marked sent; every proposal and proposal status. Contacts belong to the org, so these show
+// on each of its leads: every route, fact and person the operator added, every mark on any of
+// them (a retire naming its replacement shows the old value then the new), every finished
+// research attempt and every sector the operator set. A missing lead has none.
 func (q Queries) LeadTimeline(ctx context.Context, leadID int64, limit int) ([]TimelineItem, error) {
 	limit = min(max(limit, 1), timelineLimitMax)
+	const orgOfLead = `(SELECT l.org_id FROM lead l WHERE l.id = $1)`
 	rows, err := q.db.Query(ctx,
 		`SELECT * FROM (
 		   SELECT 'event' AS kind, e.id, e.at, e.state, e.reason AS detail, 0 AS step, '' AS channel, false AS shadow,
-		     0::bigint AS message_id, NULL::date AS call_back_on
+		     0::bigint AS message_id, NULL::date AS call_back_on, '' AS note
 		   FROM lead_event e WHERE e.lead_id = $1
 		   UNION ALL
-		   SELECT 'sent', m.id, m.sent_at, m.state, '', m.step, m.channel, b.shadow, m.id, NULL
+		   SELECT 'sent', m.id, m.sent_at, m.state, '', m.step, m.channel, b.shadow, m.id, NULL, ''
 		   FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
 		   WHERE m.lead_id = $1 AND m.channel <> 'phone' AND m.state IN ('sent', 'maybe_sent', 'shadow_sent')
 		     AND m.sent_at IS NOT NULL
 		   UNION ALL
 		   SELECT 'mailbox', ev.id, ev.seen_at, ev.kind, coalesce(ev.snippet, ''), 0, '', false,
-		     coalesce(ev.matched_message_id, 0), NULL
+		     coalesce(ev.matched_message_id, 0), NULL, ''
 		   FROM mailbox_event ev WHERE ev.lead_id = $1
 		   UNION ALL
-		   SELECT 'call', co.id, co.at, co.outcome, co.note, m.step, m.channel, b.shadow, m.id, co.call_back_on
+		   SELECT 'call', co.id, co.at, co.outcome, co.note, m.step, m.channel, b.shadow, m.id, co.call_back_on, ''
 		   FROM call_outcome co JOIN outreach_message m ON m.id = co.message_id JOIN outreach_batch b ON b.id = m.batch_id
 		   WHERE m.lead_id = $1
 		   UNION ALL
-		   SELECT 'email_check', ec.id, ec.checked_at, ec.status, ec.address, 0, '', false, 0, NULL
+		   SELECT 'email_check', ec.id, ec.checked_at, ec.status, ec.address, 0, '', false, 0, NULL, ''
 		   FROM email_check ec
 		   WHERE ec.account_id = (SELECT c.account_id FROM lead l JOIN campaign c ON c.id = l.campaign_id WHERE l.id = $1)
 		     AND ec.address IN (
@@ -377,8 +398,56 @@ func (q Queries) LeadTimeline(ctx context.Context, leadID int64, limit int) ([]T
 		       UNION SELECT lower(m.to_address) FROM outreach_message m
 		       WHERE m.lead_id = $1 AND m.channel = 'email' AND m.to_address <> '')
 		   UNION ALL
-		   SELECT 'stage', s.id, s.at, s.stage, s.reason, 0, '', false, 0, NULL
+		   SELECT 'stage', s.id, s.at, s.stage, s.reason, 0, '', false, 0, NULL, ''
 		   FROM lead_stage_event s WHERE s.lead_id = $1
+		   UNION ALL
+		   SELECT 'draft', m.id, m.created_at, b.origin, coalesce(nullif(m.slots->>'writer', ''), 'template'),
+		     m.step, m.channel, b.shadow, m.id, NULL, ''
+		   FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
+		   WHERE m.lead_id = $1 AND m.channel <> 'phone'
+		   UNION ALL
+		   SELECT 'edit', me.id, me.at, '', '', m.step, m.channel, b.shadow, m.id, NULL, ''
+		   FROM message_edit me JOIN outreach_message m ON m.id = me.message_id JOIN outreach_batch b ON b.id = m.batch_id
+		   WHERE m.lead_id = $1
+		   UNION ALL
+		   SELECT 'done', m.id, m.sent_at, m.state, '', m.step, m.channel, b.shadow, m.id, NULL, ''
+		   FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
+		   WHERE m.lead_id = $1 AND m.channel IN ('form', 'linkedin') AND m.state = 'done' AND m.sent_at IS NOT NULL
+		   UNION ALL
+		   SELECT 'contact', r.id, r.found_at, 'added', r.value, 0, r.kind, false, 0, NULL, ''
+		   FROM contact_route r WHERE r.org_id = `+orgOfLead+` AND r.derived_by = 'operator@1'
+		   UNION ALL
+		   SELECT 'contact', f.id, f.found_at, 'added', f.value, 0, f.kind, false, 0, NULL, ''
+		   FROM org_fact f WHERE f.org_id = `+orgOfLead+` AND f.derived_by = 'operator@1'
+		   UNION ALL
+		   SELECT 'contact', p.id, p.at, 'added', `+personLabelSQL+`, 0, 'person', false, 0, NULL, ''
+		   FROM org_person p WHERE p.org_id = `+orgOfLead+` AND p.derived_by = 'operator@1'
+		   UNION ALL
+		   SELECT 'contact', cm.id, cm.at, cm.mark, r.value || coalesce(' → ' || n.value, ''), 0, r.kind, false, 0, NULL, coalesce(cm.note, '')
+		   FROM contact_route r JOIN contact_mark cm ON cm.route_id = r.id
+		   LEFT JOIN contact_route n ON n.id = cm.replaced_by_route_id
+		   WHERE r.org_id = `+orgOfLead+`
+		   UNION ALL
+		   SELECT 'contact', cm.id, cm.at, cm.mark, f.value || coalesce(' → ' || n.value, ''), 0, f.kind, false, 0, NULL, coalesce(cm.note, '')
+		   FROM org_fact f JOIN contact_mark cm ON cm.fact_id = f.id
+		   LEFT JOIN org_fact n ON n.id = cm.replaced_by_fact_id
+		   WHERE f.org_id = `+orgOfLead+`
+		   UNION ALL
+		   SELECT 'contact', cm.id, cm.at, cm.mark, `+personLabelSQL+`, 0, 'person', false, 0, NULL, coalesce(cm.note, '')
+		   FROM org_person p JOIN contact_mark cm ON cm.person_id = p.id
+		   WHERE p.org_id = `+orgOfLead+`
+		   UNION ALL
+		   SELECT 'research', cr.id, cr.finished_at, cr.status, array_to_string(cr.want, ', '), 0, '', false, 0, NULL, ''
+		   FROM contact_research cr WHERE cr.org_id = `+orgOfLead+` AND cr.finished_at IS NOT NULL
+		   UNION ALL
+		   SELECT 'proposal', pr.id, pr.at, 'added', pr.title, 0, '', false, 0, NULL, ''
+		   FROM lead_proposal pr WHERE pr.lead_id = $1
+		   UNION ALL
+		   SELECT 'proposal', ps.id, ps.at, ps.status, pr.title, 0, '', false, 0, NULL, ps.note
+		   FROM lead_proposal pr JOIN lead_proposal_status ps ON ps.proposal_id = pr.id WHERE pr.lead_id = $1
+		   UNION ALL
+		   SELECT 'sector', os.id, os.at, os.sector, '', 0, '', false, 0, NULL, ''
+		   FROM org_sector os WHERE os.org_id = `+orgOfLead+` AND os.source = 'operator'
 		 ) t
 		 ORDER BY t.at DESC, t.kind, t.id DESC
 		 LIMIT $2`, leadID, limit)
@@ -388,7 +457,7 @@ func (q Queries) LeadTimeline(ctx context.Context, leadID int64, limit int) ([]T
 	out := []TimelineItem{}
 	var it TimelineItem
 	if _, err := pgx.ForEachRow(rows, []any{&it.Kind, &it.ID, &it.At, &it.State, &it.Detail, &it.Step, &it.Channel,
-		&it.Shadow, &it.MessageID, &it.CallBackOn}, func() error {
+		&it.Shadow, &it.MessageID, &it.CallBackOn, &it.Note}, func() error {
 		out = append(out, it)
 		return nil
 	}); err != nil {
@@ -555,14 +624,14 @@ func (q Queries) CallQueue(ctx context.Context, day time.Time, loc *time.Locatio
 		   JOIN outreach_message m ON m.id = co.message_id JOIN outreach_batch b ON b.id = m.batch_id
 		   WHERE NOT b.shadow ORDER BY m.lead_id, co.id DESC
 		 ) `
-	due, err := collect(ctx, q.db, pgx.RowToStructByName[CallQueueRow], lastco+wrap(callRowSQL+
+	due, err := collect(ctx, q.db, pgx.RowToStructByName[CallQueueRow], lastco+wrap(callRowSQL+callPhoneLiveSQL+
 		` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND NOT b.shadow AND b.discarded_at IS NULL
 		  AND m.due_at IS NOT NULL AND m.due_at < $1
 		  AND NOT EXISTS (SELECT 1 FROM call_outcome c WHERE c.message_id = m.id)`, CallQueueDue), dayEnd)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: call queue: %w", err)
 	}
-	backs, err := collect(ctx, q.db, pgx.RowToStructByName[CallQueueRow], lastco+wrap(callRowSQL+
+	backs, err := collect(ctx, q.db, pgx.RowToStructByName[CallQueueRow], lastco+wrap(callRowSQL+callPhoneLiveSQL+
 		` AND m.id IN (SELECT message_id FROM lastco WHERE call_back_on <= $1::date)
 		  AND l.state NOT IN ('opted_out', 'bounced', 'suppressed', 'closed')`, CallQueueBack), d.Format(time.DateOnly))
 	if err != nil {

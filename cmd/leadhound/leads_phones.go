@@ -516,7 +516,9 @@ func (rr researchRun) recordPhoneResearch(ctx context.Context, orgID int64, res 
 	wrote := false
 	for _, p := range res.Phones {
 		var id int64
-		err := rr.pool.QueryRow(ctx, `SELECT id FROM org_fact WHERE org_id = $1 AND kind = 'phone' AND normalized = $2`,
+		// A number he retired stays retired: research finding it again records no line for it.
+		err := rr.pool.QueryRow(ctx, `SELECT id FROM org_fact WHERE org_id = $1 AND kind = 'phone' AND normalized = $2
+			AND coalesce((SELECT cm.mark FROM contact_mark cm WHERE cm.fact_id = org_fact.id ORDER BY cm.id DESC LIMIT 1), '') <> 'retire'`,
 			orgID, p.Fact.Normalized).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue

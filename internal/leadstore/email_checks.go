@@ -92,15 +92,31 @@ func (q Queries) EmailChecksSince(ctx context.Context, account int64, since time
 // SetNewLeadRoute moves lead id, while it is still new, onto channel and route routeID: the
 // email check's fallback when the address of the lead's email route is blocked and the lead
 // has another route (a batch drafts it there, and its page shows the route it was drafted
-// on). It reports whether the lead moved (false: not new, or already on that route).
+// on), and the re-pick when the operator adds, claims or retires a contact. It reports whether
+// the lead moved (false: not new, already on that route, or the route is another org's or
+// retired).
 func (q Queries) SetNewLeadRoute(ctx context.Context, id int64, channel string, routeID int64) (bool, error) {
 	tag, err := q.db.Exec(ctx,
 		`UPDATE lead SET channel = $2, route_id = $3
 		 WHERE id = $1 AND state = 'new' AND (channel, route_id) IS DISTINCT FROM ($2::text, $3::bigint)
-		   AND EXISTS (SELECT 1 FROM contact_route r WHERE r.id = $3 AND r.org_id = lead.org_id)`,
+		   AND EXISTS (SELECT 1 FROM contact_route r WHERE r.id = $3 AND r.org_id = lead.org_id
+		     AND `+contactLatestMarkSQL("route_id", "r.id")+` IS DISTINCT FROM 'retire')`,
 		id, channel, routeID)
 	if err != nil {
 		return false, fmt.Errorf("leadstore: set lead route: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClearNewLeadRoute moves lead id, while it is still new, onto no channel and no route: the
+// re-pick when no route is left. It reports whether the lead moved (false: not new, or already
+// on none).
+func (q Queries) ClearNewLeadRoute(ctx context.Context, id int64) (bool, error) {
+	tag, err := q.db.Exec(ctx,
+		`UPDATE lead SET channel = 'none', route_id = NULL
+		 WHERE id = $1 AND state = 'new' AND (channel <> 'none' OR route_id IS NOT NULL)`, id)
+	if err != nil {
+		return false, fmt.Errorf("leadstore: clear lead route: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

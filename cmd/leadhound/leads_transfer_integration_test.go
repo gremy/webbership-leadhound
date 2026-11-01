@@ -881,3 +881,54 @@ func TestLeadsCheckConfig(t *testing.T) {
 		t.Errorf("broken config prints a value: %s", errOut)
 	}
 }
+
+// TestLeadsTransferRetiredRoutes: marks do not cross, so a retired route stays behind and the lead
+// on it arrives with no route and channel none; another route of the org crosses, and so does one
+// retired then claimed back, without its claim.
+func TestLeadsTransferRetiredRoutes(t *testing.T) {
+	leadstoretest.Reset(t)
+	t.Setenv("LEADHOUND_DATABASE_URL", storetest.AppDSN())
+	saved := transferReservedTLDs
+	transferReservedTLDs = []string{"invalid"}
+	t.Cleanup(func() { transferReservedTLDs = saved })
+	transferFixture(t)
+	mark := func(value string, marks ...string) {
+		t.Helper()
+		for _, m := range marks {
+			ownerExecCmd(t, `INSERT INTO contact_mark (route_id, mark, actor) SELECT id, $2, 'operator' FROM contact_route WHERE value = $1`, value, m)
+		}
+	}
+	mark("info@alpha.example", leadstore.MarkRetire)
+	mark("hello@agency.example", leadstore.MarkRetire, leadstore.MarkClaim)
+
+	dir := filepath.Join(t.TempDir(), "transfer")
+	code, _, errOut := leadsRun(t, "leads", "transfer", "export", dir)
+	if code != 0 {
+		t.Fatalf("export exited %d: %s", code, errOut)
+	}
+	leadstoretest.Reset(t)
+	code, _, errOut = leadsRun(t, "leads", "transfer", "import", dir)
+	if code != 0 {
+		t.Fatalf("import exited %d: %s", code, errOut)
+	}
+	for _, c := range []struct {
+		what, q string
+		want    int
+	}{
+		{"the retired route stayed behind", `SELECT count(*) FROM contact_route WHERE value = 'info@alpha.example'`, 0},
+		{"the org's other route crossed", `SELECT count(*) FROM contact_route WHERE value = 'https://alpha.example/contact'`, 1},
+		{"the lead on it has no route", `SELECT count(*) FROM lead l JOIN org o ON o.id = l.org_id
+			WHERE o.domain = 'alpha.example' AND l.route_id IS NULL AND l.channel = 'none'`, 1},
+		{"the claimed-back route crossed, its lead on it", `SELECT count(*) FROM lead l JOIN contact_route r ON r.id = l.route_id
+			WHERE r.value = 'hello@agency.example' AND l.channel = 'email'`, 1},
+		{"no mark crossed", `SELECT count(*) FROM contact_mark`, 0},
+	} {
+		var n int
+		if err := storetest.OwnerConn(t).QueryRow(context.Background(), c.q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		if n != c.want {
+			t.Errorf("%s: %d, want %d", c.what, n, c.want)
+		}
+	}
+}

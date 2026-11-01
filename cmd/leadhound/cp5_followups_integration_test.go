@@ -229,7 +229,7 @@ func TestDraftsSampleNeverUsesWrongNumber(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustRun(t, "leads", "drafts", "sample", "--campaign", campaign.LegacySlug, "--n", "10", "--decider", "fake")
-	gens, err := leadstoretest.Q(t).GenerationsForLead(ctx, leadOf(t, "tailspin.example"), cid)
+	gens, err := leadstoretest.Q(t).GenerationsForLead(ctx, leadOf(t, "tailspin.example"), cid, "email")
 	if err != nil {
 		t.Fatal(err)
 	}

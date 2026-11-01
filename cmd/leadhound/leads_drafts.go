@@ -246,7 +246,7 @@ func sampleJobs(ctx context.Context, env draftsEnv, n int) ([]draftJob, error) {
 		if c.Channel != leadconfig.ChannelEmail || c.RouteKind != leadstore.RouteEmail || c.Route == "" {
 			continue
 		}
-		gens, err := env.lq.GenerationsForLead(ctx, c.LeadID, env.camp.ID)
+		gens, err := env.lq.GenerationsForLead(ctx, c.LeadID, env.camp.ID, leadconfig.ChannelEmail)
 		if err != nil {
 			return nil, err
 		}

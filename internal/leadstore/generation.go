@@ -1,6 +1,7 @@
 package leadstore
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -101,6 +102,9 @@ type GenerationRow struct {
 	Failures   []outreach.Failure // empty exactly when CheckOK
 	CostMicros *int64             // nil: unknown
 	Purpose    string
+	// Channel is what the draft is for: email, form or linkedin; "" is email. Manual drafts
+	// stay out of the email gate, its reviews and its samples (00029).
+	Channel string
 }
 
 // Generation is one draft_generation row.
@@ -117,6 +121,7 @@ type Generation struct {
 	Failures   []outreach.Failure
 	CostMicros *int64
 	Purpose    string
+	Channel    string
 	At         time.Time
 }
 
@@ -139,6 +144,10 @@ func (q Queries) RecordGeneration(ctx context.Context, g GenerationRow) (int64, 
 	case g.CostMicros != nil && *g.CostMicros < 0:
 		return 0, bad("cost %d", *g.CostMicros)
 	}
+	channel := cmp.Or(g.Channel, "email")
+	if channel != "email" && channel != "form" && channel != "linkedin" {
+		return 0, bad("channel %q", g.Channel)
+	}
 	var output []byte
 	if json.Valid(g.Output) {
 		output = g.Output
@@ -160,10 +169,10 @@ func (q Queries) RecordGeneration(ctx context.Context, g GenerationRow) (int64, 
 	var id int64
 	if err := q.db.QueryRow(ctx,
 		`INSERT INTO draft_generation (lead_id, campaign_id, attempt, model, fact_sha256, facts, output,
-		   check_ok, check_failures, cost_micros, purpose)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11) RETURNING id`,
+		   check_ok, check_failures, cost_micros, purpose, channel)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12) RETURNING id`,
 		g.LeadID, g.CampaignID, g.Attempt, g.Model, g.Facts.SHA256(), facts, nullJSON(output),
-		g.CheckOK, fails, g.CostMicros, g.Purpose).Scan(&id); err != nil {
+		g.CheckOK, fails, g.CostMicros, g.Purpose, channel).Scan(&id); err != nil {
 		return 0, wrap(err)
 	}
 	return id, nil
@@ -179,14 +188,14 @@ func nullJSON(b []byte) any {
 
 // generationCols are Generation's columns over draft_generation g.
 const generationCols = `g.id, g.lead_id, g.campaign_id, g.attempt, g.model, g.fact_sha256, g.facts, g.output,
-	g.check_ok, g.check_failures, g.cost_micros, g.purpose, g.at`
+	g.check_ok, g.check_failures, g.cost_micros, g.purpose, g.channel, g.at`
 
 // scanGeneration reads one row of generationCols followed by extra destinations.
 func scanGeneration(row pgx.Row, extra ...any) (Generation, error) {
 	var g Generation
 	var facts, output, fails []byte
 	dest := append([]any{&g.ID, &g.LeadID, &g.CampaignID, &g.Attempt, &g.Model, &g.FactSHA256, &facts, &output,
-		&g.CheckOK, &fails, &g.CostMicros, &g.Purpose, &g.At}, extra...)
+		&g.CheckOK, &fails, &g.CostMicros, &g.Purpose, &g.Channel, &g.At}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return Generation{}, err
 	}
@@ -232,25 +241,25 @@ func (q Queries) GenerationByID(ctx context.Context, id int64) (Generation, erro
 	return g, nil
 }
 
-// GenerationsForLead returns every attempt for lead leadID in campaign campaignID, newest
-// first.
-func (q Queries) GenerationsForLead(ctx context.Context, leadID, campaignID int64) ([]Generation, error) {
+// GenerationsForLead returns every attempt on channel for lead leadID in campaign campaignID,
+// newest first.
+func (q Queries) GenerationsForLead(ctx context.Context, leadID, campaignID int64, channel string) ([]Generation, error) {
 	out, err := q.generations(ctx, `SELECT `+generationCols+` FROM draft_generation g
-		WHERE g.lead_id = $1 AND g.campaign_id = $2 ORDER BY g.id DESC`, leadID, campaignID)
+		WHERE g.lead_id = $1 AND g.campaign_id = $2 AND g.channel = $3 ORDER BY g.id DESC`, leadID, campaignID, channel)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: generations for lead %d: %w", leadID, err)
 	}
 	return out, nil
 }
 
-// LatestGenerationForLead returns the newest generation for lead leadID in campaign
+// LatestGenerationForLead returns the newest generation on channel for lead leadID in campaign
 // campaignID that passed the check on the fact sheet hashed factSHA256, whatever its
 // purpose: a batch reuses it instead of asking again. ok is false when there is none (the
 // facts changed, or no attempt passed).
-func (q Queries) LatestGenerationForLead(ctx context.Context, leadID, campaignID int64, factSHA256 string) (Generation, bool, error) {
+func (q Queries) LatestGenerationForLead(ctx context.Context, leadID, campaignID int64, channel, factSHA256 string) (Generation, bool, error) {
 	g, err := scanGeneration(q.db.QueryRow(ctx, `SELECT `+generationCols+` FROM draft_generation g
-		WHERE g.lead_id = $1 AND g.campaign_id = $2 AND g.fact_sha256 = $3 AND g.check_ok
-		ORDER BY g.id DESC LIMIT 1`, leadID, campaignID, factSHA256))
+		WHERE g.lead_id = $1 AND g.campaign_id = $2 AND g.channel = $3 AND g.fact_sha256 = $4 AND g.check_ok
+		ORDER BY g.id DESC LIMIT 1`, leadID, campaignID, channel, factSHA256))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Generation{}, false, nil
 	}
@@ -348,17 +357,17 @@ const latestReviewSQL = `SELECT DISTINCT ON (r.generation_id) r.id, r.generation
 	   r.note, r.actor, r.at
 	 FROM draft_review r JOIN draft_generation g ON g.id = r.generation_id`
 
-// ReviewsForCampaign returns the latest review of each of the last n reviewed generations of
-// campaign campaignID (n <= 0: all), newest review first: what the gate's "approved share
-// of the last 20 reviewed drafts" counts.
-func (q Queries) ReviewsForCampaign(ctx context.Context, campaignID int64, n int) ([]Review, error) {
+// ReviewsForCampaign returns the latest review of each of the last n reviewed generations on
+// channel of campaign campaignID (n <= 0: all), newest review first: with email, what the gate's
+// "approved share of the last 20 reviewed drafts" counts.
+func (q Queries) ReviewsForCampaign(ctx context.Context, campaignID int64, channel string, n int) ([]Review, error) {
 	limit := any(nil)
 	if n > 0 {
 		limit = n
 	}
 	rows, err := q.db.Query(ctx, `SELECT * FROM (`+latestReviewSQL+`
-		 WHERE g.campaign_id = $1 ORDER BY r.generation_id, r.id DESC) latest
-		 ORDER BY id DESC LIMIT $2`, campaignID, limit)
+		 WHERE g.campaign_id = $1 AND g.channel = $2 ORDER BY r.generation_id, r.id DESC) latest
+		 ORDER BY id DESC LIMIT $3`, campaignID, channel, limit)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: reviews for campaign %d: %w", campaignID, err)
 	}
@@ -401,12 +410,12 @@ func SummarizeReviews(reviews []Review) ReviewSummary {
 	return s
 }
 
-// ReviewedLeads returns the leads of campaign campaignID with at least one reviewed
+// ReviewedLeads returns the leads of campaign campaignID with at least one reviewed email
 // generation, in id order: the set leads drafts eval regenerates.
 func (q Queries) ReviewedLeads(ctx context.Context, campaignID int64) ([]int64, error) {
 	out, err := collect(ctx, q.db, pgx.RowTo[int64],
 		`SELECT DISTINCT g.lead_id FROM draft_review r JOIN draft_generation g ON g.id = r.generation_id
-		 WHERE g.campaign_id = $1 ORDER BY g.lead_id`, campaignID)
+		 WHERE g.campaign_id = $1 AND g.channel = 'email' ORDER BY g.lead_id`, campaignID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: reviewed leads of campaign %d: %w", campaignID, err)
 	}
@@ -420,9 +429,10 @@ type SampledGeneration struct {
 	Review *Review
 }
 
-// SampleGenerations returns campaign campaignID's sampled drafts (purpose sample), newest
-// first, at most limit (limit <= 0: all), each with its latest review. Drafts refused by the
-// check are included (they show why; they cannot be reviewed).
+// SampleGenerations returns campaign campaignID's sampled email drafts (purpose sample), newest
+// first, at most limit (limit <= 0: all), each with its latest review; manual drafts are read on
+// the lead page. Drafts refused by the check are included (they show why; they cannot be
+// reviewed).
 func (q Queries) SampleGenerations(ctx context.Context, campaignID int64, limit int) ([]SampledGeneration, error) {
 	lim := any(nil)
 	if limit > 0 {
@@ -432,7 +442,7 @@ func (q Queries) SampleGenerations(ctx context.Context, campaignID int64, limit 
 		   r.id, r.verdict, r.reasons, r.note, r.actor, r.at
 		 FROM draft_generation g
 		 LEFT JOIN LATERAL (SELECT * FROM draft_review rr WHERE rr.generation_id = g.id ORDER BY rr.id DESC LIMIT 1) r ON true
-		 WHERE g.campaign_id = $1 AND g.purpose = 'sample'
+		 WHERE g.campaign_id = $1 AND g.purpose = 'sample' AND g.channel = 'email'
 		 ORDER BY g.id DESC LIMIT $2`, campaignID, lim)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: sample generations of campaign %d: %w", campaignID, err)

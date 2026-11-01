@@ -13,8 +13,9 @@ import (
 
 // The kinds a contact route can be (contact_route_kind_check).
 const (
-	RouteEmail = "email"
-	RouteForm  = "form"
+	RouteEmail    = "email"
+	RouteForm     = "form"
+	RouteLinkedIn = "linkedin"
 )
 
 // MaxPhraseRunes is the longest agency_finding phrase (agency_finding_phrase_check).
@@ -25,7 +26,7 @@ const MaxPhraseRunes = 120
 const RouteRetryAfter = 30 * 24 * time.Hour
 
 var (
-	// ErrUnknownRouteKind is returned by InsertRoute for a kind other than email or form.
+	// ErrUnknownRouteKind is returned by InsertRoute for a kind other than email, form or linkedin.
 	ErrUnknownRouteKind = errors.New("leadstore: unknown route kind")
 	// ErrEmptyRoute is returned by InsertRoute for a blank value.
 	ErrEmptyRoute = errors.New("leadstore: empty route value")
@@ -36,21 +37,22 @@ var (
 // RouteRow is one contact_route row to write.
 type RouteRow struct {
 	OrgID     int64
-	Kind      string // RouteEmail or RouteForm
-	Value     string // the address (stored lower case) or the form page URL
+	Kind      string // RouteEmail, RouteForm or RouteLinkedIn
+	Value     string // the address (stored lower case), the form page URL or the canonical LinkedIn URL
 	FetchID   int64  // the page it was seen on
 	MXOK      bool
 	DerivedBy string // e.g. "contacts@1"
+	PersonID  int64  // the person a LinkedIn or email route belongs to; 0 for none
 }
 
 // InsertRoute writes r. A route the org already has (same kind and value) is kept as it
-// was; inserted reports whether this call added the row.
+// was, a retired one stays retired; inserted reports whether this call added the row.
 func (q Queries) InsertRoute(ctx context.Context, r RouteRow) (inserted bool, err error) {
 	value := strings.TrimSpace(r.Value)
 	switch r.Kind {
 	case RouteEmail:
 		value = strings.ToLower(value)
-	case RouteForm:
+	case RouteForm, RouteLinkedIn:
 	default:
 		return false, fmt.Errorf("leadstore: insert route: %w: %q", ErrUnknownRouteKind, r.Kind)
 	}
@@ -58,9 +60,9 @@ func (q Queries) InsertRoute(ctx context.Context, r RouteRow) (inserted bool, er
 		return false, fmt.Errorf("leadstore: insert route: %w", ErrEmptyRoute)
 	}
 	tag, err := q.db.Exec(ctx,
-		`INSERT INTO contact_route (org_id, kind, value, fetch_id, mx_ok, derived_by)
-		 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (org_id, kind, value) DO NOTHING`,
-		r.OrgID, r.Kind, value, r.FetchID, r.MXOK, r.DerivedBy)
+		`INSERT INTO contact_route (org_id, kind, value, fetch_id, mx_ok, derived_by, person_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0)) ON CONFLICT (org_id, kind, value) DO NOTHING`,
+		r.OrgID, r.Kind, value, r.FetchID, r.MXOK, r.DerivedBy, r.PersonID)
 	if err != nil {
 		return false, fmt.Errorf("leadstore: insert route: %w", err)
 	}
@@ -73,17 +75,29 @@ type Route struct {
 	OrgID     int64     `db:"org_id"`
 	Kind      string    `db:"kind"`
 	Value     string    `db:"value"`
-	FetchID   int64     `db:"fetch_id"` // 0 for a route read from a place (00022)
+	FetchID   int64     `db:"fetch_id"` // 0 for a route read from a place (00022) or typed by the operator
 	MXOK      bool      `db:"mx_ok"`
 	DerivedBy string    `db:"derived_by"`
 	FoundAt   time.Time `db:"found_at"`
+	PersonID  int64     `db:"person_id"` // 0 for none
+	Operator  bool      `db:"operator"`  // the latest mark is a claim: the operator's own
 }
 
-// RoutesFor returns the routes of org orgID, emails first, then in the order found.
+// RoutesFor returns the routes of org orgID without the retired ones: by kind (emails first),
+// the operator's before the rest, then in the order found. Among LinkedIn routes a person
+// profile comes before a company page in the operator's own and after it in the rest, because
+// a company page is the safer default for a route nobody chose.
 func (q Queries) RoutesFor(ctx context.Context, orgID int64) ([]Route, error) {
 	routes, err := collect(ctx, q.db, pgx.RowToStructByName[Route],
-		`SELECT id, org_id, kind, value, coalesce(fetch_id, 0) AS fetch_id, mx_ok, derived_by, found_at
-		 FROM contact_route WHERE org_id = $1 ORDER BY kind, id`, orgID)
+		`SELECT r.id, r.org_id, r.kind, r.value, coalesce(r.fetch_id, 0) AS fetch_id, r.mx_ok, r.derived_by, r.found_at,
+		   coalesce(r.person_id, 0) AS person_id, m.mark IS NOT DISTINCT FROM 'claim' AS operator
+		 FROM contact_route r
+		 CROSS JOIN LATERAL (SELECT `+contactLatestMarkSQL("route_id", "r.id")+` AS mark) m
+		 WHERE r.org_id = $1 AND m.mark IS DISTINCT FROM 'retire'
+		 ORDER BY r.kind, operator DESC,
+		   CASE WHEN r.kind <> 'linkedin' THEN 0
+		     WHEN (r.value LIKE '%/in/%') = (m.mark IS NOT DISTINCT FROM 'claim') THEN 0 ELSE 1 END,
+		   r.id`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: routes for org %d: %w", orgID, err)
 	}
@@ -128,8 +142,9 @@ func (q Queries) RecordContactAttempt(ctx context.Context, orgID, runID int64, r
 
 // OrgsNeedingRoutes returns up to limit orgs (limit <= 0: all of them) with no route search
 // and no route found in the RouteRetryAfter before now, oldest org first. A route read from a
-// place's map listing (00022) does not count: the org's own pages are still searched. Selftest orgs are
-// never returned, nor an org whose domain is suppressed (orgDomainSuppressedSQL).
+// place's map listing (00022), typed by the operator or retired does not count: the org's own
+// pages are still searched. Selftest orgs are never returned, nor an org whose domain is suppressed
+// (orgDomainSuppressedSQL).
 func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time) ([]Org, error) {
 	var lim *int
 	if limit > 0 {
@@ -141,7 +156,7 @@ func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time
 		 WHERE o.kind <> 'selftest'
 		   AND NOT (o.source = 'place' AND o.site_id IS NULL)
 		   AND NOT EXISTS (SELECT 1 FROM contact_attempt a WHERE a.org_id = o.id AND a.attempted_at > $1)
-		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1 AND r.place_id IS NULL)
+		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1 AND r.fetch_id IS NOT NULL AND `+reachRouteLiveSQL+`)
 		   AND NOT `+orgDomainSuppressedSQL("o")+`
 		 ORDER BY o.id
 		 LIMIT $2`, now.Add(-RouteRetryAfter), lim)

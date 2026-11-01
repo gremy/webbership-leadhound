@@ -112,7 +112,7 @@ func capReason(err error) string {
 // Claude wrote (a fake decider's sample never counts), newest review first, with each
 // reviewed generation by id.
 func claudeReviews(ctx context.Context, lq leadstore.Queries, campaignID int64) ([]leadstore.Review, map[int64]leadstore.Generation, error) {
-	all, err := lq.ReviewsForCampaign(ctx, campaignID, 0)
+	all, err := lq.ReviewsForCampaign(ctx, campaignID, leadconfig.ChannelEmail, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -479,7 +479,7 @@ func (d *batchDrafter) claudeRows(ctx context.Context, lq leadstore.Queries, pla
 // and rendered again under today's rules (a replay, no call); one that no longer passes is
 // skipped.
 func (d *batchDrafter) reuse(ctx context.Context, lq leadstore.Queries, leadID int64, in outreach.WriteInput) (int64, outreach.WriteResult, bool, error) {
-	gens, err := lq.GenerationsForLead(ctx, leadID, d.dc.campaignID)
+	gens, err := lq.GenerationsForLead(ctx, leadID, d.dc.campaignID, leadconfig.ChannelEmail)
 	if err != nil {
 		return 0, outreach.WriteResult{}, false, err
 	}

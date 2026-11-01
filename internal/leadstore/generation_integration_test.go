@@ -66,7 +66,7 @@ func TestGenerationRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all, err := f.q.GenerationsForLead(ctx, lead, 1)
+	all, err := f.q.GenerationsForLead(ctx, lead, 1, "email")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestGenerationRoundTrip(t *testing.T) {
 	if _, err := f.q.GenerationByID(ctx, 999); !errors.Is(err, leadstore.ErrGenerationNotFound) {
 		t.Errorf("missing generation: %v", err)
 	}
-	if other, err := f.q.GenerationsForLead(ctx, lead, 2); err != nil || len(other) != 0 {
+	if other, err := f.q.GenerationsForLead(ctx, lead, 2, "email"); err != nil || len(other) != 0 {
 		t.Errorf("another campaign's generations = %v, %v", other, err)
 	}
 }
@@ -106,23 +106,23 @@ func TestGenerationReuseByFactHash(t *testing.T) {
 	ctx := context.Background()
 	lead := f.siteLead(t, "reuse.localhost", nil, 7, "info@reuse.localhost")
 	sheet := sheetFor("7")
-	if _, ok, err := f.q.LatestGenerationForLead(ctx, lead, 1, sheet.SHA256()); err != nil || ok {
+	if _, ok, err := f.q.LatestGenerationForLead(ctx, lead, 1, "email", sheet.SHA256()); err != nil || ok {
 		t.Fatalf("cold start: ok %t, %v; want none", ok, err)
 	}
 	f.generate(t, lead, sheet, false, leadstore.PurposeBatch)
-	if _, ok, _ := f.q.LatestGenerationForLead(ctx, lead, 1, sheet.SHA256()); ok {
+	if _, ok, _ := f.q.LatestGenerationForLead(ctx, lead, 1, "email", sheet.SHA256()); ok {
 		t.Fatal("a refused generation was offered for reuse")
 	}
 	first := f.generate(t, lead, sheet, true, leadstore.PurposeSample)
 	second := f.generate(t, lead, sheet, true, leadstore.PurposeBatch)
-	g, ok, err := f.q.LatestGenerationForLead(ctx, lead, 1, sheet.SHA256())
+	g, ok, err := f.q.LatestGenerationForLead(ctx, lead, 1, "email", sheet.SHA256())
 	if err != nil || !ok || g.ID != second {
 		t.Fatalf("reuse = %d %t %v, want %d (newest passing; %d older)", g.ID, ok, err, second, first)
 	}
-	if _, ok, _ := f.q.LatestGenerationForLead(ctx, lead, 1, sheetFor("8").SHA256()); ok {
+	if _, ok, _ := f.q.LatestGenerationForLead(ctx, lead, 1, "email", sheetFor("8").SHA256()); ok {
 		t.Error("a generation was reused across changed facts")
 	}
-	if _, ok, _ := f.q.LatestGenerationForLead(ctx, lead, 2, sheet.SHA256()); ok {
+	if _, ok, _ := f.q.LatestGenerationForLead(ctx, lead, 2, "email", sheet.SHA256()); ok {
 		t.Error("a generation was reused across campaigns")
 	}
 }
@@ -162,13 +162,13 @@ func TestReviewStatusGrid(t *testing.T) {
 	good := f.generate(t, lead, sheet, true, leadstore.PurposeSample)
 	refused := f.generate(t, lead, sheet, false, leadstore.PurposeSample)
 
-	if got, err := f.q.ReviewsForCampaign(ctx, 1, 20); err != nil || len(got) != 0 {
+	if got, err := f.q.ReviewsForCampaign(ctx, 1, "email", 20); err != nil || len(got) != 0 {
 		t.Fatalf("cold start reviews = %v, %v", got, err)
 	}
 	if _, err := f.q.RecordReview(ctx, good, leadstore.VerdictApprove, nil, "", op); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	reviews, err := f.q.ReviewsForCampaign(ctx, 1, 20)
+	reviews, err := f.q.ReviewsForCampaign(ctx, 1, "email", 20)
 	if err != nil || len(reviews) != 1 || reviews[0].Verdict != leadstore.VerdictApprove || reviews[0].LeadID != lead {
 		t.Fatalf("after approve = %+v, %v", reviews, err)
 	}
@@ -179,7 +179,7 @@ func TestReviewStatusGrid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-review reject: %v", err)
 	}
-	reviews, _ = f.q.ReviewsForCampaign(ctx, 1, 20)
+	reviews, _ = f.q.ReviewsForCampaign(ctx, 1, "email", 20)
 	if len(reviews) != 1 || reviews[0].ID != rej || reviews[0].Verdict != leadstore.VerdictReject ||
 		!reflect.DeepEqual(reviews[0].Reasons, []string{"too_long", "other"}) || reviews[0].Note != "too stiff" {
 		t.Fatalf("latest review = %+v, want the reject (latest wins), reasons in the set's order", reviews)
@@ -244,11 +244,11 @@ func TestReviewsLastN(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := f.q.ReviewsForCampaign(ctx, 1, 2)
+	got, err := f.q.ReviewsForCampaign(ctx, 1, "email", 2)
 	if err != nil || len(got) != 2 || got[0].GenerationID != gens[0] || got[1].GenerationID != gens[3] {
 		t.Fatalf("last 2 = %+v, %v; want generations %d then %d", got, err, gens[0], gens[3])
 	}
-	all, _ := f.q.ReviewsForCampaign(ctx, 1, 0)
+	all, _ := f.q.ReviewsForCampaign(ctx, 1, "email", 0)
 	if s := leadstore.SummarizeReviews(all); s.Reviewed != 4 || s.Approved != 2 {
 		t.Errorf("summary over all = %+v, want 4 reviewed, 2 approved (0 and 2 approve, 1 and 3 reject)", s)
 	}

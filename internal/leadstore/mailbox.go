@@ -413,11 +413,12 @@ const sendRowSQL = `SELECT ` + messageCols + `, b.shadow, b.campaign_id, l.state
 	 JOIN org o ON o.id = l.org_id`
 
 // SendRows returns the email messages of approved batches of the given kind that are
-// approved and due at or before now, oldest due first.
+// approved and due at or before now, oldest due first, leaving out an address retired since it
+// was approved: nothing goes to it while the retire stands.
 func (q Queries) SendRows(ctx context.Context, now time.Time, shadow bool) ([]SendRow, error) {
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[SendRow],
 		sendRowSQL+` WHERE m.state = 'approved' AND m.channel = 'email' AND b.approved_at IS NOT NULL
-		   AND b.shadow = $2 AND m.due_at IS NOT NULL AND m.due_at <= $1
+		   AND b.shadow = $2 AND m.due_at IS NOT NULL AND m.due_at <= $1 AND NOT `+MessageTargetRetiredSQL("m", "o.id")+`
 		 ORDER BY m.due_at, m.id`, now, shadow)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: send rows: %w", err)

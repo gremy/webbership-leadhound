@@ -235,7 +235,7 @@ func (q Queries) LatestScreening(ctx context.Context, number, register string) (
 // screening against register is missing or was checked before before: phone facts of orgs
 // whose country is country and that have a lead of the account in state new, batched or
 // contacted, leaving out a fact whose latest status is bad and a number the account has an
-// active phone suppression for. A fact kept in national form is matched to its screenings
+// active phone suppression for, and a retired one. A fact kept in national form is matched to its screenings
 // through dial.Number with country. The numbers come sorted, each once.
 func (q Queries) ScreeningsMissingOrOlder(ctx context.Context, accountID int64, register, country string, before time.Time) ([]string, error) {
 	type row struct {
@@ -252,6 +252,7 @@ func (q Queries) ScreeningsMissingOrOlder(ctx context.Context, accountID int64, 
 		   AND EXISTS (SELECT 1 FROM lead l WHERE l.org_id = o.id AND l.state IN ('new', 'batched', 'contacted')
 		     AND `+inAccountSQL+`)
 		   AND NOT `+phoneBadSQL("f.id")+`
+		   AND `+contactLatestMarkSQL("fact_id", "f.id")+` IS DISTINCT FROM 'retire'
 		   AND NOT `+phoneSuppressedSQL("$2", "f.id")+`
 		 ORDER BY f.normalized`, register, orAccount(accountID), country)
 	if err != nil {
@@ -369,9 +370,9 @@ func (q Queries) PhoneFactBad(ctx context.Context, factID int64) (bool, error) {
 	return bad, nil
 }
 
-// UsableOrgFacts is OrgFacts without the phone facts whose latest status is bad, in the
-// same order: what the batch's phone pick may choose from (a wrong number is never drafted
-// again). Facts of the other kinds all come back.
+// UsableOrgFacts is OrgFacts (so without the retired ones) without the phone facts whose latest
+// status is bad, in the same order: what the batch's phone pick may choose from (a wrong number
+// is never drafted again). Facts of the other kinds all come back.
 func (q Queries) UsableOrgFacts(ctx context.Context, orgIDs []int64) ([]Fact, error) {
 	if len(orgIDs) == 0 {
 		return nil, nil
@@ -379,6 +380,7 @@ func (q Queries) UsableOrgFacts(ctx context.Context, orgIDs []int64) ([]Fact, er
 	facts, err := collect(ctx, q.db, pgx.RowToStructByName[Fact],
 		`SELECT f.id, f.org_id, f.kind, f.value, f.normalized, coalesce(f.fetch_id, 0) AS fetch_id, f.derived_by, f.found_at
 		 FROM org_fact f WHERE f.org_id = ANY($1) AND (f.kind <> 'phone' OR NOT `+phoneBadSQL("f.id")+`)
+		   AND `+contactLatestMarkSQL("fact_id", "f.id")+` IS DISTINCT FROM 'retire'
 		 ORDER BY f.org_id, f.kind, f.id`, orgIDs)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: usable org facts: %w", err)
@@ -448,6 +450,10 @@ func (q Queries) markWrongNumber(ctx context.Context, messageID, factID, outcome
 	return nil
 }
 
+// personRouteSQL is true for a contact_route that belongs to a person: one naming a person, or a
+// LinkedIn person profile that names none (erasure takes the safe side).
+const personRouteSQL = `(person_id IS NOT NULL OR (kind = 'linkedin' AND value LIKE '%/in/%'))`
+
 // Forgotten counts what ForgetOrg did; a second run on the same org counts zero everywhere.
 type Forgotten struct {
 	PhoneFacts      int64 // org_fact phone rows deleted
@@ -464,6 +470,20 @@ type Forgotten struct {
 	SnippetsBlanked int64 // reply snippets of its lead's mailbox events emptied (the rows stay; 00028)
 	CRMRows         int64 // lead_crm rows of its lead deleted (note, next action, deal, tenant link)
 	StageEvents     int64 // lead_stage_event rows of its lead deleted
+	ContactMarks    int64 // contact_mark rows on its routes, facts and people deleted (notes and reasons)
+	LeadRoutes      int64 // its leads moved off a person's route (route_id NULL, channel none)
+	PersonPages     int64 // kept pages that its people and their routes were read from, emptied (the rows stay)
+	EmailChecks     int64 // email_check rows of a person's address deleted, in every account (the address is theirs)
+	PersonEmails    int64 // emails to a person's address whose target was emptied (the rows stay)
+	PersonRoutes    int64 // contact_route rows of a person deleted
+	People          int64 // org_person rows deleted
+	EditsBlanked    int64 // message_edit rows emptied, before and after (the rows stay)
+	EditedEmails    int64 // edited emails whose subject and body were emptied: an email edit moves the message itself
+	ProfileTargets  int64 // form and LinkedIn messages whose target was a person's profile, target emptied
+	Proposals       int64 // lead_proposal rows whose title became "(erased)" and whose link went (the value stays)
+	ProposalNotes   int64 // lead_proposal_status notes blanked (the rows stay)
+	Sectors         int64 // org_sector rows deleted
+	DraftRequests   int64 // draft_request rows deleted
 }
 
 // ForgetOrg erases org orgID's phone data, for `leads forget` (run on the owner's
@@ -482,13 +502,20 @@ type Forgotten struct {
 // places (00021), keeping the rows, and erases its lead's CRM (00028): the reply snippets of
 // its mailbox events are emptied (the rows stay), its lead_crm row and its stage changes are
 // deleted. A screening of a number
-// another org shares goes too: that org must be screened again (the safe side).
+// another org shares goes too: that org must be screened again (the safe side). It erases what
+// 00029 added, in this order, because contact_route.person_id and lead.route_id have no CASCADE:
+// the marks on its routes, facts and people; its leads off a person's route; the pages those
+// people were read from; the checks of a person's email address and the target of the org's
+// emails to it (while the route still says which address is theirs); the person routes (any with
+// a person, and any LinkedIn profile without one); the people. Then the before and after text of every edit, the subject and body of an
+// edited email, a form or LinkedIn message's person-profile target, its proposals' titles and
+// links and its status notes, its sectors and its draft requests.
 //
 // reason says why (at most MaxForgetReason characters, no line break, no @: never a
 // person's address). It returns counts only, and is idempotent: run again (after a backup
 // restore, say), it finds nothing left and counts zero. A missing org is ErrOrgNotFound.
-// The org's other facts (descriptions, social profiles), its routes and the fetched pages
-// in http_fetch are not touched.
+// The org's other facts (descriptions, social profiles), its routes without a person and its
+// other fetched pages in http_fetch are not touched, nor is the text of an email nobody edited.
 func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (Forgotten, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" || utf8.RuneCountInString(reason) > MaxForgetReason || strings.ContainsAny(reason, "\r\n@") {
@@ -564,6 +591,40 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 			sql  string
 			args []any
 		}{
+			{&res.ContactMarks, `DELETE FROM contact_mark WHERE route_id IN (SELECT id FROM contact_route WHERE org_id = $1)
+			   OR fact_id IN (SELECT id FROM org_fact WHERE org_id = $1)
+			   OR person_id IN (SELECT id FROM org_person WHERE org_id = $1)`, []any{orgID}},
+			{&res.LeadRoutes, `UPDATE lead SET route_id = NULL, channel = 'none' WHERE org_id = $1 AND route_id IN
+			   (SELECT id FROM contact_route WHERE org_id = $1 AND ` + personRouteSQL + `)`, []any{orgID}},
+			// ForgetOrgPages runs after this and could no longer tell which pages these were.
+			{&res.PersonPages, `UPDATE http_fetch SET body = ''::bytea WHERE length(body) > 0 AND id IN
+			   (SELECT fetch_id FROM org_person WHERE org_id = $1
+			    UNION SELECT fetch_id FROM contact_route WHERE org_id = $1 AND ` + personRouteSQL + `)`, []any{orgID}},
+			// Before the routes go, while they say which addresses are a person's. A check of an
+			// address another account or org shares goes too: it is checked again (the safe side).
+			{&res.EmailChecks, `DELETE FROM email_check WHERE address IN
+			   (SELECT lower(value) FROM contact_route WHERE org_id = $1 AND kind = 'email' AND person_id IS NOT NULL)`, []any{orgID}},
+			{&res.PersonEmails, `UPDATE outreach_message SET to_address = ''
+			   WHERE channel = 'email' AND lead_id IN (SELECT id FROM lead WHERE org_id = $1) AND lower(to_address) IN
+			   (SELECT lower(value) FROM contact_route WHERE org_id = $1 AND kind = 'email' AND person_id IS NOT NULL)`, []any{orgID}},
+			{&res.PersonRoutes, `DELETE FROM contact_route WHERE org_id = $1 AND ` + personRouteSQL, []any{orgID}},
+			{&res.People, `DELETE FROM org_person WHERE org_id = $1`, []any{orgID}},
+			{&res.EditsBlanked, `UPDATE message_edit SET subject_before = '', body_before = '', subject_after = '', body_after = ''
+			   WHERE (subject_before <> '' OR body_before <> '' OR subject_after <> '' OR body_after <> '') AND message_id IN
+			   (SELECT m.id FROM outreach_message m JOIN lead l ON l.id = m.lead_id WHERE l.org_id = $1)`, []any{orgID}},
+			// A name typed into an email edit also sits on the message itself.
+			{&res.EditedEmails, `UPDATE outreach_message SET subject = '', body_text = ''
+			   WHERE channel = 'email' AND (subject <> '' OR body_text <> '')
+			   AND lead_id IN (SELECT id FROM lead WHERE org_id = $1) AND id IN (SELECT message_id FROM message_edit)`, []any{orgID}},
+			{&res.ProfileTargets, `UPDATE outreach_message SET to_address = ''
+			   WHERE channel IN ('form', 'linkedin') AND to_address LIKE '%/in/%'
+			   AND lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
+			{&res.Proposals, `UPDATE lead_proposal SET title = '(erased)', url = NULL WHERE (title <> '(erased)' OR url IS NOT NULL)
+			   AND lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
+			{&res.ProposalNotes, `UPDATE lead_proposal_status SET note = '' WHERE note <> '' AND proposal_id IN
+			   (SELECT pr.id FROM lead_proposal pr JOIN lead l ON l.id = pr.lead_id WHERE l.org_id = $1)`, []any{orgID}},
+			{&res.Sectors, `DELETE FROM org_sector WHERE org_id = $1`, []any{orgID}},
+			{&res.DraftRequests, `DELETE FROM draft_request WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
 			{&res.PhoneResearch, `DELETE FROM phone_research WHERE org_id = $1`, []any{orgID}},
 			{&res.Screenings, `DELETE FROM phone_screening WHERE number = ANY($1)`, []any{forms}},
 			{&res.PhoneFacts, `DELETE FROM org_fact WHERE id = ANY($1)`, []any{factIDs}},

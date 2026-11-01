@@ -369,9 +369,81 @@ func mustQuery(t *testing.T, conn *pgx.Conn, sql string) pgx.Rows {
 	return rows
 }
 
+// t17Person is what t17SeedPerson wrote on one lead's org.
+type t17Person struct {
+	profile  int64    // the operator's person route, now the lead's route
+	page     int64    // a page on another host that a person was read from
+	edit     int64    // the edit of the LinkedIn message
+	formMsg  int64    // the form message, its target the org's own form
+	noteMsg  int64    // the LinkedIn message, its target a person's profile
+	emailMsg int64    // an email to the person's address, spelled with a capital
+	secrets  []string // text that names a person, each stored somewhere before the erasure
+}
+
+// t17SeedPerson writes with owner SQL every kind of 00029 row that may name a person, each
+// carrying tag: an operator person whose profile is chosen as the lead's route, one read from a
+// page with its route, a person's email route, a person's profile with no person row, an
+// operator phone with marks, marks on a route and on a person, a shadow manual batch with a
+// person's profile as its LinkedIn target and an edit, a proposal with a link and a status
+// note, sectors and a draft request. emailMsg, when not 0, is an email of the lead that the
+// operator edited: the edit also moved its subject and body.
+func (f outreachFixture) t17SeedPerson(t *testing.T, lead int64, tag, phone string, emailMsg int64) t17Person {
+	t.Helper()
+	id := func(sql string, args ...any) int64 { return ownerInt(t, f.owner, sql, args...) }
+	org := f.orgOf(t, lead)
+	p := t17Person{page: f.pageFetch(t, "https://"+tag+"-people.example/team", "", "The team: Sam "+tag)}
+	const addPerson = `INSERT INTO org_person (org_id, name, role, derived_by, fetch_id, actor) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+	jo := id(addPerson, org, "Jo "+tag, "Head of "+tag, "operator@1", nil, "operator")
+	sam := id(addPerson, org, "Sam "+tag, "Owner", "claude-research@1", p.page, "system")
+	profile := func(slug string) string { return "https://linkedin.com/" + "in/" + slug + "-" + tag }
+	const addRoute = `INSERT INTO contact_route (org_id, kind, value, person_id, fetch_id, derived_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+	p.profile = id(addRoute, org, "linkedin", profile("jo"), jo, nil, "operator@1")
+	id(addRoute, org, "linkedin", profile("sam"), sam, p.page, "claude-research@1")
+	id(addRoute, org, "email", "jo@"+tag+".example", jo, nil, "operator@1")
+	f.ownerRun(t, `INSERT INTO email_check (address, provider, status) VALUES ($1, 'reoon', 'safe')`, "jo@"+tag+".example")
+	id(addRoute, org, "linkedin", profile("bare"), nil, p.page, "claude-research@1")
+	f.ownerRun(t, `UPDATE lead SET route_id = $2, channel = 'linkedin' WHERE id = $1`, lead, p.profile)
+
+	fact := id(`INSERT INTO org_fact (org_id, kind, value, normalized, derived_by) VALUES ($1, 'phone', $2, $2, 'operator@1') RETURNING id`, org, phone)
+	f.ownerRun(t, `INSERT INTO contact_mark (fact_id, mark, note, actor) VALUES ($1, 'claim', $2, 'operator')`, fact, "Phone note "+tag)
+	f.ownerRun(t, `INSERT INTO contact_mark (fact_id, mark, actor) VALUES ($1, 'retire', 'operator')`, fact)
+	f.ownerRun(t, `INSERT INTO contact_mark (route_id, mark, note, replaced_by_route_id, actor)
+		SELECT r.id, 'retire', $3, $2, 'operator' FROM contact_route r WHERE r.org_id = $1 AND r.person_id IS NULL AND r.kind = 'email'`, org, p.profile, "Route note "+tag)
+	f.ownerRun(t, `INSERT INTO contact_mark (person_id, mark, note, actor) VALUES ($1, 'claim', $2, 'operator')`, jo, "Person note "+tag)
+
+	// Written directly: a lead already contacted cannot be drafted again.
+	batch := id(`INSERT INTO outreach_batch (shadow, content_sha256, templates_sha256, manual) VALUES (true, '\x00', '\x00', true) RETURNING id`)
+	const addMessage = `INSERT INTO outreach_message (batch_id, lead_id, step, channel, to_address, body_text, slots, mailbox_id)
+		VALUES ($1, $2, $3, $4, $5, $6, '{}', $7) RETURNING id`
+	p.formMsg = id(addMessage, batch, lead, 0, "form", "https://"+tag+".localhost/contact", "form text", f.mailbox(t))
+	p.noteMsg = id(addMessage, batch, lead, 1, "linkedin", profile("jo"), "note", f.mailbox(t))
+	p.emailMsg = id(addMessage, batch, lead, 2, "email", "Jo@"+tag+".example", "email text", f.mailbox(t))
+	const addEdit = `INSERT INTO message_edit (message_id, subject_before, body_before, subject_after, body_after, actor)
+		VALUES ($1, $2, $3, $4, $5, 'operator') RETURNING id`
+	p.edit = id(addEdit, p.noteMsg, "", "note", "", "Hi Jo "+tag)
+	if emailMsg != 0 {
+		id(addEdit, emailMsg, "Step 0", "Body", "To Jo "+tag, "Hello Jo "+tag)
+		f.ownerRun(t, `UPDATE outreach_message SET subject = $2, body_text = $3 WHERE id = $1`, emailMsg, "To Jo "+tag, "Hello Jo "+tag)
+	}
+
+	proposal := id(`INSERT INTO lead_proposal (lead_id, title, url, value_cents, actor) VALUES ($1, $2, $3, 500000, 'operator') RETURNING id`,
+		lead, "Proposal for Jo "+tag, "https://docs.example/jo-"+tag)
+	f.ownerRun(t, `INSERT INTO lead_proposal_status (proposal_id, status, note, actor) VALUES ($1, 'accepted', $2, 'operator')`, proposal, "Jo "+tag+" said yes")
+	f.ownerRun(t, `INSERT INTO org_sector (org_id, sector, source, actor) VALUES ($1, 'education', 'operator', 'operator'), ($1, 'retail', 'rule', 'system')`, org)
+	f.ownerRun(t, `INSERT INTO draft_request (lead_id, status, reason, requested_at, started_at, finished_at)
+		VALUES ($1, 'failed', $2, now(), now(), now())`, lead, "Jo "+tag+" asked us not to")
+
+	// No name is a substring of another org's: tag says whose.
+	p.secrets = []string{"Jo " + tag, "Sam " + tag, "Head of " + tag, "jo-" + tag, "sam-" + tag, "bare-" + tag, "jo@" + tag + ".example",
+		"Phone note " + tag, "Route note " + tag, "Person note " + tag, strings.TrimPrefix(phone, "+")}
+	return p
+}
+
 // TestForgetOrgSweep: after ForgetOrg no table holds the org's numbers in clear (the
-// hashed suppressions are not a match by design), its lead is suppressed so it is never
-// re-collected, another org's phone data is untouched, and a second run counts zero.
+// hashed suppressions are not a match by design), nor anything of 00029 that may name a person,
+// with a person's route chosen as its lead's route and an operator phone carrying marks; its
+// lead is suppressed so it is never re-collected, another org's data is untouched, and a second
+// run counts zero.
 func TestForgetOrgSweep(t *testing.T) {
 	ctx := context.Background()
 	f := newOutreachFixture(t)
@@ -396,8 +468,12 @@ func TestForgetOrgSweep(t *testing.T) {
 	f.setCountry(t, keep, "GB")
 	keepFact := f.phoneFact(t, keep, "+441632960099")
 	f.screen(t, "+441632960099", "tps", leadstore.ScreenClean, now)
+	gone := f.t17SeedPerson(t, s.lead, "forgetful", "+441632960077", s.msg[0])
+	kept := f.t17SeedPerson(t, keep, "keeper", "+441632960088", 0)
 
-	secret := []string{"441632960001", "441632960002", "1632960002"}
+	f.ownerRun(t, `INSERT INTO email_check (address, provider, status) VALUES ('info@forget.localhost', 'reoon', 'safe')`)
+
+	secret := append([]string{"441632960001", "441632960002", "1632960002"}, gone.secrets...)
 	before := dumpLeadTables(t, f.owner)
 	for _, d := range secret {
 		if !strings.Contains(before, d) {
@@ -410,8 +486,10 @@ func TestForgetOrgSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("forget: %v", err)
 	}
-	want := leadstore.Forgotten{PhoneFacts: 2, PhoneStatuses: 1, PhoneResearch: 1, Screenings: 2, NotesBlanked: 1,
-		Suppressions: 4, LeadsSuppressed: 0, Cancelled: got.Cancelled} // contacted: only new or batched leads move
+	want := leadstore.Forgotten{PhoneFacts: 3, PhoneStatuses: 1, PhoneResearch: 1, Screenings: 2, NotesBlanked: 1,
+		Suppressions: 5, LeadsSuppressed: 0, Cancelled: got.Cancelled, // contacted: only new or batched leads move
+		ContactMarks: 4, LeadRoutes: 1, PersonPages: 1, EmailChecks: 1, PersonEmails: 1, PersonRoutes: 4, People: 2, EditsBlanked: 2, EditedEmails: 1,
+		ProfileTargets: 1, Proposals: 1, ProposalNotes: 1, Sectors: 2, DraftRequests: 1}
 	if got != want || got.Cancelled < 1 {
 		t.Errorf("forget = %+v, want %+v with at least one cancelled", got, want)
 	}
@@ -427,11 +505,97 @@ func TestForgetOrgSweep(t *testing.T) {
 	if !strings.Contains(after, "441632960099") {
 		t.Error("the other org's number went too")
 	}
+	for _, d := range kept.secrets {
+		if !strings.Contains(after, d) {
+			t.Errorf("the other org's %q went too", d)
+		}
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM http_fetch WHERE id = $1 AND length(body) > 0`, kept.page); n != 1 {
+		t.Error("the other org's person page was emptied")
+	}
+	t17Empty := []struct{ what, sql string }{
+		{"marks", `SELECT count(*) FROM contact_mark m LEFT JOIN contact_route r ON r.id = m.route_id LEFT JOIN org_fact f ON f.id = m.fact_id
+			LEFT JOIN org_person p ON p.id = m.person_id WHERE coalesce(r.org_id, f.org_id, p.org_id) = $1`},
+		{"people", `SELECT count(*) FROM org_person WHERE org_id = $1`},
+		{"person routes", `SELECT count(*) FROM contact_route WHERE org_id = $1 AND (person_id IS NOT NULL OR value LIKE '%/in/%')`},
+		{"sectors", `SELECT count(*) FROM org_sector WHERE org_id = $1`},
+		{"draft requests", `SELECT count(*) FROM draft_request d JOIN lead l ON l.id = d.lead_id WHERE l.org_id = $1`},
+		{"text in edits", `SELECT count(*) FROM message_edit e JOIN outreach_message m ON m.id = e.message_id JOIN lead l ON l.id = m.lead_id
+			WHERE l.org_id = $1 AND subject_before || body_before || subject_after || body_after <> ''`},
+	}
+	for _, c := range t17Empty {
+		if n := ownerInt(t, f.owner, c.sql, org); n != 0 {
+			t.Errorf("%s left: %d", c.what, n)
+		}
+	}
+	// What is left of them: the lead with no route, the rows that keep a count, an empty page,
+	// the org's own form as a target, the text of an email nobody edited.
+	var channel string
+	var route *int64
+	if err := f.owner.QueryRow(ctx, `SELECT channel, route_id FROM lead WHERE id = $1`, s.lead).Scan(&channel, &route); err != nil ||
+		channel != leadstore.ChannelNone || route != nil {
+		t.Errorf("lead channel %q route %v (%v), want none and no route", channel, route, err)
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM message_edit WHERE id = $1`, gone.edit); n != 1 {
+		t.Error("the edit's row went; only its text should")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM lead_proposal WHERE lead_id = $1 AND title = '(erased)' AND url IS NULL AND value_cents = 500000`, s.lead); n != 1 {
+		t.Error("the proposal is not erased with its value kept")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM lead_proposal_status st JOIN lead_proposal pr ON pr.id = st.proposal_id WHERE pr.lead_id = $1 AND st.note = '' AND st.status = 'accepted'`, s.lead); n != 1 {
+		t.Error("the proposal status is not kept with a blank note")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM http_fetch WHERE id = $1 AND length(body) = 0`, gone.page); n != 1 {
+		t.Error("the page a person was read from still holds its body")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM outreach_message WHERE id = $1 AND to_address = 'https://forgetful.localhost/contact'`, gone.formMsg); n != 1 {
+		t.Error("the org's own form target went too")
+	}
+	// A person's email address is gone from the checks and the messages; the org's own address,
+	// and another org's person, are not. The suppressions stay: they keep them from being contacted.
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM email_check WHERE address = 'jo@forgetful.example'`); n != 0 {
+		t.Errorf("the person's email checks left: %d", n)
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM email_check WHERE address IN ('info@forget.localhost', 'jo@keeper.example')`); n != 2 {
+		t.Errorf("email checks of other addresses left: %d, want 2", n)
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM outreach_message WHERE id = $1 AND to_address = '' AND body_text = 'email text'`, gone.emailMsg); n != 1 {
+		t.Error("the email to the person keeps its target, or lost its text")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM outreach_message WHERE id = $1 AND to_address = 'info@forget.localhost'`, s.msg[0]); n != 1 {
+		t.Error("the email to the org's own address lost its target")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM outreach_message WHERE to_address = 'Jo@keeper.example'`); n != 1 {
+		t.Error("the other org's person's email lost its target")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM outreach_message WHERE id = $1 AND to_address = ''`, gone.noteMsg); n != 1 {
+		t.Error("the person's profile target stayed")
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM outreach_message WHERE id = $1 AND body_text <> ''`, s.msg[1]); n != 1 {
+		t.Error("an email nobody edited was emptied")
+	}
+	// The timeline still reads, and names nobody.
+	items, err := f.q.LeadTimeline(ctx, s.lead, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		for _, d := range gone.secrets {
+			if strings.Contains(it.Detail, d) || strings.Contains(it.Note, d) {
+				t.Errorf("the timeline still shows %q: %+v", d, it)
+			}
+		}
+	}
 	if _, ok, err := f.q.LatestScreening(ctx, "+441632960099", "tps"); err != nil || !ok {
 		t.Errorf("the other org's screening went too (%v %v)", ok, err)
 	}
-	if facts, err := f.q.OrgFacts(ctx, []int64{f.orgOf(t, keep)}); err != nil || len(facts) != 1 || facts[0].ID != keepFact {
+	// Its seeded operator phone is retired, so OrgFacts leaves it out; the row itself stays.
+	if facts, err := f.q.OrgFacts(ctx, []int64{f.orgOf(t, keep)}); err != nil || len(facts) != 1 ||
+		!slices.ContainsFunc(facts, func(x leadstore.Fact) bool { return x.ID == keepFact }) {
 		t.Errorf("the other org's facts = %+v %v", facts, err)
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM org_fact WHERE org_id = $1 AND kind = 'phone'`, f.orgOf(t, keep)); n != 2 {
+		t.Errorf("the other org's phone rows = %d, want 2", n)
 	}
 	var state string
 	if err := f.owner.QueryRow(ctx, `SELECT state FROM lead WHERE id = $1`, s.lead).Scan(&state); err != nil || state != leadstore.LeadContacted {
@@ -463,6 +627,30 @@ func TestForgetOrgSweep(t *testing.T) {
 		if _, err := owner.ForgetOrg(ctx, org, r); !errors.Is(err, leadstore.ErrBadForgetReason) {
 			t.Errorf("reason %q: %v, want ErrBadForgetReason", r, err)
 		}
+	}
+}
+
+// TestForgetOrgPagesCitesPeople: run alone, ForgetOrgPages empties the page a person was read
+// from even on a host that is not the org's, and leaves another org's person page alone.
+func TestForgetOrgPagesCitesPeople(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	lead := f.siteLead(t, "forget-pages.localhost", nil, 7, "")
+	other := f.siteLead(t, "keep-pages.localhost", nil, 7, "")
+	page := f.pageFetch(t, "https://people-pages.example/team", "", "The team")
+	keep := f.pageFetch(t, "https://other-people-pages.example/team", "", "Another team")
+	const addPerson = `INSERT INTO org_person (org_id, role, derived_by, fetch_id, actor) VALUES ($1, 'Owner', 'claude-research@1', $2, 'system')`
+	f.ownerRun(t, addPerson, f.orgOf(t, lead), page)
+	f.ownerRun(t, addPerson, f.orgOf(t, other), keep)
+	got, err := leadstore.NewQueries(f.owner).ForgetOrgPages(ctx, f.orgOf(t, lead))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM http_fetch WHERE id = $1 AND length(body) = 0`, page); n != 1 || got.BodiesBlanked < 1 {
+		t.Errorf("the person's page: %d empty, %d blanked", n, got.BodiesBlanked)
+	}
+	if n := ownerInt(t, f.owner, `SELECT count(*) FROM http_fetch WHERE id = $1 AND length(body) > 0`, keep); n != 1 {
+		t.Error("the other org's person page was emptied")
 	}
 }
 

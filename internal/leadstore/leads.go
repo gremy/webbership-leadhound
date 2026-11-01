@@ -451,7 +451,9 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   CROSS JOIN LATERAL (SELECT `+scoreSQL+` AS score) sc
 		   WHERE l.state = 'new'
 		     AND (l.channel <> 'none' OR (upper(o.country) = ANY($13::text[])
-		       AND EXISTS (SELECT 1 FROM org_fact pfx WHERE pfx.org_id = l.org_id AND pfx.kind = 'phone')))
+		       AND EXISTS (SELECT 1 FROM org_fact pfx WHERE pfx.org_id = l.org_id AND pfx.kind = 'phone'
+		         AND `+contactLatestMarkSQL("fact_id", "pfx.id")+` IS DISTINCT FROM 'retire')))
+		     AND (l.route_id IS NULL OR `+reachRouteLiveSQL+`)
 		     AND (l.probe_id IS NULL OR p.id = s.last_probe_id)
 		     AND o.kind <> 'selftest'
 		     AND ($4 OR (o.domain !~ $3 AND coalesce(ad.adom, '') !~ $3))
@@ -627,6 +629,7 @@ func (q Queries) handLeadRow(ctx context.Context, orgID int64, orgKind string) (
 	var routeKind string
 	err := q.db.QueryRow(ctx,
 		`SELECT id, kind FROM contact_route WHERE org_id = $1
+		   AND `+contactLatestMarkSQL("route_id", "contact_route.id")+` IS DISTINCT FROM 'retire'
 		 ORDER BY CASE WHEN kind = 'email' AND mx_ok THEN 0 WHEN kind = 'form' THEN 1 ELSE 2 END, id
 		 LIMIT 1`, orgID).Scan(&routeID, &routeKind)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

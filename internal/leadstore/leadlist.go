@@ -91,6 +91,9 @@ type ListFilter struct {
 	LeadIDs []int64
 	// CampaignID keeps only the leads of that campaign; 0 lists every campaign's.
 	CampaignID int64
+	// Reach keeps only the leads of one bucket (ReachEmail, ...); "" keeps every bucket. A
+	// bucket picks its own states, so with Reach set a blank Status is every state.
+	Reach string
 }
 
 // ListContext is what the list is weighed by.
@@ -102,6 +105,9 @@ type ListContext struct {
 	TrustedTypes []string
 	// CampaignID keeps LeadsToRate to that campaign's leads; 0 is every campaign's.
 	CampaignID int64
+	// CountryOff says whether a country is off, the config rule behind ReachCountry; nil leaves
+	// the rule unjudged.
+	CountryOff func(country string) bool
 }
 
 // ListRow is one lead of the list.
@@ -123,6 +129,8 @@ type ListRow struct {
 	SmallSite                   bool
 	Finding                     FindingSubject
 	CreatedAt                   time.Time
+	Reach                       string // the lead's next action (a Reach* bucket)
+	ReachReason                 string // why a dead end; LeadDetail leaves ReachCountry to ReachOf
 }
 
 // Detail is one lead in full: its list row and everything behind it.
@@ -275,6 +283,8 @@ type listRow struct {
 	ProbeMajor      int        `db:"probe_major"`
 	ProbeExact      string     `db:"probe_exact"`
 	CreatedAt       time.Time  `db:"created_at"`
+	Reach           string     `db:"reach"`
+	ReachReason     string     `db:"reach_reason"`
 	Total           int        `db:"total"`
 }
 
@@ -291,7 +301,7 @@ func (r listRow) row() ListRow {
 			Ambiguous: r.Ambiguous, URL: r.URL, Phrase: r.Phrase,
 			Reason: r.Reason, Language: r.Language, LanguageVia: r.LanguageVia,
 		},
-		CreatedAt: r.CreatedAt,
+		CreatedAt: r.CreatedAt, Reach: r.Reach, ReachReason: r.ReachReason,
 	}
 }
 
@@ -301,15 +311,16 @@ func (r listRow) row() ListRow {
 // CandidateLeads scores it; unlike the queue, a lead whose probe is no longer its site's
 // latest is listed with its own finding. A site lead is one with a probe. Its relevance is
 // the latest rating under its own type's question (rtype, typeQuestionSQL): a rating under
-// another type's question is not its number. No message body is read.
+// another type's question is not its number. A retired route or phone counts for nothing. No
+// message body is read.
 var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
 	   cg.name AS campaign_name, o.domain,
 	   coalesce(nullif(p.site_name, ''), nullif(o.name, ''), o.domain) AS name,
 	   o.country, l.kind, ` + typeSQL() + ` AS rtype, l.state, l.channel, l.probe_id,
 	   l.agency_finding_id, l.finding_id, l.created_at,
-	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'email') AS has_email,
-	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'form') AS has_form,
-	   EXISTS (SELECT 1 FROM org_fact x WHERE x.org_id = l.org_id AND x.kind = 'phone') AS has_phone,
+	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'email' AND ` + reachRouteLiveSQL + `) AS has_email,
+	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'form' AND ` + reachRouteLiveSQL + `) AS has_form,
+	   EXISTS (SELECT 1 FROM org_fact x WHERE x.org_id = l.org_id AND x.kind = 'phone' AND ` + reachFactLiveSQL + `) AS has_phone,
 	   rv.score AS relevance, coalesce(rv.band, '') AS band, rv.created_at AS rated_at,
 	   sc.score AS points,
 	   coalesce(st.action <> 'unstar', false) AS starred,
@@ -324,7 +335,8 @@ var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS c
 	   coalesce(f.subject->>'reason', '') AS f_reason, coalesce(f.subject->>'language', '') AS f_language,
 	   coalesce(f.subject->>'language_via', '') AS f_language_via,
 	   s.list_rank, coalesce(s.origin, o.source) AS origin,
-	   coalesce(p.major, 0) AS probe_major, coalesce(p.exact_version, '') AS probe_exact
+	   coalesce(p.major, 0) AS probe_major, coalesce(p.exact_version, '') AS probe_exact,
+	   rc.reach, ` + reachReasonSQL + ` AS reach_reason
 	 FROM lead l
 	 CROSS JOIN (SELECT $1::jsonb AS pf) pf
 	 JOIN org o ON o.id = l.org_id
@@ -342,28 +354,12 @@ var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS c
 	   WHERE x.lead_id = l.id ORDER BY x.id DESC LIMIT 1
 	 ) st ON true
 	 CROSS JOIN LATERAL (SELECT ` + scoreSQL + ` AS score) sc
+	 CROSS JOIN LATERAL (SELECT ` + reachBucketSQL + ` AS reach) rc
 	 WHERE l.kind <> 'selftest' AND o.kind <> 'selftest'`
 
-// LeadList returns page f.Page of the leads f asks for, weighed by c, and how many leads
-// match in all. Filters combine with AND; Kinds, Countries and Channels each match any of
-// their values (a lead with an email route, a form route or a phone fact for its
-// channels). MinRelevance leaves out the leads never rated. The sorts:
-//   - relevance, c.TrustedTypes set: the leads of a trusted type by relevance (unrated
-//     last), every other lead after them, then points, then list rank (unranked last), then
-//     id;
-//   - relevance, no type trusted: points, then list rank, then id;
-//   - newest: created, newest first, then id, highest first;
-//   - order: the starred leads only, by position, then id.
-//
-// A page past the last returns no rows and the true total. An unknown status, sort or
-// channel is ErrBadListFilter.
-func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]ListRow, int, error) {
+// listConds is the WHERE conditions of f over a row m of listRowsSQL, each value placed by arg.
+func listConds(f ListFilter, arg func(any) string) ([]string, error) {
 	var conds []string
-	args := []any{profileOrEmpty(c.ProfileJSON), c.SkipRankOver}
-	arg := func(v any) string {
-		args = append(args, v)
-		return "$" + strconv.Itoa(len(args))
-	}
 	if len(f.Kinds) > 0 {
 		conds = append(conds, "m.kind = ANY("+arg(f.Kinds)+"::text[])")
 	}
@@ -381,7 +377,7 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 			case ListChannelPhone:
 				ors = append(ors, "m.has_phone")
 			default:
-				return nil, 0, fmt.Errorf("leadstore: lead list: channel %q: %w", ch, ErrBadListFilter)
+				return nil, fmt.Errorf("channel %q: %w", ch, ErrBadListFilter)
 			}
 		}
 		conds = append(conds, "("+strings.Join(ors, " OR ")+")")
@@ -402,34 +398,80 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 		conds = append(conds, "m.relevance >= "+arg(min(f.MinRelevance, 100)))
 	}
 	switch f.Status {
-	case "", ListOpen:
+	case "":
+		if f.Reach == "" {
+			conds = append(conds, "m.state = 'new'")
+		}
+	case ListOpen:
 		conds = append(conds, "m.state = 'new'")
 	case ListContacted:
 		conds = append(conds, "m.state = ANY("+arg(contactedStates)+"::text[])")
 	case ListAll:
 	default:
-		return nil, 0, fmt.Errorf("leadstore: lead list: status %q: %w", f.Status, ErrBadListFilter)
+		return nil, fmt.Errorf("status %q: %w", f.Status, ErrBadListFilter)
+	}
+	switch f.Reach {
+	case "":
+	case ReachContacted, ReachEmail, ReachManual, ReachDead, ReachOther:
+		conds = append(conds, "m.reach = "+arg(f.Reach))
+	default:
+		return nil, fmt.Errorf("reach %q: %w", f.Reach, ErrBadListFilter)
+	}
+	switch f.Sort {
+	case "", SortRelevance, SortNewest:
+	case SortOrder:
+		conds = append(conds, "m.starred")
+	default:
+		return nil, fmt.Errorf("sort %q: %w", f.Sort, ErrBadListFilter)
+	}
+	return conds, nil
+}
+
+// listWhere is conds as a WHERE clause; "" for none.
+func listWhere(conds []string) string {
+	if len(conds) == 0 {
+		return ""
+	}
+	return " WHERE " + strings.Join(conds, " AND ")
+}
+
+// LeadList returns page f.Page of the leads f asks for, weighed by c, and how many leads
+// match in all. Filters combine with AND; Kinds, Countries and Channels each match any of
+// their values (a lead with an email route, a form route or a phone fact for its
+// channels). MinRelevance leaves out the leads never rated. The sorts:
+//   - relevance, c.TrustedTypes set: the leads of a trusted type by relevance (unrated
+//     last), every other lead after them, then points, then list rank (unranked last), then
+//     id;
+//   - relevance, no type trusted: points, then list rank, then id;
+//   - newest: created, newest first, then id, highest first;
+//   - order: the starred leads only, by position, then id.
+//
+// A page past the last returns no rows and the true total. An unknown status, sort, channel
+// or reach is ErrBadListFilter.
+func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]ListRow, int, error) {
+	args := []any{profileOrEmpty(c.ProfileJSON), c.SkipRankOver}
+	arg := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+	conds, err := listConds(f, arg)
+	if err != nil {
+		return nil, 0, fmt.Errorf("leadstore: lead list: %w", err)
 	}
 	countArgs := len(args) // the count reads the filters' placeholders only, not the order's
 	var order string
 	switch f.Sort {
-	case "", SortRelevance:
+	case SortNewest:
+		order = "m.created_at DESC, m.lead_id DESC"
+	case SortOrder:
+		order = "m.position, m.lead_id"
+	default:
 		order = "m.points DESC, m.list_rank NULLS LAST, m.lead_id"
 		if len(c.TrustedTypes) > 0 {
 			order = trustedOrderSQL(arg(c.TrustedTypes)) + order
 		}
-	case SortNewest:
-		order = "m.created_at DESC, m.lead_id DESC"
-	case SortOrder:
-		conds = append(conds, "m.starred")
-		order = "m.position, m.lead_id"
-	default:
-		return nil, 0, fmt.Errorf("leadstore: lead list: sort %q: %w", f.Sort, ErrBadListFilter)
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = " WHERE " + strings.Join(conds, " AND ")
-	}
+	where := listWhere(conds)
 	per := f.PerPage
 	switch {
 	case per <= 0:
@@ -446,7 +488,9 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 	}
 	out := make([]ListRow, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.row())
+		row := r.row()
+		row.ReachReason = reachReasonIn(r.Reach, r.ReachReason, r.Country, c.CountryOff)
+		out = append(out, row)
 	}
 	if len(rows) > 0 {
 		return out, rows[0].Total, nil
@@ -510,14 +554,14 @@ func (q Queries) LeadDetail(ctx context.Context, leadID int64) (Detail, error) {
 		`SELECT r.kind, r.value, r.mx_ok, coalesce(r.fetch_id, 0), coalesce(nullif(h.final_url, ''), h.url, ''), r.found_at,
 		   r.derived_by
 		 FROM contact_route r LEFT JOIN http_fetch h ON h.id = r.fetch_id
-		 WHERE r.org_id = $1 ORDER BY r.kind, r.id`, r.OrgID); err != nil {
+		 WHERE r.org_id = $1 AND `+reachRouteLiveSQL+` ORDER BY r.kind, r.id`, r.OrgID); err != nil {
 		return Detail{}, fmt.Errorf("leadstore: lead detail: routes: %w", err)
 	}
 	if d.Facts, err = collect(ctx, q.db, pgx.RowToStructByPos[DetailFact],
 		`SELECT x.kind, x.value, coalesce(x.fetch_id, 0), coalesce(nullif(h.final_url, ''), h.url, ''), x.found_at,
 		   x.derived_by
 		 FROM org_fact x LEFT JOIN http_fetch h ON h.id = x.fetch_id
-		 WHERE x.org_id = $1 ORDER BY x.kind, x.id`, r.OrgID); err != nil {
+		 WHERE x.org_id = $1 AND `+reachFactLiveSQL+` ORDER BY x.kind, x.id`, r.OrgID); err != nil {
 		return Detail{}, fmt.Errorf("leadstore: lead detail: facts: %w", err)
 	}
 	if r.AgencyFindingID != nil {

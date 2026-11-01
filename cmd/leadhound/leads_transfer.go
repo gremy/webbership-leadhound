@@ -693,10 +693,15 @@ func (ex *exporter) orgs(ctx context.Context, w *jsonlWriter, _ *exportCounts) e
 	})
 }
 
+// liveRouteSQL is true for a contact_route r whose latest mark is not a retire.
+const liveRouteSQL = `coalesce((SELECT cm.mark FROM contact_mark cm WHERE cm.route_id = r.id ORDER BY cm.id DESC LIMIT 1), '') <> 'retire'`
+
+// routes writes every route that crosses. Marks do not cross, so a retired route stays behind:
+// on the target it would be a live way in. A route he claimed back crosses, without its claim.
 func (ex *exporter) routes(ctx context.Context, w *jsonlWriter, _ *exportCounts) error {
 	return each(ctx, ex.tx, "routes", `SELECT o.domain, r.kind, r.value, r.fetch_id, r.mx_ok, r.derived_by, r.found_at
 		FROM contact_route r JOIN org o ON o.id = r.org_id
-		WHERE `+carriedOrgSQL+` AND r.fetch_id IS NOT NULL ORDER BY r.id`, []any{ex.re}, func(r pgx.Rows) error {
+		WHERE `+carriedOrgSQL+` AND r.fetch_id IS NOT NULL AND `+liveRouteSQL+` ORDER BY r.id`, []any{ex.re}, func(r pgx.Rows) error {
 		var rt tRoute
 		var fetchID int64
 		if err := r.Scan(&rt.Org, &rt.Kind, &rt.Value, &fetchID, &rt.MXOK, &rt.DerivedBy, &rt.FoundAt); err != nil {
@@ -742,17 +747,18 @@ func (ex *exporter) attempts(ctx context.Context, w *jsonlWriter, _ *exportCount
 }
 
 // leads writes every lead that crosses: not a selftest, its org, finding and route all
-// crossing. A lead batched on the source arrives new (its batch stays behind) at the
+// crossing. A lead on a retired route crosses with no route and channel none. A lead batched on the source arrives new (its batch stays behind) at the
 // export's moment. Only the default account's campaigns cross. It returns the ids written
 // and the campaign and org domain of the batched ones.
 func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, batched []tEvent, err error) {
 	err = each(ctx, ex.tx, "leads", `SELECT l.id, cg.slug, o.domain, l.kind, ps.domain, p.created_at, fo.domain, f.url, f.created_at,
-		  l.channel, ro.domain, r.kind, r.value, l.state, l.state_at, l.created_at
+		  CASE WHEN l.route_id IS NOT NULL AND r.id IS NULL THEN 'none' ELSE l.channel END,
+		  ro.domain, r.kind, r.value, l.state, l.state_at, l.created_at
 		FROM lead l JOIN org o ON o.id = l.org_id
 		JOIN campaign cg ON cg.id = l.campaign_id AND cg.account_id = $2
 		LEFT JOIN site_probe p ON p.id = l.probe_id LEFT JOIN site ps ON ps.id = p.site_id
 		LEFT JOIN agency_finding f ON f.id = l.agency_finding_id LEFT JOIN org fo ON fo.id = f.org_id
-		LEFT JOIN contact_route r ON r.id = l.route_id LEFT JOIN org ro ON ro.id = r.org_id
+		LEFT JOIN contact_route r ON r.id = l.route_id AND `+liveRouteSQL+` LEFT JOIN org ro ON ro.id = r.org_id
 		WHERE l.kind <> 'selftest' AND `+carriedOrgSQL+`
 		  AND (p.id IS NULL OR ps.domain !~ $1)
 		  AND (f.id IS NULL OR (fo.kind <> 'selftest' AND fo.domain !~ $1))

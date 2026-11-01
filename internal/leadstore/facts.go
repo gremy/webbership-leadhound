@@ -52,13 +52,13 @@ type Fact struct {
 	Kind       string    `db:"kind"`
 	Value      string    `db:"value"`
 	Normalized string    `db:"normalized"`
-	FetchID    int64     `db:"fetch_id"` // 0 for a phone read from a place (00022)
+	FetchID    int64     `db:"fetch_id"` // 0 for a phone read from a place (00022) or typed by the operator
 	DerivedBy  string    `db:"derived_by"`
 	FoundAt    time.Time `db:"found_at"`
 }
 
 // InsertFact writes f. A fact the org already has (same kind and normalized value) is kept as
-// it was; inserted reports whether this call added the row. A phone whose normalized value is
+// it was, a retired one stays retired; inserted reports whether this call added the row. A phone whose normalized value is
 // not + and 8 to 15 digits is refused by org_fact_phone_check.
 func (q Queries) InsertFact(ctx context.Context, f FactRow) (inserted bool, err error) {
 	switch f.Kind {
@@ -84,15 +84,16 @@ func (q Queries) InsertFact(ctx context.Context, f FactRow) (inserted bool, err 
 	return tag.RowsAffected() == 1, nil
 }
 
-// OrgFacts returns every fact of the orgs orgIDs, by org, then kind, then the order they
-// were found in.
+// OrgFacts returns every fact of the orgs orgIDs without the retired ones, by org, then kind,
+// then the order they were found in.
 func (q Queries) OrgFacts(ctx context.Context, orgIDs []int64) ([]Fact, error) {
 	if len(orgIDs) == 0 {
 		return nil, nil
 	}
 	facts, err := collect(ctx, q.db, pgx.RowToStructByName[Fact],
-		`SELECT id, org_id, kind, value, normalized, coalesce(fetch_id, 0) AS fetch_id, derived_by, found_at
-		 FROM org_fact WHERE org_id = ANY($1) ORDER BY org_id, kind, id`, orgIDs)
+		`SELECT f.id, f.org_id, f.kind, f.value, f.normalized, coalesce(f.fetch_id, 0) AS fetch_id, f.derived_by, f.found_at
+		 FROM org_fact f WHERE f.org_id = ANY($1) AND `+contactLatestMarkSQL("fact_id", "f.id")+` IS DISTINCT FROM 'retire'
+		 ORDER BY f.org_id, f.kind, f.id`, orgIDs)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: org facts: %w", err)
 	}

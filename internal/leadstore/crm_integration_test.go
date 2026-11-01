@@ -5,6 +5,7 @@ package leadstore_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -436,6 +437,9 @@ func TestLeadTimeline(t *testing.T) {
 	}
 	var items []leadstore.TimelineItem
 	for _, it := range all {
+		if it.Kind == leadstore.TimelineDraft {
+			continue // the fixture's batches, dated by the clock; TestLeadTimelineOutreach covers them
+		}
 		if !it.At.Before(t0) {
 			items = append(items, it)
 		} else if it.Kind != leadstore.TimelineEvent {
@@ -475,6 +479,173 @@ func TestLeadTimeline(t *testing.T) {
 	}
 	if items, err := q.LeadTimeline(ctx, lead, 2); err != nil || len(items) != 2 || items[0].Kind != leadstore.TimelineStage {
 		t.Errorf("limit 2: %+v %v", items, err)
+	}
+}
+
+// TestLeadTimelineOutreach: every branch of 00029 shows, newest first, each with its fields: a
+// draft with its origin and writer, an edit, a form marked sent, the operator's contacts and
+// every mark (a replaced route and a replaced fact show old value then new), finished research,
+// proposals and their statuses, the operator's sector. A call step is no draft and no "done"; a
+// row found by research shows only when marked, a rule's sector and research still open never;
+// another org's rows never. What belongs to the org shows on its other campaign's lead too.
+func TestLeadTimelineOutreach(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	lead := f.formLead(t, "timeline-reach.localhost")
+	org := f.orgOf(t, lead)
+	la := f.leadOf(t, lead)
+	f.ownerRun(t, `INSERT INTO campaign (id, account_id, slug, name) VALUES (2, 1, 'cafes', 'Cafes')`)
+	sibling := f.leadIn(t, 2, org, la.Kind, la.ProbeID)
+	stranger := f.formLead(t, "timeline-reach-other.localhost")
+	strangerOrg := f.orgOf(t, stranger)
+	formRoute := *la.RouteID
+	campaignOf := int64(1)
+
+	t0 := crmNow.Add(-40 * time.Hour)
+	at := func(h int) time.Time { return t0.Add(time.Duration(h) * time.Hour) }
+	id := func(sql string, args ...any) int64 { return ownerInt(t, f.owner, sql, args...) }
+	var want []leadstore.TimelineItem // oldest first, reversed below
+
+	shadow := f.manualBatch(t, true, lead) // first: it leaves the lead new
+	msgs := f.manualBatch(t, false, lead)
+	form, note := msgs[0].ID, msgs[1].ID
+	f.ownerRun(t, `UPDATE outreach_batch SET origin = 'draft_it' WHERE id = (SELECT batch_id FROM outreach_message WHERE id = $1)`, form)
+	f.ownerRun(t, `UPDATE outreach_message SET created_at = $2, slots = '{"writer": "claude"}' WHERE id = $1`, form, at(0))
+	f.ownerRun(t, `UPDATE outreach_message SET created_at = $2 WHERE id = $1`, note, at(1))
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineDraft, ID: form, At: at(0), State: "draft_it", Detail: "claude", Channel: "form", MessageID: form},
+		leadstore.TimelineItem{Kind: leadstore.TimelineDraft, ID: note, At: at(1), State: "draft_it", Detail: "template", Step: 1, Channel: "linkedin", MessageID: note})
+	// A call step of the same batch, done: no text was written and nothing was marked sent.
+	f.ownerRun(t, `INSERT INTO outreach_message (batch_id, lead_id, step, channel, body_text, slots, state, sent_at, created_at, mailbox_id)
+		SELECT batch_id, lead_id, 2, 'phone', '', '{}', 'done', $2, $2, $3 FROM outreach_message WHERE id = $1`, form, at(2), f.mailbox(t))
+
+	f.ownerRun(t, `UPDATE outreach_message SET created_at = $2 WHERE id = $1`, shadow[0].ID, at(3))
+	f.ownerRun(t, `UPDATE outreach_message SET created_at = $2 WHERE id = $1`, shadow[1].ID, at(4))
+	f.ownerRun(t, `UPDATE outreach_batch SET origin = 'send_now' WHERE id = (SELECT batch_id FROM outreach_message WHERE id = $1)`, shadow[0].ID)
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineDraft, ID: shadow[0].ID, At: at(3), State: "send_now", Detail: "template", Channel: "form", Shadow: true, MessageID: shadow[0].ID},
+		leadstore.TimelineItem{Kind: leadstore.TimelineDraft, ID: shadow[1].ID, At: at(4), State: "send_now", Detail: "template", Step: 1, Channel: "linkedin", Shadow: true, MessageID: shadow[1].ID})
+
+	edit := id(`INSERT INTO message_edit (message_id, body_before, body_after, actor, at) VALUES ($1, 'note', 'a better note', 'operator', $2) RETURNING id`, note, at(5))
+	want = append(want, leadstore.TimelineItem{Kind: leadstore.TimelineEdit, ID: edit, At: at(5), Step: 1, Channel: "linkedin", MessageID: note})
+
+	if _, err := f.q.MarkDone(ctx, form, leadstore.ActorGremy); err != nil {
+		t.Fatal(err)
+	}
+	f.ownerRun(t, `UPDATE outreach_message SET sent_at = $2 WHERE id = $1`, form, at(6))
+	want = append(want, leadstore.TimelineItem{Kind: leadstore.TimelineDone, ID: form, At: at(6), State: "done", Channel: "form", MessageID: form})
+
+	const addRoute = `INSERT INTO contact_route (org_id, kind, value, derived_by, found_at) VALUES ($1, $2, $3, 'operator@1', $4) RETURNING id`
+	const addFact = `INSERT INTO org_fact (org_id, kind, value, normalized, derived_by, found_at) VALUES ($1, 'phone', $2, $3, 'operator@1', $4) RETURNING id`
+	oldRoute := id(addRoute, org, "email", "old@reach.example", at(7))
+	newRoute := id(addRoute, org, "email", "new@reach.example", at(8))
+	retireRoute := id(`INSERT INTO contact_mark (route_id, mark, note, replaced_by_route_id, actor, at) VALUES ($1, 'retire', 'moved on', $2, 'operator', $3) RETURNING id`, oldRoute, newRoute, at(9))
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: oldRoute, At: at(7), State: leadstore.TimelineAdded, Detail: "old@reach.example", Channel: "email"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: newRoute, At: at(8), State: leadstore.TimelineAdded, Detail: "new@reach.example", Channel: "email"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: retireRoute, At: at(9), State: "retire", Detail: "old@reach.example → new@reach.example", Channel: "email", Note: "moved on"})
+
+	oldFact := id(addFact, org, "01632 960071", "+441632960071", at(10))
+	newFact := id(addFact, org, "01632 960072", "+441632960072", at(11))
+	retireFact := id(`INSERT INTO contact_mark (fact_id, mark, replaced_by_fact_id, actor, at) VALUES ($1, 'retire', $2, 'operator', $3) RETURNING id`, oldFact, newFact, at(12))
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: oldFact, At: at(10), State: leadstore.TimelineAdded, Detail: "01632 960071", Channel: "phone"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: newFact, At: at(11), State: leadstore.TimelineAdded, Detail: "01632 960072", Channel: "phone"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: retireFact, At: at(12), State: "retire", Detail: "01632 960071 → 01632 960072", Channel: "phone"})
+
+	const addPerson = `INSERT INTO org_person (org_id, name, role, derived_by, fetch_id, actor, at) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`
+	named := id(addPerson, org, "Pat Harbour", "Head of IT", "operator@1", nil, "operator", at(13))
+	claimPerson := id(`INSERT INTO contact_mark (person_id, mark, note, actor, at) VALUES ($1, 'claim', 'met at a meetup', 'operator', $2) RETURNING id`, named, at(14))
+	roleOnly := id(addPerson, org, nil, "Editor", "operator@1", nil, "operator", at(15))
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: named, At: at(13), State: leadstore.TimelineAdded, Detail: "Pat Harbour · Head of IT", Channel: "person"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: claimPerson, At: at(14), State: "claim", Detail: "Pat Harbour · Head of IT", Channel: "person", Note: "met at a meetup"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: roleOnly, At: at(15), State: leadstore.TimelineAdded, Detail: "Editor", Channel: "person"})
+
+	// Found by research: not an addition of the operator's, until he marks it.
+	id(addPerson, org, "Sam Harbour", "Owner", "claude-research@1", f.fid, "system", at(16))
+	claimRoute := id(`INSERT INTO contact_mark (route_id, mark, actor, at) VALUES ($1, 'claim', 'operator', $2) RETURNING id`, formRoute, at(16))
+	want = append(want, leadstore.TimelineItem{Kind: leadstore.TimelineContact, ID: claimRoute, At: at(16), State: "claim",
+		Detail: "https://timeline-reach.localhost/contact", Channel: "form"})
+
+	const addResearch = `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, status, want, candidates, verified,
+		requested_at, started_at, finished_at, actor) VALUES ($1, $2, $3, 'button', $4, $5, $6, $7, $8, $9, $10, 'operator') RETURNING id`
+	found := id(addResearch, org, lead, campaignOf, "found", []string{"email", "linkedin"}, 2, 1, at(17), at(17), at(17))
+	nothing := id(addResearch, org, lead, campaignOf, "nothing", []string{"phone"}, 0, 0, at(18), at(18), at(18))
+	failed := id(addResearch, org, lead, campaignOf, "error", []string{"email"}, 0, 0, at(19), at(19), at(19))
+	id(addResearch, org, lead, campaignOf, "looking", []string{"email"}, 0, 0, at(20), at(20), nil)
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineResearch, ID: found, At: at(17), State: "found", Detail: "email, linkedin"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineResearch, ID: nothing, At: at(18), State: "nothing", Detail: "phone"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineResearch, ID: failed, At: at(19), State: "error", Detail: "email"})
+
+	proposal := id(`INSERT INTO lead_proposal (lead_id, title, value_cents, actor, at) VALUES ($1, 'Site rebuild', 500000, 'operator', $2) RETURNING id`, lead, at(21))
+	const addStatus = `INSERT INTO lead_proposal_status (proposal_id, status, note, actor, at) VALUES ($1, $2, $3, 'operator', $4) RETURNING id`
+	sentStatus := id(addStatus, proposal, "sent", "", at(22))
+	accepted := id(addStatus, proposal, "accepted", "signed on the call", at(23))
+	want = append(want,
+		leadstore.TimelineItem{Kind: leadstore.TimelineProposal, ID: proposal, At: at(21), State: leadstore.TimelineAdded, Detail: "Site rebuild"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineProposal, ID: sentStatus, At: at(22), State: "sent", Detail: "Site rebuild"},
+		leadstore.TimelineItem{Kind: leadstore.TimelineProposal, ID: accepted, At: at(23), State: "accepted", Detail: "Site rebuild", Note: "signed on the call"})
+
+	const addSector = `INSERT INTO org_sector (org_id, sector, source, actor, at) VALUES ($1, $2, $3, $4, $5) RETURNING id`
+	sector := id(addSector, org, "education", "operator", "operator", at(24))
+	id(addSector, org, "retail", "rule", "system", at(25))
+	want = append(want, leadstore.TimelineItem{Kind: leadstore.TimelineSector, ID: sector, At: at(24), State: "education"})
+
+	// Another org's rows, every sort.
+	strangerRoute := id(addRoute, strangerOrg, "email", "other@reach-other.example", at(26))
+	id(`INSERT INTO contact_mark (route_id, mark, actor, at) VALUES ($1, 'claim', 'operator', $2) RETURNING id`, strangerRoute, at(26))
+	id(addFact, strangerOrg, "01632 960073", "+441632960073", at(26))
+	id(addPerson, strangerOrg, "Lee Other", "Owner", "operator@1", nil, "operator", at(26))
+	id(addResearch, strangerOrg, stranger, campaignOf, "nothing", []string{"email"}, 0, 0, at(26), at(26), at(26))
+	strangerProposal := id(`INSERT INTO lead_proposal (lead_id, title, actor, at) VALUES ($1, 'Not theirs', 'operator', $2) RETURNING id`, stranger, at(26))
+	id(addStatus, strangerProposal, "sent", "", at(26))
+	id(addSector, strangerOrg, "media", "operator", "operator", at(26))
+	strangerMsg := f.manualBatch(t, false, stranger)[0].ID
+	f.ownerRun(t, `UPDATE outreach_message SET created_at = $2 WHERE id = $1`, strangerMsg, at(26))
+	id(`INSERT INTO message_edit (message_id, body_before, body_after, actor, at) VALUES ($1, 'a', 'b', 'operator', $2) RETURNING id`, strangerMsg, at(26))
+
+	dated := func(leadID int64, limit int) []leadstore.TimelineItem {
+		t.Helper()
+		all, err := f.q.LeadTimeline(ctx, leadID, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []leadstore.TimelineItem
+		for _, it := range all {
+			if it.At.Before(t0) {
+				continue // the fixture's own writes, dated by the clock
+			}
+			it.At = it.At.UTC()
+			out = append(out, it)
+		}
+		return out
+	}
+	got := dated(lead, 500)
+	slices.Reverse(want)
+	if len(got) != len(want) {
+		t.Errorf("%d items, want %d", len(got), len(want))
+	}
+	for i := range min(len(got), len(want)) {
+		if got[i] != want[i] {
+			t.Errorf("item %d:\n got %+v\nwant %+v", i, got[i], want[i])
+		}
+	}
+	if got := dated(lead, 2); len(got) != 2 || got[0].ID != sector || got[1].ID != accepted {
+		t.Errorf("limit 2: %+v", got)
+	}
+
+	// The other campaign's lead on the org: the org's contacts, research and sector, not this
+	// lead's messages or proposals.
+	var orgWide []leadstore.TimelineItem
+	for _, it := range want {
+		if it.Kind == leadstore.TimelineContact || it.Kind == leadstore.TimelineResearch || it.Kind == leadstore.TimelineSector {
+			orgWide = append(orgWide, it)
+		}
+	}
+	if got := dated(sibling, 500); !slices.Equal(got, orgWide) {
+		t.Errorf("the org's other lead:\n got %+v\nwant %+v", got, orgWide)
 	}
 }
 
