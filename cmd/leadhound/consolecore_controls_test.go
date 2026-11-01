@@ -623,3 +623,26 @@ func TestLastBadNeverReadsAGuardedService(t *testing.T) {
 		t.Errorf("a passed-over tick changed the row: %+v %q vs %+v %q", a, busyA, b, busyB)
 	}
 }
+
+// TestTimerParseSystemctlDeactivating: a service deactivating (a guarded unit while its
+// ExecStopPost= records the run's end) reads as stopping, not starting, and the Run now rows
+// count it as busy (serviceBusy); an inactive or activating one keeps its old reading.
+func TestTimerParseSystemctlDeactivating(t *testing.T) {
+	units := []string{serviceProbe, serviceContacts, serviceBatch}
+	out := "Id=leadhound-leads-probe.service\nLoadState=loaded\nActiveState=deactivating\nUnitFileState=static\n\n" +
+		"Id=leadhound-leads-contacts.service\nLoadState=loaded\nActiveState=activating\nUnitFileState=static\n\n" +
+		"Id=leadhound-leads-batch.service\nLoadState=loaded\nActiveState=inactive\nUnitFileState=static\n"
+	got, err := parseSystemctlShow([]byte(out), units)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := got[serviceProbe]; !st.Stopping || st.Starting || st.Active || st.Failed || !serviceBusy(st) {
+		t.Errorf("deactivating %+v, want stopping and busy", st)
+	}
+	if st := got[serviceContacts]; !st.Starting || st.Stopping || !serviceBusy(st) {
+		t.Errorf("activating %+v, want starting and busy", st)
+	}
+	if st := got[serviceBatch]; st.Starting || st.Stopping || serviceBusy(st) {
+		t.Errorf("inactive %+v, want not busy", st)
+	}
+}

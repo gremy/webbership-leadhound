@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -346,6 +348,175 @@ func TestTimerGuardDatabaseDown(t *testing.T) {
 	}
 	if code := run(context.Background(), []string{"timer-guard", "--record", "--ended", "leads-probe"}, &bytes.Buffer{}); code != 0 {
 		t.Errorf("--ended, database down: exit %d, want 0", code)
+	}
+	// The press ran once, so it is marked served beside its request (0600, its time), and the
+	// next tick with the database still down does not run it again.
+	marker := servedMarker(dir, "leads-probe")
+	fi, err := os.Stat(marker)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("marker %v, %v; want a 0600 file", fi, err)
+	}
+	r, err := readRunRequest(dir, "leads-probe")
+	if err != nil || r == nil {
+		t.Fatal(r, err)
+	}
+	if b, err := os.ReadFile(marker); /* #nosec G304 -- a test temp dir */ err != nil || strings.TrimSpace(string(b)) != r.UTC().Format(time.RFC3339Nano) {
+		t.Errorf("marker holds %q, %v; want the request time", b, err)
+	}
+	if code := run(context.Background(), []string{"timer-guard", "--record", "leads-probe"}, &bytes.Buffer{}); code != 3 {
+		t.Errorf("the same press again, database down: exit %d, want 3", code)
+	}
+	// A new press is not the marked one: it runs once.
+	if err := writeRunRequest(dir, "leads-probe", now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if code := run(context.Background(), []string{"timer-guard", "--record", "leads-probe"}, &bytes.Buffer{}); code != 0 {
+		t.Errorf("a new press, database down: exit %d, want 0", code)
+	}
+	if code := run(context.Background(), []string{"timer-guard", "--record", "leads-probe"}, &bytes.Buffer{}); code != 3 {
+		t.Errorf("the new press again, database down: exit %d, want 3", code)
+	}
+	// A request file is never deleted.
+	if r, err := readRunRequest(dir, "leads-probe"); err != nil || r == nil {
+		t.Errorf("request file after the runs: %v, %v", r, err)
+	}
+}
+
+// TestTimerGuardDatabaseDownMarkerInDoubt: with the database down, a marker that cannot be read
+// or holds no time, or one that cannot be written, means wait: the press does not run.
+func TestTimerGuardDatabaseDownMarkerInDoubt(t *testing.T) {
+	now := bt(11, 2, 12, 0)
+	for _, tc := range []struct {
+		name string
+		prep func(t *testing.T, dir string)
+	}{
+		{"marker unreadable", func(t *testing.T, dir string) {
+			// Unreadable, though it could be replaced: the read alone must make it wait.
+			if err := os.WriteFile(servedMarker(dir, "leads-batch"), []byte("x"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.ReadFile(servedMarker(dir, "leads-batch")); err == nil {
+				t.Skip("the marker reads despite mode 0000 (running as root)")
+			}
+		}},
+		{"marker holds no time", func(t *testing.T, dir string) {
+			if err := os.WriteFile(servedMarker(dir, "leads-batch"), []byte("half"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"marker cannot be written", func(t *testing.T, dir string) {
+			if err := os.Chmod(filepath.Join(dir, runRequestDir), 0o500); err != nil { // #nosec G302 -- a test temp dir made read-only
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, runRequestDir), 0o700) }) // #nosec G302 -- the run/ folder's own mode back
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("LEADHOUND_DATA_DIR", dir)
+			t.Setenv("LEADHOUND_DATABASE_URL", "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=1")
+			t.Setenv("INVOCATION_ID", "")
+			saved := guardClock
+			guardClock = func() time.Time { return now }
+			t.Cleanup(func() { guardClock = saved })
+			captureGuardLog(t)
+			captureStdout(t)
+			if err := writeRunRequest(dir, "leads-batch", now.Add(-2*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			tc.prep(t, dir)
+			if code := run(context.Background(), []string{"timer-guard", "--record", "leads-batch"}, &bytes.Buffer{}); code != 3 {
+				t.Errorf("exit %d, want 3", code)
+			}
+		})
+	}
+}
+
+// TestPressDealt: the press a recorded decision dealt with, to be marked served: the one let
+// through, or a fresh one already served by a run; never one waiting behind the lock.
+func TestPressDealt(t *testing.T) {
+	g := guardJobs["leads-contacts"]
+	now := bt(11, 2, 12, 0)
+	r := now.Add(-5 * time.Minute)
+	reqs := map[string]*time.Time{"leads-contacts": &r}
+	plan := bt(11, 3, 10, 0)
+	for _, tc := range []struct {
+		verdict string
+		at      time.Time
+		want    *time.Time
+	}{
+		{verdictPress, r, &r},
+		{verdictWait, plan, &r},
+		{verdictDue, plan, &r},
+		{verdictDeferred, plan, &r},
+		{verdictDeferred, r, nil},
+	} {
+		got := pressDealt(g, reqs, tc.verdict, tc.at, now)
+		if (got == nil) != (tc.want == nil) || (got != nil && !got.Equal(*tc.want)) {
+			t.Errorf("%s at %v: %v, want %v", tc.verdict, tc.at, got, tc.want)
+		}
+	}
+	if got := pressDealt(g, nil, verdictWait, plan, now); got != nil {
+		t.Errorf("no press: %v", got)
+	}
+}
+
+// TestStartedNothing: a start row closed as unrecorded with no work row of its job inside its
+// window neither anchors the plan nor serves a press, so its slot is still due at the next
+// tick; with a work row inside it anchors and serves as before. For ats and collect the work
+// rows are their own collect rows.
+func TestStartedNothing(t *testing.T) {
+	d := func(day, h, m int) time.Time { return bt(11, day, h, m) }
+	for _, tc := range []struct {
+		job  string
+		work store.Run
+	}{
+		{"leads-contacts", stepRun(9, commandLeadsContacts, d(2, 10, 1), tp(d(2, 11, 0)))},
+		{"leads-batch", stepRun(9, commandLeadsVerify, d(2, 6, 16), tp(d(2, 6, 40)))},
+		{"ats", store.Run{ID: 9, Command: linkedin.CommandCollect, Source: "greenhouse", StartedAt: d(2, 1, 1), FinishedAt: tp(d(2, 1, 30))}},
+		{"collect", store.Run{ID: 9, Command: linkedin.CommandCollect, Source: linkedin.Source, StartedAt: d(2, 6, 31), FinishedAt: tp(d(2, 6, 40))}},
+	} {
+		t.Run(tc.job, func(t *testing.T) {
+			g := guardJobs[tc.job]
+			slot := slotOn(d(2, 0, 0), 0, g.slots[0])
+			prev := closedRun(startRun(1, commandScheduled, tc.job, slot.Add(-g.interval()), nil, slot.Add(-g.interval())), slot.Add(-g.interval()+time.Hour), "success")
+			open := startRun(2, commandScheduled, tc.job, slot, nil, slot)
+			next := slot.Add(tick)
+
+			// No work row: closed as unrecorded at its start, and the slot is due again.
+			nothing := guardRows{starts: []store.Run{prev, open}}
+			dead := deadRuns(nothing.starts, nothing.steps)
+			nothing.starts[1] = dead[0]
+			if !startedNothing(dead[0], nil) || len(nothing.counted()) != 1 {
+				t.Fatalf("a run with no work counted: %+v", nothing.counted())
+			}
+			if v, at := guardDecision(g, nil, nothing.served, nothing.anchor(g), false, next); v != verdictDue || !at.Equal(slot) {
+				t.Errorf("next tick after a run that started nothing: %s %v, want due for %v", v, at, slot)
+			}
+			// A press it was opened for is not served by it.
+			if nothing.served(slot) {
+				t.Error("a run that started nothing serves the press")
+			}
+
+			// Its own work row inside the window: it anchors and serves as before.
+			ran := guardRows{starts: []store.Run{prev, open}, steps: []store.Run{tc.work}}
+			ran.starts[1] = deadRuns(ran.starts, ran.steps)[0]
+			if startedNothing(ran.starts[1], ran.steps) || len(ran.counted()) != 2 {
+				t.Fatalf("a run with work not counted: %+v", ran.starts[1])
+			}
+			if v, _ := guardDecision(g, nil, ran.served, ran.anchor(g), false, next); v != verdictWait {
+				t.Errorf("next tick after a run that ran: %s, want wait", v)
+			}
+			if !ran.served(slot) {
+				t.Error("a run that ran does not serve the press at its start")
+			}
+
+			// Only unrecorded rows are judged: a run its unit closed counts even with no work.
+			closed := guardRows{starts: []store.Run{prev, closedRun(open, slot.Add(time.Minute), "exit-code exit 1")}}
+			if len(closed.counted()) != 2 {
+				t.Error("a run closed by its unit was dropped")
+			}
+		})
 	}
 }
 

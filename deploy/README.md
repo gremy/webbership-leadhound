@@ -146,6 +146,7 @@ That wait is never a skip: the next tick checks again, and the job starts once t
 When in doubt, it waits: a database it cannot read, a crash or its own one-minute timeout passes over the tick, and the next tick tries again.
 So a broken check shows as an overdue run on the console, never as a job run every 15 minutes.
 The one exception is a fresh press, which runs even when the database cannot be read, so the job itself reports the database.
+Every press the check lets through or finds already served is marked in a hidden file beside its request (`run/.<request>.served`), so a press that has had its run never runs again while the database is out of reach; a marker it cannot read or write means wait.
 `systemctl start` of a guarded service by hand is passed over too unless the job is due: use its button, or write its request file as the console does.
 
 **The rows.**
@@ -153,6 +154,7 @@ Each start the check lets through opens one run row, `run-now` (note `asked at <
 The row stays open while the job runs, and the unit's `ExecStopPost=` closes it with systemd's own result (`· ended success`, `· ended timeout`, …), also after a failure or a kill.
 A row left open by a reboot is closed `· ended unrecorded` by the next check.
 These rows are the plan's anchor, and the console reads a run's state from them.
+An `unrecorded` row with no step row of its job inside it (for ATS and collect, no collect row of their own) is a start that never ran: it neither anchors the plan nor serves a press, so its slot or press is still due at the next tick.
 They stay off the dashboard's latest runs; each step still records its own row as before.
 
 **The journal.**
@@ -368,8 +370,8 @@ The same sentence, with a link to Controls, sits above the Outreach tab's list a
 - **Run a job now**: the Contacts, Site probe and Morning batch rows each have a Run now block, so you can start the job without ssh.
   Tick the box to confirm, because the run takes a while and spends credits, then press Run now.
   The console writes the request file (`run/leads-contacts`, `run/leads-probe` or `run/leads-batch`), and the job's watcher starts its timed service unchanged.
-  It refuses, and says why, when the server's systemd cannot be read, while the job runs or a press already waits, while the job is switched off, while its watcher is not armed or has stopped, for Contacts while the site probe runs and for Site probe while the contacts job runs (they share the sites' fetch lock), for Morning batch while a batch waits for you to approve it, and while the box is not ticked.
-  The block then follows the run in a live line: waiting to start, running and which step, ended, did not finish, or stuck.
+  It refuses, and says why, when the server's systemd cannot be read, while the job runs (until its unit has recorded the end) or a press already waits, while the job is switched off, while its watcher is not armed or has stopped, for Contacts while the site probe runs and for Site probe while the contacts job runs (they share the sites' fetch lock), for Morning batch while a batch waits for you to approve it, and while the box is not ticked.
+  The block then follows the run in a live line: waiting to start, running and which step, ended, did not finish, did not start, or stuck.
   It refreshes itself every 30 seconds while something is pending.
   "Ended" means the unit ended; each step's own result is in the row's Last run.
   A press moves the next automatic run to one interval after it (see [Run now and the rolling schedule](#run-now-and-the-rolling-schedule)).

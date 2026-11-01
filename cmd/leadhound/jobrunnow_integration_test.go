@@ -170,6 +170,11 @@ func TestJobRunNowRefusalsWriteNothing(t *testing.T) {
 			prep: func(t *testing.T, _ *sendWorld, _ *backend) {
 				execRun(t, `INSERT INTO run (command, source, started_at, note) VALUES ($1, 'leads-probe', '2026-10-27 09:30Z', 'planned 2026-10-27T11:30:00+02:00')`, commandScheduled)
 			}},
+		{name: "the run's end being recorded", job: console.JobProbe, confirmed: true, states: map[string]string{serviceProbe: "deactivating/static"},
+			want: "Already running since ",
+			prep: func(t *testing.T, _ *sendWorld, _ *backend) {
+				execRun(t, `INSERT INTO run (command, source, started_at, note) VALUES ($1, 'leads-probe', '2026-10-27 09:30Z', 'planned 2026-10-27T11:30:00+02:00')`, commandScheduled)
+			}},
 		{name: "contacts while the probe holds the lock", job: console.JobContacts, confirmed: true,
 			want: "The site probe is running since ",
 			prep: func(t *testing.T, _ *sendWorld, _ *backend) {

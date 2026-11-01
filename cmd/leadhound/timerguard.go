@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -96,8 +97,9 @@ type guardJob struct {
 	// to anchor the very first plan.
 	legacyCommand string
 	legacy        func(store.Run) bool
-	// steps are the job's step commands, used only to name the running step and to date a run
-	// that ended unrecorded; none for ats and collect (the Jobs home card keeps its own state).
+	// steps are the job's step commands, used to name the running step, to date a run that
+	// ended unrecorded and to tell whether it ran at all (workRows); none for ats and collect,
+	// whose own work rows are their legacy collect rows (the Jobs home card keeps its own state).
 	steps []string
 	// limit is its unit's TimeoutStartSec: the longest a run can last.
 	limit time.Duration
@@ -415,16 +417,39 @@ func guardDecision(g guardJob, reqs map[string]*time.Time, served func(time.Time
 type guardRows struct {
 	starts     []store.Run // the job's start rows, oldest first
 	legacy     *store.Run  // its latest legacy row, nil when none
-	steps      []store.Run // its own step rows (g.steps), oldest first
+	steps      []store.Run // its own work rows (workRows: g.steps' rows, else its legacy rows), oldest first
 	lockStarts []store.Run // the start rows of the job sharing its lock (lockJob)
 	lockSteps  []store.Run // the rows of that job's fetch steps (lockedBy)
 }
 
-// anchor is the rows' anchorOf.
-func (rows guardRows) anchor(g guardJob) *time.Time { return anchorOf(g, rows.starts, rows.legacy) }
+// counted are the rows' start rows that count for the plan and for a press (countedStarts).
+func (rows guardRows) counted() []store.Run { return countedStarts(rows.starts, rows.steps) }
 
-// served is pressServed over the job's start rows.
-func (rows guardRows) served(r time.Time) bool { return pressServed(r, rows.starts) }
+// anchor is the rows' anchorOf, over the counted start rows.
+func (rows guardRows) anchor(g guardJob) *time.Time { return anchorOf(g, rows.counted(), rows.legacy) }
+
+// served is pressServed over the job's counted start rows.
+func (rows guardRows) served(r time.Time) bool { return pressServed(r, rows.counted()) }
+
+// startedNothing is a start row closed as unrecorded with nothing to show its job ran: no work
+// row of the job (workRows) began inside [started_at, finished_at]. Its start was recorded,
+// but the job itself may never have started (a commit that errored after it landed, a check
+// killed after its commit, the unit stopped between its check and its start), so it neither
+// anchors the plan nor serves a press: the slot stays due, the press stays pending.
+func startedNothing(s store.Run, work []store.Run) bool {
+	if !isStartRow(s) || s.FinishedAt == nil || endedWith(s) != noteUnrecorded {
+		return false
+	}
+	return !slices.ContainsFunc(work, func(r store.Run) bool {
+		return !r.StartedAt.Before(s.StartedAt) && !r.StartedAt.After(*s.FinishedAt)
+	})
+}
+
+// countedStarts are starts without the ones that started nothing (startedNothing over work):
+// what anchorOf and pressServed read, in the check and in the console alike.
+func countedStarts(starts, work []store.Run) []store.Run {
+	return slices.DeleteFunc(slices.Clone(starts), func(s store.Run) bool { return startedNothing(s, work) })
+}
 
 // lockHeld is lockHeldBy over the rows.
 func (rows guardRows) lockHeld(g guardJob, now time.Time) (time.Time, bool) {
@@ -484,6 +509,21 @@ func guardStepRows(ctx context.Context, db store.DBTX, commands []string, since 
 		 ORDER BY started_at, id`, commands, since)
 }
 
+// workRows are g's own work rows started at or after since, oldest first: its step rows
+// (g.steps), or for a job without steps (ats, collect) its legacy rows (g.legacy), one per
+// ATS or per collect. They date a run that ended unrecorded (deadEnd) and show whether it ran
+// at all (startedNothing).
+func workRows(ctx context.Context, db store.DBTX, g guardJob, since time.Time) ([]store.Run, error) {
+	if len(g.steps) > 0 {
+		return guardStepRows(ctx, db, g.steps, since)
+	}
+	runs, err := guardStepRows(ctx, db, []string{g.legacyCommand}, since)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(runs, func(r store.Run) bool { return !g.legacy(r) }), nil
+}
+
 // readGuardRows reads everything the check (and the console's plannedRun) decides job from.
 func readGuardRows(ctx context.Context, db store.DBTX, job string, g guardJob, now time.Time) (guardRows, error) {
 	var rows guardRows
@@ -495,7 +535,7 @@ func readGuardRows(ctx context.Context, db store.DBTX, job string, g guardJob, n
 	if rows.legacy, err = guardLegacyRow(ctx, db, g, since); err != nil {
 		return guardRows{}, err
 	}
-	if rows.steps, err = guardStepRows(ctx, db, g.steps, since); err != nil {
+	if rows.steps, err = workRows(ctx, db, g, since); err != nil {
 		return guardRows{}, err
 	}
 	if g.lockJob != "" {
@@ -748,7 +788,7 @@ func guardExplain(out io.Writer, job string, g guardJob, rows guardRows, reqs ma
 	default:
 		_, _ = fmt.Fprintf(out, "%s (%s): not due; next run planned at %s.\n", g.name, job, planWords(at))
 	}
-	switch r := latestStart(rows.starts); {
+	switch r := latestStart(rows.counted()); {
 	case r != nil && r.Command == commandRunNow:
 		_, _ = fmt.Fprintf(out, "Counted from the run by hand at %s.\n", planWords(*anchor))
 	case r != nil:
@@ -782,7 +822,8 @@ func guardOpen(ctx context.Context, dsn string) (*store.Store, error) {
 // With --record (only the unit passes it) it decides and writes (guardRecord): nil starts the
 // job, errNotNow (exit 3) passes over this tick. Any error is errNotNow with one warning line,
 // except a fresh press, which runs even when the database cannot be read (the job then reports
-// the database, and --ended records the press). With --ended it closes the run's row instead
+// the database, and --ended records the press) unless the check already let it through or
+// found it served: every press it deals with is marked beside its request (servedMarker). With --ended it closes the run's row instead
 // (guardEnded) and always exits 0: a failed close is healed by the next check's closeDead.
 func cmdTimerGuard(ctx context.Context, args []string) (err error) {
 	var job string
@@ -850,8 +891,9 @@ func cmdTimerGuard(ctx context.Context, args []string) (err error) {
 		return nil
 	}
 
-	// A press fresh enough to run even when the database cannot tell whether it was served.
-	freshPress := pressWithin(g, reqs, func(time.Time) bool { return false }, now, pressFresh) != nil
+	// A press fresh enough to run even when the database cannot tell whether it was served,
+	// unless the check already let it through or found it served (its marker, markedServed).
+	freshPress := pressWithin(g, reqs, func(r time.Time) bool { return markedServed(cfg.DataDir, g, reqs, r) }, now, pressFresh)
 	verdict, at, err := guardRecordOpen(ctx, cfg, cfgErr, job, g, reqs, now)
 	if *explain && verdict != "" {
 		_, _ = fmt.Fprintf(stdout, "%s (%s): %s, %s.\n", g.name, job, verdict, planWords(at))
@@ -859,17 +901,115 @@ func cmdTimerGuard(ctx context.Context, args []string) (err error) {
 	switch {
 	case err != nil && verdict == verdictPress:
 		slog.Warn("timer-guard: press start not recorded, running it", "job", job, "err", err)
+		markServedOrWarn(cfg.DataDir, job, g, reqs, at)
 		return nil
-	case err != nil && verdict == "" && freshPress:
+	case err != nil && verdict == "" && freshPress != nil:
+		// The marker is what keeps this press from running again at the next tick while the
+		// database stays out of reach: unwritten, the check waits.
+		if merr := markServed(cfg.DataDir, g, reqs, *freshPress); merr != nil {
+			slog.Warn("timer-guard: database unreadable and the press could not be marked served, not now", "job", job, "err", err, "marker", merr)
+			return errNotNow
+		}
 		slog.Warn("timer-guard: database unreadable, running the fresh press", "job", job, "err", err)
 		return nil
 	case err != nil:
 		slog.Warn("timer-guard: in doubt, not now", "job", job, "err", err)
 		return errNotNow
-	case verdict == verdictPress || verdict == verdictDue:
+	}
+	if r := pressDealt(g, reqs, verdict, at, now); r != nil {
+		markServedOrWarn(cfg.DataDir, job, g, reqs, *r)
+	}
+	if verdict == verdictPress || verdict == verdictDue {
 		return nil
 	}
 	return errNotNow
+}
+
+// pressDealt is the press the check's recorded decision dealt with: the one it let through
+// (verdictPress), or the newest fresh press it found already served by a run (any verdict but
+// a press waiting behind the lock); nil when there is none.
+func pressDealt(g guardJob, reqs map[string]*time.Time, verdict string, at, now time.Time) *time.Time {
+	if verdict == verdictPress {
+		return &at
+	}
+	r := pressWithin(g, reqs, func(time.Time) bool { return false }, now, g.pressWindow())
+	if r == nil || (verdict == verdictDeferred && at.Equal(*r)) {
+		return nil
+	}
+	return r
+}
+
+// servedMarker is the file beside action's request file (in the data directory's run/ folder,
+// the unit's own, 0700) that holds the time of the last press the check let through or found
+// served. Only the database-down exception reads it (markedServed): a press that has had its
+// run then never runs again while the database cannot say so. Request files are never deleted.
+func servedMarker(dataDir, action string) string {
+	return filepath.Join(dataDir, runRequestDir, "."+action+".served")
+}
+
+// pressActions are g's actions whose request is at r.
+func pressActions(g guardJob, reqs map[string]*time.Time, r time.Time) []string {
+	var out []string
+	for _, a := range g.actions {
+		if at := reqs[a]; at != nil && at.Equal(r) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// markServed writes r into the marker of each of g's actions whose request is r: to a temp
+// file beside it (0600), then renamed into place, so a reader never sees half a time.
+func markServed(dataDir string, g guardJob, reqs map[string]*time.Time, r time.Time) error {
+	if dataDir == "" {
+		return errors.New("timer guard: LEADHOUND_DATA_DIR is not set")
+	}
+	for _, a := range pressActions(g, reqs, r) {
+		path := servedMarker(dataDir, a)
+		f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+		if err != nil {
+			return fmt.Errorf("timer guard: mark served: %w", err)
+		}
+		tmp := f.Name()
+		_, werr := f.WriteString(r.UTC().Format(time.RFC3339Nano) + "\n")
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr == nil {
+			werr = os.Rename(tmp, path)
+		}
+		if werr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("timer guard: mark served: %w", werr)
+		}
+	}
+	return nil
+}
+
+// markServedOrWarn is markServed on the database's road, where the database already holds the
+// truth: a marker that cannot be written is one warning line and never stops the job.
+func markServedOrWarn(dataDir, job string, g guardJob, reqs map[string]*time.Time, r time.Time) {
+	if err := markServed(dataDir, g, reqs, r); err != nil {
+		slog.Warn("timer-guard: press not marked served", "job", job, "err", err)
+	}
+}
+
+// markedServed is whether the marker of one of g's actions whose request is r holds r. A
+// marker that cannot be read, or holds no time, counts as served: when in doubt, wait.
+func markedServed(dataDir string, g guardJob, reqs map[string]*time.Time, r time.Time) bool {
+	for _, a := range pressActions(g, reqs, r) {
+		b, err := os.ReadFile(servedMarker(dataDir, a)) // #nosec G304 -- action is one of the fixed guardJobs actions
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return true
+		}
+		if at, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b))); err != nil || at.Equal(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardRecordOpen opens the store and runs guardRecord.

@@ -112,7 +112,7 @@ func plannedLine(key string, g guardJob, rows guardRows, now time.Time) console.
 	anchor := rows.anchor(g)
 	verdict, at := guardDecision(g, nil, rows.served, anchor, held, now)
 	p := console.PlannedRun{At: at}
-	latest := latestStart(rows.starts)
+	latest := latestStart(rows.counted())
 	switch {
 	case latest != nil && latest.FinishedAt == nil && now.Sub(latest.StartedAt) < g.limit:
 		p.Line = fmt.Sprintf("Running since %s; the next run is planned from this one.", hhmm(latest.StartedAt, now))
@@ -196,33 +196,36 @@ func (u jobRunUnit) stuckWords(asked string) string {
 // jobRunNowState is a Run now row's block, pure, with busy the refusal a press would get for
 // it ("" when none). It reads the job's own start rows (one per run, open while it runs and
 // closed by the unit with "ended <result>"), never the service's Result or timestamps; steps
-// (the job's step rows) only name the step and show failed ones. In order:
+// (the job's step rows) name the step, show failed ones and tell a run that started nothing
+// (countedStarts: it serves no press, as in the check). svcBusy is serviceBusy. In order:
 //  1. systemd not read: idle, and the press is refused (jobRunNowDecision);
-//  2. the latest run is open: running while its service starts, else it did not finish;
+//  2. the latest run is open: running while its service starts or stops, else it did not finish;
 //  3. a press served by a run that began at or after it: that run's outcome;
 //  4. a press served by a run already going at it: when that run ended;
 //  5. an unserved press: waiting within pressFresh (a tick and a margin, the guard's own), then
-//     stuck: by then the watcher and the next tick have both passed it by;
+//     did not start when a run that started nothing began at or after it, else stuck: by then
+//     the watcher and the next tick have both passed it by;
 //  6. otherwise idle (Last run and the planned line cover the schedule's runs).
 //
 // Steps 3 and 4 hold only while that run is the latest; after a later run the row is idle.
-func jobRunNowState(u jobRunUnit, requested *time.Time, starts, steps []store.Run, svcStarting, read bool, now time.Time) (console.JobRunNow, string) {
-	st, busy := jobRunNowStep(u, requested, starts, steps, svcStarting, read, now)
+func jobRunNowState(u jobRunUnit, requested *time.Time, starts, steps []store.Run, svcBusy, read bool, now time.Time) (console.JobRunNow, string) {
+	st, busy := jobRunNowStep(u, requested, starts, steps, svcBusy, read, now)
 	st.CanAsk, st.Confirm = !st.Pending, u.confirm
 	return st, busy
 }
 
 // jobRunNowStep is jobRunNowState's block before CanAsk and Confirm are set.
-func jobRunNowStep(u jobRunUnit, requested *time.Time, starts, steps []store.Run, svcStarting, read bool, now time.Time) (console.JobRunNow, string) {
+func jobRunNowStep(u jobRunUnit, requested *time.Time, all, steps []store.Run, svcBusy, read bool, now time.Time) (console.JobRunNow, string) {
 	if !read {
 		return console.JobRunNow{State: "idle", Line: "Run now needs the server's systemd, which could not be asked just now."}, ""
 	}
+	starts := countedStarts(all, steps)
 	latest := latestStart(starts)
 	pressAfter := func(s store.Run) bool { return requested != nil && requested.After(s.StartedAt) }
 	if latest != nil && latest.FinishedAt == nil {
 		since := hhmm(latest.StartedAt, now)
 		switch {
-		case svcStarting:
+		case svcBusy:
 			line := fmt.Sprintf("Running since %s: %s.", since, u.runStep(steps, latest.StartedAt))
 			if pressAfter(*latest) {
 				line += fmt.Sprintf(" Asked at %s while a run was already going; that run covers it.", hhmm(*requested, now))
@@ -278,8 +281,18 @@ func jobRunNowStep(u jobRunUnit, requested *time.Time, starts, steps []store.Run
 	if now.Sub(*requested) < -pressAhead {
 		return console.JobRunNow{State: "idle"}, "" // ahead of the clock: the check ignores it too
 	}
+	if slices.ContainsFunc(all, func(s store.Run) bool { return !s.StartedAt.Before(*requested) && startedNothing(s, steps) }) {
+		return console.JobRunNow{State: "bad", Line: fmt.Sprintf("The run asked at %s did not start: its start was recorded, but none of its steps ran. See journalctl -u %s.",
+			asked, u.service)}, ""
+	}
 	return console.JobRunNow{State: "stuck", Line: u.stuckWords(asked)}, ""
 }
+
+// serviceBusy is whether a guarded service is in a run: starting (its check or its job) or
+// stopping (deactivating, while its ExecStopPost= records the end). A press while it stops
+// would land before that end is written, count as served by the run that is ending, and never
+// run.
+func serviceBusy(st unitState) bool { return st.Starting || st.Stopping }
 
 // jobRunFacts is what a press's refusals read besides the row's state: whether systemd was
 // read, the job's switch, its watcher, the job holding the sites' fetch lock (holder, its
@@ -347,7 +360,7 @@ func (b *backend) jobRunNowView(ctx context.Context, job string, timers timerRea
 	if err != nil {
 		return nil, err
 	}
-	st, _ := jobRunNowState(u, rememberedPress(req, now), rows.starts, rows.steps, timers.units[u.service].Starting, timers.fromSystemd, now.In(b.loc))
+	st, _ := jobRunNowState(u, rememberedPress(req, now), rows.starts, rows.steps, serviceBusy(timers.units[u.service]), timers.fromSystemd, now.In(b.loc))
 	return &st, nil
 }
 
@@ -378,7 +391,7 @@ func (b *backend) JobRunNow(ctx context.Context, job string, confirmed bool) (co
 	if err != nil {
 		return console.ControlOutcome{}, err
 	}
-	_, busy := jobRunNowState(u, rememberedPress(req, now), rows.starts, rows.steps, timers.units[u.service].Starting, timers.fromSystemd, local)
+	_, busy := jobRunNowState(u, rememberedPress(req, now), rows.starts, rows.steps, serviceBusy(timers.units[u.service]), timers.fromSystemd, local)
 	f := jobRunFacts{read: timers.fromSystemd, path: timers.units[u.path]}
 	lq := b.lq()
 	if f.off, _, err = jobOff(ctx, lq, u.switchJob); err != nil {
@@ -396,7 +409,10 @@ func (b *backend) JobRunNow(ctx context.Context, job string, confirmed bool) (co
 	if err != nil {
 		return console.ControlOutcome{}, err
 	}
-	if err := writeRunRequest(setup.dataDir, u.action, now); err != nil {
+	// The press is timed after systemd and the rows were read: a service that was no longer
+	// stopping then has its run's end written, so that end is before the press, and the run
+	// that ended cannot count as serving it.
+	if err := writeRunRequest(setup.dataDir, u.action, b.now()); err != nil {
 		return console.ControlOutcome{}, err
 	}
 	return console.ControlOutcome{Message: msg}, nil

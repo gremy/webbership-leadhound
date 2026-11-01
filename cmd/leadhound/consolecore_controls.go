@@ -51,8 +51,8 @@ const (
 )
 
 // The services the three Run now rows start, and the watchers that start them from a press
-// (deploy/leadhound-leads-*.path). Of a service only Starting is read: its Result and its
-// timestamps move on every tick its due-check passes over.
+// (deploy/leadhound-leads-*.path). Of a service only Starting and Stopping are read
+// (serviceBusy): its Result and its timestamps move on every tick its due-check passes over.
 const (
 	serviceBatch    = "leadhound-leads-batch.service"
 	serviceProbe    = "leadhound-leads-probe.service"
@@ -112,6 +112,9 @@ type unitState struct {
 	// Starting is ActiveState activating: a oneshot service (the backup) is activating for
 	// as long as it runs, never active.
 	Starting bool
+	// Stopping is ActiveState deactivating: a guarded service while its ExecStopPost= records
+	// the run's end. Read only for the Run now rows (serviceBusy); Starting stays as it was.
+	Stopping bool
 	// Failed is ActiveState failed: a watcher stopped by its service's start limit.
 	Failed bool
 	Next   *time.Time // a timer's next run; nil when none is planned
@@ -235,6 +238,7 @@ func parseSystemctlShow(out []byte, units []string) (map[string]unitState, error
 			Enabled:  b["UnitFileState"] == "enabled" || b["UnitFileState"] == "enabled-runtime",
 			Active:   b["ActiveState"] == "active",
 			Starting: b["ActiveState"] == "activating",
+			Stopping: b["ActiveState"] == "deactivating",
 			Failed:   b["ActiveState"] == "failed",
 		}
 		next, err := parseSystemdTime(b["NextElapseUSecRealtime"])

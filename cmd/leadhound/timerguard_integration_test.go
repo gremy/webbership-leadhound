@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -130,13 +131,15 @@ func TestTimerGuardRecord(t *testing.T) {
 	if len(rows) != 2 || rows[1].Command != commandRunNow || !strings.HasPrefix(rows[1].Note, noteAskedAt) {
 		t.Fatalf("start rows %+v, want a run-now row", rows)
 	}
+	// The run's first step ran (its row inside the run), and the run-now row was left open:
+	// the next check closes it as unrecorded before deciding, and the press stays served.
+	insertRun(t, commandLeadsBuild, "", rows[1].StartedAt.Add(time.Millisecond), new(rows[1].StartedAt.Add(2*time.Millisecond)), "")
 	if code, _ := guardRun(t, "--record", "leads-batch"); code != 3 {
 		t.Errorf("the same press again: exit %d, want 3", code)
 	}
 	if n := runCount(t, `SELECT count(*) FROM run WHERE command = $1`, commandRunNow); n != 1 {
 		t.Errorf("%d run-now rows, want 1", n)
 	}
-	// The run-now row was left open: the next check closes it as unrecorded before deciding.
 	if r := startRows(t, "leads-batch"); r[1].FinishedAt == nil || !strings.HasSuffix(r[1].Note, " · ended unrecorded") {
 		t.Errorf("a dead run left open: %+v", r[1])
 	}
@@ -269,6 +272,103 @@ func TestTimerGuardContactsProbeConcurrent(t *testing.T) {
 		}
 		if n != 1 || due != 1 || deferred != 1 {
 			t.Fatalf("round %d: %d new scheduled rows, verdicts %v; want one due and one deferred", i, n, verdicts)
+		}
+	}
+}
+
+// TestTimerGuardServedPressDatabaseDown: a press the check let through on the database's road
+// (Contacts pressed and started at once by its watcher) is marked served, so at the next tick
+// with the database out of reach it does not run a second time; nor does a press the check
+// found already served by a run going at it.
+func TestTimerGuardServedPressDatabaseDown(t *testing.T) {
+	now := time.Now()
+	dir := guardWorld(t, now)
+	press := now.Add(-time.Second)
+	if err := writeRunRequest(dir, "leads-contacts", press); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := guardRun(t, "--record", "leads-contacts"); code != 0 {
+		t.Fatalf("the press: exit %d, want 0", code)
+	}
+	if rows := startRows(t, "leads-contacts"); len(rows) != 1 || rows[0].Command != commandRunNow {
+		t.Fatalf("start rows %+v, want one run-now row", rows)
+	}
+	t.Setenv("LEADHOUND_DATABASE_URL", "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=1")
+	setGuardClock(t, now.Add(14*time.Minute))
+	if code, _ := guardRun(t, "--record", "leads-contacts"); code != 3 {
+		t.Errorf("the next tick, database down: exit %d, want 3 (the press already ran)", code)
+	}
+
+	// The probe pressed while its run was already going: that run serves it (the check
+	// waits), and the press is marked, so the database being down later changes nothing.
+	t.Setenv("LEADHOUND_DATABASE_URL", storetest.AppDSN())
+	setGuardClock(t, now)
+	insertRun(t, commandScheduled, "leads-probe", now.Add(-time.Hour), new(now.Add(time.Minute)), notePlanned+now.Add(-time.Hour).Format(time.RFC3339))
+	insertRun(t, commandLeadsSitesProbe, "", now.Add(-time.Hour+time.Second), new(now.Add(time.Minute)), "")
+	if err := writeRunRequest(dir, "leads-probe", now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := guardRun(t, "--record", "leads-probe"); code != 3 {
+		t.Fatalf("a press served by the run going: exit %d, want 3", code)
+	}
+	t.Setenv("LEADHOUND_DATABASE_URL", "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=1")
+	setGuardClock(t, now.Add(14*time.Minute))
+	if code, _ := guardRun(t, "--record", "leads-probe"); code != 3 {
+		t.Errorf("the served press, database down: exit %d, want 3", code)
+	}
+}
+
+// TestTimerGuardStartedNothingStillDue: a scheduled start row committed for a run that never
+// started (no step row) is closed as unrecorded by the next check and does not anchor: the
+// slot is still due at that tick and starts. Had a step run inside it, the tick waits.
+func TestTimerGuardStartedNothingStillDue(t *testing.T) {
+	g := guardJobs["leads-batch"]
+	slot := lastSlotBefore(g, time.Now())
+	for _, ran := range []bool{false, true} {
+		guardWorld(t, slot)
+		prev := slot.AddDate(0, 0, -1)
+		insertRun(t, commandScheduled, "leads-batch", prev, new(prev.Add(time.Hour)), notePlanned+prev.Format(time.RFC3339)+noteEnded+"success")
+		if code, _ := guardRun(t, "--record", "leads-batch"); code != 0 {
+			t.Fatalf("the slot: exit %d, want 0", code)
+		}
+		rows := startRows(t, "leads-batch")
+		if len(rows) != 2 || rows[1].FinishedAt != nil {
+			t.Fatalf("start rows %+v, want the slot's open row", rows)
+		}
+		if ran {
+			insertRun(t, commandLeadsBuild, "", rows[1].StartedAt.Add(time.Millisecond), new(rows[1].StartedAt.Add(2*time.Millisecond)), "")
+		}
+		setGuardClock(t, slot.Add(tick))
+		code, _ := guardRun(t, "--record", "leads-batch")
+		rows = startRows(t, "leads-batch")
+		switch {
+		case !ran && (code != 0 || len(rows) != 3 || rows[2].Note != notePlanned+slot.Format(time.RFC3339)):
+			t.Errorf("no step ran: exit %d, rows %+v; want 0 and a new row planned at the slot", code, rows)
+		case ran && (code != 3 || len(rows) != 2):
+			t.Errorf("a step ran: exit %d, rows %+v; want 3 and no new row", code, rows)
+		}
+		if !strings.HasSuffix(rows[1].Note, noteEnded+noteUnrecorded) {
+			t.Errorf("the slot's row %+v, want closed unrecorded", rows[1])
+		}
+	}
+}
+
+// TestTimerGuardWorkRows: the work rows a run is judged by are the job's step rows, or for ats
+// and collect their own collect rows only (an ATS's for ats, LinkedIn's for collect).
+func TestTimerGuardWorkRows(t *testing.T) {
+	now := time.Now()
+	guardWorld(t, now)
+	at := now.Add(-time.Hour)
+	insertRun(t, linkedin.CommandCollect, "greenhouse", at, new(at.Add(time.Minute)), "")
+	insertRun(t, linkedin.CommandCollect, linkedin.Source, at.Add(2*time.Minute), new(at.Add(3*time.Minute)), "")
+	insertRun(t, commandLeadsBuild, "", at.Add(4*time.Minute), new(at.Add(5*time.Minute)), "")
+	for job, want := range map[string]string{"ats": "greenhouse", "collect": linkedin.Source, "leads-batch": ""} {
+		rows, err := readGuardRows(context.Background(), storetest.AppConn(t), job, guardJobs[job], now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows.steps) != 1 || rows.steps[0].Source != want {
+			t.Errorf("%s: work rows %+v, want the one from %q", job, rows.steps, want)
 		}
 	}
 }

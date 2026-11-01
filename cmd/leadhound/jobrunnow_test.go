@@ -128,7 +128,23 @@ func TestJobRunNowState(t *testing.T) {
 		{name: "press, its run timed out", read: true, starts: []store.Run{closedRun(pressRow, bt(10, 27, 11, 40), "timeout")}, req: p(bt(10, 27, 11, 2)),
 			state: "bad", line: "The run asked at 11:02 did not finish (timeout). See journalctl -u leadhound-leads-contacts.service."},
 		{name: "press, its run closed unrecorded", read: true, starts: []store.Run{closedRun(pressRow, bt(10, 27, 11, 40), noteUnrecorded)}, req: p(bt(10, 27, 11, 2)),
+			steps: []store.Run{stepRun(12, commandLeadsContacts, bt(10, 27, 11, 3), p(bt(10, 27, 11, 40)))},
 			state: "bad", line: "The run asked at 11:02 did not finish (unrecorded). See journalctl -u leadhound-leads-contacts.service."},
+		// Its start row committed but no step of it ran (the commit errored after landing, the
+		// check was killed after it, the unit was stopped before its job): the press is not
+		// served; within pressFresh it waits for the next check, which runs it, then the row
+		// says the run did not start.
+		{name: "press, its run started nothing, still fresh", read: true, req: p(bt(10, 27, 11, 50)),
+			starts: []store.Run{closedRun(startRun(6, commandRunNow, "leads-contacts", bt(10, 27, 11, 50), nil, time.Time{}), bt(10, 27, 11, 50), noteUnrecorded)},
+			steps:  []store.Run{stepRun(12, commandLeadsContacts, bt(10, 27, 10, 1), p(bt(10, 27, 11, 0)))},
+			state:  "waiting", line: "Asked at 11:50, waiting to start.", busy: "Already asked at 11:50."},
+		{name: "press, its run started nothing", read: true, starts: []store.Run{closedRun(pressRow, bt(10, 27, 11, 2), noteUnrecorded)}, req: p(bt(10, 27, 11, 2)),
+			state: "bad", line: "The run asked at 11:02 did not start: its start was recorded, but none of its steps ran. See journalctl -u leadhound-leads-contacts.service."},
+		// While its ExecStopPost= records the end the service is deactivating and the row still
+		// open: running, and a press is refused (serviceBusy), or it would count as served by
+		// the run that is ending.
+		{name: "running, the service stopping", read: true, starting: serviceBusy(unitState{Stopping: true}), starts: []store.Run{open},
+			state: "running", line: "Running since 10:00: between two steps.", busy: "Already running since 10:00."},
 		{name: "press, a failed step in its run", read: true, starts: []store.Run{closedRun(pressRow, bt(10, 27, 11, 40), "success")}, req: p(bt(10, 27, 11, 2)),
 			steps: []store.Run{{ID: 12, Command: commandLeadsEnrich, StartedAt: bt(10, 27, 11, 10), FinishedAt: p(bt(10, 27, 11, 20)), Note: "failed: the store went away"}},
 			state: "bad", line: "The run asked at 11:02 ended at 11:40. Some steps failed; see Last run above."},
