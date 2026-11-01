@@ -1,6 +1,12 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Lead page and relevance by lead type (2026-11-01, on local main, not pushed or deployed; plan `leadhound-lead-page-by-campaign-type`, Checkpoints 1-3 built, in CP4):
+- Committed: CP1 rating types, the café question and state (`8a73dc3`), CP2 store, queue, list and `--type` on golden-draft and eval (`82b91a6`), CP3 the console by type (`5b48e25`).
+- What exists: Drupal leads keep `relevance@1` exactly (pinned); café leads get `relevance-cafe@1`; calls, the 30-call gate and the trust per type; a café's page shows The place, its café findings with vendor names and the comparison link, and no report card; agency pages lose the report card.
+- After deploy: the first contacts run re-rates every open café lead once, in the unit's second rate line (`leads rate --campaign cafes-loyalty`; about 2,300 Jev calls, cents); Drupal ratings untouched.
+- Next: CP4, `make gate` and one `make test-scale`, the real walk on dev, the review, then push and deploy on the operator's yes.
+
 Console redesign, Dashboard and Status, manual Send now and the CRM (2026-10-31, on local main, not pushed or deployed; plan `leadhound-console-redesign-manual-send`, Checkpoints 1-4b built, in CP5):
 - Committed: CP1 the board (`640b3b3`), CP2 the shell with Leads | Jobs, the gear menu and the theme button (`69efac8`), CP3 the restyle (`dcb9739`, `12ea73b`), CP3b the Dashboard cards and the Status page (`6587109`), CP4 the manual Send now (`9600e3a`); CP4b the CRM is built (Replies, Pipeline, Calls, Reports, the lead timeline, note, next action and deal).
 - What exists: Send now on chosen leads with a confirm page, overridable warnings (`window`, `business_hours`, `ramp`, `domain_daily`, `spacing_jitter`, `schedule`) and hard stops; `leads send --from-request` runs it from a `send_request` row, and every override lands in the run note and `send_override`; `leads verify --balance-only` and the `leadhound-leads-verify-balance` units feed Status; reply sync keeps a snippet of at most 300 characters, which `leads forget` empties.
@@ -53,6 +59,7 @@ The Leads console (2026-10-27, pushed and deployed to production; plan `leadhoun
 - Dev: 1,185 leads built, enriched (phones on 666 orgs, descriptions on 823, social links on 988), and screenshots of every Leads page at 1280 and 390 px in light and dark, outside the repo.
 - Not checked from here (the server could not be read): the leads migration level in production and whether the server env has `LEADHOUND_LIVE=1` and the Jev key; the dashboard's "for leads" Jev line after the next contacts run shows it.
 - Next: give your call on 30 leads under Leads → To label in production, then run `leads relevance eval --decider jev` with `LEADHOUND_LIVE=1` (about 90 calls) and record the numbers under "Eval baseline".
+- Next, for café leads: give your call on 30 café leads under To label, then run `leads relevance eval --type cafe --decider jev` with `LEADHOUND_LIVE=1` and record the numbers under "Eval baseline".
 
 No false opt-outs (2026-10-26, on local main, not yet pushed or deployed; plan `leadhound-false-opt-outs`):
 - CP1 (detection, `b47f703`) and CP2 (lift, `4bb4a5d`) are committed: an opt-out is read from the subject and the sender's own words only, our own lines and quoted text are taken out, a multipart reply's first text part is decoded, and a draft with an opt-out word outside the opt-out line is refused.
@@ -108,8 +115,8 @@ That is right: the oldest observation is from 2026-10-24, so nothing is past the
 The wide-net night's rejected postings (about 380,000) reach 7 days on 2026-10-31, and the 15:00 timer trims them from then on.
 
 ## Eval baseline: lead relevance
-Not measured yet.
-It waits for 30 of the operator's calls under To label, then `leads relevance eval --decider jev`.
+- Drupal leads (sites and agencies): not measured yet; it waits for 30 of the operator's Drupal calls under To label, then `leads relevance eval --decider jev`.
+- Café leads: not measured yet; it waits for 30 café calls, then `leads relevance eval --type cafe --decider jev`.
 Until a recorded eval passes the trust gate (30 or more labelled leads, within one band on at least 80%, Spearman's rho at least 0.5), the list and the queue order by the fallback order's points and the number shows as early.
 
 ## Eval baseline (jev-1.13.0, 2026-10-23)

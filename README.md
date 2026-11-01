@@ -153,6 +153,9 @@ A draft is either a template filled with stored facts or, once a campaign has ea
 - **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, phone), its relevance and a star.
   It filters by kind, country, channel, starred, has a phone, minimum relevance and status (not contacted yet, contacted, all), and sorts by relevance, newest or your outreach order; the filters survive paging.
   A lead's page (`/leads/{id}`) shows the finding with its evidence, the ways to reach them and the pages they came from, phone numbers, description and social links, the agency page, the site, its history, its place in the queue, its messages and one line per reason it ranks where it does.
+  The page shows only the cards that fit the lead's type.
+  A café's page shows The place (category, address, its own website or "none of its own", where it was found and the country's policy), its café findings with the loyalty vendors by name, and the campaign's comparison page for that vendor, or its default one when no vendor was seen.
+  The upgrade-risk report card shows only on a Drupal site lead; an agency or café page has none, and a café page never shows a list rank.
   Nothing on a GET writes.
 - **The CRM**: once a lead replies or a call gets through, it shows as Talking, and you move it to Proposal, Won or Lost (Lost needs a reason).
   Replies (`/leads/replies`) lists the leads that answered, newest first, with the first lines of what they said, stage buttons, and Snooze for 1 day or 1 week.
@@ -181,18 +184,28 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   It refuses while rating is off in Settings, and `--decider jev` (the default) refuses without `TYPESAFE_API_KEY`; without `LEADHOUND_LIVE=1` it asks nothing and exits 0, and a second rating while one runs is skipped.
   A rating stopped by `--max`, the cap, an unavailable provider or five failed calls in a row is recorded and exits 0.
   `--decider fake` rates every lead "maybe" (50) without a key, for tests.
+  Each lead type has its own question: Drupal site and agency leads keep the Drupal question (`relevance@1`), unchanged.
+  A café lead gets its own (`relevance-cafe@1`): which description fits the café best as a customer for a digital loyalty card its customers keep in their phone wallet.
+  A café rated under the old Drupal question shows no relevance until it is rated again, and the next `leads rate --campaign cafes-loyalty` (the contacts unit's second rate line, nightly) does that once.
 - **Your call**: on a lead's page, "Your call" records the band you would give it (strong, likely, maybe, unlikely or no), or clears it.
   The call is stored in the database with the lead's facts exactly as you saw them, every call is kept, and the latest per lead wins.
-  To label (`/leads?to_label=1`) lists 30 leads spread over kinds, Drupal versions and countries, plus every lead you have already labelled.
-- **Measuring relevance**: `leads relevance eval [--golden FILE] [--runs N] [--decider fake|jev]` asks about every lead with your call, N times (3 by default, 1 to 5), and prints how often Jev's band matches yours exactly and within one band, the mean error, Spearman's rho, the disagreements between runs, and the input tokens with their estimated cost.
+  To label (`/leads?to_label=1`) lists up to 30 open leads of each lead type, Drupal and café, since each type's trust needs its own calls.
+  Each type's 30 are spread over kinds, Drupal versions and countries, and every lead you have already labelled is listed too, whatever its type or state.
+  Calls count per type: the Your call card says how many of 30 you have for that lead's type, and the list header and Settings show the count for each type.
+- **Measuring relevance**: `leads relevance eval [--type drupal|cafe] [--golden FILE] [--runs N] [--decider fake|jev]` asks about every lead of that type with your call, N times (3 by default, 1 to 5), and prints how often Jev's band matches yours exactly and within one band, the mean error, Spearman's rho, the disagreements between runs, and the input tokens with their estimated cost.
   By default it reads your calls from the database; `--golden FILE` reads a golden file instead (one JSON lead per line, such as the demo `examples/leads-relevance.demo.jsonl`).
   With no call yet it refuses and says to open To label; a golden file with no labelled line is refused too.
   The decider is the fake unless you pass `--decider jev`, which needs `TYPESAFE_API_KEY` and `LEADHOUND_LIVE=1`, says how many calls it will make before the first, and is not capped.
-  `leads relevance golden-draft [--n N] --out FILE` writes N open leads (30 by default) spread over kinds, Drupal versions and countries, each with an empty label, at mode 0600; it refuses a path inside a checkout of this repository, because labels are private, and never overwrites a file.
+  `--type` is `drupal` (Drupal sites and agencies, the default) or `cafe`.
+  With `--golden FILE` it keeps only that type's lines and says how many of another type it skipped; a file with none of that type is refused.
+  A café call in the database made before cafés had their own question is rebuilt from the lead's facts now, and the eval says how many it rebuilt.
+  `leads relevance golden-draft [--type drupal|cafe] [--n N] --out FILE` writes N open leads of that type (30 by default) spread over kinds, Drupal versions and countries, each with an empty label, at mode 0600; it refuses a path inside a checkout of this repository, because labels are private, and never overwrites a file.
 - **The trust gate**: the relevance number is not trusted until it has been measured against your own calls.
   Only an eval with `--decider jev` on at least 30 of your calls is recorded, and it passes when Jev is within one band of you on at least 80% of them and its order agrees with yours (Spearman's rho at least 0.5); the latest recorded eval decides.
   Until one passes, the list's Relevance sort reads "by score for now" and orders by the fallback order's points, and batches do the same; once it passes, relevance orders the leads that are not starred.
   Either way, starred leads come first in your order.
+  The gate is per type: each type needs its own 30 calls and its own passing eval, so a passing Drupal eval never makes café numbers trusted.
+  With one type trusted, the sort reads which ("Relevance (Drupal leads; the rest by score)").
 - **Shadow and live**: without `LEADHOUND_OUTREACH=live`, `leads send` writes each complete message to `<data dir>/outreach-outbox/` and nothing leaves the machine.
   With `LEADHOUND_OUTREACH=live`, a message is sent only from a batch the operator approved, from the mailbox it was drafted for, after that mailbox's records passed today's DNS check (`leads senders check`) and its reply sync has just succeeded.
   `leads send pause [--reason TEXT]` and `leads send resume`, or Sending on the console's Controls page, stop and restart sending; the pause is checked before every message.

@@ -229,7 +229,7 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
 | Timer | When | Runs | Enabled when | Console switch |
 | --- | --- | --- | --- | --- |
 | `leadhound-leads-probe.timer` | 13:00 | `leads sites probe --max 10000`, under `timeout 3h`, after waiting up to 195 minutes for the fetch lock; `TimeoutStartSec=390min` | `LEADHOUND_LEADS_TIMERS=on` | Site probe (`probe`) |
-| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000`, under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=7h` | `LEADHOUND_LEADS_TIMERS=on` | Contacts (`contacts`): the contacts, enrich and rate steps; the build always runs |
+| `leadhound-leads-contacts.timer` | 10:00 | `leads contacts --max 300`, under `timeout 2h`, then `leads enrich --max 300`, under `timeout 60m`, then `leads rate --max 10000` for `drupal-eol` and `leads rate --campaign cafes-loyalty --max 10000`, each under `timeout 180m`, then `leads build`, under `timeout 20m`; `TimeoutStartSec=10h` | `LEADHOUND_LEADS_TIMERS=on` | Contacts (`contacts`): the contacts, enrich and rate steps; the build always runs |
 | `leadhound-leads-batch.timer` | 06:15 | `leads build`, under `timeout 20m`, then `leads verify --max 60`, under `timeout 50m`, then `leads batch new`, under `timeout 20m`, for the `drupal-eol` campaign; `TimeoutStartSec=2h`; it holds the [Anthropic key](#the-anthropic-key) because Claude drafts at batch time, and the [Reoon key](#the-reoon-key) for the email check | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Morning batch (`batch`): `leads batch new`; Email check (`verify`): `leads verify`; the build always runs |
 | `leadhound-leads-send.timer` | hourly 10:00 to 19:00, Monday to Friday, not persistent | `leads send --max 25`, under `timeout 225m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Sending (the send pause) |
 | `leadhound-leads-sync.timer` | every 15 minutes, not persistent | `leads sync`, under `timeout 10m` | `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` | Inbox sync (`sync`) |
@@ -246,14 +246,16 @@ Business hours, spacing, daily caps, the warm-up ramp and the pause are the comm
   ExecStart=-/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 2h /opt/leadhound/bin/leadhound leads contacts --max 300
   ExecStart=-/usr/bin/flock --nonblock --conflict-exit-code 75 /opt/leadhound/data/.leads-fetch.lock /usr/bin/timeout --kill-after=5m 60m /opt/leadhound/bin/leadhound leads enrich --max 300
   ExecStart=-/usr/bin/timeout --kill-after=5m 180m /opt/leadhound/bin/leadhound leads rate --max 10000
+  ExecStart=-/usr/bin/timeout --kill-after=5m 180m /opt/leadhound/bin/leadhound leads rate --campaign cafes-loyalty --max 10000
   ExecStart=/usr/bin/timeout --kill-after=5m 20m /opt/leadhound/bin/leadhound leads build
   SuccessExitStatus=75
-  TimeoutStartSec=7h
+  TimeoutStartSec=10h
   ```
 
   Every step but the build is `ExecStart=-`, so a failed search, enrichment or rating never stops the build.
   The rating and the build read no web page, so they run outside the fetch lock.
-  `TimeoutStartSec=7h` is longer than the four timeouts and their kill graces together (6h40).
+  `leads rate` rates one campaign's leads, `drupal-eol` unless `--campaign` names another, so the café campaign has its own rate line, the second.
+  `TimeoutStartSec=10h` is longer than the five timeouts and their kill graces together (9h45).
 - Before the batch drafts, `leads verify` checks with Reoon the email addresses that batch would draft (see [The email check](#the-email-check)); it is written `ExecStart=-`, so a Reoon outage or a missing key makes a smaller batch, never no batch.
 - The batch drafts the next batch for you to read and approve in the console; while a batch waits, `leads batch new` makes none.
   While your saved settings no longer fit `leads.yaml` (so they are not applied), `leads batch new` makes none and exits 2, so the batch unit shows as failed in `systemctl`; fix or reset them in Leads → Settings.
@@ -452,7 +454,8 @@ Later kinds are designed, not built, and each needs one `INSERT INTO lead_kind` 
 
 ### Relevance
 
-The contacts unit runs `leads rate --max 10000`, under `timeout 180m`, after the enrichment and outside the fetch lock.
+The contacts unit runs `leads rate --max 10000` for the `drupal-eol` campaign and then `leads rate --campaign cafes-loyalty --max 10000` for the cafés, each under `timeout 180m`, after the enrichment and outside the fetch lock.
+Each run rates only its own campaign's leads, and both count against the one leads cap, Drupal first.
 It asks Jev one question about every open lead whose facts changed since its last rating and stores the answer as a number from 0 to 100, so a day's run after the first is small.
 
 - It needs `LEADHOUND_LIVE=1` and the Jev key, `TYPESAFE_API_KEY`, in `/etc/leadhound/env`.
@@ -468,6 +471,16 @@ The number orders the list only once it passes its trust gate: an eval with `--d
 Until then the list and the batches order by the fallback order's points, and starred leads always come first.
 Run the eval by hand once you have labelled the leads: `make remote HOST=… CONFIRM=1 ARGS='leads relevance eval --decider jev'`.
 It says how many calls it will make before the first, is not capped, and is recorded only with 30 or more labelled leads; the latest recorded eval decides.
+
+Each lead type has its own question, its own 30 calls and its own gate.
+The command above measures Drupal leads (sites and agencies), because `--type drupal` is the default.
+Once you have 30 calls on café leads, measure them the same way: `make remote HOST=… CONFIRM=1 ARGS='leads relevance eval --type cafe --decider jev'`, with `LEADHOUND_LIVE=1` in the env file as for Drupal.
+A passing eval of one type never trusts the other.
+
+The first contacts run after the release that gave cafés their own question re-rates every open café lead once, in its second rate line (`--campaign cafes-loyalty`): about 2,300 Jev calls, counted against the leads cap.
+That costs cents of input: the eval's estimate is `CostPerMillionInput = 0.042` US dollars per million input tokens (`internal/eval/eval.go`), so even 2,000 input tokens a call comes to about 19 cents.
+Drupal ratings are untouched: their question, facts and hash are exactly as before, so no Drupal lead is asked again.
+Nothing is sent by it.
 
 ### Settings in the console
 
@@ -541,6 +554,7 @@ Production has never built a lead, so take these steps in order:
    To start it before 10:00, run `sudo systemctl start leadhound-leads-contacts.service`.
 7. Rating is on by default and runs inside that unit once `LEADHOUND_LIVE=1` and `TYPESAFE_API_KEY` are in the env file; turn it off in Settings if you do not want it.
    Then label 30 leads under To label and run the eval, as [Relevance](#relevance) says.
+   Each type needs its own: 30 Drupal calls for `leads relevance eval --decider jev`, and 30 café calls for `leads relevance eval --type cafe --decider jev`.
 8. Before any campaign with a call step is batched: write your privacy notice, set `sender.privacy_url` in `leads.yaml` and run `make deploy-data` (the deadline is 7 Nov), and screen the Great Britain numbers against TPS and CTPS before the first GB call, as [Calls, screening and phone research](#calls-screening-and-phone-research) says.
 9. Add a mailbox, assign it to its campaign, send its test and turn sending on, as [Mailboxes](#mailboxes) and the steps above say.
 
