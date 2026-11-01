@@ -32,15 +32,26 @@ const (
 	maxRecentRuns = 200
 )
 
-// RecentRuns returns the latest limit runs, newest first (by started_at, then id). limit is
-// clamped to 1–200.
+// The run commands the due-check (cmd/leadhound/timerguard.go) writes: one row per run of a
+// guarded unit, open for the whole run, whose source is the job. They are the schedule's
+// anchors, not a step's result, so the run lists leave them out.
+const (
+	RunCommandRunNow    = "run-now"   // a press started the run
+	RunCommandScheduled = "scheduled" // the rolling schedule started it
+)
+
+// RecentRuns returns the latest limit runs, newest first (by started_at, then id), leaving
+// out the due-check's start rows (RunCommandRunNow, RunCommandScheduled): each spans a whole
+// run, so a few a day would push the steps' own rows off the dashboard. limit is clamped to
+// 1–200 and counts the steps' rows only.
 func (q Queries) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 	limit = min(max(limit, minRecentRuns), maxRecentRuns)
 	rows, err := q.db.Query(ctx,
 		`SELECT id, command, source, started_at, finished_at, requests, failures, stop_reason, note
 		 FROM run
+		 WHERE command <> ALL($2::text[])
 		 ORDER BY started_at DESC, id DESC
-		 LIMIT $1`, limit)
+		 LIMIT $1`, limit, []string{RunCommandRunNow, RunCommandScheduled})
 	if err != nil {
 		return nil, fmt.Errorf("store: recent runs: %w", err)
 	}

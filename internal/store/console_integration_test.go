@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -238,6 +239,51 @@ func TestConsoleRecentRuns(t *testing.T) {
 		if got, err := q.RecentRuns(ctx, limit); err != nil || len(got) != 200 {
 			t.Fatalf("RecentRuns(%d) = %d runs, %v; want 200", limit, len(got), err)
 		}
+	}
+}
+
+// TestConsoleRecentRunsLeaveOutStartRows: the due-check's start rows (run-now, scheduled)
+// never reach the run lists, even when they are the newest, and the limit counts the steps'
+// own rows only.
+func TestConsoleRecentRunsLeaveOutStartRows(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	base := time.Date(2026, 10, 24, 6, 0, 0, 0, time.UTC)
+	var steps []int64
+	for i, command := range []string{"leads-contacts", "leads-enrich", "leads-build"} {
+		id, err := q.StartRun(ctx, command, "")
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		ownerExec(t, "UPDATE run SET started_at = $2 WHERE id = $1", id, base.Add(time.Duration(i)*time.Hour))
+		steps = append(steps, id)
+	}
+	for i, command := range []string{store.RunCommandScheduled, store.RunCommandRunNow} {
+		id, err := q.StartRun(ctx, command, "leads-contacts")
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		// Newer than every step row, and one of them still open.
+		ownerExec(t, "UPDATE run SET started_at = $2 WHERE id = $1", id, base.Add(time.Duration(5+i)*time.Hour))
+		if i == 0 {
+			if err := q.FinishRun(ctx, id, store.RunResult{Note: "planned 2026-10-24T09:00:00+03:00 · ended success"}); err != nil {
+				t.Fatalf("FinishRun: %v", err)
+			}
+		}
+	}
+	got, err := q.RecentRuns(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if want := []int64{steps[2], steps[1], steps[0]}; !slices.Equal(runIDs(got), want) {
+		t.Fatalf("RecentRuns = %v, want the step rows only %v", runIDs(got), want)
+	}
+	if got, err := q.RecentRuns(ctx, 2); err != nil || !slices.Equal(runIDs(got), []int64{steps[2], steps[1]}) {
+		t.Fatalf("RecentRuns(2) = %v, %v; want the two newest step rows", runIDs(got), err)
+	}
+	// RunsSince, which the Run now card and the due-check read, still has them.
+	if all, err := q.RunsSince(ctx, base); err != nil || len(all) != 5 {
+		t.Fatalf("RunsSince = %d runs, %v; want all 5", len(all), err)
 	}
 }
 

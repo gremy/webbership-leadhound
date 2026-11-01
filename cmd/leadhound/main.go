@@ -49,7 +49,8 @@ func main() {
 }
 
 // run dispatches args to a command and turns its result into an exit code: 0 ok, 1 failure,
-// 2 usage.
+// 2 usage, 3 the due-check's not now (errNotNow, timerguard.go), which logs nothing here: a
+// guarded unit's check passes over 96 ticks a day.
 func run(ctx context.Context, args []string, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
@@ -69,6 +70,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	case errors.Is(err, errUsage):
 		_, _ = fmt.Fprintf(stderr, "leadhound %s: %v\n", args[0], err)
 		return 2
+	case errors.Is(err, errNotNow):
+		return 3
 	default:
 		slog.Error("command failed", "command", args[0], "err", err)
 		return 1

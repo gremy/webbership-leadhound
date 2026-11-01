@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -87,6 +88,32 @@ func TestUnitCommandsIgnoreConsoleSettings(t *testing.T) {
 				t.Errorf("%v: exit %d, want 1; stderr %s", args, code, stderr.String())
 			}
 		})
+	}
+}
+
+// TestExitCodeNotNowIsThree: the due-check's not now (errNotNow, wrapped or not) exits 3 and
+// logs nothing at error level, since a guarded unit's check passes over 96 ticks a day; any
+// other error still exits 1 with the failure line.
+func TestExitCodeNotNowIsThree(t *testing.T) {
+	logs := captureGuardLog(t)
+	for name, err := range map[string]error{
+		"test-not-now":         errNotNow,
+		"test-not-now-wrapped": fmt.Errorf("deferred: %w", errNotNow),
+	} {
+		commands[name] = func(context.Context, []string) error { return err }
+		t.Cleanup(func() { delete(commands, name) })
+		var stderr bytes.Buffer
+		if code := run(context.Background(), []string{name}, &stderr); code != 3 || stderr.Len() != 0 {
+			t.Errorf("%s: exit %d, stderr %q; want 3 and nothing", name, code, stderr.String())
+		}
+	}
+	if strings.Contains(logs.String(), "command failed") {
+		t.Errorf("not now logged a failure:\n%s", logs)
+	}
+	commands["test-failure"] = func(context.Context, []string) error { return fmt.Errorf("boom") }
+	t.Cleanup(func() { delete(commands, "test-failure") })
+	if code := run(context.Background(), []string{"test-failure"}, &bytes.Buffer{}); code != 1 || !strings.Contains(logs.String(), "command failed") {
+		t.Errorf("a failure: exit %d, want 1 with the failure line", code)
 	}
 }
 
