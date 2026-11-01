@@ -825,11 +825,10 @@ func TestAppRoleCannotRewriteOutreach(t *testing.T) {
 	}
 	app := storetest.AppConn(t)
 	for _, q := range []string{
-		"UPDATE outreach_message SET body_text = 'changed'",
+		// subject, body_text and content_sha256 are the email edit's since 00029; the edit's own
+		// WHERE approved_at IS NULL holds them (TestSaveEmailEdit).
 		"UPDATE outreach_message SET to_address = 'other@x.localhost'",
-		"UPDATE outreach_message SET subject = ''",
 		"UPDATE outreach_message SET in_reply_to = ''",
-		"UPDATE outreach_batch SET content_sha256 = ''",
 		"UPDATE lead SET org_id = 1",
 		"UPDATE lead_event SET reason = ''",
 		"UPDATE suppression SET value = 'y@x.localhost'",

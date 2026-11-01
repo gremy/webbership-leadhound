@@ -76,7 +76,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
-    GRANT UPDATE (approved_at, approved_hash, discarded_at) ON public.outreach_batch TO leadhound_app;
+    GRANT UPDATE (approved_at, approved_hash, discarded_at, content_sha256) ON public.outreach_batch TO leadhound_app;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
                AND table_name = 'outreach_batch' AND column_name = 'manual') THEN
       GRANT UPDATE (manual) ON public.outreach_batch TO leadhound_app;
@@ -84,7 +84,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
-    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256) ON public.outreach_message TO leadhound_app;
+    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256, subject, body_text) ON public.outreach_message TO leadhound_app;
     -- hard_bounce comes with 00007; a database not yet migrated that far skips it, and the
     -- next run after its migrate grants it.
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
@@ -192,6 +192,8 @@ BEGIN
   END IF;
   -- Call outcomes and email consents (00017) are append-only. The columns 00017 adds to
   -- outreach_message and outreach_batch are fixed at insert: the pointer grants above stay.
+  -- A batch's content_sha256 and an email's subject and body are fixed at approval (00029: an
+  -- email edit re-hashes an unapproved batch); the UPDATE's own WHERE approved_at IS NULL holds it.
   IF to_regclass('public.call_outcome') IS NOT NULL THEN
     REVOKE UPDATE ON public.call_outcome FROM leadhound_app;
   END IF;
@@ -255,6 +257,36 @@ BEGIN
   -- column a pointer).
   IF to_regclass('public.lead_stage_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_stage_event FROM leadhound_app;
+  END IF;
+  -- Outreach by hand (00029): people, marks, edits, sectors, proof and proposals are append-only;
+  -- a draft request moves the columns a drafting run sets only.
+  IF to_regclass('public.org_person') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org_person FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.contact_mark') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_mark FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.message_edit') IS NOT NULL THEN
+    REVOKE UPDATE ON public.message_edit FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.org_sector') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org_sector FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.proof') IS NOT NULL THEN
+    REVOKE UPDATE ON public.proof FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.proof_retire') IS NOT NULL THEN
+    REVOKE UPDATE ON public.proof_retire FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_proposal') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_proposal FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_proposal_status') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_proposal_status FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_request') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_request FROM leadhound_app;
+    GRANT UPDATE (status, reason, batch_id, started_at, finished_at) ON public.draft_request TO leadhound_app;
   END IF;
 END
 $$;

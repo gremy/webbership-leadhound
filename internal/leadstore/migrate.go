@@ -102,7 +102,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // column (00024); email_check is append-only (00025); outreach_batch gains the manual pointer, send_request
 // takes UPDATE on used_at only and send_override is append-only (00027); lead_stage_event is
 // append-only and lead_crm keeps its table-wide UPDATE, every column of it being a pointer, and
-// the new mailbox_event and call_outcome columns are fixed at insert (00028). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// the new mailbox_event and call_outcome columns are fixed at insert (00028); org_person,
+// contact_mark, message_edit, org_sector, proof, proof_retire, lead_proposal and
+// lead_proposal_status are append-only, draft_request takes UPDATE on the columns a drafting
+// run moves only, outreach_message gains subject and body_text and outreach_batch gains
+// content_sha256 for an email edit before approval, and the new outreach_batch.origin,
+// contact_route.person_id and draft_generation.channel columns are fixed at insert (00029). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -141,7 +146,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_batch') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_batch FROM leadhound_app;
-    GRANT UPDATE (approved_at, approved_hash, discarded_at) ON public.outreach_batch TO leadhound_app;
+    GRANT UPDATE (approved_at, approved_hash, discarded_at, content_sha256) ON public.outreach_batch TO leadhound_app;
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
                AND table_name = 'outreach_batch' AND column_name = 'manual') THEN
       GRANT UPDATE (manual) ON public.outreach_batch TO leadhound_app;
@@ -149,7 +154,7 @@ BEGIN
   END IF;
   IF to_regclass('public.outreach_message') IS NOT NULL THEN
     REVOKE UPDATE ON public.outreach_message FROM leadhound_app;
-    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256, hard_bounce) ON public.outreach_message TO leadhound_app;
+    GRANT UPDATE (state, due_at, sent_at, smtp_reply, cancel_reason, approved_sha256, hard_bounce, subject, body_text) ON public.outreach_message TO leadhound_app;
   END IF;
   IF to_regclass('public.lead_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_event FROM leadhound_app;
@@ -286,6 +291,34 @@ BEGIN
   END IF;
   IF to_regclass('public.lead_stage_event') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_stage_event FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.org_person') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org_person FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.contact_mark') IS NOT NULL THEN
+    REVOKE UPDATE ON public.contact_mark FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.message_edit') IS NOT NULL THEN
+    REVOKE UPDATE ON public.message_edit FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.org_sector') IS NOT NULL THEN
+    REVOKE UPDATE ON public.org_sector FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.proof') IS NOT NULL THEN
+    REVOKE UPDATE ON public.proof FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.proof_retire') IS NOT NULL THEN
+    REVOKE UPDATE ON public.proof_retire FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_proposal') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_proposal FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_proposal_status') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_proposal_status FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.draft_request') IS NOT NULL THEN
+    REVOKE UPDATE ON public.draft_request FROM leadhound_app;
+    GRANT UPDATE (status, reason, batch_id, started_at, finished_at) ON public.draft_request TO leadhound_app;
   END IF;
 END
 $$`

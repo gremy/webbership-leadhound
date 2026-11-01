@@ -113,7 +113,8 @@ func appHasColumn(t *testing.T, owner *pgx.Conn, table, column, priv string) boo
 var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_attempt", "lead_relevance",
 	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent",
 	"draft_generation", "draft_review", "draft_eval", "phone_screening", "phone_status", "phone_research",
-	"place_import", "place", "job_switch", "campaign_mailbox", "email_check", "send_override", "lead_stage_event"}
+	"place_import", "place", "job_switch", "campaign_mailbox", "email_check", "send_override", "lead_stage_event",
+	"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire", "lead_proposal", "lead_proposal_status"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -179,7 +180,8 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 		}
 	}
 	for _, table := range append([]string{"lead", "lead_event", "outreach_batch", "outreach_message", "suppression",
-		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check", "campaign", "contact_research"}, appendOnlyLeadTables...) {
+		"suppression_lift", "suppression_active", "mailbox_event", "mailbox_cursor", "sender_check", "campaign", "contact_research",
+		"draft_request"}, appendOnlyLeadTables...) {
 		if appHas(t, owner, table, "DELETE") || appHas(t, owner, table, "TRUNCATE") {
 			t.Errorf("%s: leadhound_app may DELETE or TRUNCATE %s", when, table)
 		}
@@ -191,16 +193,19 @@ func assertLeadPrivileges(t *testing.T, owner *pgx.Conn, when string) {
 var pointerColumns = map[string][2][]string{
 	"lead": {{"state", "state_at", "kind", "probe_id", "agency_finding_id", "finding_id", "channel", "route_id"},
 		{"org_id", "created_at", "campaign_id"}},
-	"outreach_batch": {{"approved_at", "approved_hash", "manual"},
-		{"shadow", "created_at", "content_sha256", "templates_sha256", "account_id", "campaign_id", "sequence"}},
+	"outreach_batch": {{"approved_at", "approved_hash", "manual", "content_sha256"},
+		{"shadow", "created_at", "templates_sha256", "account_id", "campaign_id", "sequence", "origin"}},
 	// 00016: a campaign's one pointer is retired_at; its owner, slug and name are fixed.
 	"campaign": {{"retired_at"}, {"account_id", "slug", "name", "created_at"}},
 	// 00018: a research row moves its run columns only; who, what and why it was asked are fixed.
 	"contact_research": {{"status", "model", "cost_micros", "candidates", "verified", "started_at", "finished_at"},
 		{"org_id", "lead_id", "campaign_id", "trigger", "want", "requested_at", "actor"}},
-	"outreach_message": {{"state", "due_at", "sent_at", "smtp_reply", "cancel_reason", "approved_sha256"},
-		{"batch_id", "lead_id", "step", "channel", "to_address", "subject", "body_text", "message_id",
+	"outreach_message": {{"state", "due_at", "sent_at", "smtp_reply", "cancel_reason", "approved_sha256", "subject", "body_text"},
+		{"batch_id", "lead_id", "step", "channel", "to_address", "message_id",
 			"in_reply_to", "slots", "created_at", "condition", "phone_fact_id", "sequence_name"}},
+	// 00029: a draft request moves its run columns only; its lead, channel and time are fixed.
+	"draft_request": {{"status", "reason", "batch_id", "started_at", "finished_at"},
+		{"lead_id", "channel", "requested_at"}},
 }
 
 // assertPointerColumns fails the test when the app role holds table-wide UPDATE on an
@@ -485,6 +490,17 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"TRUNCATE campaign_mailbox",
 		"DELETE FROM email_check",
 		"TRUNCATE email_check",
+		"DELETE FROM org_person",
+		"DELETE FROM contact_mark",
+		"DELETE FROM message_edit",
+		"DELETE FROM org_sector",
+		"DELETE FROM proof",
+		"DELETE FROM proof_retire",
+		"DELETE FROM lead_proposal",
+		"DELETE FROM lead_proposal_status",
+		"DELETE FROM draft_request",
+		"TRUNCATE contact_mark",
+		"TRUNCATE draft_request",
 		"DELETE FROM lead_kind",
 		"DELETE FROM lead_channel",
 		"TRUNCATE lead_kind",
@@ -519,8 +535,22 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"INSERT INTO suppression_active (kind, value, reason) VALUES ('domain', 'view.invalid', 'manual')",
 		"UPDATE mailbox_event SET kind = 'reply'",
 		"UPDATE sender_check SET spf = true",
-		"UPDATE outreach_message SET body_text = ''",
-		"UPDATE outreach_batch SET content_sha256 = ''",
+		// 00029: subject, body_text and content_sha256 joined the pointers; the rest stays fixed.
+		"UPDATE outreach_message SET to_address = ''",
+		"UPDATE outreach_batch SET origin = 'batch'",
+		"UPDATE contact_route SET person_id = NULL",
+		"UPDATE draft_generation SET channel = 'email'",
+		"UPDATE org_person SET name = NULL",
+		"UPDATE contact_mark SET note = NULL",
+		"UPDATE message_edit SET body_after = ''",
+		"UPDATE org_sector SET sector = 'other'",
+		"UPDATE proof SET public = true",
+		"UPDATE proof_retire SET reason = ''",
+		"UPDATE lead_proposal SET title = 'x'",
+		"UPDATE lead_proposal_status SET note = ''",
+		"UPDATE draft_request SET lead_id = 1",
+		"UPDATE draft_request SET channel = 'email'",
+		"UPDATE draft_request SET requested_at = now()",
 		"UPDATE lead SET org_id = 1",
 		"UPDATE lead SET created_at = now()",
 		"UPDATE finding SET subject = '{}'",
@@ -654,4 +684,368 @@ func TestResetKeepsVersionTables(t *testing.T) {
 	if sites != 0 {
 		t.Fatalf("site rows after Reset = %d, want 0", sites)
 	}
+}
+
+const leadOutreachVersion = 29 // 00029_lead_outreach.sql
+
+// leadOutreachTables are the tables 00029 adds.
+var leadOutreachTables = []string{"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire",
+	"lead_proposal", "lead_proposal_status", "draft_request"}
+
+// assertLeadOutreachGrants fails the test unless the app role may SELECT and INSERT every
+// 00029 table, UPDATE only the listed columns of them, and never DELETE or TRUNCATE.
+func assertLeadOutreachGrants(t *testing.T, owner *pgx.Conn, when string) {
+	t.Helper()
+	for _, table := range leadOutreachTables {
+		for _, priv := range []string{"SELECT", "INSERT"} {
+			if !appHas(t, owner, table, priv) {
+				t.Errorf("%s: leadhound_app lacks %s on %s", when, priv, table)
+			}
+		}
+		for _, priv := range []string{"UPDATE", "DELETE", "TRUNCATE"} {
+			if appHas(t, owner, table, priv) {
+				t.Errorf("%s: leadhound_app has %s on %s, want none", when, priv, table)
+			}
+		}
+	}
+	for _, c := range [][2]string{{"draft_request", "status"}, {"draft_request", "reason"}, {"draft_request", "batch_id"},
+		{"draft_request", "started_at"}, {"draft_request", "finished_at"}, {"outreach_message", "subject"},
+		{"outreach_message", "body_text"}, {"outreach_batch", "content_sha256"}} {
+		if !appHasColumn(t, owner, c[0], c[1], "UPDATE") {
+			t.Errorf("%s: leadhound_app lacks UPDATE on %s.%s", when, c[0], c[1])
+		}
+	}
+	for _, c := range [][2]string{{"draft_request", "lead_id"}, {"draft_request", "channel"}, {"draft_request", "requested_at"},
+		{"outreach_batch", "origin"}, {"contact_route", "person_id"}, {"draft_generation", "channel"},
+		{"outreach_message", "to_address"}, {"proof", "public"}, {"contact_mark", "note"}, {"message_edit", "body_after"}} {
+		if appHasColumn(t, owner, c[0], c[1], "UPDATE") {
+			t.Errorf("%s: leadhound_app has UPDATE on %s.%s, want none", when, c[0], c[1])
+		}
+	}
+	for _, table := range []string{"outreach_message", "outreach_batch"} {
+		if appHas(t, owner, table, "UPDATE") || appHas(t, owner, table, "DELETE") {
+			t.Errorf("%s: leadhound_app has table-wide UPDATE or DELETE on %s", when, table)
+		}
+	}
+}
+
+// TestMigration00029Grants: migrate.go and grants.sql each leave the same privileges, in
+// either order.
+func TestMigration00029Grants(t *testing.T) {
+	leadstoretest.Migrated(t)
+	owner := storetest.OwnerConn(t)
+	assertLeadOutreachGrants(t, owner, "after migrate")
+	grants, err := os.ReadFile("../../deploy/sql/grants.sql")
+	if err != nil {
+		t.Fatalf("read grants.sql: %v", err)
+	}
+	if _, err := owner.Exec(context.Background(), string(grants)); err != nil {
+		t.Fatalf("run grants.sql: %v", err)
+	}
+	assertLeadOutreachGrants(t, owner, "after grants.sql")
+	migrateAll(t)
+	assertLeadOutreachGrants(t, owner, "after grants.sql then migrate")
+}
+
+// TestMigration00029DownUp: down succeeds with a row in every new table, a lead on a linkedin
+// route and a lead on a route the operator typed, keeps what was found on a page, and restores
+// the old CHECKs; up again backfills the LinkedIn pages and the manual batches' origin.
+func TestMigration00029DownUp(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	owner := f.owner
+	orgOf := func(lead int64) int64 { return ownerInt(t, owner, `SELECT org_id FROM lead WHERE id = $1`, lead) }
+
+	leadA := f.siteLead(t, "harbour-lane.example", nil, 7, "info@harbour-lane.example")
+	leadB := f.siteLead(t, "north-quay.example", nil, 7, "")
+	leadC := f.siteLead(t, "third-street.example", nil, 7, "info@third-street.example")
+	leadD := f.siteLead(t, "fourth-street.example", nil, 7, "info@fourth-street.example")
+	orgA, orgB := orgOf(leadA), orgOf(leadB)
+
+	person := ownerInt(t, owner, `INSERT INTO org_person (org_id, name, role, derived_by, fetch_id, actor)
+		VALUES ($1, 'Harbour Person', 'Director', 'claude-research@1', $2, 'system') RETURNING id`, orgA, f.fid)
+	profile := ownerInt(t, owner, `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by, person_id)
+		VALUES ($1, 'linkedin', 'https://linkedin.com/' || 'in/harbour-person', $2, 'claude-research@1', $3) RETURNING id`, orgA, f.fid, person)
+	f.ownerRun(t, `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by, person_id)
+		VALUES ($1, 'email', 'person@harbour-lane.example', $2, 'claude-research@1', $3)`, orgA, f.fid, person)
+	f.ownerRun(t, `UPDATE lead SET channel = 'linkedin', route_id = $2 WHERE id = $1`, leadA, profile)
+	typed := ownerInt(t, owner, `INSERT INTO contact_route (org_id, kind, value, derived_by)
+		VALUES ($1, 'form', 'https://north-quay.example/contact', 'operator@1') RETURNING id`, orgB)
+	f.ownerRun(t, `UPDATE lead SET channel = 'form', route_id = $2 WHERE id = $1`, leadB, typed)
+	phone := ownerInt(t, owner, `INSERT INTO org_fact (org_id, kind, value, normalized, derived_by)
+		VALUES ($1, 'phone', '+44 20 7946 0000', '+442079460000', 'operator@1') RETURNING id`, orgB)
+	f.ownerRun(t, `INSERT INTO contact_mark (route_id, mark, note, actor) VALUES ($1, 'claim', 'Their own form', 'operator')`, typed)
+	f.ownerRun(t, `INSERT INTO contact_mark (route_id, mark, replaced_by_route_id, actor) VALUES ($1, 'retire', $2, 'operator')`, profile, typed)
+	f.ownerRun(t, `INSERT INTO contact_mark (fact_id, mark, actor) VALUES ($1, 'claim', 'operator')`, phone)
+	f.ownerRun(t, `INSERT INTO contact_mark (person_id, mark, actor) VALUES ($1, 'claim', 'operator')`, person)
+
+	batch, _ := f.batch(t, false, leadC)
+	msg := ownerInt(t, owner, `SELECT min(id) FROM outreach_message WHERE batch_id = $1`, batch)
+	f.ownerRun(t, `INSERT INTO message_edit (message_id, body_before, body_after, actor) VALUES ($1, 'before', 'after', 'operator')`, msg)
+	f.ownerRun(t, `INSERT INTO draft_request (lead_id, channel, status, batch_id, started_at, finished_at)
+		VALUES ($1, 'form', 'done', $2, now(), now())`, leadC, batch)
+	f.ownerRun(t, `INSERT INTO draft_request (lead_id) VALUES ($1)`, leadA)
+	f.ownerRun(t, `INSERT INTO org_sector (org_id, sector, source, actor) VALUES ($1, 'education', 'operator', 'operator')`, orgA)
+	proof := ownerInt(t, owner, `INSERT INTO proof (account_id, title, line, url, sectors, public, actor)
+		VALUES (1, 'A school', 'We moved a school.', 'https://proof.example/school', '{education}', true, 'operator') RETURNING id`)
+	f.ownerRun(t, `INSERT INTO proof_retire (proof_id, reason) VALUES ($1, 'old')`, proof)
+	proposal := ownerInt(t, owner, `INSERT INTO lead_proposal (lead_id, title, value_cents, currency, actor)
+		VALUES ($1, 'The upgrade', 100000, 'EUR', 'operator') RETURNING id`, leadA)
+	f.ownerRun(t, `INSERT INTO lead_proposal_status (proposal_id, status, note, actor) VALUES ($1, 'sent', 'by post', 'operator')`, proposal)
+	f.ownerRun(t, `INSERT INTO draft_generation (lead_id, campaign_id, attempt, model, fact_sha256, facts, output, check_ok, purpose, channel)
+		VALUES ($1, 1, 1, 'm', repeat('a', 64), '{}', '{}', true, 'batch', 'linkedin')`, leadA)
+	f.ownerRun(t, `UPDATE outreach_batch SET origin = 'draft_it', manual = true WHERE id = $1`, batch)
+	both := ownerInt(t, owner, `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, want, actor)
+		VALUES ($1, $2, 1, 'cli', '{email,phone,linkedin}', 'system') RETURNING id`, orgA, leadA)
+	only := ownerInt(t, owner, `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, want, actor)
+		VALUES ($1, $2, 1, 'cli', '{linkedin}', 'system') RETURNING id`, orgB, leadB)
+
+	p := leadsProvider(t)
+	t.Cleanup(func() { migrateAll(t) })
+	if _, err := p.DownTo(ctx, leadOutreachVersion-1); err != nil {
+		t.Fatalf("down to %d: %v", leadOutreachVersion-1, err)
+	}
+
+	for _, table := range leadOutreachTables {
+		var reg *string
+		if err := owner.QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&reg); err != nil || reg != nil {
+			t.Errorf("%s after down: %v %v, want gone", table, reg, err)
+		}
+	}
+	for _, col := range [][2]string{{"contact_route", "person_id"}, {"draft_generation", "channel"}, {"outreach_batch", "origin"}} {
+		if n := ownerInt(t, owner, `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public'
+			AND table_name = $1 AND column_name = $2`, col[0], col[1]); n != 0 {
+			t.Errorf("%s.%s left after down", col[0], col[1])
+		}
+	}
+	for _, lead := range []int64{leadA, leadB} {
+		if n := ownerInt(t, owner, `SELECT count(*) FROM lead WHERE id = $1 AND channel = 'none' AND route_id IS NULL`, lead); n != 1 {
+			t.Errorf("lead %d after down: not on channel none with no route", lead)
+		}
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM lead_channel WHERE name = 'linkedin'`); n != 0 {
+		t.Error("lead_channel linkedin left after down")
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE org_id IN ($1, $2)`, orgA, orgB); n != 2 {
+		t.Errorf("routes after down = %d, want the two email routes found on a page", n)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM org_fact WHERE id = $1`, phone); n != 0 {
+		t.Error("the operator's phone fact stayed after down")
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_research WHERE id = $1 AND want = '{email,phone}'`, both); n != 1 {
+		t.Error("research with linkedin among its wants: want it kept without linkedin")
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_research WHERE id = $1`, only); n != 0 {
+		t.Error("research that wanted only linkedin stayed after down")
+	}
+	for q, want := range map[string]string{
+		`INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by) VALUES (` + strconv.FormatInt(orgA, 10) + `, 'linkedin', 'https://linkedin.com/company/a', ` + strconv.FormatInt(f.fid, 10) + `, 'x')`: "23514",
+		`INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES (` + strconv.FormatInt(orgA, 10) + `, 'form', 'https://a.example/', 'operator@1')`:                                                        "23514",
+		`INSERT INTO org_fact (org_id, kind, value, normalized, derived_by) VALUES (` + strconv.FormatInt(orgA, 10) + `, 'phone', '+442079460001', '+442079460001', 'operator@1')`:                                    "23514",
+		`UPDATE contact_research SET want = '{email,linkedin}' WHERE id = ` + strconv.FormatInt(both, 10):                                                                                                             "23514",
+		`UPDATE lead SET channel = 'linkedin' WHERE id = ` + strconv.FormatInt(leadA, 10):                                                                                                                             "23503",
+	} {
+		if _, err := owner.Exec(ctx, q); sqlState(err) != want {
+			t.Errorf("after down, %s: %v, want SQLSTATE %s", q, err, want)
+		}
+	}
+
+	// Now the state the backfill meets in production: social facts from a page and from a
+	// place, a social fact that is not LinkedIn, and one manual batch beside a plain one.
+	imp := ownerInt(t, owner, `INSERT INTO place_import (source, release, campaign_id, lines, kept, blank, malformed, not_cafe,
+		low_confidence, other_country, no_name, stored, already, chains, orgs, sites, actor)
+		VALUES ('overture', 'r1', 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 'system') RETURNING id`)
+	place := ownerInt(t, owner, `INSERT INTO place (import_id, source, source_id, release, name, category, confidence, org_id)
+		VALUES ($1, 'overture', 'p1', 'r1', 'North Quay', 'cafe', 0.9, $2) RETURNING id`, imp, orgB)
+	for _, s := range []struct {
+		org   int64
+		url   string
+		fetch *int64
+		place *int64
+	}{
+		{orgA, "https://linkedin.com/company/harbour-lane", &f.fid, nil},
+		{orgA, "https://linkedin.com/school/harbour-lane", &f.fid, nil},
+		{orgB, "https://linkedin.com/company/north-quay", nil, &place},
+		{orgA, "https://facebook.com/harbour-lane", &f.fid, nil},
+		{orgA, "https://linkedin.com.example/company/harbour-lane", &f.fid, nil},
+	} {
+		f.ownerRun(t, `INSERT INTO org_fact (org_id, kind, value, normalized, fetch_id, place_id, derived_by)
+			VALUES ($1, 'social', $2, $2, $3, $4, 'enrich@1')`, s.org, s.url, s.fetch, s.place)
+	}
+	plain, _ := f.batch(t, false, leadD)
+
+	if _, err := p.UpTo(ctx, leadOutreachVersion); err != nil {
+		t.Fatalf("up again: %v", err)
+	}
+
+	if n := ownerInt(t, owner, `SELECT count(*) FROM lead_channel WHERE name = 'linkedin' AND label = 'LinkedIn'`); n != 1 {
+		t.Error("lead_channel linkedin missing after up")
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE kind = 'linkedin'`); n != 3 {
+		t.Errorf("linkedin routes after backfill = %d, want 3 (company and school pages only)", n)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE org_id = $1 AND kind = 'linkedin' AND derived_by = 'enrich@1'
+		AND fetch_id = $2 AND place_id IS NULL AND value IN ('https://linkedin.com/company/harbour-lane', 'https://linkedin.com/school/harbour-lane')`, orgA, f.fid); n != 2 {
+		t.Errorf("page-read LinkedIn routes = %d, want 2 with the fact's fetch and derived_by", n)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE org_id = $1 AND kind = 'linkedin' AND derived_by = 'enrich@1'
+		AND fetch_id IS NULL AND place_id = $2 AND value = 'https://linkedin.com/company/north-quay'`, orgB, place); n != 1 {
+		t.Errorf("place-read LinkedIn routes = %d, want 1 with the fact's place", n)
+	}
+	for id, want := range map[int64]string{batch: "send_now", plain: "batch"} {
+		if n := ownerInt(t, owner, `SELECT count(*) FROM outreach_batch WHERE id = $1 AND origin = $2`, id, want); n != 1 {
+			t.Errorf("batch %d origin after backfill: want %s", id, want)
+		}
+	}
+	// A second down with the backfilled routes in use, and up again, stays clean.
+	route := ownerInt(t, owner, `SELECT id FROM contact_route WHERE value = 'https://linkedin.com/company/harbour-lane'`)
+	f.ownerRun(t, `UPDATE lead SET channel = 'linkedin', route_id = $2 WHERE id = $1`, leadA, route)
+	if _, err := p.DownTo(ctx, leadOutreachVersion-1); err != nil {
+		t.Fatalf("second down: %v", err)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM org_fact WHERE normalized = 'https://linkedin.com/company/harbour-lane'`); n != 1 {
+		t.Error("down took the social fact with its route")
+	}
+	if _, err := p.UpTo(ctx, leadOutreachVersion); err != nil {
+		t.Fatalf("second up: %v", err)
+	}
+}
+
+// TestMigration00029Checks: each new CHECK takes the edge that is allowed and refuses a bad row
+// written straight to the table; an owner's erase of a route takes its marks.
+func TestMigration00029Checks(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	lead := f.siteLead(t, "harbour-lane.example", nil, 7, "info@harbour-lane.example")
+	org := ownerInt(t, f.owner, `SELECT org_id FROM lead WHERE id = $1`, lead)
+	route := ownerInt(t, f.owner, `SELECT id FROM contact_route WHERE org_id = $1`, org)
+	person := ownerInt(t, f.owner, `INSERT INTO org_person (org_id, role, derived_by, actor) VALUES ($1, 'Director', 'operator@1', 'operator') RETURNING id`, org)
+	fact := ownerInt(t, f.owner, `INSERT INTO org_fact (org_id, kind, value, normalized, fetch_id, derived_by)
+		VALUES ($1, 'phone', '+442079460000', '+442079460000', $2, 'enrich@1') RETURNING id`, org, f.fid)
+	f.ownerRun(t, `INSERT INTO draft_request (lead_id) VALUES ($1)`, lead)
+	f.batch(t, false, lead)
+
+	tx, err := f.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, c := range []struct {
+		name, want, sql string
+		args            []any
+	}{
+		// Decision 4: operator@1 alone may have neither a fetch nor a place.
+		{"route operator neither", "", `INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES ($1, 'linkedin', 'https://linkedin.com/company/a', 'operator@1')`, []any{org}},
+		{"route other neither", "23514", `INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES ($1, 'linkedin', 'https://linkedin.com/company/a', 'contacts@1')`, []any{org}},
+		{"fact operator neither", "", `INSERT INTO org_fact (org_id, kind, value, normalized, derived_by) VALUES ($1, 'phone', '+442079460001', '+442079460001', 'operator@1')`, []any{org}},
+		{"fact other neither", "23514", `INSERT INTO org_fact (org_id, kind, value, normalized, derived_by) VALUES ($1, 'phone', '+442079460001', '+442079460001', 'enrich@1')`, []any{org}},
+		// The person on a route: linkedin or email only.
+		{"person on linkedin", "", `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by, person_id) VALUES ($1, 'linkedin', 'https://linkedin.com/' || 'in/a', $2, 'x', $3)`, []any{org, f.fid, person}},
+		{"person on email", "", `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by, person_id) VALUES ($1, 'email', 'a@harbour-lane.example', $2, 'x', $3)`, []any{org, f.fid, person}},
+		{"person on form", "23514", `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by, person_id) VALUES ($1, 'form', 'https://harbour-lane.example/', $2, 'x', $3)`, []any{org, f.fid, person}},
+		{"route kind", "23514", `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by) VALUES ($1, 'pigeon', 'x', $2, 'x')`, []any{org, f.fid}},
+		// org_person.
+		{"person no fetch", "23514", `INSERT INTO org_person (org_id, role, derived_by, actor) VALUES ($1, 'Owner', 'claude-research@1', 'system')`, []any{org}},
+		{"person nothing", "23514", `INSERT INTO org_person (org_id, derived_by, actor) VALUES ($1, 'operator@1', 'operator')`, []any{org}},
+		{"person name only", "", `INSERT INTO org_person (org_id, name, derived_by, actor) VALUES ($1, 'A Person', 'operator@1', 'operator')`, []any{org}},
+		{"person role long", "23514", `INSERT INTO org_person (org_id, role, derived_by, actor) VALUES ($1, repeat('r', 61), 'operator@1', 'operator')`, []any{org}},
+		// contact_mark: one target, claim or retire, a short note.
+		{"mark no target", "23514", `INSERT INTO contact_mark (mark, actor) VALUES ('claim', 'operator')`, nil},
+		{"mark two targets", "23514", `INSERT INTO contact_mark (route_id, fact_id, mark, actor) VALUES ($1, $2, 'claim', 'operator')`, []any{route, fact}},
+		{"mark kind", "23514", `INSERT INTO contact_mark (route_id, mark, actor) VALUES ($1, 'star', 'operator')`, []any{route}},
+		{"mark note edge", "", `INSERT INTO contact_mark (person_id, mark, note, actor) VALUES ($1, 'claim', repeat('n', 200), 'operator')`, []any{person}},
+		{"mark note long", "23514", `INSERT INTO contact_mark (route_id, mark, note, actor) VALUES ($1, 'claim', repeat('n', 201), 'operator')`, []any{route}},
+		{"mark claim replaced", "23514", `INSERT INTO contact_mark (route_id, mark, replaced_by_route_id, actor) VALUES ($1, 'claim', $1, 'operator')`, []any{route}},
+		{"mark fact replaced by route", "23514", `INSERT INTO contact_mark (fact_id, mark, replaced_by_route_id, actor) VALUES ($1, 'retire', $2, 'operator')`, []any{fact, route}},
+		{"mark actor", "23514", `INSERT INTO contact_mark (route_id, mark, actor) VALUES ($1, 'claim', 'gremy')`, []any{route}},
+		// The channels and origins.
+		{"generation channel", "23514", `INSERT INTO draft_generation (lead_id, campaign_id, attempt, model, fact_sha256, facts, output, check_ok, purpose, channel)
+			VALUES ($1, 1, 1, 'm', repeat('a', 64), '{}', '{}', true, 'batch', 'phone')`, []any{lead}},
+		{"batch origin", "23514", `UPDATE outreach_batch SET origin = 'other'`, nil},
+		// org_sector and proof: the closed list.
+		{"sector edge", "", `INSERT INTO org_sector (org_id, sector, source, actor) VALUES ($1, 'hospitality', 'rule', 'system')`, []any{org}},
+		{"sector other word", "23514", `INSERT INTO org_sector (org_id, sector, source, actor) VALUES ($1, 'mining', 'rule', 'system')`, []any{org}},
+		{"sector source", "23514", `INSERT INTO org_sector (org_id, sector, source, actor) VALUES ($1, 'media', 'guess', 'system')`, []any{org}},
+		{"proof edge", "", `INSERT INTO proof (account_id, title, line, sectors, public, actor) VALUES (1, repeat('t', 80), repeat('l', 240), '{education,other}', false, 'operator')`, nil},
+		{"proof no sectors", "23514", `INSERT INTO proof (account_id, title, line, sectors, public, actor) VALUES (1, 't', 'l', '{}', false, 'operator')`, nil},
+		{"proof bad sector", "23514", `INSERT INTO proof (account_id, title, line, sectors, public, actor) VALUES (1, 't', 'l', '{education,mining}', false, 'operator')`, nil},
+		{"proof null sector", "23514", `INSERT INTO proof (account_id, title, line, sectors, public, actor) VALUES (1, 't', 'l', '{education,NULL}', false, 'operator')`, nil},
+		{"proof title long", "23514", `INSERT INTO proof (account_id, title, line, sectors, public, actor) VALUES (1, repeat('t', 81), 'l', '{other}', false, 'operator')`, nil},
+		{"proof line long", "23514", `INSERT INTO proof (account_id, title, line, sectors, public, actor) VALUES (1, 't', repeat('l', 241), '{other}', false, 'operator')`, nil},
+		{"proof http", "23514", `INSERT INTO proof (account_id, title, line, url, sectors, public, actor) VALUES (1, 't', 'l', 'http://proof.example/', '{other}', false, 'operator')`, nil},
+		// lead_proposal and its status.
+		{"proposal edge", "", `INSERT INTO lead_proposal (lead_id, title, url, value_cents, currency, actor) VALUES ($1, repeat('t', 120), 'https://proposal.example/1', 0, 'RON', 'operator')`, []any{lead}},
+		{"proposal title long", "23514", `INSERT INTO lead_proposal (lead_id, title, actor) VALUES ($1, repeat('t', 121), 'operator')`, []any{lead}},
+		{"proposal negative", "23514", `INSERT INTO lead_proposal (lead_id, title, value_cents, actor) VALUES ($1, 't', -1, 'operator')`, []any{lead}},
+		{"proposal currency", "23514", `INSERT INTO lead_proposal (lead_id, title, currency, actor) VALUES ($1, 't', 'JPY', 'operator')`, []any{lead}},
+		{"proposal http", "23514", `INSERT INTO lead_proposal (lead_id, title, url, actor) VALUES ($1, 't', 'http://proposal.example/', 'operator')`, []any{lead}},
+		// draft_request: one open per lead, the times follow the status.
+		{"second open request", "23505", `INSERT INTO draft_request (lead_id) VALUES ($1)`, []any{lead}},
+		{"second finished request", "", `INSERT INTO draft_request (lead_id, status, reason, started_at, finished_at) VALUES ($1, 'failed', repeat('r', 200), now(), now())`, []any{lead}},
+		{"request reason long", "23514", `INSERT INTO draft_request (lead_id, status, reason, started_at, finished_at) VALUES ($1, 'failed', repeat('r', 201), now(), now())`, []any{lead}},
+		{"request channel", "23514", `INSERT INTO draft_request (lead_id, status, channel, started_at, finished_at) VALUES ($1, 'done', 'phone', now(), now())`, []any{lead}},
+		{"request status", "23514", `INSERT INTO draft_request (lead_id, status) VALUES ($1, 'other')`, []any{lead}},
+		{"request times", "23514", `INSERT INTO draft_request (lead_id, status) VALUES ($1, 'done')`, []any{lead}},
+		// contact_research.want.
+		{"want three", "", `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, want, actor) VALUES ($1, $2, 1, 'cli', '{email,phone,linkedin}', 'system')`, []any{org, lead}},
+		{"want other", "23514", `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, want, actor) VALUES ($1, $2, 1, 'cli', '{fax}', 'system')`, []any{org, lead}},
+		{"want four", "23514", `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, want, actor) VALUES ($1, $2, 1, 'cli', '{email,phone,linkedin,email}', 'system')`, []any{org, lead}},
+		{"want none", "23514", `INSERT INTO contact_research (org_id, lead_id, campaign_id, trigger, want, actor) VALUES ($1, $2, 1, 'cli', '{}', 'system')`, []any{org, lead}},
+	} {
+		if _, err := tx.Exec(ctx, "SAVEPOINT s"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := tx.Exec(ctx, c.sql, c.args...)
+		if got := sqlState(err); got != c.want || (c.want == "" && err != nil) {
+			t.Errorf("%s: %v (SQLSTATE %q), want %q", c.name, err, got, c.want)
+		}
+		if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT s"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An erase by the owner: deleting a route, fact or person takes its marks, and a retire
+	// that named a deleted route as its replacement keeps its own place with no replacement.
+	other := ownerTxInt(t, tx, `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by) VALUES ($1, 'form', 'https://harbour-lane.example/c', $2, 'x') RETURNING id`, org, f.fid)
+	retire := ownerTxInt(t, tx, `INSERT INTO contact_mark (route_id, mark, replaced_by_route_id, actor) VALUES ($1, 'retire', $2, 'operator') RETURNING id`, route, other)
+	for _, q := range []struct {
+		sql string
+		arg int64
+	}{
+		{`INSERT INTO contact_mark (route_id, mark, actor) VALUES ($1, 'claim', 'operator')`, other},
+		{`INSERT INTO contact_mark (fact_id, mark, actor) VALUES ($1, 'retire', 'operator')`, fact},
+		{`INSERT INTO contact_mark (person_id, mark, actor) VALUES ($1, 'retire', 'operator')`, person},
+	} {
+		if _, err := tx.Exec(ctx, q.sql, q.arg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []struct {
+		sql string
+		arg int64
+	}{
+		{`DELETE FROM contact_route WHERE id = $1`, other},
+		{`DELETE FROM org_fact WHERE id = $1`, fact},
+		{`DELETE FROM org_person WHERE id = $1`, person},
+	} {
+		if _, err := tx.Exec(ctx, q.sql, q.arg); err != nil {
+			t.Fatalf("%s: %v", q.sql, err)
+		}
+	}
+	if n := ownerTxInt(t, tx, `SELECT count(*) FROM contact_mark WHERE id = $1 AND replaced_by_route_id IS NULL`, retire); n != 1 {
+		t.Error("a retire whose replacement was erased: want it kept with no replacement")
+	}
+	if n := ownerTxInt(t, tx, `SELECT count(*) FROM contact_mark`); n != 1 {
+		t.Errorf("marks after erase = %d, want only the retire on the kept route", n)
+	}
+}
+
+// ownerTxInt is ownerInt inside a transaction.
+func ownerTxInt(t *testing.T, tx pgx.Tx, q string, args ...any) int64 {
+	t.Helper()
+	var n int64
+	if err := tx.QueryRow(context.Background(), q, args...).Scan(&n); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return n
 }
