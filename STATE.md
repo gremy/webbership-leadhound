@@ -1,6 +1,15 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Run now for every scheduled job, on a rolling schedule (2026-11-01, on local main, not pushed or deployed; plan `leadhound-run-now-and-adaptive-timers`, Checkpoints 1-3 built, in CP4):
+- Committed: CP1 the due-check `timer-guard` (`c9120bb`), CP2 the units: 15-minute ticks, `ExecCondition=`/`ExecStopPost=`, three Run now watchers (`618e5f8`), CP3 the console: Run now on Contacts, Site probe and Morning batch, planned and overdue lines on Controls, Jobs home and Status (`a9d9c43`), review fixes (`14dd738`).
+- What exists: each guarded job (leads contacts, probe, batch, ATS, LinkedIn collect) runs one interval after its last start, by hand or timed, rounded to 15 minutes; with no history it keeps its old slot. The collect becomes every 12 hours (06:30, then 18:30).
+- Ship rule: CP1 and CP2 deploy together; a unit's `ExecCondition=` naming a missing subcommand would keep the job from ever starting.
+- Not verified: anything on real systemd (ExecCondition skips, `$SERVICE_RESULT` in ExecStopPost, the watchers); the planned lines with real timers (integration tests only).
+- Known gap: the ATS Run now card (runnow.go) does not treat a deactivating service as busy, so a press in the seconds while an ATS run records its end can be counted as served.
+- Open for the operator: after an outage of 1-2 intervals a catch-up run anchors on its missed plan, so the next run can follow within the hour (two LinkedIn collects back to back).
+- Next: CP4, push and deploy on the operator's yes, then the live checks in the plan.
+
 Lead page and relevance by lead type (2026-11-01, on local main, not pushed or deployed; plan `leadhound-lead-page-by-campaign-type`, Checkpoints 1-3 built, in CP4):
 - Committed: CP1 rating types, the café question and state (`8a73dc3`), CP2 store, queue, list and `--type` on golden-draft and eval (`82b91a6`), CP3 the console by type (`5b48e25`).
 - What exists: Drupal leads keep `relevance@1` exactly (pinned); café leads get `relevance-cafe@1`; calls, the 30-call gate and the trust per type; a café's page shows The place, its café findings with vendor names and the comparison link, and no report card; agency pages lose the report card.
