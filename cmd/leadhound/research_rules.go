@@ -32,6 +32,10 @@ import (
 //
 // A phone is looked for only where the law table lets the campaign call, and never for an org
 // that already has one the batch could dial (usablePhoneOrgs: pickPhone over UsableOrgFacts).
+//
+// LinkedIn is looked for wherever the country is open (in the campaign's list, not off in
+// leads.yaml), whatever a phone or an email would do there: a star on a lead with no route,
+// "Look again" on a lead with no route or only a form. The CLI asks for it with --linkedin.
 
 // The star notes D5 adds beside console.StarNoteEmail and console.StarNotePhone.
 const (
@@ -40,6 +44,8 @@ const (
 	starNoteNoCalls       = "This campaign makes no calls there"
 	// starNoteFindPhone offers a phone search for a contact-form country the campaign calls.
 	starNoteFindPhone = "No phone yet: starring it looks for a business phone"
+	// starNoteFindLinkedIn offers a search where neither an email nor a phone would be looked for.
+	starNoteFindLinkedIn = "No contact yet: starring it looks for a LinkedIn page"
 )
 
 // researchRules are the campaigns' country lists and plans and the law table, read once per
@@ -205,7 +211,43 @@ type researchLead struct {
 // one, and a star looks for one only on a lead with no route at all (a form lead keeps its
 // form; "Look again" may still ask). A phone is looked for on any lead with no phone a call
 // could dial, an email lead in a call-first country included.
+//
+// LinkedIn comes on top: a star on a lead with no route and "Look again" on a lead with no route
+// or only a form also look for it (withLinkedIn). The CLI's plain request does not.
 func (r researchRules) forLead(l researchLead, trigger string) researchVerdict {
+	v := r.lacking(l, trigger)
+	switch {
+	case trigger == leadstore.ResearchStar && l.Channel == leadstore.ChannelNone,
+		trigger == leadstore.ResearchButton && (l.Channel == leadstore.ChannelNone || l.Channel == leadstore.ChannelForm):
+		return r.withLinkedIn(v, l)
+	}
+	return v
+}
+
+// withLinkedIn is v also looking for LinkedIn, when the lead's country is open; else v.
+func (r researchRules) withLinkedIn(v researchVerdict, l researchLead) researchVerdict {
+	if !r.countryOpen(l.CampaignID, l.Country) || slices.Contains(v.Want, leadstore.WantLinkedIn) {
+		return v
+	}
+	want := append(slices.Clone(v.Want), leadstore.WantLinkedIn)
+	slices.Sort(want)
+	return researchVerdict{Want: want, CallFirst: v.CallFirst}
+}
+
+// countryOpen reports whether the campaign may reach country at all: its list holds the country
+// (when it lists any) and leads.yaml's rule is not off.
+func (r researchRules) countryOpen(campaignID int64, country string) bool {
+	if cr := r.camps[campaignID]; cr.listed {
+		if cc, ok := cr.ov.Countries[countryCode(country)]; !ok || (!cc.Email && !cc.Call) {
+			return false
+		}
+	}
+	ch := r.cfg.Policy(country).Channel
+	return ch == leadconfig.ChannelEmail || ch == leadconfig.ChannelForm
+}
+
+// lacking is want's answer, unless the lead already has what it would look for.
+func (r researchRules) lacking(l researchLead, trigger string) researchVerdict {
 	v := r.want(l.CampaignID, l.Country)
 	switch {
 	case v.Want == nil:
@@ -246,6 +288,8 @@ func starNoteFor(v researchVerdict) string {
 		return console.StarNotePhone
 	case slices.Contains(v.Want, leadstore.WantPhone):
 		return starNoteFindPhone
+	case slices.Contains(v.Want, leadstore.WantLinkedIn):
+		return starNoteFindLinkedIn
 	}
 	return ""
 }

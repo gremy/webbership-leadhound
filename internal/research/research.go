@@ -5,8 +5,10 @@
 //
 // An email counts only when contacts.Extract, the finder's own classification, returns it
 // as a role address on the organisation's registrable domain and that domain has MX. A
-// phone counts only when its normalised number is printed on the cited page. Everything
-// else is counted and dropped.
+// phone counts only when its normalised number is printed on the cited page. A LinkedIn
+// address counts only when an href on the cited page normalises to the same value through
+// enrich.LinkedInURL, and a person's profile also needs a role printed beside that link.
+// LeadHound never requests a linkedin.com URL. Everything else is counted and dropped.
 //
 // The model's quote (the text around a candidate) is read from the answer and discarded
 // at once: verification rests on the page LeadHound fetched, never on what the model says
@@ -44,13 +46,15 @@ const (
 	MaxTokens             = 2048
 	// MaxCandidates is how many candidates of the answer are verified; the rest are counted
 	// and dropped, so one answer can never make LeadHound fetch more than this many pages.
-	MaxCandidates = 6
+	// A full answer holds emails, phones (three line kinds) and two LinkedIn pages.
+	MaxCandidates = 8
 )
 
 // The candidate kinds.
 const (
-	KindEmail = "email"
-	KindPhone = "phone"
+	KindEmail    = "email"
+	KindPhone    = "phone"
+	KindLinkedIn = "linkedin"
 )
 
 // The phone line kinds the model may name; anything else reads as "".
@@ -60,8 +64,11 @@ const (
 	LineSwitchboard   = "switchboard"
 )
 
-// maxRoleRunes is the longest role kept from the model's answer.
-const maxRoleRunes = 60
+// The longest role and name kept from the model's answer; org_person holds no longer.
+const (
+	maxRoleRunes = leadstore.MaxPersonRoleRunes
+	maxNameRunes = leadstore.MaxPersonNameRunes
+)
 
 // Caller is the slice of a Claude caller research needs. *claude.Capped implements it
 // (and so do *claude.Client and *claude.Fake, for tests).
@@ -79,8 +86,9 @@ type Org struct {
 
 // Want says what to look for. The caller decides it from the lead's country rule.
 type Want struct {
-	Email bool // a published role address
-	Phone bool // a published business phone
+	Email    bool // a published role address
+	Phone    bool // a published business phone
+	LinkedIn bool // the organisation's LinkedIn page and the website decider's profile, linked from its own site
 }
 
 // Request is one research run for one lead's organisation.
@@ -99,11 +107,22 @@ type Phone struct {
 	Role     string
 }
 
-// Result is what one research run produced. Routes and Phones are verified; Candidates
-// counts every candidate in the model's answer and Verified those kept.
+// LinkedInFound is one verified LinkedIn page. Value and Normalized are both enrich.LinkedInURL's
+// canonical address; Kind is enrich.LinkedInCompany or enrich.LinkedInPerson. Role is set only
+// for a person, printed beside the link on the page; Name only when that page also prints it
+// there. FetchID is the page's http_fetch row.
+type LinkedInFound struct {
+	Value, Normalized, Kind, Role, Name string
+	FetchID                             int64
+}
+
+// Result is what one research run produced. Routes, Phones and LinkedIn are verified (LinkedIn
+// with company pages first); Candidates counts every candidate in the model's answer and
+// Verified those kept.
 type Result struct {
 	Routes     []leadstore.RouteRow // each ready for leadstore.Queries.InsertRoute
 	Phones     []Phone
+	LinkedIn   []LinkedInFound
 	Candidates int
 	Verified   int
 	Model      string
@@ -114,7 +133,7 @@ type Result struct {
 
 // candidate is one item of the model's answer, quote already dropped.
 type candidate struct {
-	kind, value, sourceURL, lineKind, role string
+	kind, value, sourceURL, lineKind, role, name string
 }
 
 // Run asks c for Request's contact routes, then verifies each candidate through v. The
@@ -124,10 +143,10 @@ type candidate struct {
 // The Result carries the usage and cost also when an error is returned: a spend-cap
 // refusal (errors.Is ai.ErrSpendCap, nothing called), an answer that is not the candidates
 // JSON (ai.ErrBadAnswer, billed), a failed call, or a verification stopped by the context
-// or the fetch breaker (Routes and Phones then hold what was verified before the stop).
+// or the fetch breaker (Routes, Phones and LinkedIn then hold what was verified before the stop).
 func Run(ctx context.Context, c Caller, v Verifier, req Request) (Result, error) {
 	out := Result{Model: Model}
-	if !req.Want.Email && !req.Want.Phone {
+	if !req.Want.Email && !req.Want.Phone && !req.Want.LinkedIn {
 		return out, errors.New("research: nothing to look for")
 	}
 	if strings.TrimSpace(req.Org.Domain) == "" {
@@ -162,8 +181,8 @@ func Run(ctx context.Context, c Caller, v Verifier, req Request) (Result, error)
 		return out, fmt.Errorf("research: org %d: %w", req.Org.ID, err)
 	}
 	vr, err := v.verify(ctx, req, cands)
-	out.Routes, out.Phones = vr.routes, vr.phones
-	out.Verified = len(out.Routes) + len(out.Phones)
+	out.Routes, out.Phones, out.LinkedIn = vr.routes, vr.phones, vr.linkedIn
+	out.Verified = len(out.Routes) + len(out.Phones) + len(out.LinkedIn)
 	if err != nil {
 		return out, fmt.Errorf("research: org %d: verify: %w", req.Org.ID, err)
 	}
@@ -202,11 +221,12 @@ Rules:
 - An email address counts only when it is a published, impersonal role address (such as info@, office@, contact@, hello@, sales@) on the organisation's own domain, printed on the organisation's own website.
 - Never give a named person's address (such as jane.smith@ or j.smith@), even when it is published.
 - A phone counts only when it is a business number printed on the organisation's own website. Prefer a direct line or a decision-maker's line over the switchboard. A role is a job title, never a person's name.
+- A LinkedIn address counts only when the organisation's own website links to it. Read the link from that page: never open linkedin.com. A person's LinkedIn profile counts only with their job title printed beside the link: give that title as role, and name only if it is printed beside the link too.
 - source_url is the exact address of the page on the organisation's own website where the value is printed. quote is the exact text around it on that page.
 - Return nothing rather than guess. An empty list is a good answer.
 
 Answer with one JSON object and nothing else, in this shape:
-{"candidates":[{"kind":"email"|"phone","value":"...","source_url":"https://...","quote":"...","line_kind":"direct"|"decision_maker"|"switchboard"|"","role":"..."}]}`
+{"candidates":[{"kind":"email"|"phone"|"linkedin","value":"...","source_url":"https://...","quote":"...","line_kind":"direct"|"decision_maker"|"switchboard"|"","role":"...","name":"..."}]}`
 
 func userPrompt(req Request) string {
 	var want []string
@@ -215,6 +235,9 @@ func userPrompt(req Request) string {
 	}
 	if req.Want.Phone {
 		want = append(want, "a published business phone number")
+	}
+	if req.Want.LinkedIn {
+		want = append(want, "the organisation's LinkedIn page linked from its own website, and a LinkedIn profile linked from its own team or contact page for the person in the role that decides on the website (web, digital, IT, marketing lead), with the role title printed beside it")
 	}
 	country := req.Org.Country
 	if country == "" {
@@ -239,6 +262,7 @@ type wire struct {
 		Quote     string `json:"quote"`
 		LineKind  string `json:"line_kind"`
 		Role      string `json:"role"`
+		Name      string `json:"name"`
 	} `json:"candidates"`
 }
 
@@ -267,6 +291,7 @@ func parse(text string) ([]candidate, int, error) {
 			sourceURL: strings.TrimSpace(c.SourceURL),
 			lineKind:  lineKind(c.LineKind),
 			role:      role(c.Role),
+			name:      name(c.Name),
 		})
 	}
 	return out, len(w.Candidates), nil
@@ -278,6 +303,15 @@ func lineKind(s string) string {
 		return s
 	}
 	return ""
+}
+
+// name is a person's name from the answer, or "" when it is too long to be one.
+func name(s string) string {
+	s = oneLine(s)
+	if len([]rune(s)) > maxNameRunes {
+		return ""
+	}
+	return s
 }
 
 func role(s string) string {

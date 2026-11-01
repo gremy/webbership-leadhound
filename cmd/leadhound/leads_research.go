@@ -18,6 +18,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/claude"
 	"github.com/gremy/webbership-leadhound/internal/config"
+	"github.com/gremy/webbership-leadhound/internal/enrich"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -41,7 +42,7 @@ const defaultResearchMax = 10
 // nothing, so every queued attempt stays queued for a run that may.
 const researchLiveOffWords = "Live Claude calls are off (LEADHOUND_LIVE=1 and the key file): nothing claimed."
 
-const leadsResearchUsage = "usage: leadhound leads research request LEAD | list [--status S] [--limit N] | run [--max N (at least 1)]"
+const leadsResearchUsage = "usage: leadhound leads research request LEAD [--linkedin] | list [--status S] [--limit N] | run [--max N (at least 1)]"
 
 // researchClients builds a research run's site clients; tests replace it to reach httptest.
 var researchClients = siteClients
@@ -72,21 +73,22 @@ func runLeadsResearch(ctx context.Context, args []string) error {
 	return usageError("unknown research subcommand %q; %s", args[0], leadsResearchUsage)
 }
 
-// parseResearchRequest reads `request LEAD`.
-func parseResearchRequest(args []string) (int64, error) {
+// parseResearchRequest reads `request LEAD [--linkedin]`.
+func parseResearchRequest(args []string) (id int64, linkedIn bool, err error) {
 	fs := flag.NewFlagSet("leads research request", flag.ContinueOnError)
+	li := fs.Bool("linkedin", false, "also look for its LinkedIn page and the website decider's profile")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if len(pos) != 1 {
-		return 0, usageError(leadsResearchUsage)
+		return 0, false, usageError(leadsResearchUsage)
 	}
-	id, err := strconv.ParseInt(pos[0], 10, 64)
+	id, err = strconv.ParseInt(pos[0], 10, 64)
 	if err != nil || id < 1 {
-		return 0, usageError("%q is not a lead id; %s", pos[0], leadsResearchUsage)
+		return 0, false, usageError("%q is not a lead id; %s", pos[0], leadsResearchUsage)
 	}
-	return id, nil
+	return id, *li, nil
 }
 
 // researchStatuses are the statuses `list --status` takes.
@@ -150,6 +152,12 @@ type ResearchAsk struct {
 // (button, cli) an attempt within 90 days are a NoRequest in plain words, never an error.
 // The CLI and the console share it. A lead that does not exist is leadstore.ErrLeadNotFound.
 func requestLeadResearch(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, leadID int64, trigger string, now time.Time) (ResearchAsk, error) {
+	return askLeadResearch(ctx, lq, cfg, leadID, trigger, false, now)
+}
+
+// askLeadResearch is requestLeadResearch; linkedIn also looks for LinkedIn on any lead whose
+// country is open, the CLI's --linkedin.
+func askLeadResearch(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, leadID int64, trigger string, linkedIn bool, now time.Time) (ResearchAsk, error) {
 	l, err := lq.LeadByID(ctx, leadID)
 	if err != nil {
 		return ResearchAsk{}, err
@@ -166,7 +174,11 @@ func requestLeadResearch(ctx context.Context, lq leadstore.Queries, cfg leadconf
 	if rr, err = rr.withPhones(ctx, lq, []int64{o.ID}); err != nil {
 		return ResearchAsk{}, err
 	}
-	v := rr.forLead(researchLead{Channel: l.Channel, CampaignID: l.CampaignID, Country: o.Country, Phone: rr.phones[o.ID]}, trigger)
+	rl := researchLead{Channel: l.Channel, CampaignID: l.CampaignID, Country: o.Country, Phone: rr.phones[o.ID]}
+	v := rr.forLead(rl, trigger)
+	if linkedIn {
+		v = rr.withLinkedIn(v, rl)
+	}
 	if ask.Want, ask.CallFirst = v.Want, v.CallFirst; ask.Want == nil {
 		ask.NoRequest = v.NoRequest
 		return ask, nil
@@ -209,6 +221,8 @@ func wantWords(want []string) string {
 			w = append(w, "a role email")
 		case leadstore.WantPhone:
 			w = append(w, "a business phone")
+		case leadstore.WantLinkedIn:
+			w = append(w, "a LinkedIn page")
 		}
 	}
 	if len(w) == 0 {
@@ -217,9 +231,9 @@ func wantWords(want []string) string {
 	return strings.Join(w, " and ")
 }
 
-// runResearchRequest is `leads research request LEAD`.
+// runResearchRequest is `leads research request LEAD [--linkedin]`.
 func runResearchRequest(ctx context.Context, args []string) error {
-	leadID, err := parseResearchRequest(args)
+	leadID, linkedIn, err := parseResearchRequest(args)
 	if err != nil {
 		return err
 	}
@@ -228,7 +242,7 @@ func runResearchRequest(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	ask, err := requestLeadResearch(ctx, leadstore.NewQueries(s.Pool()), setup.leads, leadID, leadstore.ResearchCLI, leadsNow())
+	ask, err := askLeadResearch(ctx, leadstore.NewQueries(s.Pool()), setup.leads, leadID, leadstore.ResearchCLI, linkedIn, leadsNow())
 	if errors.Is(err, leadstore.ErrLeadNotFound) {
 		return usageError("lead %d does not exist", leadID)
 	}
@@ -310,6 +324,7 @@ type researchSummary struct {
 	Errors     int
 	Emails     int // role email routes stored
 	Phones     int // phone facts stored
+	LinkedIn   int // LinkedIn routes stored
 	CostMicros int64
 	Requests   int
 	Failures   int
@@ -432,7 +447,8 @@ func (rr researchRun) one(ctx context.Context, row leadstore.Research, sum *rese
 	req := research.Request{
 		LeadID: row.LeadID,
 		Org:    research.Org{ID: row.OrgID, Name: row.OrgName, Domain: row.Domain, Country: row.Country},
-		Want:   research.Want{Email: slices.Contains(row.Want, leadstore.WantEmail), Phone: slices.Contains(row.Want, leadstore.WantPhone)},
+		Want: research.Want{Email: slices.Contains(row.Want, leadstore.WantEmail), Phone: slices.Contains(row.Want, leadstore.WantPhone),
+			LinkedIn: slices.Contains(row.Want, leadstore.WantLinkedIn)},
 	}
 	res, runErr := research.Run(ctx, rr.caller, v, req)
 	sum.Requests += int(counter.n)
@@ -440,12 +456,13 @@ func (rr researchRun) one(ctx context.Context, row leadstore.Research, sum *rese
 	sum.Orgs++
 	sum.CostMicros += res.CostMicros
 
-	emails, phones, storeErr := rr.store(wctx, res, pr)
+	emails, phones, linkedIn, storeErr := rr.store(wctx, row.OrgID, res, pr)
 	if storeErr == nil && pr.err != nil {
 		storeErr = researchStoreError("recording a fetch", pr.err)
 	}
 	sum.Emails += emails
 	sum.Phones += phones
+	sum.LinkedIn += linkedIn
 	status := researchStatusOf(runErr, res.Verified)
 	if storeErr != nil {
 		status = leadstore.ResearchError
@@ -468,7 +485,7 @@ func (rr researchRun) one(ctx context.Context, row leadstore.Research, sum *rese
 	switch status {
 	case leadstore.ResearchFound:
 		sum.Found++
-		line += "found " + foundWords(emails, phones, res.Verified)
+		line += "found " + foundWords(emails, phones, linkedIn, res.Verified)
 	case leadstore.ResearchNothing:
 		sum.Nothing++
 		line += "nothing"
@@ -493,13 +510,16 @@ func (rr researchRun) one(ctx context.Context, row leadstore.Research, sum *rese
 
 // foundWords is what a found attempt stored, e.g. "1 email" or "1 email and 1 phone"; a
 // verified value the org already had counts as found and reads "nothing new".
-func foundWords(emails, phones, verified int) string {
+func foundWords(emails, phones, linkedIn, verified int) string {
 	var w []string
 	if emails > 0 {
 		w = append(w, plural(emails, "email", "emails"))
 	}
 	if phones > 0 {
 		w = append(w, plural(phones, "phone", "phones"))
+	}
+	if linkedIn > 0 {
+		w = append(w, plural(linkedIn, "LinkedIn page", "LinkedIn pages"))
 	}
 	if len(w) == 0 {
 		return plural(verified, "contact", "contacts") + ", nothing new"
@@ -517,6 +537,7 @@ var researchStoreSentinels = []struct {
 	{leadstore.ErrUnknownFactKind, "ErrUnknownFactKind"},
 	{leadstore.ErrEmptyFact, "ErrEmptyFact"},
 	{leadstore.ErrFactTooLong, "ErrFactTooLong"},
+	{leadstore.ErrBadContact, "ErrBadContact"},
 	{leadstore.ErrResearchNotLooking, "ErrResearchNotLooking"},
 	{leadstore.ErrBadResearch, "ErrBadResearch"},
 	{store.ErrFetchBodyMismatch, "ErrFetchBodyMismatch"},
@@ -557,16 +578,16 @@ func researchStoreError(what string, err error) error {
 		what, researchStoreCause(err))
 }
 
-// store writes res's verified routes and phone facts and attaches the bodies of the pages
-// they cite, in one transaction. It returns how many routes and facts were new. Its error
-// is a researchStoreError, never the store's own text.
-func (rr researchRun) store(ctx context.Context, res research.Result, pr *pageRecorder) (emails, phones int, err error) {
-	if len(res.Routes) == 0 && len(res.Phones) == 0 {
-		return 0, 0, nil
+// store writes res's verified routes of org orgID, phone facts and LinkedIn pages (a person's profile with
+// its org_person row) and attaches the bodies of the pages they cite, in one transaction. It
+// returns how many were new. Its error is a researchStoreError, never the store's own text.
+func (rr researchRun) store(ctx context.Context, orgID int64, res research.Result, pr *pageRecorder) (emails, phones, linkedIn int, err error) {
+	if len(res.Routes) == 0 && len(res.Phones) == 0 && len(res.LinkedIn) == 0 {
+		return 0, 0, 0, nil
 	}
 	tx, err := rr.pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, researchStoreError("beginning the write", err)
+		return 0, 0, 0, researchStoreError("beginning the write", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // a no-op after Commit
 	lq, sq := leadstore.NewQueries(tx), store.NewQueries(tx)
@@ -574,7 +595,7 @@ func (rr researchRun) store(ctx context.Context, res research.Result, pr *pageRe
 	for _, r := range res.Routes {
 		ok, err := lq.InsertRoute(ctx, r)
 		if err != nil {
-			return 0, 0, researchStoreError("storing a route", err)
+			return 0, 0, 0, researchStoreError("storing a route", err)
 		}
 		cited[r.FetchID] = true
 		if ok {
@@ -584,11 +605,21 @@ func (rr researchRun) store(ctx context.Context, res research.Result, pr *pageRe
 	for _, p := range res.Phones {
 		ok, err := lq.InsertFact(ctx, p.Fact)
 		if err != nil {
-			return 0, 0, researchStoreError("storing a phone", err)
+			return 0, 0, 0, researchStoreError("storing a phone", err)
 		}
 		cited[p.Fact.FetchID] = true
 		if ok {
 			phones++
+		}
+	}
+	for _, l := range res.LinkedIn {
+		cited[l.FetchID] = true
+		ok, err := storeLinkedIn(ctx, lq, orgID, l)
+		if err != nil {
+			return 0, 0, 0, researchStoreError("storing a LinkedIn page", err)
+		}
+		if ok {
+			linkedIn++
 		}
 	}
 	for id := range cited {
@@ -597,13 +628,35 @@ func (rr researchRun) store(ctx context.Context, res research.Result, pr *pageRe
 			continue
 		}
 		if err := sq.AttachFetchBody(ctx, id, body); err != nil {
-			return 0, 0, researchStoreError(fmt.Sprintf("keeping the body of fetch %d", id), err)
+			return 0, 0, 0, researchStoreError(fmt.Sprintf("keeping the body of fetch %d", id), err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, researchStoreError("committing the write", err)
+		return 0, 0, 0, researchStoreError("committing the write", err)
 	}
-	return emails, phones, nil
+	return emails, phones, linkedIn, nil
+}
+
+// storeLinkedIn writes verified LinkedIn page l of org orgID and reports whether it was new. A
+// person's profile gets its org_person row first, for the route to point at, and only when the
+// org has no such route: a value it already holds is left as it is, a retired one stays retired,
+// and neither adds a person.
+func storeLinkedIn(ctx context.Context, lq leadstore.Queries, orgID int64, l research.LinkedInFound) (bool, error) {
+	row := leadstore.RouteRow{OrgID: orgID, Kind: leadstore.RouteLinkedIn, Value: l.Value, FetchID: l.FetchID, DerivedBy: research.DerivedBy}
+	if l.Kind == enrich.LinkedInPerson {
+		held, err := lq.ContactsFor(ctx, orgID)
+		if err != nil {
+			return false, err
+		}
+		if slices.ContainsFunc(held, func(c leadstore.Contact) bool { return c.Kind == leadstore.RouteLinkedIn && c.Value == l.Value }) {
+			return false, nil
+		}
+		row.PersonID, err = lq.AddPerson(ctx, leadstore.PersonRow{OrgID: orgID, Name: l.Name, Role: l.Role, FetchID: l.FetchID, DerivedBy: research.DerivedBy})
+		if err != nil {
+			return false, err
+		}
+	}
+	return lq.InsertRoute(ctx, row)
 }
 
 // printResearchSummary prints the run's line, then one line per org.
@@ -616,7 +669,11 @@ func printResearchSummary(w io.Writer, runID int64, sum researchSummary) {
 	for _, l := range sum.Lines {
 		_, _ = fmt.Fprintln(w, l)
 	}
-	if sum.Emails+sum.Phones > 0 {
-		_, _ = fmt.Fprintf(w, "  stored: %d new emails, %d new phones; the next leads build gives a lead its channel\n", sum.Emails, sum.Phones)
+	if sum.Emails+sum.Phones+sum.LinkedIn > 0 {
+		li := ""
+		if sum.LinkedIn > 0 {
+			li = fmt.Sprintf(", %d new LinkedIn pages", sum.LinkedIn)
+		}
+		_, _ = fmt.Fprintf(w, "  stored: %d new emails, %d new phones%s; the next leads build gives a lead its channel\n", sum.Emails, sum.Phones, li)
 	}
 }

@@ -20,6 +20,9 @@ func (c *Client) checkURL(u *url.URL) error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return fmt.Errorf("%w: %q", ErrBadURL, u.Redacted())
 	}
+	if c.noLinkedIn && isLinkedInHost(normalHost(u.Hostname())) {
+		return fmt.Errorf("%w: %s", ErrLinkedInRefused, u.Hostname())
+	}
 	if c.publicOnly {
 		if err := checkPublic(u); err != nil {
 			return err

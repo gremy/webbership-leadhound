@@ -1592,3 +1592,13 @@ func TestLeadDetailReportByKind(t *testing.T) {
 		}
 	}
 }
+
+// TestResearchLinkedInWords: an attempt that looks for LinkedIn says so, and says what it found.
+func TestResearchLinkedInWords(t *testing.T) {
+	if got := wantPhrase([]string{WantEmail, WantLinkedIn}); got != "an email or a LinkedIn page" {
+		t.Errorf("wantPhrase = %q", got)
+	}
+	if got := foundWords(2, []string{WantLinkedIn}); got != "2 LinkedIn pages" {
+		t.Errorf("foundWords = %q", got)
+	}
+}

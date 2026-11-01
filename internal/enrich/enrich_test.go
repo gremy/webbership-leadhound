@@ -1,6 +1,8 @@
 package enrich
 
 import (
+	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +10,10 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/gremy/webbership-leadhound/internal/contacts"
+	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/robots"
 )
 
 // personProfile is a person's LinkedIn profile link, built at runtime so no file holds one;
@@ -219,4 +225,134 @@ func dump(fs []Fact) string {
 		b.WriteString("  " + f.Kind + " " + f.Value + " | " + f.Normalized + "\n")
 	}
 	return b.String()
+}
+
+// inPath is a person page's first path segment, built at runtime so no file holds a profile URL.
+const inPath = "/" + "in" + "/"
+
+func TestLinkedInURL(t *testing.T) {
+	for _, tc := range []struct{ raw, want, kind string }{
+		{"uk.linkedin.com/company/x/about?trk=1", "https://linkedin.com/company/x", LinkedInCompany},
+		{"https://www.linkedin.com/company/Harbour-Lane/", "https://linkedin.com/company/harbour-lane", LinkedInCompany},
+		{"http://de.linkedin.com/COMPANY/x/posts/#feed", "https://linkedin.com/company/x", LinkedInCompany},
+		{"//www.linkedin.com/company/x", "https://linkedin.com/company/x", LinkedInCompany},
+		{"  https://LINKEDIN.com/company/x  ", "https://linkedin.com/company/x", LinkedInCompany},
+		{"https://www.linkedin.com/company/1234567", "https://linkedin.com/company/1234567", LinkedInCompany},
+		{"https://www.linkedin.com/company/caf%C3%A9-x", "https://linkedin.com/company/caf%c3%a9-x", LinkedInCompany},
+		{"https://www.linkedin.com/school/x", "https://linkedin.com/school/x", LinkedInCompany},
+		{"https://www.linkedin.com/school/x/people", "https://linkedin.com/school/x", LinkedInCompany},
+		{"https://www.linkedin.com" + inPath + "jane-doe-123", "https://linkedin.com" + inPath + "jane-doe-123", LinkedInPerson},
+		{"https://ro.linkedin.com" + inPath + "Jane-Doe-123/details/?x=1", "https://linkedin.com" + inPath + "jane-doe-123", LinkedInPerson},
+	} {
+		value, normalized, kind, ok := LinkedInURL(tc.raw)
+		if !ok || value != tc.want || normalized != tc.want || kind != tc.kind {
+			t.Errorf("LinkedInURL(%q) = %q, %q, %q, %v; want %q as both, %q", tc.raw, value, normalized, kind, ok, tc.want, tc.kind)
+		}
+		// The canonical form is its own canonical form: every writer stores one value.
+		if again, _, k, ok := LinkedInURL(value); !ok || again != value || k != kind {
+			t.Errorf("LinkedInURL(%q) moved to %q, %q, %v", value, again, k, ok)
+		}
+	}
+	for _, raw := range []string{
+		"", "   ",
+		"https://www.linkedin.com/", "https://www.linkedin.com/feed", "https://www.linkedin.com/jobs", "https://www.linkedin.com/jobs/view/1",
+		"https://www.linkedin.com/company", "https://www.linkedin.com/company/", "https://www.linkedin.com" + inPath,
+		"https://www.linkedin.com/showcase/x", "https://www.linkedin.com/sharing/share-offsite/?url=x", "https://www.linkedin.com/shareArticle",
+		"https://www.linkedin.com/company/..", "https://www.linkedin.com/company/a%2Fb", "https://www.linkedin.com/company/a%20b", "https://www.linkedin.com/company/%zz",
+		"https://www.linkedin.com/company/a b", "https://www.linkedin.com/company/%2E%2E", "https://www.linkedin.com/company/" + strings.Repeat("x", MaxRunes),
+		"https://www.linkedin.com:8443/company/x", "https://someone" + "@" + "www.linkedin.com/company/x",
+		"https://linkedin.com.northwind.example/company/x", "https://notlinkedin.com/company/x", "https://northwind.example/company/x",
+		"https://northwind.example/linkedin.com/company/x", "lnkd.in/company/x",
+		"ftp://www.linkedin.com/company/x", "mailto:someone" + "@" + "linkedin.com/company/x", "javascript:alert(1)//linkedin.com/company/x",
+	} {
+		if v, _, kind, ok := LinkedInURL(raw); ok {
+			t.Errorf("LinkedInURL(%q) = %q, %q; want not ok", raw, v, kind)
+		}
+	}
+}
+
+func TestLinkedInRoute(t *testing.T) {
+	links := `<a href="https://uk.linkedin.com/company/Harbour-Lane/about?trk=1">a</a>` +
+		`<a href="https://www.linkedin.com` + inPath + `jane-doe">b</a>` +
+		`<a href="https://www.linkedin.com/school/harbour-lane">c</a>` +
+		`<a href="https://www.facebook.com/harbour">d</a><a href="tel:+442079460199">e</a>`
+	var routes []string
+	for _, f := range Extract([]byte(links), "https://harbour.example/", "harbour.example", false) {
+		if v, ok := LinkedInRoute(f); ok {
+			if v != f.Normalized {
+				t.Errorf("route %q differs from its fact's normalized %q", v, f.Normalized)
+			}
+			routes = append(routes, v)
+		}
+	}
+	if want := []string{"https://linkedin.com/company/harbour-lane"}; !reflect.DeepEqual(routes, want) {
+		t.Errorf("routes = %q, want %q: a person's profile is never a fact, and a /school/ page is not one today", routes, want)
+	}
+	if _, ok := LinkedInRoute(Fact{Kind: KindDescription, Value: "x", Normalized: "https://linkedin.com/company/x"}); ok {
+		t.Error("a description gave a route")
+	}
+}
+
+// recordingFetcher answers every page with the same body and records each request's URL.
+type recordingFetcher struct {
+	body []byte
+	gets []string
+}
+
+func (f *recordingFetcher) Get(_ context.Context, _ fetch.Kind, rawURL string) (fetch.Response, int64, error) {
+	f.gets = append(f.gets, rawURL)
+	return fetch.Response{Status: 200, Body: f.body}, int64(len(f.gets)), nil
+}
+
+// TestNeverRequestsLinkedIn walks the enrichment's only fetching road, the homepage's contact
+// links through contacts.FetchPage and its robots lookup, over every fixture and a page that
+// tempts it with LinkedIn links named like contact pages. No request and no robots lookup may
+// land on linkedin.com.
+func TestNeverRequestsLinkedIn(t *testing.T) {
+	names, err := filepath.Glob(filepath.Join("testdata", "*.html"))
+	if err != nil || len(names) < 5 {
+		t.Fatalf("fixtures %v: %v", names, err)
+	}
+	bodies := map[string][]byte{"tempting": []byte(
+		`<a href="https://www.linkedin.com/company/contact">Contact</a>` +
+			`<a href="https://www.linkedin.com/contact">Kontakt</a>` +
+			`<a href="https://uk.linkedin.com` + inPath + `contact">Contact us</a>` +
+			`<a href="//www.linkedin.com/company/x/contact">Impressum</a>` +
+			`<a href="/contact">Contact</a>`)}
+	for _, n := range names {
+		bodies[n] = readFixture(t, filepath.Base(n))
+	}
+	const domain = "northwind.example"
+	base, _ := url.Parse("https://" + domain + "/")
+	var fetched int
+	for name, body := range bodies {
+		f := &recordingFetcher{body: body}
+		var asked []string
+		robotsFor := func(_ context.Context, _ string, host string) (robots.Verdict, *robots.Rules) {
+			asked = append(asked, host)
+			return robots.VerdictRules, robots.Parse(nil)
+		}
+		org := contacts.Org{Domain: domain, UserAgent: "LeadHound/1"}
+		res := contacts.Routes{Complete: true}
+		for _, link := range contacts.ContactLinks(base, body, domain) {
+			if p, ok := contacts.FetchPage(context.Background(), f, robotsFor, org, link, &res); ok {
+				Extract(p.Body, p.URL, domain, true)
+			}
+		}
+		fetched += len(f.gets)
+		for _, g := range f.gets {
+			u, err := url.Parse(g)
+			if err != nil || IsLinkedInHost(u.Hostname()) {
+				t.Errorf("%s: requested %q", name, g)
+			}
+		}
+		for _, h := range asked {
+			if IsLinkedInHost(h) {
+				t.Errorf("%s: asked robots of %q", name, h)
+			}
+		}
+	}
+	if fetched == 0 {
+		t.Fatal("no page was fetched, so the sweep proved nothing")
+	}
 }

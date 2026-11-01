@@ -57,59 +57,62 @@ func researchTestRules() researchRules {
 // before; a contact-form country (DE) looks for a phone only when the campaign calls there
 // (a call step, DE's calls on, the law's written reason given), never under a campaign that
 // makes no calls there; a country the campaign does not list, or that is off, gets nothing.
+// Decision 20 on top: a star on a lead with no route and Look again on a lead with no route or
+// only a form also look for LinkedIn wherever the country is open; the CLI's plain request not.
 func TestResearchDecision(t *testing.T) {
 	callFirstTable(t)
 	rr := researchTestRules()
 	phone, email := []string{leadstore.WantPhone}, []string{leadstore.WantEmail}
+	li, emailLI, phoneLI := []string{leadstore.WantLinkedIn}, []string{leadstore.WantEmail, leadstore.WantLinkedIn}, []string{leadstore.WantLinkedIn, leadstore.WantPhone}
 	for _, c := range []struct {
 		name     string
 		lead     researchLead
-		want     []string // forLead's want, star and button alike unless button says otherwise
-		button   []string // "Look again"'s want when it differs from the star's
+		want     []string // the star's want
+		button   []string // "Look again"'s want
+		cli      []string // the CLI's want without --linkedin
 		note     string   // the new lead's star note
-		noReqHas string   // a word of the NoRequest when want is nil
+		noReqHas string   // a word of the star's NoRequest when want is nil
 	}{
-		{"call-first, email, no phone", researchLead{leadstore.ChannelEmail, rcCalls, "RO", false}, phone, nil, console.StarNotePhone, ""},
-		{"call-first, no route, no phone", researchLead{leadstore.ChannelNone, rcCalls, "RO", false}, phone, nil, console.StarNotePhone, ""},
-		{"call-first, email, a phone", researchLead{leadstore.ChannelEmail, rcCalls, "RO", true}, nil, nil, "", "already has a phone"},
-		{"call-first, no route, a phone", researchLead{leadstore.ChannelNone, rcCalls, "RO", true}, nil, nil, "", "already has a phone"},
-		{"RO, no call step", researchLead{leadstore.ChannelNone, rcNoCalls, "RO", false}, email, nil, console.StarNoteEmail, ""},
-		{"RO, no call step, email", researchLead{leadstore.ChannelEmail, rcNoCalls, "RO", false}, nil, nil, "", "already has an email"},
-		{"RO, legacy", researchLead{leadstore.ChannelNone, rcLegacy, "RO", false}, email, nil, console.StarNoteEmail, ""},
-		{"email country", researchLead{leadstore.ChannelNone, rcCalls, "GB", false}, email, nil, console.StarNoteEmail, ""},
-		{"email country, legacy", researchLead{leadstore.ChannelNone, rcLegacy, "GB", true}, email, nil, console.StarNoteEmail, ""},
-		{"email country, email", researchLead{leadstore.ChannelEmail, rcCalls, "GB", false}, nil, nil, "", "already has an email"},
-		{"email country, form", researchLead{leadstore.ChannelForm, rcCalls, "GB", false}, nil, email, "", "way to reach it (form)"},
-		{"form country, legacy (no calls)", researchLead{leadstore.ChannelNone, rcLegacy, "DE", false}, nil, nil, starNoteNoCalls, "makes no calls"},
-		{"form country, no call step", researchLead{leadstore.ChannelForm, rcNoCalls, "DE", false}, nil, nil, "", "makes no calls"},
-		{"form country, its calls off", researchLead{leadstore.ChannelNone, rcDEOff, "DE", false}, nil, nil, starNoteNoCalls, "makes no calls"},
-		{"form country, calls on", researchLead{leadstore.ChannelNone, rcDEReason, "DE", false}, phone, nil, starNoteFindPhone, ""},
-		{"form country, calls on, form", researchLead{leadstore.ChannelForm, rcDEReason, "DE", false}, phone, nil, starNoteFindPhone, ""},
-		{"form country, calls on, a phone", researchLead{leadstore.ChannelForm, rcDEReason, "DE", true}, nil, nil, "", "already has a phone"},
-		{"form country, calls the law blocks", researchLead{leadstore.ChannelNone, rcCalls, "DE", false}, nil, nil, starNoteCallsBlocked, "calls aren't allowed"},
-		{"not in the campaign", researchLead{leadstore.ChannelNone, rcCalls, "BE", false}, nil, nil, starNoteNotInCampaign, "not in this campaign"},
-		{"off in the campaign", researchLead{leadstore.ChannelNone, rcCalls, "IE", false}, nil, nil, starNoteNotInCampaign, "not in this campaign"},
-		{"off in leads.yaml", researchLead{leadstore.ChannelNone, rcLegacy, "US", false}, nil, nil, "", "off in leads.yaml"},
+		{"call-first, email, no phone", researchLead{leadstore.ChannelEmail, rcCalls, "RO", false}, phone, phone, phone, console.StarNotePhone, ""},
+		{"call-first, no route, no phone", researchLead{leadstore.ChannelNone, rcCalls, "RO", false}, phoneLI, phoneLI, phone, console.StarNotePhone, ""},
+		{"call-first, email, a phone", researchLead{leadstore.ChannelEmail, rcCalls, "RO", true}, nil, nil, nil, "", "already has a phone"},
+		{"call-first, no route, a phone", researchLead{leadstore.ChannelNone, rcCalls, "RO", true}, li, li, nil, starNoteFindLinkedIn, ""},
+		{"RO, no call step", researchLead{leadstore.ChannelNone, rcNoCalls, "RO", false}, emailLI, emailLI, email, console.StarNoteEmail, ""},
+		{"RO, no call step, email", researchLead{leadstore.ChannelEmail, rcNoCalls, "RO", false}, nil, nil, nil, "", "already has an email"},
+		{"RO, legacy", researchLead{leadstore.ChannelNone, rcLegacy, "RO", false}, emailLI, emailLI, email, console.StarNoteEmail, ""},
+		{"email country", researchLead{leadstore.ChannelNone, rcCalls, "GB", false}, emailLI, emailLI, email, console.StarNoteEmail, ""},
+		{"email country, legacy", researchLead{leadstore.ChannelNone, rcLegacy, "GB", true}, emailLI, emailLI, email, console.StarNoteEmail, ""},
+		{"email country, email", researchLead{leadstore.ChannelEmail, rcCalls, "GB", false}, nil, nil, nil, "", "already has an email"},
+		{"email country, form", researchLead{leadstore.ChannelForm, rcCalls, "GB", false}, nil, emailLI, email, "", "way to reach it (form)"},
+		{"email country, LinkedIn", researchLead{leadconfig.ChannelLinkedIn, rcCalls, "GB", false}, nil, email, email, "", "way to reach it (linkedin)"},
+		{"form country, legacy (no calls)", researchLead{leadstore.ChannelNone, rcLegacy, "DE", false}, li, li, nil, starNoteFindLinkedIn, ""},
+		{"form country, no call step", researchLead{leadstore.ChannelForm, rcNoCalls, "DE", false}, nil, li, nil, "", "makes no calls"},
+		{"form country, its calls off", researchLead{leadstore.ChannelNone, rcDEOff, "DE", false}, li, li, nil, starNoteFindLinkedIn, ""},
+		{"form country, calls on", researchLead{leadstore.ChannelNone, rcDEReason, "DE", false}, phoneLI, phoneLI, phone, starNoteFindPhone, ""},
+		{"form country, calls on, form", researchLead{leadstore.ChannelForm, rcDEReason, "DE", false}, phone, phoneLI, phone, starNoteFindPhone, ""},
+		{"form country, calls on, a phone", researchLead{leadstore.ChannelForm, rcDEReason, "DE", true}, nil, li, nil, "", "already has a phone"},
+		{"form country, calls the law blocks", researchLead{leadstore.ChannelNone, rcCalls, "DE", false}, li, li, nil, starNoteFindLinkedIn, ""},
+		{"not in the campaign", researchLead{leadstore.ChannelNone, rcCalls, "BE", false}, nil, nil, nil, starNoteNotInCampaign, "not in this campaign"},
+		{"off in the campaign", researchLead{leadstore.ChannelNone, rcCalls, "IE", false}, nil, nil, nil, starNoteNotInCampaign, "not in this campaign"},
+		{"off in leads.yaml", researchLead{leadstore.ChannelNone, rcLegacy, "US", false}, nil, nil, nil, "", "off in leads.yaml"},
 	} {
 		star := rr.forLead(c.lead, leadstore.ResearchStar)
 		if !slices.Equal(star.Want, c.want) || (c.want == nil && !strings.Contains(star.NoRequest, c.noReqHas)) {
 			t.Errorf("%s: star wants %v (%q), want %v", c.name, star.Want, star.NoRequest, c.want)
 		}
-		button := c.want
-		if c.button != nil {
-			button = c.button
+		button := c.button
+		if got := rr.forLead(c.lead, leadstore.ResearchButton).Want; !slices.Equal(got, button) {
+			t.Errorf("%s: Look again wants %v, want %v", c.name, got, button)
 		}
-		for _, trig := range []string{leadstore.ResearchButton, leadstore.ResearchCLI} {
-			if got := rr.forLead(c.lead, trig).Want; !slices.Equal(got, button) {
-				t.Errorf("%s: %s wants %v, want %v", c.name, trig, got, button)
-			}
+		if got := rr.forLead(c.lead, leadstore.ResearchCLI).Want; !slices.Equal(got, c.cli) {
+			t.Errorf("%s: the CLI wants %v, want %v", c.name, got, c.cli)
 		}
 		if got := starNote(rr, leadstore.LeadNew, c.lead); got != c.note {
 			t.Errorf("%s: star note %q, want %q", c.name, got, c.note)
 		}
 		// One decision: the note offers a search exactly when the star asks for one, and
 		// "Look again" is offered exactly when it asks for one.
-		offers := slices.Contains([]string{console.StarNoteEmail, console.StarNotePhone, starNoteFindPhone}, c.note)
+		offers := slices.Contains([]string{console.StarNoteEmail, console.StarNotePhone, starNoteFindPhone, starNoteFindLinkedIn}, c.note)
 		if offers != (star.Want != nil) {
 			t.Errorf("%s: note %q but the star wants %v", c.name, c.note, star.Want)
 		}
@@ -126,6 +129,12 @@ func TestResearchDecision(t *testing.T) {
 	}
 	if w := starQueuedWords(ResearchAsk{Want: phone}); !strings.HasPrefix(w, "It has no phone yet") {
 		t.Errorf("form-country star words %q", w)
+	}
+	if w := starQueuedWords(ResearchAsk{Want: li}); !strings.HasPrefix(w, "It has no contact yet, so a search for a LinkedIn page") {
+		t.Errorf("LinkedIn words: %q", w)
+	}
+	if w := starQueuedWords(ResearchAsk{Want: emailLI}); !strings.HasPrefix(w, "It has no email yet, so a search for one and a LinkedIn page") {
+		t.Errorf("email and LinkedIn words: %q", w)
 	}
 	if w := starQueuedWords(ResearchAsk{Want: email}); !strings.HasPrefix(w, "It has no email yet") {
 		t.Errorf("email star words %q", w)
@@ -165,7 +174,7 @@ func TestResearchConsoleView(t *testing.T) {
 	rr := researchTestRules()
 	asked := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
 	began, done := asked.Add(time.Minute), asked.Add(2*time.Minute)
-	next := began.Add(leadstore.ResearchWindow)
+	next, earlier := began.Add(leadstore.ResearchWindow), began.Add(leadstore.ResearchWindow-time.Hour)
 	row := func(status string) *leadstore.Research {
 		return &leadstore.Research{Status: status, Want: []string{leadstore.WantPhone}, Verified: 1,
 			RequestedAt: asked, StartedAt: &began, FinishedAt: &done}
@@ -176,11 +185,19 @@ func TestResearchConsoleView(t *testing.T) {
 	}{
 		{leadstore.ResearchQueued, asked}, {leadstore.ResearchLooking, began}, {leadstore.ResearchFound, done},
 	} {
-		v := consoleResearch(leadstore.LeadResearch{Latest: row(c.status), NextAt: &next}, rr, leadstore.LeadNew, researchLead{leadstore.ChannelNone, rcLegacy, "GB", false})
+		v := consoleResearch(leadstore.LeadResearch{Latest: row(c.status), NextAt: &earlier, NextAtLinkedIn: &next}, rr, leadstore.LeadNew, researchLead{leadstore.ChannelNone, rcLegacy, "GB", false})
 		if v.Status != c.status || v.At == nil || !v.At.Equal(c.at) || !slices.Equal(v.Want, []string{leadstore.WantPhone}) ||
 			v.Verified != 1 || v.NextAt != &next || !v.CanAsk {
 			t.Errorf("%s: %+v", c.status, v)
 		}
+	}
+	// Decision 20: an attempt that did not look for LinkedIn holds back no search for it, and
+	// still holds back any other.
+	if v := consoleResearch(leadstore.LeadResearch{NextAt: &earlier}, rr, leadstore.LeadNew, researchLead{leadstore.ChannelNone, rcLegacy, "GB", false}); v.NextAt != nil || !v.CanAsk {
+		t.Errorf("an email-only attempt holds back LinkedIn: %+v", v)
+	}
+	if v := consoleResearch(leadstore.LeadResearch{NextAt: &earlier}, rr, leadstore.LeadNew, researchLead{leadstore.ChannelEmail, rcCalls, "RO", false}); v.NextAt != &earlier {
+		t.Errorf("an attempt no longer holds back a phone search: %+v", v)
 	}
 	if v := consoleResearch(leadstore.LeadResearch{}, rr, leadstore.LeadNew, researchLead{leadstore.ChannelEmail, rcCalls, "RO", false}); v.Status != "" || !v.CanAsk ||
 		!slices.Equal(v.Want, []string{leadstore.WantPhone}) {

@@ -47,6 +47,7 @@ type Client struct {
 	live      config.Live
 
 	publicOnly   bool          // WithPublicOnly: the SSRF guard is on
+	noLinkedIn   bool          // WithoutLinkedIn: linkedin.com is refused
 	timeout      time.Duration // the http.Client timeout
 	maxRedirects int           // requests in a redirect chain before CheckRedirect stops
 }
@@ -264,7 +265,8 @@ func (c *Client) attempt(ctx context.Context, kind Kind, u *url.URL) (Response, 
 }
 
 // refusedRedirect records the 3xx whose redirect CheckRedirect refused and tells the breaker.
-// A refusal by the live gate is not a failure; a redirect loop or a bad target is.
+// A refusal by the live gate or of linkedin.com is not the site failing; a redirect loop or a
+// bad target is.
 func (c *Client) refusedRedirect(ctx context.Context, kind Kind, u *url.URL, res *http.Response, err error, at time.Time) (Response, http.Header, error) {
 	final := res.Request.URL
 	resp := Response{Status: res.StatusCode, FinalURL: final.String(), ContentType: res.Header.Get("Content-Type"), Header: allowedHeaders(res.Header), FetchedAt: at}
@@ -274,7 +276,7 @@ func (c *Client) refusedRedirect(ctx context.Context, kind Kind, u *url.URL, res
 	}
 	recErr := c.record(ctx, rec)
 	o := c.classify(res.StatusCode, final.Path, nil)
-	if o == outcomeOK && !errors.Is(err, ErrLiveOff) {
+	if o == outcomeOK && !errors.Is(err, ErrLiveOff) && !errors.Is(err, ErrLinkedInRefused) {
 		o = outcomeFailure
 	}
 	opened := c.Breaker.observe(o)

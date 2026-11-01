@@ -932,3 +932,66 @@ func TestLeadsTransferRetiredRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestLeadsTransferRoutesWithNoFetch: a route with no fetch (the operator's own, a map listing's)
+// stays behind, as its source does not cross, and the lead on it crosses with no route and channel
+// none instead of aborting the import. A found LinkedIn route crosses with its lead on it.
+func TestLeadsTransferRoutesWithNoFetch(t *testing.T) {
+	leadstoretest.Reset(t)
+	t.Setenv("LEADHOUND_DATABASE_URL", storetest.AppDSN())
+	saved := transferReservedTLDs
+	transferReservedTLDs = []string{"invalid"}
+	t.Cleanup(func() { transferReservedTLDs = saved })
+	transferFixture(t)
+	ctx := context.Background()
+	lq := leadstoretest.Q(t)
+	owner := storetest.OwnerConn(t)
+	orgOf := func(domain string) (org, fetchID int64) {
+		t.Helper()
+		if err := owner.QueryRow(ctx, `SELECT o.id, r.fetch_id FROM org o JOIN contact_route r ON r.org_id = o.id AND r.fetch_id IS NOT NULL
+			WHERE o.domain = $1 ORDER BY r.id LIMIT 1`, domain).Scan(&org, &fetchID); err != nil {
+			t.Fatalf("%s: %v", domain, err)
+		}
+		return org, fetchID
+	}
+	alpha, _ := orgOf("alpha.example")
+	mine := "jane" + "@" + "alpha.example"
+	added, err := lq.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: alpha, Kind: leadstore.RouteEmail, Value: mine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerExecCmd(t, `UPDATE lead SET route_id = $1, channel = 'email' WHERE org_id = $2`, added.ID, alpha)
+	agency, fetchID := orgOf("agency.example")
+	const page = "https://linkedin.com/company/agency"
+	if _, err := lq.InsertRoute(ctx, leadstore.RouteRow{OrgID: agency, Kind: leadstore.RouteLinkedIn, Value: page, FetchID: fetchID, DerivedBy: "enrich@1"}); err != nil {
+		t.Fatal(err)
+	}
+	ownerExecCmd(t, `UPDATE lead SET route_id = (SELECT id FROM contact_route WHERE value = $1), channel = 'linkedin' WHERE org_id = $2`, page, agency)
+
+	dir := filepath.Join(t.TempDir(), "transfer")
+	if code, _, errOut := leadsRun(t, "leads", "transfer", "export", dir); code != 0 {
+		t.Fatalf("export exited %d: %s", code, errOut)
+	}
+	leadstoretest.Reset(t)
+	if code, _, errOut := leadsRun(t, "leads", "transfer", "import", dir); code != 0 {
+		t.Fatalf("import exited %d: %s", code, errOut)
+	}
+	for _, c := range []struct {
+		what, q string
+		want    int
+	}{
+		{"the operator's route stayed behind", `SELECT count(*) FROM contact_route WHERE derived_by = 'operator@1'`, 0},
+		{"the lead on it has no route", `SELECT count(*) FROM lead l JOIN org o ON o.id = l.org_id
+			WHERE o.domain = 'alpha.example' AND l.route_id IS NULL AND l.channel = 'none'`, 1},
+		{"the found LinkedIn route crossed, its lead on it", `SELECT count(*) FROM lead l JOIN contact_route r ON r.id = l.route_id
+			WHERE r.value = 'https://linkedin.com/company/agency' AND l.channel = 'linkedin'`, 1},
+	} {
+		var n int
+		if err := storetest.OwnerConn(t).QueryRow(ctx, c.q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		if n != c.want {
+			t.Errorf("%s: %d, want %d", c.what, n, c.want)
+		}
+	}
+}

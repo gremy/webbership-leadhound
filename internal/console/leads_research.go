@@ -61,6 +61,8 @@ func wantPhrase(want []string) string {
 			w = append(w, "an email")
 		case WantPhone:
 			w = append(w, "a business phone")
+		case WantLinkedIn:
+			w = append(w, "a LinkedIn page")
 		}
 	}
 	if len(w) == 0 {
@@ -78,6 +80,8 @@ func foundWords(n int, want []string) string {
 			one, many = "email", "emails"
 		case WantPhone:
 			one, many = "business phone", "business phones"
+		case WantLinkedIn:
+			one, many = "LinkedIn page", "LinkedIn pages"
 		}
 	}
 	if n == 1 {

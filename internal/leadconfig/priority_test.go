@@ -142,3 +142,11 @@ func TestKindPoints(t *testing.T) {
 		t.Errorf("KindPoints(nil) = %v", got)
 	}
 }
+
+// TestPriorityLinkedInChannel: a lead on LinkedIn is offered to a batch, so its channel can be weighed.
+func TestPriorityLinkedInChannel(t *testing.T) {
+	p := Profile{Channels: map[string]int{ChannelLinkedIn: -5}}
+	if problems := p.Problems(); len(problems) != 0 {
+		t.Errorf("a linkedin channel: %v", problems)
+	}
+}

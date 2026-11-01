@@ -246,7 +246,7 @@ func TestResearchSwitchConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(out.Message, "so a search for one is queued for the research job. "+researchOffStarWords) {
+	if !strings.HasSuffix(out.Message, "so a search for one and a LinkedIn page is queued for the research job. "+researchOffStarWords) {
 		t.Errorf("star with research off: %q", out.Message)
 	}
 	if n := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM lead_star WHERE lead_id = %d AND action = 'star'`, north)); n != 1 {

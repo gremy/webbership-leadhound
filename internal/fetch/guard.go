@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +26,20 @@ var ErrNotPublic = errors.New("fetch: not a public address on port 80 or 443")
 // network, but checkURL's guard part applies to fixture URLs; WithTransport replaces the
 // guarded transport, so tests can reach httptest's loopback server through checkURL alone.
 func WithPublicOnly() Option { return func(c *Client) { c.publicOnly = true } }
+
+// ErrLinkedInRefused is returned when WithoutLinkedIn refuses a URL.
+var ErrLinkedInRefused = errors.New("fetch: a lead's fetch never requests linkedin.com")
+
+// WithoutLinkedIn makes checkURL refuse linkedin.com and its subdomains, for the first request
+// and for every redirect (through refusedRedirect), whatever the live gate allows. The leads
+// side's clients set it: a LinkedIn address on a lead is only ever read from a link on the
+// organisation's own site. The job search reads LinkedIn on purpose and never sets it.
+func WithoutLinkedIn() Option { return func(c *Client) { c.noLinkedIn = true } }
+
+// isLinkedInHost reports whether a normalHost is linkedin.com or a subdomain of it.
+func isLinkedInHost(host string) bool {
+	return host == "linkedin.com" || strings.HasSuffix(host, ".linkedin.com")
+}
 
 // checkPublic is checkURL's guard part: the port, and the host when it is a literal IP.
 func checkPublic(u *url.URL) error {

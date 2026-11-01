@@ -147,6 +147,21 @@ func runLeadsBuild(ctx context.Context, args []string) error {
 	return nil
 }
 
+// channelRoute is route r as outreach.PickChannel reads it.
+func channelRoute(r leadstore.Route) outreach.Route {
+	return outreach.Route{ID: r.ID, Kind: r.Kind, Value: r.Value, MXOK: r.MXOK, Operator: r.Operator}
+}
+
+// channelRoutes are stored (leadstore.RoutesFor: no retired route, the operator's first) in
+// their order, as outreach.PickChannel reads them.
+func channelRoutes(stored []leadstore.Route) []outreach.Route {
+	routes := make([]outreach.Route, len(stored))
+	for i, r := range stored {
+		routes[i] = channelRoute(r)
+	}
+	return routes
+}
+
 // buildLeads classifies every org and upserts its lead in campaign campaignID.
 func buildLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, campaignID int64) (buildSummary, error) {
 	sum := buildSummary{ByKind: map[string]map[string]int{}, NoLead: map[string]int{}}
@@ -168,10 +183,7 @@ func buildLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config
 		if err != nil {
 			return sum, err
 		}
-		routes := make([]outreach.Route, len(stored))
-		for i, r := range stored {
-			routes[i] = outreach.Route{ID: r.ID, Kind: r.Kind, Value: r.Value, MXOK: r.MXOK}
-		}
+		routes := channelRoutes(stored)
 		if o.LeadID != nil && o.LeadState != leadstore.LeadNew {
 			sum.Kept++
 			sum.Leads++
@@ -254,7 +266,7 @@ func printBuildSummary(w io.Writer, sum buildSummary) {
 			continue
 		}
 		var parts []string
-		for _, c := range []string{leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelNone} {
+		for _, c := range []string{leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelLinkedIn, leadconfig.ChannelNone} {
 			if ch[c] > 0 {
 				parts = append(parts, fmt.Sprintf("%s %d", c, ch[c]))
 			}

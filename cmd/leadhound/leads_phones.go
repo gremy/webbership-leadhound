@@ -469,8 +469,8 @@ func (rr researchRun) phoneOne(ctx context.Context, req research.Request, sum *r
 	sum.Failures += c.Breaker.Failures()
 	sum.Orgs++
 	sum.CostMicros += res.CostMicros
-	res.Routes = nil // phone research stores phones only
-	_, found, storeErr := rr.store(wctx, res, pr)
+	res.Routes, res.LinkedIn = nil, nil // phone research stores phones only
+	_, found, _, storeErr := rr.store(wctx, req.Org.ID, res, pr)
 	if storeErr == nil && pr.err != nil {
 		storeErr = researchStoreError("recording a fetch", pr.err)
 	}
@@ -486,7 +486,7 @@ func (rr researchRun) phoneOne(ctx context.Context, req research.Request, sum *r
 	case status == leadstore.ResearchFound:
 		sum.Found++
 		sum.Phones += found
-		line += "found " + foundWords(0, found, res.Verified)
+		line += "found " + foundWords(0, found, 0, res.Verified)
 	case status == leadstore.ResearchNothing:
 		sum.Nothing++
 		line += "nothing"

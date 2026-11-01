@@ -517,11 +517,7 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 		if err != nil {
 			return sum, err
 		}
-		routes := make([]outreach.Route, len(stored))
-		for i, r := range stored {
-			routes[i] = outreach.Route{ID: r.ID, Kind: r.Kind, Value: r.Value, MXOK: r.MXOK}
-		}
-		channel, routeID := outreach.PickChannel(cfg.Policy(o.Country).Channel, routes)
+		channel, routeID := outreach.PickChannel(cfg.Policy(o.Country).Channel, channelRoutes(stored))
 		fid, err := lq.EnsureCafeFinding(ctx, cafeFinding(o, d, in, probeID))
 		if err != nil {
 			return sum, err

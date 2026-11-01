@@ -73,13 +73,19 @@ const researchOffStarWords = "Research is switched off on the Controls page, so 
 // so the line reads as two ("Lead 5 starred: it is last in your order. It has no email yet,
 // so a search for one is queued for the research job.").
 func starQueuedWords(ask ResearchAsk) string {
+	also := ""
+	if slices.Contains(ask.Want, leadstore.WantLinkedIn) {
+		also = " and a LinkedIn page"
+	}
 	switch {
 	case slices.Contains(ask.Want, leadstore.WantEmail):
-		return "It has no email yet, so a search for one is queued for the research job."
+		return "It has no email yet, so a search for one" + also + " is queued for the research job."
 	case ask.CallFirst:
-		return "Its country takes calls first, so a search for a business phone is queued for the research job."
+		return "Its country takes calls first, so a search for a business phone" + also + " is queued for the research job."
+	case !slices.Contains(ask.Want, leadstore.WantPhone):
+		return "It has no contact yet, so a search for a LinkedIn page is queued for the research job."
 	}
-	return "It has no phone yet, so a search for a business phone is queued for the research job."
+	return "It has no phone yet, so a search for a business phone" + also + " is queued for the research job."
 }
 
 // lookAgain is the lead page's "Look again": a research request by the button, refused in
@@ -114,7 +120,11 @@ func (b *backend) lookAgain(ctx context.Context, setup leadsSetup, leadID int64)
 // request itself applies) gives something it lacks to look for.
 func consoleResearch(lr leadstore.LeadResearch, rr researchRules, state string, l researchLead) console.LeadResearch {
 	want := rr.forLead(l, leadstore.ResearchButton).Want
-	out := console.LeadResearch{NextAt: lr.NextAt, CanAsk: state == leadstore.LeadNew && want != nil, Want: want}
+	next := lr.NextAt
+	if slices.Contains(want, leadstore.WantLinkedIn) {
+		next = lr.NextAtLinkedIn // only an attempt that looked for LinkedIn holds this one back
+	}
+	out := console.LeadResearch{NextAt: next, CanAsk: state == leadstore.LeadNew && want != nil, Want: want}
 	if r := lr.Latest; r != nil {
 		out.Status, out.Want, out.Verified = r.Status, r.Want, r.Verified
 		switch r.Status {

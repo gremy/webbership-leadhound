@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/dial"
 	"github.com/gremy/webbership-leadhound/internal/enrich"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/postingguard"
 	"github.com/gremy/webbership-leadhound/internal/sitelist"
 )
 
@@ -28,8 +32,9 @@ type Verifier struct {
 }
 
 type verified struct {
-	routes []leadstore.RouteRow
-	phones []Phone
+	routes   []leadstore.RouteRow
+	phones   []Phone
+	linkedIn []LinkedInFound
 }
 
 // page is one cited page's fetch, kept so two candidates on one page fetch it once.
@@ -41,8 +46,8 @@ type page struct {
 // verify keeps the candidates of a wanted kind whose cited page, on the org's own
 // registrable domain, robots-allowed and public, holds them. A cited page is fetched with
 // contacts.FetchPage, the finder's own step (robots before and after redirects, a 2xx only,
-// no off-domain final URL). It stops early, with what it has, when a fetch reports a
-// context or breaker stop.
+// no off-domain final URL). A source_url on linkedin.com is never fetched, whatever the org's
+// domain. It stops early, with what it has, when a fetch reports a context or breaker stop.
 func (v Verifier) verify(ctx context.Context, req Request, cands []candidate) (verified, error) {
 	var out verified
 	org := contacts.Org{Domain: req.Org.Domain, Roles: v.Roles, UserAgent: v.UserAgent}
@@ -54,10 +59,11 @@ func (v Verifier) verify(ctx context.Context, req Request, cands []candidate) (v
 		switch {
 		case c.kind == KindEmail && req.Want.Email:
 		case c.kind == KindPhone && req.Want.Phone:
+		case c.kind == KindLinkedIn && req.Want.LinkedIn:
 		default:
 			continue
 		}
-		if c.value == "" || !onDomain(c.sourceURL, req.Org.Domain) {
+		if c.value == "" || onLinkedIn(c.sourceURL) || !onDomain(c.sourceURL, req.Org.Domain) {
 			continue
 		}
 		pg, done := pages[c.sourceURL]
@@ -112,10 +118,187 @@ func (v Verifier) verify(ctx context.Context, req Request, cands []candidate) (v
 				},
 				LineKind: c.lineKind, Role: c.role,
 			})
+		case KindLinkedIn:
+			found, ok := linkedInOnPage(c, pg.p)
+			if !ok || seen[KindLinkedIn+found.Value] {
+				continue
+			}
+			seen[KindLinkedIn+found.Value] = true
+			found.FetchID = pg.p.FetchID
+			out.linkedIn = append(out.linkedIn, found)
 		}
 	}
+	// The order they are stored in is the order they are offered in: the company page is the
+	// safer default.
+	slices.SortStableFunc(out.linkedIn, func(a, b LinkedInFound) int {
+		if a.Kind == b.Kind {
+			return 0
+		}
+		if a.Kind == enrich.LinkedInCompany {
+			return -1
+		}
+		return 1
+	})
 	return out, nil
 }
+
+// onLinkedIn reports whether rawURL is on linkedin.com.
+func onLinkedIn(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && enrich.IsLinkedInHost(u.Hostname())
+}
+
+// The reach of "beside a link": the largest element around it, at most maxBesideLevels up,
+// that holds no other LinkedIn page and at most maxBesideRunes of text.
+const (
+	maxBesideLevels = 4
+	maxBesideRunes  = 500
+)
+
+// linkedInOnPage keeps candidate c when an href on p normalises to the same value as c's own.
+// A company page needs nothing more and carries no role or name. A person's profile needs a
+// role, not their name, printed beside the link and outside it; the name is kept only when
+// printed beside the link or as its text. The model's words are never taken on trust.
+func linkedInOnPage(c candidate, p contacts.Page) (LinkedInFound, bool) {
+	value, normalized, kind, ok := enrich.LinkedInURL(c.value)
+	if !ok {
+		return LinkedInFound{}, false
+	}
+	found := LinkedInFound{Value: value, Normalized: normalized, Kind: kind}
+	if kind == enrich.LinkedInPerson && (c.role == "" || strings.Contains(c.role, "@") || strings.EqualFold(c.role, c.name)) {
+		return LinkedInFound{}, false
+	}
+	base, err := url.Parse(p.URL)
+	if err != nil {
+		return LinkedInFound{}, false
+	}
+	doc, err := html.Parse(strings.NewReader(postingguard.DecodePage(capBody(p.Body))))
+	if err != nil {
+		return LinkedInFound{}, false
+	}
+	for _, a := range anchors(doc) {
+		if linkedInHref(a, base) != value {
+			continue
+		}
+		if kind != enrich.LinkedInPerson {
+			return found, true
+		}
+		box := besideBox(a, value, base)
+		if !printed(visibleText(box, a), c.role) {
+			continue
+		}
+		found.Role = c.role
+		if !strings.Contains(c.name, "@") && printed(visibleText(box, nil), c.name) {
+			found.Name = c.name
+		}
+		return found, true
+	}
+	return LinkedInFound{}, false
+}
+
+// linkedInHref is the canonical address an anchor links to, resolved against base the way a
+// browser would, or "" when it is no LinkedIn page. A bare "linkedin.com/…" href is a path on
+// the org's own site.
+func linkedInHref(a *html.Node, base *url.URL) string {
+	for _, at := range a.Attr {
+		if at.Namespace != "" || !strings.EqualFold(at.Key, "href") {
+			continue
+		}
+		ref, err := url.Parse(strings.TrimSpace(at.Val))
+		if err != nil {
+			return ""
+		}
+		v, _, _, _ := enrich.LinkedInURL(base.ResolveReference(ref).String())
+		return v
+	}
+	return ""
+}
+
+// anchors is every <a> under n in document order.
+func anchors(n *html.Node) []*html.Node {
+	var out []*html.Node
+	for d := range n.Descendants() {
+		if d.Type == html.ElementNode && d.Data == "a" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// besideBox is the element whose text counts as beside a, a link to value: see maxBesideLevels.
+// A team page's cards stop it at the card, because the next card links another profile.
+func besideBox(a *html.Node, value string, base *url.URL) *html.Node {
+	box := a
+	for range maxBesideLevels {
+		up := box.Parent
+		if up == nil || up.Type != html.ElementNode || up.Data == "html" ||
+			utf8.RuneCountInString(visibleText(up, nil)) > maxBesideRunes {
+			break
+		}
+		other := slices.ContainsFunc(anchors(up), func(o *html.Node) bool {
+			v := linkedInHref(o, base)
+			return v != "" && v != value
+		})
+		if other {
+			break
+		}
+		box = up
+	}
+	return box
+}
+
+// visibleText is the text under n, one-lined, leaving out skip's subtree and what a reader
+// never sees.
+func visibleText(n, skip *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n == skip {
+			return
+		}
+		if n.Type == html.TextNode {
+			b.WriteString(n.Data + " ")
+			return
+		}
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "script", "style", "template", "noscript", "head":
+				return
+			}
+		}
+		for c := range n.ChildNodes() {
+			walk(c)
+		}
+	}
+	walk(n)
+	return oneLine(b.String())
+}
+
+// printed reports whether want appears in text as whole words, ignoring case: an "IT" role is
+// not printed by the word "digital".
+func printed(text, want string) bool {
+	t, w := strings.ToLower(text), strings.ToLower(oneLine(want))
+	if w == "" {
+		return false
+	}
+	for from := 0; from <= len(t); {
+		i := strings.Index(t[from:], w)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(w)
+		before, _ := utf8.DecodeLastRuneInString(t[:start])
+		after, _ := utf8.DecodeRuneInString(t[end:])
+		if (start == 0 || !wordRune(before)) && (end == len(t) || !wordRune(after)) {
+			return true
+		}
+		from = start + 1
+	}
+	return false
+}
+
+func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // onDomain reports whether rawURL is an http(s) URL on domain's registrable domain.
 func onDomain(rawURL, domain string) bool {

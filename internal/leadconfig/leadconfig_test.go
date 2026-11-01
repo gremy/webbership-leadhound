@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"text/template"
@@ -284,6 +285,10 @@ func TestConfigProblems(t *testing.T) {
 		{"bad d6 date", "d6_eol: 2016-02-24", "d6_eol: later", "facts.d6_eol", false},
 		{"no identity line", `identity_line: "Demo Ltd, 1 Example Street, Example City"`, `identity_line: ""`, "sender.identity_line", false},
 		{"absolute templates dir", "templates_dir: leads-templates", "templates_dir: /etc", "templates_dir", false},
+		{"note max zero", "linkedin_note_max: 200", "linkedin_note_max: 0", "sender.linkedin_note_max", false},
+		{"note max negative", "linkedin_note_max: 200", "linkedin_note_max: -1", "sender.linkedin_note_max", false},
+		{"note max over the limit", "linkedin_note_max: 200", "linkedin_note_max: 301", "sender.linkedin_note_max", false},
+		{"linkedin is no country policy", "channel: form", "channel: linkedin", `"linkedin"`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,6 +328,44 @@ func TestDKIMSelectorDefault(t *testing.T) {
 		t.Errorf("dkim_selector = %q", cfg.Sender.DKIMSelector)
 	}
 }
+
+func TestLinkedInNoteMax(t *testing.T) {
+	dir := demoDir(t)
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sender.LinkedInNoteMax != 200 {
+		t.Errorf("the example's note max = %d", cfg.Sender.LinkedInNoteMax)
+	}
+	for _, n := range []string{"1", "300"} {
+		dir := demoDir(t)
+		replaceIn(t, dir, FileName, "linkedin_note_max: 200", "linkedin_note_max: "+n)
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("note max %s is allowed: %v", n, err)
+		}
+		if got := strconv.Itoa(cfg.Sender.LinkedInNoteMax); got != n {
+			t.Errorf("note max = %s, want %s", got, n)
+		}
+	}
+	for name, line := range map[string]string{"absent": "", "blank": "  linkedin_note_max:\n"} {
+		t.Run(name, func(t *testing.T) {
+			dir := demoDir(t)
+			replaceIn(t, dir, FileName, exampleNoteMaxLine, line)
+			cfg, err := Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Sender.LinkedInNoteMax != DefaultLinkedInNoteMax {
+				t.Errorf("note max = %d, want the default %d", cfg.Sender.LinkedInNoteMax, DefaultLinkedInNoteMax)
+			}
+		})
+	}
+}
+
+// exampleNoteMaxLine is the example file's whole sender.linkedin_note_max line.
+const exampleNoteMaxLine = "  linkedin_note_max: 200 # the longest LinkedIn invite note, in characters, 1 to 300; 200 when left out, the free account's limit; set 300 on Premium\n"
 
 func TestEveryProblemAtOnce(t *testing.T) {
 	dir := demoDir(t)

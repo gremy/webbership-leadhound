@@ -747,7 +747,8 @@ func (ex *exporter) attempts(ctx context.Context, w *jsonlWriter, _ *exportCount
 }
 
 // leads writes every lead that crosses: not a selftest, its org, finding and route all
-// crossing. A lead on a retired route crosses with no route and channel none. A lead batched on the source arrives new (its batch stays behind) at the
+// crossing. A lead on a route that stays behind (retired, or with no fetch: the operator's own
+// or a map listing's, see routes) crosses with no route and channel none. A lead batched on the source arrives new (its batch stays behind) at the
 // export's moment. Only the default account's campaigns cross. It returns the ids written
 // and the campaign and org domain of the batched ones.
 func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, batched []tEvent, err error) {
@@ -758,7 +759,7 @@ func (ex *exporter) leads(ctx context.Context, w *jsonlWriter) (ids []int64, bat
 		JOIN campaign cg ON cg.id = l.campaign_id AND cg.account_id = $2
 		LEFT JOIN site_probe p ON p.id = l.probe_id LEFT JOIN site ps ON ps.id = p.site_id
 		LEFT JOIN agency_finding f ON f.id = l.agency_finding_id LEFT JOIN org fo ON fo.id = f.org_id
-		LEFT JOIN contact_route r ON r.id = l.route_id AND `+liveRouteSQL+` LEFT JOIN org ro ON ro.id = r.org_id
+		LEFT JOIN contact_route r ON r.id = l.route_id AND r.fetch_id IS NOT NULL AND `+liveRouteSQL+` LEFT JOIN org ro ON ro.id = r.org_id
 		WHERE l.kind <> 'selftest' AND `+carriedOrgSQL+`
 		  AND (p.id IS NULL OR ps.domain !~ $1)
 		  AND (f.id IS NULL OR (fo.kind <> 'selftest' AND fo.domain !~ $1))

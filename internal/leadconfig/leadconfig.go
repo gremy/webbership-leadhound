@@ -67,6 +67,14 @@ const (
 // DefaultDKIMSelector is sender.dkim_selector when the file leaves it out.
 const DefaultDKIMSelector = "default"
 
+// sender.linkedin_note_max: the default when the file leaves it out and the bounds a value
+// must hold (LinkedIn allows 200 characters on a free account, 300 on Premium).
+const (
+	DefaultLinkedInNoteMax = 200
+	MinLinkedInNoteMax     = 1
+	MaxLinkedInNoteMax     = 300
+)
+
 // ErrInvalid wraps every problem with the file's content or its templates.
 var ErrInvalid = errors.New("invalid leads config")
 
@@ -76,6 +84,10 @@ const (
 	ChannelForm  = "form"
 	ChannelNone  = "none"
 )
+
+// ChannelLinkedIn is the channel of a lead reached on LinkedIn by hand. It is a lead's channel
+// and never a country policy: PickChannel reaches it from an email, form or none policy.
+const ChannelLinkedIn = "linkedin"
 
 // Lead kinds kinds_priority may name; each has its own templates.
 const (
@@ -279,6 +291,10 @@ type Sender struct {
 	// OptOutLines maps a language to its opt-out line; every language an email country
 	// uses needs one.
 	OptOutLines map[string]string `yaml:"opt_out_lines"`
+	// LinkedInNoteMax is the longest LinkedIn invite note in runes after rendering,
+	// MinLinkedInNoteMax to MaxLinkedInNoteMax, DefaultLinkedInNoteMax when the file leaves
+	// it out. read seeds the default before decoding, so a written 0 stays 0 and is refused.
+	LinkedInNoteMax int `yaml:"linkedin_note_max"`
 }
 
 // PrivacyLinePrefix opens the footer's privacy line, before the notice's URL.
@@ -498,7 +514,7 @@ func read(dataDir string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("leadconfig: %w", err)
 	}
-	var cfg Config
+	cfg := Config{Sender: Sender{LinkedInNoteMax: DefaultLinkedInNoteMax}}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
@@ -651,6 +667,9 @@ func (cfg *Config) checkRest() []string {
 		if err != nil || u.Scheme != "https" || u.Host == "" || strings.ContainsAny(s.PrivacyURL, " \t\r\n") {
 			p = append(p, fmt.Sprintf("sender.privacy_url: %q is not an absolute https URL", s.PrivacyURL))
 		}
+	}
+	if s.LinkedInNoteMax < MinLinkedInNoteMax || s.LinkedInNoteMax > MaxLinkedInNoteMax {
+		p = append(p, fmt.Sprintf("sender.linkedin_note_max must be from %d to %d", MinLinkedInNoteMax, MaxLinkedInNoteMax))
 	}
 
 	p = append(p, cfg.Facts.D6EOL.check("facts.d6_eol")...)

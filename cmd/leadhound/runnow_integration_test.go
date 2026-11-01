@@ -7,11 +7,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -126,18 +128,35 @@ func TestRunNowFetchCooldown(t *testing.T) {
 	}
 }
 
-// TestRunNowFetchPausedToday: a throttled LinkedIn run today refuses the fetch; the
-// preview still goes ahead and says the recheck is skipped.
+// TestRunNowFetchPausedToday: a throttled LinkedIn run earlier on the local day refuses the
+// fetch, whatever the hour (just after midnight too), and last night's does not; the preview
+// still goes ahead and says the recheck is skipped. The clock is fixed, so the test reads the
+// same at any hour it runs.
 func TestRunNowFetchPausedToday(t *testing.T) {
-	b := runNowBackend(t)
-	ctx := context.Background()
-	ownerExecCmd(t, `INSERT INTO run (command, source, started_at, finished_at, stop_reason) VALUES ('recheck', 'linkedin', now() - interval '3 hours', now() - interval '3 hours', 'throttled')`)
-	_, err := b.RunNow(ctx, console.RunRequest{Action: console.RunFetch})
-	if !errors.Is(err, console.ErrUserFixable) || !strings.Contains(err.Error(), "LinkedIn is paused today (throttled at") {
-		t.Fatalf("fetch paused: err = %v", err)
-	}
-	out, err := b.RunNow(ctx, console.RunRequest{Action: console.RunPreview})
-	if err != nil || !strings.Contains(out.Message, "nothing is rechecked") {
-		t.Fatalf("preview paused: %+v, %v", out, err)
+	for _, hour := range []int{0, 1, 15} {
+		t.Run(strconv.Itoa(hour), func(t *testing.T) {
+			b := runNowBackend(t)
+			ctx := context.Background()
+			y, m, d := time.Now().In(b.loc).Date()
+			now := time.Date(y, m, d, hour, 30, 0, 0, b.loc)
+			b.now = func() time.Time { return now }
+			throttled := func(at time.Time) {
+				t.Helper()
+				ownerExecCmd(t, `INSERT INTO run (command, source, started_at, finished_at, stop_reason) VALUES ('recheck', 'linkedin', $1, $1, 'throttled')`, at)
+			}
+			throttled(now.Add(-time.Duration(hour)*time.Hour - 45*time.Minute)) // 23:45 last night
+			if _, paused, err := b.s.Q().PausedToday(ctx, linkedin.Source, b.loc, now); err != nil || paused {
+				t.Fatalf("last night's run: paused %v, %v", paused, err)
+			}
+			throttled(now.Add(-15 * time.Minute))
+			_, err := b.RunNow(ctx, console.RunRequest{Action: console.RunFetch})
+			if !errors.Is(err, console.ErrUserFixable) || !strings.Contains(err.Error(), "LinkedIn is paused today (throttled at") {
+				t.Fatalf("fetch paused: err = %v", err)
+			}
+			out, err := b.RunNow(ctx, console.RunRequest{Action: console.RunPreview})
+			if err != nil || !strings.Contains(out.Message, "nothing is rechecked") {
+				t.Fatalf("preview paused: %+v, %v", out, err)
+			}
+		})
 	}
 }

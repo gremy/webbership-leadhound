@@ -650,7 +650,7 @@ func starredReason(f starredFacts, offered map[int64]int, o StarredStatusOptions
 	case f.ResearchStatus != nil && *f.ResearchStatus == ResearchNothing:
 		return StarredFoundNothing, "", f.ResearchAt
 	case judged && policy == leadconfig.ChannelForm:
-		return StarredCountryRule, country + " takes contact forms only, and none was found", nil
+		return StarredCountryRule, country + " takes contact forms or LinkedIn only, and neither was found", nil
 	case f.ResearchStatus != nil && *f.ResearchStatus == ResearchFound:
 		return StarredNoEmailYet, "research found a contact: the next leads build gives it its channel", nil
 	case f.ResearchStatus != nil:

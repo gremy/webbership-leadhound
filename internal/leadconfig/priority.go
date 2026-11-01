@@ -19,7 +19,7 @@ const (
 
 // PriorityChannels are the contact channels a priority profile may weigh: the channels a
 // lead that can be offered takes (a channel none lead never is).
-var PriorityChannels = []string{ChannelEmail, ChannelForm}
+var PriorityChannels = []string{ChannelEmail, ChannelForm, ChannelLinkedIn}
 
 // Profile orders the leads a batch drafts from: a lead scores the sum of the points its
 // kind, Drupal major, country, channel and site list rank band earn, plus ExactVersion when

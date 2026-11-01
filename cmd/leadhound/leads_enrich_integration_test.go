@@ -323,3 +323,107 @@ func TestLeadsEnrichKeepsOnlyUsefulBodies(t *testing.T) {
 	}
 	sweepFacts(t)
 }
+
+// TestLeadsEnrichWritesLinkedInRoute: a company page read as a social fact is also a linkedin
+// route in the canonical form, citing the same page; a person's profile gives neither.
+func TestLeadsEnrichWritesLinkedInRoute(t *testing.T) {
+	leadsDB(t)
+	orgs := enrichFixture(t, enrichSite{domain: "northwind.example", home: `<a href="https://uk.linkedin.com/company/Northwind-Traders/about?trk=1">LinkedIn</a>
+		<a href="https://www.linkedin.com/` + `in` + `/jane-doe/">Jane</a>`})
+	mustRun(t, "leads", "enrich", "--dry-run", "--fixtures", enrichFixtureDir)
+
+	routes, err := leadstoretest.Q(t).RoutesFor(context.Background(), orgs["northwind.example"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("routes %+v, want the company page only", routes)
+	}
+	r := routes[0]
+	const want = "https://linkedin.com/company/northwind-traders"
+	if r.Kind != leadstore.RouteLinkedIn || r.Value != want || r.DerivedBy != "enrich@1" || r.Operator {
+		t.Errorf("route %+v, want linkedin %s by enrich@1", r, want)
+	}
+	if n := sitesCount(t, `SELECT count(*) FROM org_fact x JOIN contact_route r ON r.org_id = x.org_id AND r.value = x.normalized AND r.fetch_id = x.fetch_id
+		WHERE x.kind = 'social' AND r.kind = 'linkedin'`); n != 1 {
+		t.Errorf("%d linkedin routes beside their fact on the same fetch, want 1", n)
+	}
+	sweepFacts(t)
+}
+
+// TestLeadsEnrichRetiredLinkedInStaysRetired: the same page read again finds its route taken
+// (InsertRoute's DO NOTHING), so nothing un-retires it but an operator's claim.
+func TestLeadsEnrichRetiredLinkedInStaysRetired(t *testing.T) {
+	leadsDB(t)
+	ctx := context.Background()
+	const value = "https://linkedin.com/company/northwind-traders"
+	orgs := enrichFixture(t, enrichSite{domain: "northwind.example", home: `<a href="https://www.linkedin.com/company/northwind-traders">LinkedIn</a>`})
+	org := orgs["northwind.example"]
+	lq := leadstoretest.Q(t)
+	added, err := lq.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: org, Kind: leadstore.RouteLinkedIn, Value: value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, err := lq.RoutesFor(ctx, org)
+	if err != nil || len(routes) != 1 {
+		t.Fatalf("routes %+v err %v, want the operator's (%+v)", routes, err, added)
+	}
+	if err := lq.MarkContact(ctx, leadstore.Mark{OrgID: org, RouteID: routes[0].ID, Mark: leadstore.MarkRetire}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := mustRun(t, "leads", "enrich", "--dry-run", "--fixtures", enrichFixtureDir)
+	wantLines(t, "enrich", out, "· orgs 1 · phones 0 · descriptions 0 · social 1 · ")
+
+	routes, err = lq.RoutesFor(ctx, org)
+	if err != nil || len(routes) != 0 {
+		t.Errorf("routes %+v err %v, want the retired page still out of use", routes, err)
+	}
+	if n := sitesCount(t, `SELECT count(*) FROM contact_route WHERE kind = 'linkedin'`); n != 1 {
+		t.Errorf("%d linkedin rows, want the one retired row", n)
+	}
+	if n := sitesCount(t, `SELECT count(*) FROM contact_route WHERE kind = 'linkedin' AND derived_by = 'operator@1'`); n != 1 {
+		t.Errorf("the retired row changed hands: %d operator rows", n)
+	}
+	if n := sitesCount(t, `SELECT count(*) FROM contact_mark`); n != 2 {
+		t.Errorf("%d marks, want the operator's claim and retire and nothing from the enrichment", n)
+	}
+}
+
+// TestLeadsEnrichNeverAsksLinkedIn runs the real client against a server that logs every host:
+// the org's LinkedIn links, even named like contact pages, are read and never requested.
+func TestLeadsEnrichNeverAsksLinkedIn(t *testing.T) {
+	leadsDB(t)
+	home := `<a href="https://www.linkedin.com/company/contact">Contact</a>
+		<a href="https://www.linkedin.com/contact">Kontakt</a>
+		<a href="/contact">Contact</a>`
+	orgs := enrichFixture(t, enrichSite{domain: "contoso.example", home: home})
+	s := newSiteServer(t, map[string]string{
+		"/robots.txt": "User-agent: *\nDisallow:\n",
+		"/contact":    `<a href="https://uk.linkedin.com/company/contoso/about">LinkedIn</a>`,
+	})
+	liveToServer(t, s)
+	if code, _, errOut := leadsRun(t, "leads", "enrich"); code != 0 {
+		t.Fatalf("enrich exited %d: %s", code, errOut)
+	}
+	asked := s.requests()
+	if len(asked) == 0 {
+		t.Fatal("nothing was requested, so the check proved nothing")
+	}
+	for _, a := range asked {
+		if !strings.HasPrefix(a, "contoso.example/") {
+			t.Errorf("requested %q", a)
+		}
+	}
+	routes, err := leadstoretest.Q(t).RoutesFor(context.Background(), orgs["contoso.example"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values []string
+	for _, r := range routes {
+		values = append(values, r.Value)
+	}
+	if want := []string{"https://linkedin.com/company/contact", "https://linkedin.com/company/contoso"}; !slices.Equal(values, want) {
+		t.Errorf("routes %q, want %q, both read off pages", values, want)
+	}
+}

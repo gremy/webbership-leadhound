@@ -5,13 +5,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/time/rate"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
+	"github.com/gremy/webbership-leadhound/internal/config"
+	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -30,8 +35,11 @@ func TestResearchCommandParsing(t *testing.T) {
 			t.Errorf("leads research %q: %v, want a usage error", args, err)
 		}
 	}
-	if id, err := parseResearchRequest([]string{"42"}); err != nil || id != 42 {
-		t.Errorf("request 42: %d %v", id, err)
+	if id, li, err := parseResearchRequest([]string{"42"}); err != nil || id != 42 || li {
+		t.Errorf("request 42: %d %v %v", id, li, err)
+	}
+	if id, li, err := parseResearchRequest([]string{"--linkedin", "42"}); err != nil || id != 42 || !li {
+		t.Errorf("request --linkedin 42: %d %v %v", id, li, err)
 	}
 	if o, err := parseResearchList([]string{"--status", "capped", "--limit", "7"}); err != nil || o.Status != leadstore.ResearchCapped || o.Limit != 7 {
 		t.Errorf("list --status capped --limit 7: %+v %v", o, err)
@@ -88,14 +96,19 @@ func TestResearchStatusMapping(t *testing.T) {
 			t.Errorf("researchStatusOf(%v, %d) = %s, want %s", c.err, c.verified, got, c.want)
 		}
 	}
-	if got := foundWords(1, 0, 1); got != "1 email" {
-		t.Errorf("foundWords(1, 0, 1) = %q", got)
-	}
-	if got := foundWords(1, 2, 3); got != "1 email and 2 phones" {
-		t.Errorf("foundWords(1, 2, 3) = %q", got)
-	}
-	if got := foundWords(0, 0, 1); got != "1 contact, nothing new" {
-		t.Errorf("foundWords(0, 0, 1) = %q", got)
+	for _, c := range []struct {
+		emails, phones, linkedIn, verified int
+		want                               string
+	}{
+		{1, 0, 0, 1, "1 email"},
+		{1, 2, 0, 3, "1 email and 2 phones"},
+		{0, 0, 2, 2, "2 LinkedIn pages"},
+		{1, 0, 1, 2, "1 email and 1 LinkedIn page"},
+		{0, 0, 0, 1, "1 contact, nothing new"},
+	} {
+		if got := foundWords(c.emails, c.phones, c.linkedIn, c.verified); got != c.want {
+			t.Errorf("foundWords(%+v) = %q", c, got)
+		}
 	}
 }
 
@@ -175,5 +188,47 @@ func TestResearchStoreErrorWords(t *testing.T) {
 	}
 	if researchStoreError("x", nil) != nil {
 		t.Error("nil error: want nil")
+	}
+}
+
+// failTransport fails the test on every request it is asked to make.
+type failTransport struct{ t *testing.T }
+
+func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.t.Errorf("asked %s", r.URL)
+	return nil, errors.New("no network in this test")
+}
+
+// recordHostTransport answers every request with a 200 and keeps the hosts asked.
+type recordHostTransport struct{ hosts *[]string }
+
+func (h recordHostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	*h.hosts = append(*h.hosts, r.URL.Hostname())
+	return &http.Response{StatusCode: 200, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
+}
+
+// TestLinkedInRefusedOnTheLeadsSideOnly: every client the leads commands build refuses
+// linkedin.com; the job search's reaches it as it always has.
+func TestLinkedInRefusedOnTheLeadsSideOnly(t *testing.T) {
+	cfg := config.Config{Live: config.LiveAll}
+	mk, err := siteClients(cfg, fetchFlags{}, rate.NewLimiter(rate.Inf, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := mk(verifyRecorder{})
+	site.HTTP.Transport = failTransport{t}
+	if _, err := site.Get(context.Background(), fetch.KindSite, "https://uk.linkedin.com/company/x"); !errors.Is(err, fetch.ErrLinkedInRefused) {
+		t.Errorf("site client: %v, want ErrLinkedInRefused", err)
+	}
+	mkJob, _, err := linkedinClients(cfg, fetchFlags{}, fetch.Budgets{fetch.KindCompany: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := mkJob(verifyRecorder{})
+	job.Jitter = 0
+	var hosts []string
+	job.HTTP.Transport = recordHostTransport{&hosts}
+	if _, err := job.Get(context.Background(), fetch.KindCompany, "https://www.linkedin.com/company/x"); err != nil || !slices.Equal(hosts, []string{"www.linkedin.com"}) {
+		t.Errorf("job client: %v, asked %v", err, hosts)
 	}
 }

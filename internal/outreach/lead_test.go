@@ -93,6 +93,12 @@ func TestClassify(t *testing.T) {
 			want: Lead{OrgID: 1, Kind: leadconfig.KindUnsupported, Channel: leadconfig.ChannelNone, ProbeID: leadPtr(10), Reserved: true}},
 		{name: "invalid TLD flagged reserved", org: Org{ID: 6, Kind: OrgKindSiteOwner, Domain: "contoso.invalid", Country: "GB"}, probe: probe(10, ""), routes: []Route{mail}, ok: true,
 			want: Lead{OrgID: 6, Kind: leadconfig.KindD10, Channel: leadconfig.ChannelEmail, ProbeID: leadPtr(10), RouteID: leadPtr(30), Reserved: true}},
+		{name: "none country takes the operator's form", org: site("FR"), probe: probe(8, ""),
+			routes: []Route{{ID: 33, Kind: RouteForm, Operator: true}}, ok: true,
+			want: Lead{OrgID: 1, Kind: leadconfig.KindUnsupported, Channel: leadconfig.ChannelForm, ProbeID: leadPtr(10), RouteID: leadPtr(33), Reserved: true}},
+		{name: "country absent from policy takes the operator's LinkedIn", org: site("NL"), probe: probe(8, ""),
+			routes: []Route{{ID: 34, Kind: RouteLinkedIn, Operator: true}}, ok: true,
+			want: Lead{OrgID: 1, Kind: leadconfig.KindUnsupported, Channel: leadconfig.ChannelLinkedIn, ProbeID: leadPtr(10), RouteID: leadPtr(34), Reserved: true}},
 		{name: "real TLD not reserved", org: Org{ID: 7, Kind: OrgKindSiteOwner, Domain: leadRealLike, Country: "GB"}, probe: probe(10, ""), routes: []Route{mail}, ok: true,
 			want: Lead{OrgID: 7, Kind: leadconfig.KindD10, Channel: leadconfig.ChannelEmail, ProbeID: leadPtr(10), RouteID: leadPtr(30)}},
 	}
@@ -121,6 +127,147 @@ func TestClassify(t *testing.T) {
 				t.Errorf("lead = %s, want %s", leadFmt(got), leadFmt(w))
 			}
 		})
+	}
+}
+
+// TestPickChannel walks every policy over every route mix. The routes come in the order
+// leadstore.RoutesFor gives them, retired ones already gone; a mix written against that order
+// (a scraped form before an operator's) shows the pick follows the order given.
+func TestPickChannel(t *testing.T) {
+	var (
+		mx     = Route{ID: 1, Kind: RouteEmail, MXOK: true}
+		noMX   = Route{ID: 2, Kind: RouteEmail}
+		opMail = Route{ID: 3, Kind: RouteEmail, Operator: true}
+		form   = Route{ID: 4, Kind: RouteForm}
+		opForm = Route{ID: 5, Kind: RouteForm, Operator: true}
+		li     = Route{ID: 6, Kind: RouteLinkedIn}
+		opLI   = Route{ID: 7, Kind: RouteLinkedIn, Operator: true}
+	)
+	const (
+		email    = leadconfig.ChannelEmail
+		formCh   = leadconfig.ChannelForm
+		linkedin = leadconfig.ChannelLinkedIn
+		none     = leadconfig.ChannelNone
+	)
+	type pick struct {
+		channel string
+		route   int64 // 0 for no route
+	}
+	nothing := pick{none, 0}
+	tests := []struct {
+		name                    string
+		routes                  []Route
+		onEmail, onForm, onNone pick
+	}{
+		{"no routes", nil, nothing, nothing, nothing},
+		{"email with MX", []Route{mx}, pick{email, 1}, nothing, nothing},
+		{"email without MX", []Route{noMX}, nothing, nothing, nothing},
+		{"operator email without MX counts as MX-ok", []Route{opMail}, pick{email, 3}, nothing, nothing},
+		{"operator email first", []Route{opMail, mx}, pick{email, 3}, nothing, nothing},
+		{"operator email passes a no-MX email", []Route{noMX, opMail}, pick{email, 3}, nothing, nothing},
+		{"MX email passes a no-MX one", []Route{noMX, mx}, pick{email, 1}, nothing, nothing},
+		{"scraped form", []Route{form}, pick{formCh, 4}, pick{formCh, 4}, nothing},
+		{"operator form", []Route{opForm}, pick{formCh, 5}, pick{formCh, 5}, pick{formCh, 5}},
+		{"operator form first", []Route{opForm, form}, pick{formCh, 5}, pick{formCh, 5}, pick{formCh, 5}},
+		{"scraped form first", []Route{form, opForm}, pick{formCh, 4}, pick{formCh, 4}, pick{formCh, 5}},
+		{"scraped LinkedIn", []Route{li}, pick{linkedin, 6}, pick{linkedin, 6}, nothing},
+		{"operator LinkedIn", []Route{opLI}, pick{linkedin, 7}, pick{linkedin, 7}, pick{linkedin, 7}},
+		{"operator LinkedIn first", []Route{opLI, li}, pick{linkedin, 7}, pick{linkedin, 7}, pick{linkedin, 7}},
+		{"scraped LinkedIn first", []Route{li, opLI}, pick{linkedin, 6}, pick{linkedin, 6}, pick{linkedin, 7}},
+		{"form beats LinkedIn", []Route{form, li}, pick{formCh, 4}, pick{formCh, 4}, nothing},
+		{"scraped form, operator LinkedIn", []Route{form, opLI}, pick{formCh, 4}, pick{formCh, 4}, pick{linkedin, 7}},
+		{"operator form, scraped LinkedIn", []Route{opForm, li}, pick{formCh, 5}, pick{formCh, 5}, pick{formCh, 5}},
+		{"operator form beats operator LinkedIn", []Route{opForm, opLI}, pick{formCh, 5}, pick{formCh, 5}, pick{formCh, 5}},
+		{"no-MX email falls to form", []Route{noMX, form}, pick{formCh, 4}, pick{formCh, 4}, nothing},
+		{"no-MX email falls to LinkedIn", []Route{noMX, li}, pick{linkedin, 6}, pick{linkedin, 6}, nothing},
+		{"MX email, form and LinkedIn", []Route{mx, form, li}, pick{email, 1}, pick{formCh, 4}, nothing},
+		{"operator email, scraped form", []Route{opMail, form}, pick{email, 3}, pick{formCh, 4}, nothing},
+		{"operator email, operator LinkedIn", []Route{opMail, opLI}, pick{email, 3}, pick{linkedin, 7}, pick{linkedin, 7}},
+		{"every route", []Route{opMail, mx, noMX, opForm, form, opLI, li}, pick{email, 3}, pick{formCh, 5}, pick{formCh, 5}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, p := range []struct {
+				policy string
+				want   pick
+			}{
+				{email, tc.onEmail},
+				{formCh, tc.onForm},
+				{none, tc.onNone},
+				{"", nothing}, // no such policy: a checked file cannot hold one
+				{"fax", nothing},
+				{linkedin, nothing}, // a lead's channel, never a policy
+			} {
+				ch, id := PickChannel(p.policy, tc.routes)
+				got := pick{ch, 0}
+				if id != nil {
+					got.route = *id
+				}
+				if got != p.want {
+					t.Errorf("policy %q: picked %+v, want %+v", p.policy, got, p.want)
+				}
+			}
+		})
+	}
+}
+
+// TestPickChannelEveryMix holds the rules over every subset of the routes.
+func TestPickChannelEveryMix(t *testing.T) {
+	all := []Route{
+		{ID: 1, Kind: RouteEmail, Operator: true},
+		{ID: 2, Kind: RouteEmail, MXOK: true},
+		{ID: 3, Kind: RouteEmail},
+		{ID: 4, Kind: RouteForm, Operator: true},
+		{ID: 5, Kind: RouteForm},
+		{ID: 6, Kind: RouteLinkedIn, Operator: true},
+		{ID: 7, Kind: RouteLinkedIn},
+	}
+	for mask := range 1 << len(all) {
+		var routes []Route
+		has := map[int64]bool{}
+		for i, r := range all {
+			if mask&(1<<i) != 0 {
+				routes = append(routes, r)
+				has[r.ID] = true
+			}
+		}
+		wantEmail := map[bool]string{true: leadconfig.ChannelEmail, false: ""}[has[1] || has[2]]
+		wantForm, wantNone := "", ""
+		switch {
+		case has[4] || has[5]:
+			wantForm = leadconfig.ChannelForm
+		case has[6] || has[7]:
+			wantForm = leadconfig.ChannelLinkedIn
+		}
+		switch {
+		case has[4]:
+			wantNone = leadconfig.ChannelForm
+		case has[6]:
+			wantNone = leadconfig.ChannelLinkedIn
+		}
+		if wantEmail == "" {
+			wantEmail = wantForm
+		}
+		for policy, want := range map[string]string{
+			leadconfig.ChannelEmail: wantEmail, leadconfig.ChannelForm: wantForm, leadconfig.ChannelNone: wantNone,
+		} {
+			if want == "" {
+				want = leadconfig.ChannelNone
+			}
+			ch, id := PickChannel(policy, routes)
+			if ch != want {
+				t.Errorf("policy %s, routes %+v: channel %s, want %s", policy, routes, ch, want)
+			}
+			if (id == nil) != (ch == leadconfig.ChannelNone) {
+				t.Errorf("policy %s, routes %+v: channel %s with route %v", policy, routes, ch, id)
+			}
+			if id != nil && (!has[*id] || all[*id-1].Kind != ch) {
+				t.Errorf("policy %s, routes %+v: channel %s on route %d", policy, routes, ch, *id)
+			}
+			if id != nil && policy == leadconfig.ChannelNone && !all[*id-1].Operator {
+				t.Errorf("none policy picked route %d, which is not the operator's", *id)
+			}
+		}
 	}
 }
 

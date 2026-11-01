@@ -552,7 +552,7 @@ func TestDashboardSnapshotShutdown(t *testing.T) {
 // profile, and a form with problems names each of them.
 func TestPriorityFormRoundTrip(t *testing.T) {
 	p := leadconfig.Profile{
-		Kinds: map[string]int{"unsupported": 20, "d10": 10}, Majors: map[int]int{7: 30, 10: -5}, Channels: map[string]int{"email": 10, "form": 0},
+		Kinds: map[string]int{"unsupported": 20, "d10": 10}, Majors: map[int]int{7: 30, 10: -5}, Channels: map[string]int{"email": 10, "form": 0, "linkedin": -5},
 		Countries: map[string]int{"GB": 20, "DE": 10}, RankBands: []leadconfig.RankBand{{Under: 10000, Points: 15}, {Under: 100000, Points: 8}},
 		ExactVersion: 5, ExcludeCountries: []string{"FR", "IT"},
 	}

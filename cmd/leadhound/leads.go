@@ -203,7 +203,7 @@ func siteLimiter(env leadconfig.Env) *rate.Limiter {
 // siteClients returns a constructor for one organisation's site client; call it once per
 // site with the run's recorder. Every client has its own breaker (robots and site budgets of
 // four requests each, the per-site cap, so one site's failures never stop the run), the Site
-// profile, the public-only guard, a 10 s timeout, at most 3 redirects and a body cap of
+// profile, the public-only guard, the refusal of linkedin.com, a 10 s timeout, at most 3 redirects and a body cap of
 // drupal.MaxBody. With --dry-run it
 // reads fixtures and is not paced; otherwise it waits on lim, shared by the whole run, with
 // no added jitter. errLiveOff means LEADHOUND_LIVE is not 1 (ats is not enough), so the
@@ -211,6 +211,7 @@ func siteLimiter(env leadconfig.Env) *rate.Limiter {
 func siteClients(cfg config.Config, f fetchFlags, lim *rate.Limiter) (func(fetch.Recorder) *fetch.Client, error) {
 	opts := []fetch.Option{
 		fetch.WithPublicOnly(),
+		fetch.WithoutLinkedIn(),
 		fetch.WithProfile(fetch.Site),
 		fetch.WithTimeout(siteTimeout),
 		fetch.WithMaxRedirects(siteMaxRedirects),

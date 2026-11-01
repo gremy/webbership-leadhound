@@ -25,6 +25,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/claude"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/contacts"
+	"github.com/gremy/webbership-leadhound/internal/enrich"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/robots"
@@ -109,7 +110,7 @@ func req(want Want) Request {
 	return Request{LeadID: 7, Org: Org{ID: 3, Name: "Northwind Trading", Domain: orgDomain, Country: "GB"}, Want: want}
 }
 
-type cand struct{ Kind, Value, URL, LineKind, Role string }
+type cand struct{ Kind, Value, URL, LineKind, Role, Name string }
 
 // answer is a model answer holding cs, each with the sentinel quote.
 func answer(cs ...cand) string {
@@ -120,10 +121,11 @@ func answer(cs ...cand) string {
 		Quote     string `json:"quote"`
 		LineKind  string `json:"line_kind"`
 		Role      string `json:"role"`
+		Name      string `json:"name"`
 	}
 	items := []item{}
 	for _, c := range cs {
-		items = append(items, item{c.Kind, c.Value, c.URL, sentinelQuote, c.LineKind, c.Role})
+		items = append(items, item{c.Kind, c.Value, c.URL, sentinelQuote, c.LineKind, c.Role, c.Name})
 	}
 	b, _ := json.Marshal(map[string]any{"candidates": items})
 	return "Here is what I found.\n```json\n" + string(b) + "\n```"
@@ -482,13 +484,16 @@ func TestQuoteNeverSurfaces(t *testing.T) {
 			cand{Kind: "email", Value: "info@northwind.example", URL: contactURL},
 			cand{Kind: "email", Value: "jane.smith@northwind.example", URL: contactURL},
 			cand{Kind: "phone", Value: "+442078031100", URL: contactURL, Role: "Office"},
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL},
 		)),
 		"broken JSON": fakeClaude(broken),
 		"wrong type":  fakeClaude(`{"candidates":[{"kind":"email","quote":` + `["` + sentinelQuote + `"]}]}`),
 		"call error":  &claude.Fake{Err: errors.New("claude: research: status 500"), ResearchAnswer: claude.ResearchResult{Text: answer()}},
 	}
 	for name, c := range cases {
-		res, err := Run(context.Background(), c, verifier(contactFetcher(t)), req(Want{Email: true, Phone: true}))
+		f := contactFetcher(t)
+		f.pages[teamURL] = fakePage{status: 200, body: teamPage(), id: 77}
+		res, err := Run(context.Background(), c, verifier(f), req(Want{Email: true, Phone: true, LinkedIn: true}))
 		dump := fmt.Sprintf("%#v %+v", res, res)
 		if strings.Contains(dump, sentinelQuote) {
 			t.Errorf("%s: the quote is in the Result: %s", name, dump)
@@ -496,8 +501,8 @@ func TestQuoteNeverSurfaces(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), sentinelQuote) {
 			t.Errorf("%s: the quote is in the error: %v", name, err)
 		}
-		if name == "verified and dropped" && res.Verified != 2 {
-			t.Errorf("%s: verified %d, want 2 (the sweep must cover a kept candidate)", name, res.Verified)
+		if name == "verified and dropped" && res.Verified != 3 {
+			t.Errorf("%s: verified %d, want 3 (the sweep must cover a kept candidate of each kind)", name, res.Verified)
 		}
 	}
 	if strings.Contains(logs.String(), sentinelQuote) {
@@ -608,3 +613,305 @@ func TestWebToolsFallback(t *testing.T) {
 // privateAddr is a private (RFC 1918) address for the guard tests, built at run time the
 // way internal/fetch's guard tests build theirs, so the repo's privacy check sees no literal.
 var privateAddr = netip.AddrFrom4([4]byte{10, 0, 0, 5}).String()
+
+const teamURL = "https://northwind.example/team"
+
+// inPath is a person page's first path segment, built at runtime so no file holds a profile URL.
+const inPath = "/" + "in" + "/"
+
+var (
+	janeLink = "https://www.linkedin.com" + inPath + "jane-doe-123"
+	janeURL  = "https://linkedin.com" + inPath + "jane-doe-123"
+	bobLink  = "https://uk.linkedin.com" + inPath + "bob-roe/?trk=1"
+	bobURL   = "https://linkedin.com" + inPath + "bob-roe"
+	teamCo   = "https://linkedin.com/company/northwind"
+)
+
+// teamPage is a team page with two people in cards and the company page in the footer.
+func teamPage() []byte {
+	return []byte(`<html><head><title>Marketing Lead</title></head><body><main>
+<div class="card"><h3>Jane Doe</h3><p>Head of Digital</p><a href="` + janeLink + `">LinkedIn</a></div>
+<div class="card"><h3>Bob Roe</h3><p>Chief Executive</p><a href="` + bobLink + `">Bob on LinkedIn</a></div>
+</main><footer><p>Follow us: <a href="https://www.linkedin.com/company/Northwind/about?trk=1">LinkedIn</a></p></footer></body></html>`)
+}
+
+func teamFetcher() *fakeFetcher {
+	return &fakeFetcher{pages: map[string]fakePage{teamURL: {status: 200, body: teamPage(), id: 77}}}
+}
+
+func TestLinkedInVerified(t *testing.T) {
+	f := teamFetcher()
+	res, err := run(t, answer(
+		cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Head of Digital", Name: "Jane Doe"},
+		cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL, Role: "Ignored", Name: "Ignored"},
+		cand{Kind: "linkedin", Value: teamCo, URL: teamURL}, // the same page again: kept once
+	), f, Want{LinkedIn: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Candidates != 3 || res.Verified != 2 || len(res.LinkedIn) != 2 {
+		t.Fatalf("candidates %d verified %d linkedin %+v, want 3, 2 and two pages", res.Candidates, res.Verified, res.LinkedIn)
+	}
+	// The company page comes first, whatever order the model gave.
+	if got, want := res.LinkedIn[0], (LinkedInFound{Value: teamCo, Normalized: teamCo, Kind: enrich.LinkedInCompany, FetchID: 77}); got != want {
+		t.Errorf("company %+v, want %+v", got, want)
+	}
+	if got, want := res.LinkedIn[1], (LinkedInFound{Value: janeURL, Normalized: janeURL, Kind: enrich.LinkedInPerson, Role: "Head of Digital", Name: "Jane Doe", FetchID: 77}); got != want {
+		t.Errorf("person %+v, want %+v", got, want)
+	}
+	if n := f.count(); n != 1 {
+		t.Errorf("fetched %d times, want the cited page once", n)
+	}
+}
+
+// TestLinkedInDropped holds every way a LinkedIn candidate fails against one page.
+func TestLinkedInDropped(t *testing.T) {
+	page := func(body string) *fakeFetcher {
+		return &fakeFetcher{pages: map[string]fakePage{teamURL: {status: 200, body: []byte(body), id: 78}}}
+	}
+	for _, tc := range []struct {
+		name string
+		f    *fakeFetcher
+		c    cand
+	}{
+		{"the URL only in text", page(`<p>Find us at https://www.linkedin.com/company/northwind</p>`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL}},
+		{"the URL only in a script", page(`<script>var a = "<a href=\\"https://www.linkedin.com/company/northwind\\">x</a>";</script>`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL}},
+		{"the URL only in a comment", page(`<!-- <a href="https://www.linkedin.com/company/northwind">x</a> -->`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL}},
+		{"a bare href is a path on the org's own site", page(`<a href="linkedin.com/company/northwind">x</a>`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL}},
+		{"another company's href", page(`<a href="https://www.linkedin.com/company/othercorp">x</a>`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: teamURL}},
+		{"not a page LinkedInURL takes", page(`<a href="https://www.linkedin.com/feed">x</a>`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/feed", URL: teamURL}},
+		{"a look-alike host", page(`<a href="https://linkedin.com.othercorp.example/company/northwind">x</a>`),
+			cand{Kind: "linkedin", Value: "https://linkedin.com.othercorp.example/company/northwind", URL: teamURL}},
+		{"a person without a role", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Name: "Jane Doe"}},
+		{"a person whose role is not on the page", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "CTO"}},
+		{"a person with another card's role", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Chief Executive"}},
+		{"a role only in the page title", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Marketing Lead"}},
+		{"a role that is the name", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Jane Doe", Name: "Jane Doe"}},
+		{"a role only as the link's own text", teamFetcher(), cand{Kind: "linkedin", Value: bobLink, URL: teamURL, Role: "Bob on LinkedIn"}},
+		{"a role that only matches inside a word", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "IT"}},
+		{"a role holding an address", teamFetcher(), cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "digital@northwind.example"}},
+		{"a person link far from the role", page(`<div><p>Head of Digital</p></div>` + strings.Repeat(`<p>Lorem ipsum dolor sit amet, consectetur adipiscing.</p>`, 20) + `<div><a href="` + janeLink + `">x</a></div>`),
+			cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Head of Digital"}},
+		{"a cited page off the org's domain", page(`<a href="https://www.linkedin.com/company/northwind">x</a>`),
+			cand{Kind: "linkedin", Value: "https://www.linkedin.com/company/northwind", URL: "https://othercorp.example/team"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := run(t, answer(tc.c), tc.f, Want{LinkedIn: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Verified != 0 || len(res.LinkedIn) != 0 || res.Candidates != 1 {
+				t.Errorf("verified %d linkedin %+v, want nothing", res.Verified, res.LinkedIn)
+			}
+		})
+	}
+}
+
+func TestLinkedInPersonName(t *testing.T) {
+	// A name not printed beside the link is not kept, and the link still counts.
+	res, err := run(t, answer(cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "head of  digital", Name: "Janet Smith"}), teamFetcher(), Want{LinkedIn: true})
+	if err != nil || len(res.LinkedIn) != 1 {
+		t.Fatalf("linkedin %+v err %v", res.LinkedIn, err)
+	}
+	if p := res.LinkedIn[0]; p.Name != "" || p.Role != "head of digital" {
+		t.Errorf("person %+v, want the role and no name", p)
+	}
+	// A name printed as the link's own text is beside it; a table row is a card too.
+	page := `<table><tr><td>Web lead</td><td><a href="` + janeLink + `">Jane Doe</a></td></tr>
+		<tr><td>Marketing lead</td><td><a href="` + bobLink + `">Bob Roe</a></td></tr></table>`
+	f := &fakeFetcher{pages: map[string]fakePage{teamURL: {status: 200, body: []byte(page), id: 79}}}
+	res, err = run(t, answer(cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Web lead", Name: "Jane Doe"}), f, Want{LinkedIn: true})
+	if err != nil || len(res.LinkedIn) != 1 || res.LinkedIn[0].Name != "Jane Doe" {
+		t.Errorf("linkedin %+v err %v, want Jane Doe kept", res.LinkedIn, err)
+	}
+	// The same link twice, as a photo and a name, is one person, not a neighbour.
+	page = `<div><a href="` + janeLink + `"><img alt=""></a><h3><a href="` + janeLink + `">Jane Doe</a></h3><p>Web lead</p></div>`
+	f = &fakeFetcher{pages: map[string]fakePage{teamURL: {status: 200, body: []byte(page), id: 80}}}
+	res, err = run(t, answer(cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Web lead", Name: "Jane Doe"}), f, Want{LinkedIn: true})
+	if err != nil || len(res.LinkedIn) != 1 || res.LinkedIn[0].Name != "Jane Doe" {
+		t.Errorf("linkedin %+v err %v, want the doubled link kept", res.LinkedIn, err)
+	}
+	// A name too long to be one, from a model that pasted a paragraph, is dropped; the link stays.
+	long := strings.Repeat("Jane ", 40)
+	res, err = run(t, answer(cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Head of Digital", Name: long}), teamFetcher(), Want{LinkedIn: true})
+	if err != nil || len(res.LinkedIn) != 1 || res.LinkedIn[0].Name != "" {
+		t.Errorf("linkedin %+v err %v, want no name", res.LinkedIn, err)
+	}
+}
+
+func TestLinkedInNotWantedIsNotKept(t *testing.T) {
+	f := teamFetcher()
+	res, err := run(t, answer(cand{Kind: "linkedin", Value: teamCo, URL: teamURL}), f, Want{Email: true})
+	if err != nil || res.Verified != 0 || f.count() != 0 {
+		t.Errorf("verified %d err %v fetches %d, want nothing", res.Verified, err, f.count())
+	}
+}
+
+func TestLinkedInOnlyIsAnAsk(t *testing.T) {
+	fake := fakeClaude(`{"candidates":[]}`)
+	if _, err := Run(context.Background(), fake, verifier(teamFetcher()), req(Want{LinkedIn: true})); err != nil || fake.Calls() != 1 {
+		t.Errorf("err %v calls %d, want one call", err, fake.Calls())
+	}
+	ask := userPrompt(req(Want{LinkedIn: true}))
+	for _, want := range []string{"LinkedIn page linked from its own website", "own team or contact page", "role title printed beside it"} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("prompt %q lacks %q", ask, want)
+		}
+	}
+	if ask := userPrompt(req(Want{Email: true})); strings.Contains(ask, "LinkedIn") {
+		t.Errorf("an ask without LinkedIn names it: %q", ask)
+	}
+}
+
+// TestMixedAnswerNotTruncated is why MaxCandidates is 8: an answer with every kind wanted holds
+// more than the old 6, and the LinkedIn pages come last.
+func TestMixedAnswerNotTruncated(t *testing.T) {
+	page := `<p>info@northwind.example, office@northwind.example</p>
+		<p>Tel +44 20 7946 0100</p><p>Tel +44 20 7946 0101</p><p>Tel +44 20 7946 0102</p>` + string(teamPage())
+	f := &fakeFetcher{pages: map[string]fakePage{contactURL: {status: 200, body: []byte(page), id: 81}}}
+	res, err := run(t, answer(
+		cand{Kind: "email", Value: "info@northwind.example", URL: contactURL},
+		cand{Kind: "email", Value: "office@northwind.example", URL: contactURL},
+		cand{Kind: "phone", Value: "+44 20 7946 0100", URL: contactURL, LineKind: "switchboard"},
+		cand{Kind: "phone", Value: "+44 20 7946 0101", URL: contactURL, LineKind: "direct"},
+		cand{Kind: "phone", Value: "+44 20 7946 0102", URL: contactURL, LineKind: "decision_maker"},
+		cand{Kind: "linkedin", Value: teamCo, URL: contactURL},
+		cand{Kind: "linkedin", Value: janeLink, URL: contactURL, Role: "Head of Digital"},
+	), f, Want{Email: true, Phone: true, LinkedIn: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Routes) != 2 || len(res.Phones) != 3 || len(res.LinkedIn) != 2 || res.Verified != 7 {
+		t.Errorf("routes %d phones %d linkedin %d verified %d, want 2, 3, 2, 7", len(res.Routes), len(res.Phones), len(res.LinkedIn), res.Verified)
+	}
+}
+
+// TestLinkedInContractDrift drives enrich.LinkedInURL through both of its roads with the same
+// hrefs: the enrichment (Extract, then LinkedInRoute) and the research verifier. Where both
+// keep a link they must store the same value, and that value is LinkedInURL's own.
+func TestLinkedInContractDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name, href string
+		enrichKeep bool // the enrichment writes a route: company pages only
+		verifyKeep bool
+		role       string
+	}{
+		{"www company", "https://www.linkedin.com/company/northwind", true, true, ""},
+		{"locale, sub-page, query", "https://uk.linkedin.com/company/Northwind/about?trk=1", true, true, ""},
+		{"http, trailing slash, mixed case", "http://de.linkedin.com/Company/NORTHWIND/", true, true, ""},
+		{"scheme-relative", "//www.linkedin.com/company/northwind", true, true, ""},
+		{"encoded slug", "https://www.linkedin.com/company/caf%C3%A9-northwind", true, true, ""},
+		{"a school is a research find only", "https://www.linkedin.com/school/northwind", false, true, ""},
+		{"a person is a research find only", janeLink, false, true, "Head of Digital"},
+		{"LinkedIn's own feed", "https://www.linkedin.com/feed", false, false, ""},
+		{"LinkedIn's jobs", "https://www.linkedin.com/jobs/view/1", false, false, ""},
+		{"another network", "https://www.facebook.com/northwind", false, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `<div><p>Head of Digital</p><a href="` + tc.href + `">here</a></div>`
+			want, _, _, wantOK := enrich.LinkedInURL(tc.href)
+			if wantOK != tc.verifyKeep {
+				t.Fatalf("LinkedInURL(%q) ok = %v, want %v", tc.href, wantOK, tc.verifyKeep)
+			}
+
+			var routes []string
+			for _, f := range enrich.Extract([]byte(body), teamURL, orgDomain, true) {
+				if v, ok := enrich.LinkedInRoute(f); ok {
+					routes = append(routes, v)
+				}
+			}
+			if tc.enrichKeep != (len(routes) == 1) || (tc.enrichKeep && routes[0] != want) {
+				t.Errorf("enrich routes %q, want %q (keep %v)", routes, want, tc.enrichKeep)
+			}
+
+			f := &fakeFetcher{pages: map[string]fakePage{teamURL: {status: 200, body: []byte(body), id: 82}}}
+			res, err := run(t, answer(cand{Kind: "linkedin", Value: tc.href, URL: teamURL, Role: tc.role}), f, Want{LinkedIn: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.verifyKeep != (len(res.LinkedIn) == 1) || (tc.verifyKeep && res.LinkedIn[0].Value != want) {
+				t.Errorf("research kept %+v, want %q (keep %v)", res.LinkedIn, want, tc.verifyKeep)
+			}
+		})
+	}
+}
+
+// TestNeverRequestsLinkedIn sweeps answers built to tempt the verifier, over the research
+// fixtures and the fixture pages of the LinkedIn tests: nothing, robots included, goes to
+// linkedin.com, whatever the model cites and even for an org that is LinkedIn itself.
+func TestNeverRequestsLinkedIn(t *testing.T) {
+	onLI := []string{
+		"https://www.linkedin.com/company/northwind", "https://LINKEDIN.com/company/northwind", "http://uk.linkedin.com/company/northwind",
+		"https://www.linkedin.com./company/northwind", "https://www.linkedin.com" + inPath + "jane-doe-123",
+	}
+	var cs []cand
+	for _, u := range onLI {
+		for _, kind := range []string{"linkedin", "email", "phone"} {
+			cs = append(cs, cand{Kind: kind, Value: u, URL: u, Role: "Head of Digital"})
+		}
+	}
+	cs = append(cs, cand{Kind: "linkedin", Value: janeLink, URL: teamURL, Role: "Head of Digital"},
+		cand{Kind: "linkedin", Value: teamCo, URL: contactURL},
+		cand{Kind: "email", Value: "info@northwind.example", URL: contactURL})
+
+	var requested int
+	for _, domain := range []string{orgDomain, "linkedin.com"} {
+		for _, c := range cs {
+			f := &fakeFetcher{pages: map[string]fakePage{
+				contactURL: {status: 200, body: contactPage(t), id: 83},
+				teamURL:    {status: 200, body: teamPage(), id: 84},
+			}}
+			var robotsAsked []string
+			v := verifier(f)
+			v.Robots = func(_ context.Context, _, host string) (robots.Verdict, *robots.Rules) {
+				robotsAsked = append(robotsAsked, host)
+				return robots.VerdictRules, robots.Parse(nil)
+			}
+			r := req(Want{Email: true, Phone: true, LinkedIn: true})
+			r.Org.Domain = domain
+			if _, err := Run(context.Background(), fakeClaude(answer(c)), v, r); err != nil {
+				t.Fatal(err)
+			}
+			requested += f.count()
+			for _, g := range f.gets {
+				if onLinkedIn(g) {
+					t.Errorf("org %s, candidate %+v: requested %q", domain, c, g)
+				}
+			}
+			for _, h := range robotsAsked {
+				if enrich.IsLinkedInHost(h) {
+					t.Errorf("org %s, candidate %+v: asked robots of %q", domain, c, h)
+				}
+			}
+		}
+	}
+	if requested == 0 {
+		t.Fatal("nothing was fetched, so the sweep proved nothing")
+	}
+}
+
+func TestPrintedWholeWords(t *testing.T) {
+	for _, tc := range []struct {
+		text, want string
+		ok         bool
+	}{
+		{"Head of IT, London", "it", true},
+		{"Head of Digital", "it", false},
+		{"Digital", "digital", true},
+		{"Leiterin Öffentlichkeitsarbeit", "öffentlichkeitsarbeit", true},
+		{"Digitalisation lead", "digital", false},
+		{"digital digitalisation it", "digitalisation", true},
+		{"", "x", false},
+		{"x", "", false},
+	} {
+		if got := printed(tc.text, tc.want); got != tc.ok {
+			t.Errorf("printed(%q, %q) = %v, want %v", tc.text, tc.want, got, tc.ok)
+		}
+	}
+}

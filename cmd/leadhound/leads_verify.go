@@ -166,7 +166,7 @@ func (g *emailGate) verdict(addr string) verify.Verdict {
 // answer yet, or a first unknown, waits (need names it when a check is due now). A blocked
 // address makes the lead fall to its next route, as a missing email does at build time
 // (outreach.PickChannel over its routes without the blocked addresses): another email route,
-// judged the same way, or a form; with none it is skipped with the first blocked status. An
+// judged the same way, or a form or LinkedIn page; with none it is skipped with the first blocked status. An
 // email route the lead falls to must be on its org's own domain or its first address's, and
 // not suppressed, so the queue's suppression and reached-domain rules (CandidateLeads) still
 // hold for it.
@@ -219,8 +219,8 @@ func (g *emailGate) route(ctx context.Context, lq leadstore.Queries, policy stri
 	}
 }
 
-// fallbackRoutes are org c.OrgID's routes a blocked lead may fall to: every form route, and
-// every email route on the org's domain or on the domain of c's own address that no
+// fallbackRoutes are org c.OrgID's routes a blocked lead may fall to: every form and LinkedIn
+// route, and every email route on the org's domain or on the domain of c's own address that no
 // suppression covers.
 func (g *emailGate) fallbackRoutes(ctx context.Context, lq leadstore.Queries, c leadstore.Candidate) ([]outreach.Route, error) {
 	stored, err := lq.RoutesFor(ctx, c.OrgID)
@@ -244,7 +244,7 @@ func (g *emailGate) fallbackRoutes(ctx context.Context, lq leadstore.Queries, c 
 				continue
 			}
 		}
-		out = append(out, outreach.Route{ID: r.ID, Kind: r.Kind, Value: r.Value, MXOK: r.MXOK})
+		out = append(out, channelRoute(r))
 	}
 	return out, nil
 }

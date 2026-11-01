@@ -120,8 +120,6 @@ func TestOperatorRouteAdded(t *testing.T) {
 	for name, r := range map[string]leadstore.OperatorRoute{
 		"email":         {Kind: leadstore.RouteEmail, Value: "not an address"},
 		"form":          {Kind: leadstore.RouteForm, Value: "contact.example/form"},
-		"linkedin www":  {Kind: leadstore.RouteLinkedIn, Value: "https://www.linkedin.com/company/acme"},
-		"linkedin case": {Kind: leadstore.RouteLinkedIn, Value: t12LinkedIn("company", "Acme")},
 		"linkedin feed": {Kind: leadstore.RouteLinkedIn, Value: t12LinkedIn("feed", "x")},
 		"note":          {Kind: leadstore.RouteEmail, Value: "a@add.example", Note: strings.Repeat("x", 201)},
 	} {
@@ -988,5 +986,32 @@ func TestRetireCancelsUnsent(t *testing.T) {
 	}
 	if l := f.leadOf(t, leadD); l.State != leadstore.LeadNew {
 		t.Errorf("the shadow lead moved: %s", l.State)
+	}
+}
+
+// TestOperatorLinkedInCanonical: what the operator pastes is stored in enrich.LinkedInURL's one
+// form, so it meets the row research or enrich wrote; what is no LinkedIn page is refused.
+func TestOperatorLinkedInCanonical(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	q := f.q
+	_, org := t12Org(t, f, "pasted.example")
+	const want = "https://linkedin.com/company/pasted"
+	for i, raw := range []string{"https://uk.linkedin.com/company/Pasted/about?trk=1", want, "www.linkedin.com/company/pasted/"} {
+		if _, err := q.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: org, Kind: leadstore.RouteLinkedIn, Value: raw}); err != nil {
+			t.Fatalf("%d: %v", i, err)
+		}
+	}
+	routes, err := q.RoutesFor(ctx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Value != want {
+		t.Errorf("routes %+v, want one row %s", routes, want)
+	}
+	for _, raw := range []string{"https://www.linkedin.com/feed", "https://pasted.example/company/pasted"} {
+		if _, err := q.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: org, Kind: leadstore.RouteLinkedIn, Value: raw}); !errors.Is(err, leadstore.ErrBadContact) {
+			t.Errorf("%q: err %v, want ErrBadContact", raw, err)
+		}
 	}
 }

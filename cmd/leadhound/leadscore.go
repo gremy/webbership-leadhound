@@ -861,6 +861,9 @@ func starredLine(s leadstore.StarredState) string {
 	if date != "" {
 		out += ", " + date
 	}
+	if s.Channel == leadconfig.ChannelLinkedIn && (s.Reason == leadstore.StarredReady || s.Reason == leadstore.StarredRankedOut) {
+		out += " (no email yet, LinkedIn only)"
+	}
 	return out
 }
 

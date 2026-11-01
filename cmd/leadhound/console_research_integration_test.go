@@ -46,10 +46,10 @@ func finishResearch(t *testing.T, status string) {
 }
 
 // TestResearchConsoleStar: starring a new lead with no usable route queues one research
-// attempt (an email in an email country) and writes the request file the .path unit
-// watches, mode 0600; starring it again queues nothing more; a lead with a route gets no
+// attempt (an email and LinkedIn in an email country) and writes the request file the .path
+// unit watches, mode 0600; starring it again queues nothing more; a lead with a route gets no
 // attempt; a lead in a contact-form country of a campaign that makes no calls (the legacy
-// campaign) gets none either; the star control's note says so up front; a request file
+// campaign) looks for LinkedIn alone; the star control's note says so up front; a request file
 // that cannot be written never undoes the star. (The phone search a call-first lead gets
 // is TestResearchCallFirstPhone's.)
 func TestResearchConsoleStar(t *testing.T) {
@@ -67,8 +67,8 @@ func TestResearchConsoleStar(t *testing.T) {
 	blocked := leadIDOf(t, "blocked.example")
 
 	// D5: a contact-form country (RO made one here, DE) of a campaign that makes no calls
-	// offers no phone search, and the star asks for none.
-	for id, want := range map[int64]string{gb: console.StarNoteEmail, de: starNoteNoCalls, routed: "", blocked: starNoteNoCalls} {
+	// offers no phone search, and the star asks for none; Decision 20: it looks for LinkedIn.
+	for id, want := range map[int64]string{gb: console.StarNoteEmail, de: starNoteFindLinkedIn, routed: "", blocked: starNoteFindLinkedIn} {
 		d, err := b.LeadDetail(ctx, id)
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +92,7 @@ func TestResearchConsoleStar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Message, "starred") || !strings.HasSuffix(out.Message, ": it is last in your order. It has no email yet, so a search for one is queued for the research job.") {
+	if !strings.Contains(out.Message, "starred") || !strings.HasSuffix(out.Message, ": it is last in your order. It has no email yet, so a search for one and a LinkedIn page is queued for the research job.") {
 		t.Errorf("star: %q", out.Message)
 	}
 	st, err := os.Stat(file)
@@ -102,23 +102,26 @@ func TestResearchConsoleStar(t *testing.T) {
 	if st.Mode().Perm() != 0o600 {
 		t.Errorf("request file mode %v, want 0600", st.Mode().Perm())
 	}
-	if n := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM contact_research WHERE lead_id = %d AND status = 'queued' AND trigger = 'star' AND want = '{email}'`, gb)); n != 1 {
+	if n := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM contact_research WHERE lead_id = %d AND status = 'queued' AND trigger = 'star' AND want = '{email,linkedin}'`, gb)); n != 1 {
 		t.Errorf("%d queued star attempts for the GB lead, want 1", n)
 	}
 	if out, err = b.LeadAct(ctx, console.LeadAction{Do: console.LeadStar, ID: gb}); err != nil || strings.Contains(out.Message, "search") {
 		t.Errorf("star again: %q %v", out.Message, err)
 	}
-	if out, err = b.LeadAct(ctx, console.LeadAction{Do: console.LeadStar, ID: de}); err != nil || strings.Contains(out.Message, "search") {
+	if out, err = b.LeadAct(ctx, console.LeadAction{Do: console.LeadStar, ID: de}); err != nil || !strings.Contains(out.Message, "a search for a LinkedIn page") {
 		t.Errorf("star a form-country RO lead of a campaign with no calls: %q %v", out.Message, err)
 	}
-	if out, err = b.LeadAct(ctx, console.LeadAction{Do: console.LeadStar, ID: blocked}); err != nil || strings.Contains(out.Message, "search") {
+	if out, err = b.LeadAct(ctx, console.LeadAction{Do: console.LeadStar, ID: blocked}); err != nil || !strings.Contains(out.Message, "a search for a LinkedIn page") {
 		t.Errorf("star a DE lead of a campaign with no calls: %q %v", out.Message, err)
 	}
 	if out, err = b.LeadAct(ctx, console.LeadAction{Do: console.LeadStar, ID: routed}); err != nil || strings.Contains(out.Message, "search") {
 		t.Errorf("star a lead with a route: %q %v", out.Message, err)
 	}
-	if n := dbCount(t, `SELECT count(*) FROM contact_research`); n != 1 {
-		t.Errorf("%d attempts, want the GB one", n)
+	if n := dbCount(t, `SELECT count(*) FROM contact_research WHERE want = '{linkedin}'`); n != 2 {
+		t.Errorf("%d attempts for LinkedIn alone, want the two form-country ones", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM contact_research`); n != 3 {
+		t.Errorf("%d attempts, want the GB one and the two form-country ones", n)
 	}
 	d, err := b.LeadDetail(ctx, gb)
 	if err != nil {

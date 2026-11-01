@@ -7,11 +7,15 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/gremy/webbership-leadhound/internal/config"
 )
@@ -437,5 +441,83 @@ func TestSiteProfile(t *testing.T) {
 		if Site.blocked(status, "/login") {
 			t.Errorf("Site treats %d as blocked", status)
 		}
+	}
+}
+
+// linkedInGuardTransport fails the test if asked for a linkedin.com host (when it must never be)
+// and otherwise sends a request on to the network, with what a linkedin.com host was asked noted.
+type linkedInGuardTransport struct {
+	t      *testing.T
+	refuse bool
+	mu     sync.Mutex
+	asked  []string
+}
+
+func (g *linkedInGuardTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h := strings.ToLower(r.URL.Hostname()); strings.Contains(h, "linkedin") || strings.HasSuffix(h, ".example") {
+		g.mu.Lock()
+		g.asked = append(g.asked, h)
+		g.mu.Unlock()
+		if g.refuse && (h == "linkedin.com" || strings.HasSuffix(h, ".linkedin.com")) {
+			g.t.Errorf("the client asked %s", h)
+		}
+		return okResponse(r, 200, "landed"), nil
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// TestWithoutLinkedInRefusesARedirect: an organisation's page redirecting onto linkedin.com goes
+// through refusedRedirect, whatever the live gate allows and however the host is written, and the
+// transport is never asked. Only linkedin.com is refused, and a client without the option (the job
+// search) still follows.
+func TestWithoutLinkedInRefusesARedirect(t *testing.T) {
+	var target string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusFound)
+	}))
+	defer srv.Close()
+	client := func(rt http.RoundTripper, rec Recorder, opts ...Option) *Client {
+		return New(append(opts, WithTransport(rt), WithRecorder(rec), WithLiveGate(config.LiveAll), WithJitter(0),
+			WithLimiter(rate.NewLimiter(rate.Inf, 1)))...)
+	}
+	for _, to := range []string{
+		"https://linkedin.com/company/x", "https://www.linkedin.com/company/x", "https://uk.linkedin.com/company/x?trk=1",
+		"https://WWW.LinkedIn.COM./company/x", "http://linkedin.com:8080/company/x",
+	} {
+		target = to
+		g, rec := &linkedInGuardTransport{t: t, refuse: true}, &memRecorder{}
+		c := client(g, rec, WithoutLinkedIn())
+		resp, err := c.Get(context.Background(), KindSite, srv.URL+"/contact")
+		if !errors.Is(err, ErrLinkedInRefused) {
+			t.Errorf("%s: %v, want ErrLinkedInRefused", to, err)
+		}
+		if n := c.Breaker.Failures(); n != 0 {
+			t.Errorf("%s: %d failures: the refusal counted against the site", to, n)
+		}
+		if resp.Status != http.StatusFound || len(g.asked) != 0 {
+			t.Errorf("%s: status %d, asked %v: want the refused 302 and nothing asked", to, resp.Status, g.asked)
+		}
+		recs := rec.all()
+		if len(recs) != 1 || recs[0].Status != http.StatusFound || !strings.Contains(recs[0].Err, "linkedin.com") {
+			t.Errorf("%s: recorded %+v, want the 302 with the refusal", to, recs)
+		}
+	}
+	for _, to := range []string{"https://notlinkedin.example/x", "https://linkedin.com.example/x", "https://other.example/x"} {
+		target = to
+		g := &linkedInGuardTransport{t: t, refuse: true}
+		if resp, err := client(g, &memRecorder{}, WithoutLinkedIn()).Get(context.Background(), KindSite, srv.URL+"/contact"); err != nil || resp.Status != 200 || len(g.asked) != 1 {
+			t.Errorf("%s: %+v %v, asked %v: another host must be followed", to, resp.Status, err, g.asked)
+		}
+	}
+	// The first request is refused too, before any network.
+	g := &linkedInGuardTransport{t: t, refuse: true}
+	if _, err := client(g, &memRecorder{}, WithoutLinkedIn()).Get(context.Background(), KindSite, "https://www.linkedin.com/company/x"); !errors.Is(err, ErrLinkedInRefused) || len(g.asked) != 0 {
+		t.Errorf("first request: %v, asked %v", err, g.asked)
+	}
+	// The twin: no option, so the job search's client still goes there.
+	target = "https://www.linkedin.com/jobs/view/1"
+	g = &linkedInGuardTransport{t: t}
+	if resp, err := client(g, &memRecorder{}).Get(context.Background(), KindSite, srv.URL+"/contact"); err != nil || resp.Status != 200 || !slices.Equal(g.asked, []string{"www.linkedin.com"}) {
+		t.Errorf("no option: %d %v, asked %v", resp.Status, err, g.asked)
 	}
 }

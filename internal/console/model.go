@@ -428,15 +428,16 @@ const (
 
 // What a research attempt looks for (LeadResearch.Want).
 const (
-	WantEmail = "email"
-	WantPhone = "phone"
+	WantEmail    = "email"
+	WantPhone    = "phone"
+	WantLinkedIn = "linkedin"
 )
 
 // LeadResearch is the latest contact research of a lead's org, for its page: the console
 // never calls Claude, it only shows what the research job did and asks it to look again.
 type LeadResearch struct {
 	Status   string     // one of the Research* statuses; "" when never researched
-	Want     []string   // what it looks (or looked) for: WantEmail, WantPhone
+	Want     []string   // what it looks (or looked) for: WantEmail, WantPhone, WantLinkedIn
 	Verified int        // contacts found and checked on their page (found)
 	At       *time.Time // queued: when asked; looking: when it began; else when it finished
 	// NextAt is the first time another attempt may run, when one ran within the last 90

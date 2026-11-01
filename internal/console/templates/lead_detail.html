@@ -85,7 +85,7 @@
         <input type="hidden" name="back" value="{{$v.Back}}#contact-research">
         <button type="submit" class="btn btn-secondary">Look again</button>
       </form>
-      <p class="hint mt-1">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
+      <p class="hint mt-1">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else if eq $w "linkedin"}}a LinkedIn page{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
       {{end}}
       {{end}}
     </div>

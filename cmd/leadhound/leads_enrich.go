@@ -47,7 +47,8 @@ const leadsEnrichUsage = "usage: leadhound leads enrich [--max N (at least 1)] [
 // with a lead and no enrichment in the last 30 days, it reads phones, a description and
 // social links from the org's kept pages, and, when none of them is a contact page, from at
 // most two contact links of its homepage, fetched under the contact search's rules. A dry
-// run reads fixtures and touches only orgs on reserved TLDs.
+// run reads fixtures and touches only orgs on reserved TLDs. A LinkedIn company page read as a
+// social fact is also written as a linkedin route, citing the same page.
 func runLeadsEnrich(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads enrich", flag.ContinueOnError)
 	var ff fetchFlags
@@ -207,6 +208,8 @@ type enrichFact struct {
 // pages that gave one and the attempt in one transaction; one cut short (no answer, a
 // breaker stop, a cancel) stores nothing, so the org stays due. Only a store error is
 // returned. The writes run without the run's cancel, so a stop never breaks a transaction.
+// A route the org already holds is left as it is, so a retired one stays retired. Nothing is
+// fetched for an org that is LinkedIn itself: LeadHound never requests a linkedin.com URL.
 func (es enrichRun) enrich(ctx context.Context, o leadstore.Org, sum *enrichSummary) error {
 	wctx := context.WithoutCancel(ctx)
 	bodies, err := leadstore.NewQueries(es.pool).EnrichBodies(wctx, o.ID)
@@ -238,7 +241,7 @@ func (es enrichRun) enrich(ctx context.Context, o leadstore.Org, sum *enrichSumm
 	}
 
 	var pr *pageRecorder
-	if !readContact && home != nil {
+	if !readContact && home != nil && !enrich.IsLinkedInHost(o.Domain) {
 		base, err := url.Parse(home.URL)
 		var links []string
 		if err == nil {
@@ -292,10 +295,21 @@ func (es enrichRun) enrich(ctx context.Context, o leadstore.Org, sum *enrichSumm
 		if err != nil {
 			return err
 		}
+		routed := false
+		if value, ok := enrich.LinkedInRoute(f.Fact); ok {
+			routed, err = lq.InsertRoute(wctx, leadstore.RouteRow{
+				OrgID: o.ID, Kind: leadstore.RouteLinkedIn, Value: value, FetchID: f.fetchID, DerivedBy: enrich.DerivedBy,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if inserted || routed {
+			cited[f.fetchID] = true
+		}
 		if !inserted {
 			continue // the org has it already, from an earlier page
 		}
-		cited[f.fetchID] = true
 		switch f.Kind {
 		case enrich.KindPhone:
 			sum.Phones++

@@ -731,7 +731,7 @@ func manualLeftOut(ctx context.Context, lq leadstore.Queries, bs batchSetup, cam
 	hasEmail, hasMX := false, false
 	for _, r := range routes {
 		hasEmail = hasEmail || r.Kind == leadstore.RouteEmail
-		hasMX = hasMX || r.Kind == leadstore.RouteEmail && r.MXOK
+		hasMX = hasMX || r.Kind == leadstore.RouteEmail && (r.MXOK || r.Operator)
 	}
 	switch {
 	case l.Channel == leadconfig.ChannelNone:

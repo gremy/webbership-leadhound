@@ -6,6 +6,9 @@
 // contact page only, a labelled text line. A node or scope typed as a person is never read.
 // A LinkedIn link is kept only for a company page, so a person's profile is never returned,
 // and no output ever holds an email address.
+//
+// LinkedInURL is the one normaliser of a LinkedIn address, for every writer of a linkedin
+// route. It reads a string and requests nothing: LeadHound never requests a linkedin.com URL.
 package enrich
 
 import (
@@ -504,6 +507,83 @@ func socialProfile(base *url.URL, href string) (value, normalized string, ok boo
 		return "", "", false
 	}
 	return value, normalized, true
+}
+
+// The kinds of LinkedIn page LinkedInURL tells apart.
+const (
+	LinkedInCompany = "company" // a company page, or a university's page under /school/
+	LinkedInPerson  = "person"  // a person's profile
+)
+
+// linkedInDomain is LinkedIn's registrable domain.
+const linkedInDomain = "linkedin.com"
+
+// linkedInPages maps the first path segment of a LinkedIn page to its kind.
+var linkedInPages = map[string]string{"company": LinkedInCompany, "school": LinkedInCompany, "in": LinkedInPerson}
+
+// linkedInSlug is what a slug may hold once lower-cased, with non-ASCII percent-encoded.
+var linkedInSlug = regexp.MustCompile(`^[a-z0-9\-_.~%&]+$`)
+
+// LinkedInURL normalises raw to the one canonical address of a LinkedIn company, school or
+// person page: https, no www or locale subdomain, the slug in lower case, no sub-page, query
+// or fragment. value and normalized are both that address, and kind is LinkedInCompany or
+// LinkedInPerson. A scheme may be left off, as an operator pastes it; anything else (LinkedIn's
+// own pages, a port, a login in the URL) is not ok.
+func LinkedInURL(raw string) (value, normalized, kind string, ok bool) {
+	s := strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(s, "//"):
+		s = "https:" + s
+	case !strings.Contains(s, "://"):
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || !IsLinkedInHost(u.Hostname()) {
+		return "", "", "", false
+	}
+	var segs []string
+	for seg := range strings.SplitSeq(strings.ToLower(u.EscapedPath()), "/") {
+		if seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	if len(segs) < 2 {
+		return "", "", "", false
+	}
+	kind, known := linkedInPages[segs[0]]
+	slug := segs[1]
+	if !known || !linkedInSlug.MatchString(slug) {
+		return "", "", "", false
+	}
+	decoded, err := url.PathUnescape(slug)
+	if err != nil || strings.ContainsAny(decoded, "/\\ \t\r\n") || strings.Trim(decoded, ".") == "" {
+		return "", "", "", false
+	}
+	value = "https://" + linkedInDomain + "/" + segs[0] + "/" + slug
+	if utf8.RuneCountInString(value) > MaxRunes {
+		return "", "", "", false
+	}
+	return value, value, kind, true
+}
+
+// IsLinkedInHost reports whether host is on LinkedIn's registrable domain.
+func IsLinkedInHost(host string) bool {
+	reg, err := sitelist.Registrable(host)
+	return err == nil && reg == linkedInDomain
+}
+
+// LinkedInRoute is the linkedin route value a fact gives: a social fact holding a LinkedIn
+// company page gives its normalized value, and any other fact none. Extract's rule decides
+// which pages are facts, so a person's profile never reaches here.
+func LinkedInRoute(f Fact) (value string, ok bool) {
+	if f.Kind != KindSocial {
+		return "", false
+	}
+	v, _, kind, ok := LinkedInURL(f.Normalized)
+	if !ok || kind != LinkedInCompany || v != f.Normalized {
+		return "", false
+	}
+	return v, true
 }
 
 // emailRe is an email-shaped string anywhere in a value.

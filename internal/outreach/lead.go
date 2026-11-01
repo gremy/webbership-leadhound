@@ -19,8 +19,9 @@ const (
 
 // Route kinds (contact_route.kind).
 const (
-	RouteEmail = "email"
-	RouteForm  = "form"
+	RouteEmail    = "email"
+	RouteForm     = "form"
+	RouteLinkedIn = "linkedin"
 )
 
 // Lead states (lead.state).
@@ -68,13 +69,15 @@ type AgencyFinding struct {
 	ID int64
 }
 
-// Route is the part of a contact_route row Classify reads. Every stored email route is a
-// role address (DECISION 7), so any email route with MXOK is a usable one.
+// Route is the part of a contact_route row Classify reads. Every email route found on a site
+// is a role address (DECISION 7), so any email route with MXOK is a usable one; an email the
+// operator claimed counts as usable without it, because the Reoon check is its gate.
 type Route struct {
-	ID    int64
-	Kind  string // email or form
-	Value string
-	MXOK  bool
+	ID       int64
+	Kind     string // email, form or linkedin
+	Value    string
+	MXOK     bool
+	Operator bool // the latest mark is a claim: the operator's own (leadstore.Route.Operator)
 }
 
 // Lead is one lead row to upsert. It has exactly one of ProbeID (site leads) and
@@ -88,7 +91,7 @@ type Route struct {
 type Lead struct {
 	OrgID           int64
 	Kind            string // unsupported, d10 or agency_partner
-	Channel         string // email, form or none
+	Channel         string // email, form, linkedin or none
 	ProbeID         *int64
 	AgencyFindingID *int64
 	RouteID         *int64
@@ -154,32 +157,45 @@ func leadSiteKind(p *Probe) (kind, reason string) {
 	}
 }
 
-// PickChannel picks the channel and route for a country policy's channel. An email policy
-// takes the first email route with an MX record, else falls back to the first form route,
-// else none. A form policy takes the first form route, else none; it never upgrades to
-// email. Any other policy (none, or a country missing from the policy) is none.
+// PickChannel picks the channel and route for a country policy's channel, taking the first
+// fitting route of a kind in the order given (leadstore.RoutesFor: the operator's first, no
+// retired route). An email policy takes the first email route with an MX record or claimed
+// by the operator (the Reoon check is that address's gate), else the first form route, else
+// the first LinkedIn route, else none. A form policy takes the first form route, else the
+// first LinkedIn route, else none; it never upgrades to email. A none policy (a country
+// missing from the file has one) is none, except that an operator-claimed form route, else
+// an operator-claimed LinkedIn route, picks that manual channel: his own contact, his own
+// hand. Email stays policy-driven because the machine sends it. Any other policy is none.
 func PickChannel(policy string, routes []Route) (string, *int64) {
-	first := func(kind string, needMX bool) *int64 {
+	first := func(kind string, fits func(Route) bool) *int64 {
 		for i := range routes {
-			if routes[i].Kind == kind && (!needMX || routes[i].MXOK) {
+			if routes[i].Kind == kind && fits(routes[i]) {
 				id := routes[i].ID
 				return &id
 			}
 		}
 		return nil
 	}
+	manual := func(fits func(Route) bool) (string, *int64) {
+		if id := first(RouteForm, fits); id != nil {
+			return leadconfig.ChannelForm, id
+		}
+		if id := first(RouteLinkedIn, fits); id != nil {
+			return leadconfig.ChannelLinkedIn, id
+		}
+		return leadconfig.ChannelNone, nil
+	}
+	anyRoute := func(Route) bool { return true }
 	switch policy {
 	case leadconfig.ChannelEmail:
-		if id := first(RouteEmail, true); id != nil {
+		if id := first(RouteEmail, func(r Route) bool { return r.MXOK || r.Operator }); id != nil {
 			return leadconfig.ChannelEmail, id
 		}
-		if id := first(RouteForm, false); id != nil {
-			return leadconfig.ChannelForm, id
-		}
+		return manual(anyRoute)
 	case leadconfig.ChannelForm:
-		if id := first(RouteForm, false); id != nil {
-			return leadconfig.ChannelForm, id
-		}
+		return manual(anyRoute)
+	case leadconfig.ChannelNone:
+		return manual(func(r Route) bool { return r.Operator })
 	}
 	return leadconfig.ChannelNone, nil
 }

@@ -60,10 +60,6 @@ var (
 
 var operatorEmailRE = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
-// operatorLinkedInRE stands in for enrich.LinkedInURL until Task 2.1 replaces it: the one
-// canonical form of a LinkedIn page.
-var operatorLinkedInRE = regexp.MustCompile(`^https://linkedin\.com/(company|school|in)/[a-z0-9\-_%]+$`)
-
 // contactLatestMarkSQL is a SQL expression for the latest mark of a contact: column is
 // route_id, fact_id or person_id, and id an SQL expression. It is NULL when there is no mark.
 func contactLatestMarkSQL(column, id string) string {
@@ -481,9 +477,11 @@ func operatorRouteValue(kind, raw string) (string, error) {
 			return "", fmt.Errorf("%w: a form needs its full page address, starting https://", ErrBadContact)
 		}
 	case RouteLinkedIn:
-		if !operatorLinkedInRE.MatchString(value) {
+		canonical, _, _, ok := enrich.LinkedInURL(value)
+		if !ok {
 			return "", fmt.Errorf("%w: that is not a LinkedIn company, school or profile address", ErrBadContact)
 		}
+		value = canonical
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownRouteKind, kind)
 	}
