@@ -160,7 +160,7 @@ func TestPriorityDrift(t *testing.T) {
 	for name, p := range profiles {
 		for _, byRelevance := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/by relevance %v", name, byRelevance), func(t *testing.T) {
-				cs := candidates(t, f.q, leadstore.CandidateOptions{Profile: p, SortByRelevance: byRelevance})
+				cs := candidates(t, f.q, leadstore.CandidateOptions{Profile: p, TrustedTypes: trustedIf(byRelevance)})
 				if len(cs) != len(ids) {
 					t.Errorf("%d candidates, want %d", len(cs), len(ids))
 				}

@@ -32,8 +32,9 @@ import (
 // list weighed by the profile in force and the relevance trust gate, and every row worded
 // with leadview. Both read live (D15): no snapshot.
 
-// relevanceQuestion is the relevance question whose latest eval decides whether the list
-// sorts by relevance (the trust gate, D9).
+// relevanceQuestion is the Drupal relevance question, whose latest eval the Settings page
+// still reports as the trust gate (D9); the list, leads rate and the batch queue read each
+// type's own gate (trustedTypes).
 const relevanceQuestion = leadrate.Question
 
 // noteValueRunes is the most of one ignored value a note repeats.
@@ -104,11 +105,11 @@ func kindLabel(kinds []leadKind, name string) string {
 }
 
 // leadsWeighing is what the list and a lead's page are weighed by: the effective
-// profile, the small-site cut and whether relevance passed its trust gate.
+// profile, the small-site cut and the rating types whose relevance passed its trust gate.
 type leadsWeighing struct {
 	cfg      leadconfig.Config
 	profile  leadconfig.Profile
-	trusted  bool
+	trusted  []string      // trustedTypes
 	research researchRules // what a star may look for (the star notes)
 }
 
@@ -138,11 +139,11 @@ func weighLeads(ctx context.Context, lq leadstore.Queries, setup leadsSetup) (le
 	if err != nil {
 		return leadsWeighing{}, err
 	}
-	e, ok, err := lq.LatestRelevanceEval(ctx, relevanceQuestion)
+	trusted, err := trustedTypes(ctx, lq)
 	if err != nil {
 		return leadsWeighing{}, err
 	}
-	return leadsWeighing{cfg: setup.leads, profile: p, trusted: ok && e.Trusted}, nil
+	return leadsWeighing{cfg: setup.leads, profile: p, trusted: trusted}, nil
 }
 
 // LeadList is one page of the Leads list: the query read into a filter (unknown values
@@ -158,7 +159,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
-	opts := leadFilterOptions(kinds, w.cfg, w.trusted)
+	opts := leadFilterOptions(kinds, w.cfg, len(w.trusted) > 0)
 	lq := b.lq()
 	campaigns, err := lq.Campaigns(ctx, leadstore.DefaultAccountID)
 	if err != nil {
@@ -180,7 +181,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
-	lc := leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, SortByRelevance: w.trusted}
+	lc := leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, TrustedTypes: w.trusted}
 	rows, total, err := lq.LeadList(ctx, f, lc)
 	if err != nil {
 		return console.LeadListPage{}, err
@@ -201,7 +202,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if p.TotalLeads, err = leadCount(ctx, b); err != nil {
 		return console.LeadListPage{}, err
 	}
-	if p.Labelled, err = lq.LabelCount(ctx); err != nil {
+	if p.Labelled, err = lq.LabelCount(ctx, ""); err != nil {
 		return console.LeadListPage{}, err
 	}
 	order, err := outreachOrder(ctx, b, starredIDs(rows))
@@ -262,7 +263,7 @@ func toLabelIDs(ctx context.Context, lq leadstore.Queries) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	labelled, err := lq.LabelledLeadIDs(ctx)
+	labelled, err := lq.LabelledLeadIDs(ctx, "")
 	if err != nil {
 		return nil, err
 	}
@@ -289,8 +290,8 @@ func callBands() []console.CallBand {
 }
 
 // leadCall is lead id's "Your call" block: its latest call and when, the bands, and how many
-// leads have a call. The row's Call is set from the same read.
-func leadCall(ctx context.Context, lq leadstore.Queries, row *console.LeadListRow) (console.LeadCall, error) {
+// leads of its rating type t have a call. The row's Call is set from the same read.
+func leadCall(ctx context.Context, lq leadstore.Queries, t string, row *console.LeadListRow) (console.LeadCall, error) {
 	c := console.LeadCall{Bands: callBands(), LabelGoal: labelGoal}
 	calls, err := lq.LatestLabels(ctx, []int64{row.LeadID})
 	if err != nil {
@@ -299,7 +300,7 @@ func leadCall(ctx context.Context, lq leadstore.Queries, row *console.LeadListRo
 	if l, ok := calls[row.LeadID]; ok && l.Band != nil {
 		row.Call, c.At = *l.Band, &l.CreatedAt
 	}
-	if c.Labelled, err = lq.LabelCount(ctx); err != nil {
+	if c.Labelled, err = lq.LabelCount(ctx, t); err != nil {
 		return console.LeadCall{}, err
 	}
 	return c, nil
@@ -518,7 +519,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
 	}
 	if r.Relevance != nil {
-		row.Relevance = leadview.RelevanceWords(r.Relevance, r.Band, w.trusted)
+		row.Relevance = leadview.RelevanceWords(r.Relevance, r.Band, slices.Contains(w.trusted, r.RType))
 	}
 	if n, ok := order[r.LeadID]; ok {
 		row.Position = strconv.Itoa(n)
@@ -573,7 +574,7 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		CountryPolicy: countryPolicy(w, d.Country),
 		Why:           leadview.WhyLines(d.Reasons),
 	}
-	if p.YourCall, err = leadCall(ctx, b.lq(), &p.LeadListRow); err != nil {
+	if p.YourCall, err = leadCall(ctx, b.lq(), d.RType, &p.LeadListRow); err != nil {
 		return console.LeadDetailPage{}, err
 	}
 	lr, err := b.leadResearch(ctx, id)
@@ -650,7 +651,7 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 			Due: m.DueAt, Sent: m.SentAt})
 	}
 	for _, r := range d.RelevanceHistory {
-		words := leadview.RelevanceWords(&r.Score, r.Band, w.trusted)
+		words := leadview.RelevanceWords(&r.Score, r.Band, slices.Contains(w.trusted, d.RType))
 		if r.Model != "" {
 			words += " · " + r.Model
 		}

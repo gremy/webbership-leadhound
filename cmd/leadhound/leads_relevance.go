@@ -18,6 +18,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/eval"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/store"
@@ -30,10 +31,22 @@ func init() { leadsCommands["relevance"] = runLeadsRelevance }
 const leadhoundModule = "github.com/gremy/webbership-leadhound"
 
 const (
-	leadsRelevanceUsage = "usage: leadhound leads relevance golden-draft --n N --out FILE | eval [--golden FILE] [--runs 3] [--decider fake|jev]"
-	goldenDraftUsage    = "usage: leadhound leads relevance golden-draft --n N (at least 1) --out FILE"
-	relevanceEvalUsage  = "usage: leadhound leads relevance eval [--golden FILE] [--runs 3] [--decider fake|jev]"
+	leadsRelevanceUsage = "usage: leadhound leads relevance golden-draft [--type drupal|cafe] --n N --out FILE | eval [--type drupal|cafe] [--golden FILE] [--runs 3] [--decider fake|jev]"
+	goldenDraftUsage    = "usage: leadhound leads relevance golden-draft [--type drupal|cafe] --n N (at least 1) --out FILE"
+	relevanceEvalUsage  = "usage: leadhound leads relevance eval [--type drupal|cafe] [--golden FILE] [--runs 3] [--decider fake|jev]"
 )
+
+// typeFlagUsage is the --type flag's help: the rating type a golden draft or an eval is of.
+const typeFlagUsage = "the lead type: drupal (Drupal sites and agencies) or cafe (cafés)"
+
+// ratingTypeArg is --type's value as a rating type; anything else is a plain refusal naming
+// both.
+func ratingTypeArg(v string) (string, error) {
+	if slices.Contains(leadstore.RatingTypes, v) {
+		return v, nil
+	}
+	return "", usageError("--type %q is not a lead type: choose drupal (Drupal sites and agencies) or cafe (cafés)", v)
+}
 
 // defaultGoldenN is how many leads a golden draft holds without --n.
 const defaultGoldenN = 30
@@ -52,8 +65,9 @@ func runLeadsRelevance(ctx context.Context, args []string) error {
 	return usageError("unknown relevance subcommand %q; %s", args[0], leadsRelevanceUsage)
 }
 
-// runGoldenDraft is `leads relevance golden-draft --n 30 --out FILE`: it writes n open leads,
-// spread over kinds, Drupal majors and countries, as golden lines with a null label for the
+// runGoldenDraft is `leads relevance golden-draft [--type drupal] --n 30 --out FILE`: it
+// writes n open leads of that rating type, spread over kinds, Drupal majors and countries,
+// as golden lines with a null label for the
 // operator to fill in, at mode 0600. It refuses a path inside a checkout of this repository
 // (the labels are the operator's private data) and never overwrites a file. Each line's id
 // is the lead's domain, so the operator can look the site up; the input is what the
@@ -62,12 +76,17 @@ func runGoldenDraft(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads relevance golden-draft", flag.ContinueOnError)
 	n := fs.Int("n", defaultGoldenN, "how many leads the draft holds")
 	out := fs.String("out", "", "the file to write (outside the repository; never overwritten)")
+	typeArg := fs.String("type", leadstore.TypeDrupal, typeFlagUsage)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 0 || *n < 1 || *out == "" {
 		return usageError(goldenDraftUsage)
+	}
+	rt, err := ratingTypeArg(*typeArg)
+	if err != nil {
+		return err
 	}
 	path, err := filepath.Abs(*out)
 	if err != nil {
@@ -94,13 +113,19 @@ func runGoldenDraft(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	leads, err := lq.LeadsToRate(ctx, leadstore.ListContext{ProfileJSON: pf})
+	all, err := lq.LeadsToRate(ctx, leadstore.ListContext{ProfileJSON: pf})
 	if err != nil {
 		return err
 	}
+	var leads []leadstore.RateLead
+	for _, l := range all {
+		if leadstore.TypeOf(l.Kind) == rt {
+			leads = append(leads, l)
+		}
+	}
 	picked := spreadSample(leads, *n)
 	if len(picked) == 0 {
-		_, _ = fmt.Fprintln(stdout, "leads relevance golden-draft: no open leads to draft from; nothing written")
+		_, _ = fmt.Fprintf(stdout, "leads relevance golden-draft: no open %s to draft from; nothing written\n", strings.ToLower(leadstore.TypeWords(rt)))
 		return nil
 	}
 	var b strings.Builder
@@ -119,10 +144,10 @@ func runGoldenDraft(ctx context.Context, args []string) error {
 	for _, l := range picked {
 		kinds[l.Kind], majors[l.Major], countries[l.Country] = true, true, true
 	}
-	_, _ = fmt.Fprintf(stdout, "leads relevance golden-draft: %d leads (of %d open) written to %s, mode 0600 · %d kinds · %d majors · %d countries\n",
-		len(picked), len(leads), path, len(kinds), len(majors), len(countries))
-	_, _ = fmt.Fprintf(stdout, "  set each line's \"label\" to one of %s, then run leads relevance eval --golden %s\n",
-		strings.Join(leadrate.Bands(), ", "), path)
+	_, _ = fmt.Fprintf(stdout, "leads relevance golden-draft: %s · %d leads (of %d open) written to %s, mode 0600 · %d kinds · %d majors · %d countries\n",
+		leadstore.TypeWords(rt), len(picked), len(leads), path, len(kinds), len(majors), len(countries))
+	_, _ = fmt.Fprintf(stdout, "  set each line's \"label\" to one of %s, then run leads relevance eval --type %s --golden %s\n",
+		strings.Join(leadrate.Bands(), ", "), rt, path)
 	return nil
 }
 
@@ -238,20 +263,23 @@ func spreadSample(leads []leadstore.RateLead, n int) []leadstore.RateLead {
 	return out
 }
 
-// runRelevanceEval is `leads relevance eval [--golden FILE] [--runs 3] [--decider fake|jev]`:
-// it asks the relevance question about every labelled lead runs times and prints how the
-// answers measure against the labels (leadrate.Evaluate). The labels are the operator's
-// calls in the database (lead_label: the latest call per lead, on the facts he saw), or
-// with --golden a golden file instead (the demo set, tests). The decider is the fake
+// runRelevanceEval is `leads relevance eval [--type drupal] [--golden FILE] [--runs 3]
+// [--decider fake|jev]`: it asks rating type --type's relevance question about every
+// labelled lead of that type runs times and prints how the answers measure against the
+// labels (leadrate.Evaluate). The labels are the operator's calls on that type's leads in
+// the database (lead_label: the latest call per lead, on the facts he saw; dbGolden), or
+// with --golden a golden file's lines of that type instead (the demo set, tests), saying
+// how many lines of other types it skipped. The decider is the fake
 // unless --decider jev is given; a jev eval needs TYPESAFE_API_KEY and LEADHOUND_LIVE=1, is
 // uncapped (eval.MaxRuns bounds it), and announces its calls before the first one. Only a
 // jev eval on at least leadrate.TrustMinN labelled leads is recorded in lead_relevance_eval,
-// where the list and the queue read the trust gate from.
+// under the type's question, where the list and the queue read that type's trust gate from.
 func runRelevanceEval(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads relevance eval", flag.ContinueOnError)
 	golden := fs.String("golden", "", "a golden file, one JSON lead per line (default: your calls in the database)")
 	runs := fs.Int("runs", 3, "how many times to ask about each labelled lead")
 	deciderName := fs.String("decider", "", "fake or jev (default fake; jev is live and paid)")
+	typeArg := fs.String("type", leadstore.TypeDrupal, typeFlagUsage)
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -262,11 +290,25 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	if *runs < 1 || *runs > eval.MaxRuns {
 		return usageError("--runs must be 1 to %d", eval.MaxRuns)
 	}
+	rt, err := ratingTypeArg(*typeArg)
+	if err != nil {
+		return err
+	}
+	words := leadstore.TypeWords(rt)
 	var lines []leadrate.Golden
 	if *golden != "" {
-		if lines, err = leadrate.LoadGolden(*golden); err != nil {
+		all, err := leadrate.LoadGolden(*golden)
+		if err != nil {
 			return usageError("%v", err)
 		}
+		var skipped int
+		lines, skipped = leadrate.FilterType(all, rt)
+		if len(lines) == 0 {
+			return usageError("%s has no line of %s: 0 lines kept, %s skipped; choose the type its lines are with --type",
+				*golden, strings.ToLower(words), plural(skipped, "line of another type", "lines of other types"))
+		}
+		_, _ = fmt.Fprintf(stdout, "leads relevance eval: %s · %d lines kept · %s skipped\n",
+			words, len(lines), plural(skipped, "line of another type", "lines of other types"))
 	}
 	name := cmp.Or(*deciderName, rateDeciderFake)
 	var required []string
@@ -278,12 +320,19 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 		return err
 	}
 	if *golden == "" {
-		if lines, err = dbGolden(ctx, cfg); err != nil {
+		var rebuilt int
+		if lines, rebuilt, err = dbGolden(ctx, cfg, rt); err != nil {
 			return err
 		}
 		if len(lines) == 0 {
-			return usageError("%s", noCallsWords)
+			return usageError("%s", noCallsWordsFor(rt))
 		}
+		_, _ = fmt.Fprintf(stdout, "leads relevance eval: %s · %s", words, plural(len(lines), "call", "calls"))
+		if rebuilt > 0 {
+			_, _ = fmt.Fprintf(stdout, " · %s made before %s had their own question, rebuilt from the lead's facts now",
+				plural(rebuilt, "call", "calls"), strings.ToLower(words))
+		}
+		_, _ = fmt.Fprintln(stdout)
 	}
 	if name == rateDeciderJev && cfg.Live != config.LiveAll {
 		_, _ = fmt.Fprintf(stdout, "leads relevance eval: %s (LEADHOUND_LIVE is %s); nothing requested\n", liveOffMessage, cfg.Live)
@@ -302,7 +351,7 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	announceRelevanceEval(decider, labelled, *runs)
 	rep, err := leadrate.Evaluate(ctx, decider, lines, *runs)
 	if errors.Is(err, leadrate.ErrNoLabels) && *golden == "" {
-		return usageError("%s", noCallsWords)
+		return usageError("%s", noCallsWordsFor(rt))
 	}
 	if errors.Is(err, leadrate.ErrNoLabels) {
 		return usageError("%s has no labelled line: set each \"label\" to one of %s", *golden, strings.Join(leadrate.Bands(), ", "))
@@ -323,15 +372,15 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	}
 	defer s.Close()
 	id, err := leadstore.NewQueries(s.Pool()).RecordRelevanceEval(context.WithoutCancel(ctx), leadstore.RelevanceEval{
-		Question: leadrate.Question, Model: decider.Name(), N: rep.N, Exact: rep.Exact, WithinOne: rep.WithinOne,
+		Question: leadrate.QuestionFor(rt), Model: decider.Name(), N: rep.N, Exact: rep.Exact, WithinOne: rep.WithinOne,
 		MAE: rep.MAE, Spearman: rep.Spearman, Runs: rep.Runs, Trusted: rep.Trusted(),
 	})
 	if err != nil {
 		return err
 	}
-	verdict := "the trust gate is not passed, so the list and the queue keep sorting by points"
+	verdict := fmt.Sprintf("the trust gate of %s is not passed, so the list and the queue keep sorting them by points", strings.ToLower(words))
 	if rep.Trusted() {
-		verdict = "the trust gate is passed, so the list and the queue sort leads that are not starred by relevance"
+		verdict = fmt.Sprintf("the trust gate of %s is passed, so the list and the queue sort those that are not starred by relevance", strings.ToLower(words))
 	}
 	_, _ = fmt.Fprintf(stdout, "recorded as eval %d: %s\n", id, verdict)
 	return nil
@@ -340,19 +389,52 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 // noCallsWords is the refusal of an eval from the database when no lead has a call.
 const noCallsWords = "No lead has your call yet: open Leads, choose To label, and give each lead your call on its page."
 
-// dbGolden is the operator's calls in the database as golden lines: the latest call on each
-// lead that names a band, on the facts he saw when he made it.
-func dbGolden(ctx context.Context, cfg config.Config) ([]leadrate.Golden, error) {
+// noCallsWordsFor is noCallsWords for rating type t: the Drupal words as they always were,
+// a café eval's naming café leads.
+func noCallsWordsFor(t string) string {
+	if t == leadstore.TypeDrupal {
+		return noCallsWords
+	}
+	return "No café lead has your call yet: open Leads, choose To label, and give each café lead your call on its page."
+}
+
+// dbGolden is the operator's calls on rating type t's leads in the database as golden
+// lines: the latest call on each lead of the type that names a band, on the facts he saw
+// when he made it. A café call stored before café leads had their own question holds no café
+// facts (its input has no Cafe); its input is rebuilt from the lead's facts now
+// (RateLeadByID through rateInput, as a call made now would store it), and rebuilt counts
+// them. A café input reads no setting, so the rebuild needs no leads config.
+func dbGolden(ctx context.Context, cfg config.Config, t string) (lines []leadrate.Golden, rebuilt int, err error) {
 	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer s.Close()
-	labels, err := leadstore.NewQueries(s.Pool()).LabelledLeads(ctx)
+	lq := leadstore.NewQueries(s.Pool())
+	labels, err := lq.LabelledLeads(ctx, t)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return leadrate.GoldenFromLabels(labels)
+	for i, l := range labels {
+		var in leadrate.Input
+		if err := json.Unmarshal(l.Input, &in); err != nil || leadstore.TypeOf(in.Kind) != leadstore.TypeCafe || in.Cafe != nil {
+			continue // GoldenFromLabels names an input that does not read
+		}
+		rl, err := lq.RateLeadByID(ctx, l.LeadID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if labels[i].Input, err = json.Marshal(rateInput(rl, leadconfig.Config{})); err != nil {
+			return nil, 0, fmt.Errorf("eval: lead %d: %w", l.LeadID, err)
+		}
+		rebuilt++
+	}
+	lines, err = leadrate.GoldenFromLabels(labels)
+	if err != nil {
+		return nil, 0, err
+	}
+	lines, _ = leadrate.FilterType(lines, t) // a call made when the lead was of another kind
+	return lines, rebuilt, nil
 }
 
 // evalNotRecorded says why an eval of kind on n labelled leads is not recorded; "" when it

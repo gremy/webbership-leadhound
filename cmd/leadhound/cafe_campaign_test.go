@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
@@ -367,5 +369,72 @@ func TestCafeFooterLinkInStep0(t *testing.T) {
 	rows := draftCafe(t, dir, spec, cfg, c, ev)
 	if rows[0].Step != 0 || !strings.Contains(rows[0].Body, cafeTestDemo) {
 		t.Errorf("step 0 lacks the footer link:\n%s", rows[0].Body)
+	}
+}
+
+// TestCafeVendor: the pure vendor pick the batch and the lead page share: the first
+// signals.yaml loyalty vendor among the ids with its own link, else the default link; no
+// vendor gets the default link; a vendor with no entry and no default is named with no
+// link; an ordering vendor or an unknown id is never the loyalty vendor.
+func TestCafeVendor(t *testing.T) {
+	links := map[string]string{"stampino": cafeTestVsStampino, campaign.VendorLinkDefault: cafeTestVsDefault}
+	cases := []struct {
+		name                 string
+		ids                  []string
+		links                map[string]string
+		wantID, wantName, wl string
+	}{
+		{"own link", []string{"stampino"}, links, "stampino", "Stampino", cafeTestVsStampino},
+		{"signals.yaml order wins", []string{"stampino", "stampme"}, links, "stampme", "Stamp Me", cafeTestVsDefault},
+		{"no vendor", nil, links, "", "", cafeTestVsDefault},
+		{"ordering and unknown ids", []string{"glovo", "nosuch"}, links, "", "", cafeTestVsDefault},
+		{"no entry and no default", []string{"stampme"}, map[string]string{"stampino": cafeTestVsStampino}, "stampme", "Stamp Me", ""},
+		{"no links", []string{"stampino"}, nil, "stampino", "Stampino", ""},
+	}
+	for _, tc := range cases {
+		id, name, link := cafeVendor(tc.ids, tc.links)
+		if id != tc.wantID || name != tc.wantName || link != tc.wl {
+			t.Errorf("%s: cafeVendor = %q %q %q, want %q %q %q", tc.name, id, name, link, tc.wantID, tc.wantName, tc.wl)
+		}
+	}
+}
+
+// TestRateInputCafe: a café lead's input carries its café facts read back from its
+// finding's evidence and its place: vendors by name, never by id, a phrase as seen with no
+// name, the own website from the finding; a Drupal lead's input carries none.
+func TestRateInputCafe(t *testing.T) {
+	l := leadstore.RateLead{LeadID: 1, OrgID: 1, Domain: "bean.example", Kind: cafe.KindHasLoyalty, Country: "RO",
+		SiteName: "Cafeneaua Exemplu", HasEmail: true, CafeWebsite: "bean.example", Language: "ro",
+		PlaceCategory: "coffee_shop", PlaceLocality: "Oraș", PlaceRegion: "Județ",
+		Signals: []string{
+			cafe.SigLoyalty + ":" + cafe.SigLoyalty + ":stampino:" + cafe.ViaLink + ":https://stampino.ro/c/exemplu",
+			cafe.SigOrdering + ":" + cafe.SigOrdering + ":glovo:" + cafe.ViaLink + ":https://glovoapp.com/ro/exemplu",
+			cafe.SigOrdering + ":" + cafe.SigOrdering + ":order-words:" + cafe.ViaWord + ":comandă online",
+			cafe.SigInstagram + ":" + cafe.SigInstagram + ":instagram:" + cafe.ViaLink + ":https://instagram.com/exemplu",
+			"lang:ro:html-lang:ro-RO",
+		}}
+	in := rateInput(l, leadconfig.Config{})
+	want := leadrate.CafeFacts{Category: "coffee_shop", Locality: "Oraș", Region: "Județ", OwnWebsite: true,
+		LoyaltySeen: true, LoyaltyVendors: []string{"Stampino"}, OrderingSeen: true, OrderingVendors: []string{"Glovo"},
+		Instagram: true, Language: "ro"}
+	if in.Cafe == nil || !reflect.DeepEqual(*in.Cafe, want) {
+		t.Fatalf("café facts %+v, want %+v", in.Cafe, want)
+	}
+	if in.Kind != l.Kind || in.SiteName != l.SiteName || len(in.Channels) != 1 {
+		t.Errorf("shared facts %+v", in)
+	}
+
+	// Only a phrase: seen, no name; no website of its own.
+	l.Signals = []string{cafe.SigLoyalty + ":" + cafe.SigLoyalty + ":wallet-words:" + cafe.ViaWord + ":apple wallet"}
+	l.CafeWebsite, l.Language = "", ""
+	in = rateInput(l, leadconfig.Config{})
+	if c := in.Cafe; c == nil || !c.LoyaltySeen || len(c.LoyaltyVendors) != 0 || c.OrderingSeen || c.OwnWebsite || c.Language != "" {
+		t.Errorf("phrase-only café facts %+v", in.Cafe)
+	}
+
+	for _, c := range pinRateLeads() {
+		if in := rateInput(c.lead, pinRateConfig()); in.Cafe != nil {
+			t.Errorf("%s: a Drupal lead got café facts %+v", c.name, in.Cafe)
+		}
 	}
 }

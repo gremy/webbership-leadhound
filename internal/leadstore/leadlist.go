@@ -95,9 +95,11 @@ type ListFilter struct {
 
 // ListContext is what the list is weighed by.
 type ListContext struct {
-	ProfileJSON     string // the effective priority profile, for points
-	SkipRankOver    int
-	SortByRelevance bool // the trust gate passed (D9)
+	ProfileJSON  string // the effective priority profile, for points
+	SkipRankOver int
+	// TrustedTypes are the rating types (TypeDrupal, TypeCafe) whose trust gate passed (D9):
+	// a lead of one of them is ordered by its relevance; nil orders none by it.
+	TrustedTypes []string
 	// CampaignID keeps LeadsToRate to that campaign's leads; 0 is every campaign's.
 	CampaignID int64
 }
@@ -109,6 +111,7 @@ type ListRow struct {
 	CampaignSlug, CampaignName  string
 	Domain, Name                string // Name: site_name, else org.name, else domain
 	Country, Kind, State        string
+	RType                       string // the lead's rating type (TypeOf its kind)
 	Channel                     string // the lead's channel (email, form, linkedin or none)
 	HasEmail, HasForm, HasPhone bool
 	Relevance                   *int
@@ -134,7 +137,7 @@ type Detail struct {
 	Events           []DetailEvent     // state, reason, actor, at
 	Priority         *DetailPriority   // latest lead_priority row
 	Messages         []DetailMessage   // batch, step, channel, state, due, sent, subject, body
-	RelevanceHistory []DetailRelevance // last 5
+	RelevanceHistory []DetailRelevance // the last 5 under its type's question
 	Reasons          []Reason
 
 	// score is what Weigh scores the lead by: its probe's version, as CandidateLeads reads it.
@@ -241,9 +244,11 @@ type listRow struct {
 	Name            string     `db:"name"`
 	Country         string     `db:"country"`
 	Kind            string     `db:"kind"`
+	RType           string     `db:"rtype"`
 	State           string     `db:"state"`
 	Channel         string     `db:"channel"`
 	ProbeID         *int64     `db:"probe_id"`
+	FindingID       *int64     `db:"finding_id"`
 	AgencyFindingID *int64     `db:"agency_finding_id"`
 	HasEmail        bool       `db:"has_email"`
 	HasForm         bool       `db:"has_form"`
@@ -277,7 +282,7 @@ func (r listRow) row() ListRow {
 	return ListRow{
 		LeadID: r.LeadID, OrgID: r.OrgID, Domain: r.Domain, Name: r.Name,
 		CampaignID: r.CampaignID, CampaignSlug: r.CampaignSlug, CampaignName: r.CampaignName,
-		Country: r.Country, Kind: r.Kind, State: r.State, Channel: r.Channel,
+		Country: r.Country, Kind: r.Kind, RType: r.RType, State: r.State, Channel: r.Channel,
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
 		Relevance: r.Relevance, Band: r.Band, RatedAt: r.RatedAt, Points: r.Points,
 		Starred: r.Starred, Position: r.Position, SmallSite: r.SmallSite,
@@ -294,12 +299,14 @@ func (r listRow) row() ListRow {
 // aliases scoreSQL reads (l lead, o org, p site_probe, s site, pf the profile): $1 the
 // profile (jsonb), $2 SkipRankOver. Points are scoreSQL over the lead's own probe, as
 // CandidateLeads scores it; unlike the queue, a lead whose probe is no longer its site's
-// latest is listed with its own finding. A site lead is one with a probe. No message body
-// is read.
-const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
+// latest is listed with its own finding. A site lead is one with a probe. Its relevance is
+// the latest rating under its own type's question (rtype, typeQuestionSQL): a rating under
+// another type's question is not its number. No message body is read.
+var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
 	   cg.name AS campaign_name, o.domain,
 	   coalesce(nullif(p.site_name, ''), nullif(o.name, ''), o.domain) AS name,
-	   o.country, l.kind, l.state, l.channel, l.probe_id, l.agency_finding_id, l.created_at,
+	   o.country, l.kind, ` + typeSQL("l.kind") + ` AS rtype, l.state, l.channel, l.probe_id,
+	   l.agency_finding_id, l.finding_id, l.created_at,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'email') AS has_email,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'form') AS has_form,
 	   EXISTS (SELECT 1 FROM org_fact x WHERE x.org_id = l.org_id AND x.kind = 'phone') AS has_phone,
@@ -327,7 +334,8 @@ const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS
 	 LEFT JOIN finding f ON f.id = l.finding_id
 	 LEFT JOIN LATERAL (
 	   SELECT r.score, r.band, r.created_at FROM lead_relevance r
-	   WHERE r.lead_id = l.id ORDER BY r.id DESC LIMIT 1
+	   WHERE r.lead_id = l.id AND r.question = (` + typeQuestionSQL("l.kind") + `)
+	   ORDER BY r.id DESC LIMIT 1
 	 ) rv ON true
 	 LEFT JOIN LATERAL (
 	   SELECT x.action, x.position FROM lead_star x
@@ -340,9 +348,10 @@ const listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS
 // match in all. Filters combine with AND; Kinds, Countries and Channels each match any of
 // their values (a lead with an email route, a form route or a phone fact for its
 // channels). MinRelevance leaves out the leads never rated. The sorts:
-//   - relevance, c.SortByRelevance: relevance (unrated last), then points, then list rank
-//     (unranked last), then id;
-//   - relevance, not trusted: points, then list rank, then id;
+//   - relevance, c.TrustedTypes set: the leads of a trusted type by relevance (unrated
+//     last), every other lead after them, then points, then list rank (unranked last), then
+//     id;
+//   - relevance, no type trusted: points, then list rank, then id;
 //   - newest: created, newest first, then id, highest first;
 //   - order: the starred leads only, by position, then id.
 //
@@ -401,12 +410,13 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 	default:
 		return nil, 0, fmt.Errorf("leadstore: lead list: status %q: %w", f.Status, ErrBadListFilter)
 	}
+	countArgs := len(args) // the count reads the filters' placeholders only, not the order's
 	var order string
 	switch f.Sort {
 	case "", SortRelevance:
 		order = "m.points DESC, m.list_rank NULLS LAST, m.lead_id"
-		if c.SortByRelevance {
-			order = "m.relevance DESC NULLS LAST, " + order
+		if len(c.TrustedTypes) > 0 {
+			order = trustedOrderSQL(arg(c.TrustedTypes)) + order
 		}
 	case SortNewest:
 		order = "m.created_at DESC, m.lead_id DESC"
@@ -428,7 +438,6 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 		per = ListPerPageMax
 	}
 	page := min(max(f.Page, 1), ListPageMax)
-	countArgs := len(args)
 	sql := `SELECT m.*, count(*) OVER ()::int AS total FROM (` + listRowsSQL + `) m` + where +
 		` ORDER BY ` + order + ` LIMIT ` + arg(per) + ` OFFSET ` + arg((page-1)*per)
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[listRow], sql, args...)
@@ -450,6 +459,13 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 		return nil, 0, fmt.Errorf("leadstore: lead list: count: %w", err)
 	}
 	return out, total, nil
+}
+
+// trustedOrderSQL is the ORDER BY term that puts the leads of the trusted rating types
+// (the text[] placeholder p) by relevance, unrated ones and every other type's after them,
+// over a row m with rtype and relevance; it ends with ", " so the rest of the order follows.
+func trustedOrderSQL(p string) string {
+	return "CASE WHEN m.rtype = ANY(" + p + "::text[]) THEN m.relevance END DESC NULLS LAST, "
 }
 
 // profileOrEmpty is s, or an empty profile (no points) when s is blank.
@@ -534,7 +550,7 @@ func (q Queries) LeadDetail(ctx context.Context, leadID int64) (Detail, error) {
 	}
 	if d.RelevanceHistory, err = collect(ctx, q.db, pgx.RowToStructByPos[DetailRelevance],
 		`SELECT score, band, question, decider, model, created_at FROM lead_relevance
-		 WHERE lead_id = $1 ORDER BY id DESC LIMIT 5`, leadID); err != nil {
+		 WHERE lead_id = $1 AND question = $2 ORDER BY id DESC LIMIT 5`, leadID, TypeQuestion(r.RType)); err != nil {
 		return Detail{}, fmt.Errorf("leadstore: lead detail: relevance: %w", err)
 	}
 	return d, nil

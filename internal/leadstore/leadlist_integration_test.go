@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/places"
 )
 
 // The Leads list and the lead page (Task 2.1).
@@ -194,10 +196,10 @@ func TestLeadListSorts(t *testing.T) {
 		c    leadstore.ListContext
 		want []int64
 	}{
-		"relevance, trusted":   {leadstore.ListFilter{}, leadstore.ListContext{ProfileJSON: pf, SortByRelevance: true}, []int64{x3, x4, x1, x2, x5}},
+		"relevance, trusted":   {leadstore.ListFilter{}, leadstore.ListContext{ProfileJSON: pf, TrustedTypes: drupalTrusted}, []int64{x3, x4, x1, x2, x5}},
 		"relevance, untrusted": {leadstore.ListFilter{Sort: leadstore.SortRelevance}, leadstore.ListContext{ProfileJSON: pf}, []int64{x1, x2, x4, x5, x3}},
-		"newest":               {leadstore.ListFilter{Sort: leadstore.SortNewest}, leadstore.ListContext{ProfileJSON: pf, SortByRelevance: true}, []int64{x5, x4, x3, x2, x1}},
-		"no profile, trusted":  {leadstore.ListFilter{}, leadstore.ListContext{SortByRelevance: true}, []int64{x3, x4, x2, x5, x1}},
+		"newest":               {leadstore.ListFilter{Sort: leadstore.SortNewest}, leadstore.ListContext{ProfileJSON: pf, TrustedTypes: drupalTrusted}, []int64{x5, x4, x3, x2, x1}},
+		"no profile, trusted":  {leadstore.ListFilter{}, leadstore.ListContext{TrustedTypes: drupalTrusted}, []int64{x3, x4, x2, x5, x1}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, _ := listIDs(t, f.q, tc.f, tc.c); !reflect.DeepEqual(got, tc.want) {
@@ -467,7 +469,7 @@ func TestLeadListColdStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, total := listRows(t, f.q, leadstore.ListFilter{Status: leadstore.ListAll}, leadstore.ListContext{SortByRelevance: true})
+	rows, total := listRows(t, f.q, leadstore.ListFilter{Status: leadstore.ListAll}, leadstore.ListContext{TrustedTypes: drupalTrusted})
 	if total != 2 || len(rows) != 2 {
 		t.Fatalf("%d rows, total %d", len(rows), total)
 	}
@@ -557,7 +559,7 @@ func TestLeadListPointsDrift(t *testing.T) {
 				t.Fatalf("%d candidates, want %d", len(cands), len(ids))
 			}
 			for _, trusted := range []bool{false, true} {
-				rows, total := listRows(t, f.q, leadstore.ListFilter{}, leadstore.ListContext{ProfileJSON: profileJSON(t, p), SortByRelevance: trusted})
+				rows, total := listRows(t, f.q, leadstore.ListFilter{}, leadstore.ListContext{ProfileJSON: profileJSON(t, p), TrustedTypes: trustedIf(trusted)})
 				if total != len(ids) {
 					t.Errorf("trusted %v: total %d, want %d", trusted, total, len(ids))
 				}
@@ -597,4 +599,83 @@ func listBefore(a, b leadstore.ListRow, cands map[int64]leadstore.Candidate, tru
 	ca, cb := cands[a.LeadID], cands[b.LeadID]
 	ca.Score, cb.Score = a.Points, b.Points
 	return before(ca, cb)
+}
+
+// TestRateLeadCafeFacts: a café lead reads as the café question needs it: its type, its
+// finding's reason, website, language and evidence ("name:value", in order), and its
+// latest place in its own campaign's imports (not a later one in another campaign's); a
+// Drupal lead's café fields are empty. Each reads only its own type's question: a café
+// lead holding only a Drupal-question rating has no latest hash, no list relevance and no
+// history until it is rated under the café question.
+func TestRateLeadCafeFacts(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	place := places.Place{SourceID: "rate-p-1", Name: "Rate Example", Category: "coffee_shop", Confidence: 0.9,
+		Websites: []string{"https://rate-cafe.example/"}, Phones: []string{"+44 1632 960002"}, Emails: []string{"hi@rate-cafe.example"},
+		Address: places.Address{Locality: "Exampleton", Region: "ENG", Country: "GB"}}
+	imp := func(campaign int64, release, category string) {
+		t.Helper()
+		p := place
+		p.Category = category
+		if _, err := f.q.ImportPlaces(ctx, leadstore.PlaceImport{CampaignID: campaign, Release: release, FileName: "places.ndjson",
+			Stats: places.Stats{Lines: 1, Kept: 1}}, []leadstore.PlaceRow{{Place: p}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	imp(1, "2026-10-21.0", "coffee_shop")
+	f.ownerRun(t, `INSERT INTO campaign (id, account_id, slug, name) VALUES (2, 1, 'other', 'Other')`)
+	imp(2, "2026-11-18.0", "bakery") // a later place for the same org, in another campaign
+	orgs, err := f.q.CafeOrgsForBuild(ctx, 1)
+	if err != nil || len(orgs) != 1 {
+		t.Fatalf("café orgs: %+v %v", orgs, err)
+	}
+	fid, err := f.q.EnsureCafeFinding(ctx, leadstore.CafeFinding{OrgID: orgs[0].OrgID, Kind: cafe.KindNoDigitalLoyalty,
+		PlaceID: orgs[0].PlaceID, Detector: cafe.DerivedBy,
+		Subject:  map[string]any{"reason": "no digital loyalty on the homepage", "website": "rate-cafe.example", "language": "en"},
+		Evidence: []leadstore.FindingDetail{{Name: "ordering", Value: "ordering:shopx:link:a"}, {Name: "lang", Value: "en:html:"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := f.q.UpsertLead(ctx, leadstore.LeadRow{OrgID: orgs[0].OrgID, Kind: cafe.KindNoDigitalLoyalty,
+		Channel: leadstore.ChannelNone, CampaignID: 1, FindingID: &fid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := f.siteLead(t, "rate-site.example", nil, 7, "")
+
+	f.rateUnder(t, c, leadstore.QuestionDrupal, 70, leadstore.BandLikely)
+	got, err := f.q.RateLeadByID(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := leadstore.RateLead{RType: leadstore.TypeCafe, CafeReason: "no digital loyalty on the homepage",
+		CafeWebsite: "rate-cafe.example", Language: "en", Signals: []string{"ordering:ordering:shopx:link:a", "lang:en:html:"},
+		PlaceCategory: "coffee_shop", PlaceLocality: "Exampleton", PlaceRegion: "ENG"}
+	cmp := leadstore.RateLead{RType: got.RType, CafeReason: got.CafeReason, CafeWebsite: got.CafeWebsite, Language: got.Language,
+		Signals: got.Signals, PlaceCategory: got.PlaceCategory, PlaceLocality: got.PlaceLocality, PlaceRegion: got.PlaceRegion}
+	if !reflect.DeepEqual(cmp, want) || got.LatestSHA != nil {
+		t.Errorf("café rate lead = %+v (latest %x), want %+v and no latest hash under the café question", cmp, got.LatestSHA, want)
+	}
+	d, err := f.q.LeadDetail(ctx, c)
+	if err != nil || d.RType != leadstore.TypeCafe || d.Relevance != nil || len(d.RelevanceHistory) != 0 {
+		t.Errorf("café detail before a café rating: type %q relevance %v history %v, %v", d.RType, d.Relevance, d.RelevanceHistory, err)
+	}
+	f.rateUnder(t, c, leadstore.QuestionCafe, 40, leadstore.BandMaybe)
+	if got, err := f.q.RateLeadByID(ctx, c); err != nil || got.LatestSHA == nil {
+		t.Errorf("after a café rating: latest %x, %v", got.LatestSHA, err)
+	}
+	d, err = f.q.LeadDetail(ctx, c)
+	if err != nil || d.Relevance == nil || *d.Relevance != 40 || len(d.RelevanceHistory) != 1 ||
+		d.RelevanceHistory[0].Question != leadstore.QuestionCafe {
+		t.Errorf("café detail after a café rating: relevance %v history %+v, %v", d.Relevance, d.RelevanceHistory, err)
+	}
+
+	s, err := f.q.RateLeadByID(ctx, site)
+	if err != nil || s.RType != leadstore.TypeDrupal || s.CafeReason != "" || s.CafeWebsite != "" || s.Language != "" ||
+		len(s.Signals) != 0 || s.PlaceCategory != "" || s.PlaceLocality != "" || s.PlaceRegion != "" {
+		t.Errorf("Drupal rate lead café fields: %+v, %v", s, err)
+	}
+	if rows, err := f.q.LeadsToRate(ctx, leadstore.ListContext{TrustedTypes: leadstore.RatingTypes}); err != nil || len(rows) != 2 {
+		t.Errorf("leads to rate, both trusted: %d rows, %v", len(rows), err)
+	}
 }

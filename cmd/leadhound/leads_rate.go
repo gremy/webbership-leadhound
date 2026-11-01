@@ -8,15 +8,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/probe"
 	"github.com/gremy/webbership-leadhound/internal/scoring"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -130,7 +133,7 @@ func runLeadsRate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	leads, err := lq.LeadsToRate(ctx, leadstore.ListContext{ProfileJSON: pf, SortByRelevance: w.trusted, CampaignID: c.ID})
+	leads, err := lq.LeadsToRate(ctx, leadstore.ListContext{ProfileJSON: pf, TrustedTypes: w.trusted, CampaignID: c.ID})
 	if err != nil {
 		return err
 	}
@@ -183,8 +186,8 @@ func relevanceDecider(cfg config.Config, name, command string) (d ai.Decider, ki
 	return d, rateDeciderJev, nil
 }
 
-// relevanceFake is the keyless stand-in for the relevance question: every lead is a
-// "maybe", spread so its number is 50.
+// relevanceFake is the keyless stand-in for the relevance question of every rating type
+// (they share one question name): every lead is a "maybe", spread so its number is 50.
 func relevanceFake() *ai.Fake {
 	return &ai.Fake{Answers: map[string]ai.Answer{leadrate.AIQuestion(leadstore.TypeDrupal).Name: {
 		Choice: leadstore.BandMaybe, Confidence: 0.4,
@@ -195,8 +198,10 @@ func relevanceFake() *ai.Fake {
 	}}}
 }
 
-// rateInput is what the relevance question reads about lead l: its facts, and its major
-// version's end-of-life date from the effective config.
+// rateInput is what the relevance question of lead l's rating type reads about it: its
+// facts, and its major version's end-of-life date from the effective config; a café lead
+// also its café facts (cafeFacts). A Drupal lead's input is exactly what it was before café
+// leads had their own question.
 func rateInput(l leadstore.RateLead, cfg leadconfig.Config) leadrate.Input {
 	in := leadrate.Input{
 		Kind: l.Kind, Major: l.Major, Version: l.ExactVersion, Country: l.Country,
@@ -214,7 +219,65 @@ func rateInput(l leadstore.RateLead, cfg leadconfig.Config) leadrate.Input {
 	if l.HasForm {
 		in.Channels = append(in.Channels, leadstore.ChannelForm)
 	}
+	if leadstore.TypeOf(l.Kind) == leadstore.TypeCafe {
+		in.Cafe = cafeFacts(l)
+	}
 	return in
+}
+
+// cafeFacts is café lead l's own facts: its place's category, town and region, whether the
+// build read a website of its own, and what its homepage showed (its finding's evidence read
+// back through probe.CafeResult), vendors by the names signals.yaml gives them. A vendor
+// signals.yaml does not name (the own vendor) is left out; a phrase still counts as seen.
+func cafeFacts(l leadstore.RateLead) *leadrate.CafeFacts {
+	sigs := make([]leadstore.Signal, 0, len(l.Signals))
+	for _, pair := range l.Signals {
+		name, value, _ := strings.Cut(pair, ":")
+		sigs = append(sigs, leadstore.Signal{Signal: name, Value: value})
+	}
+	r := probe.CafeResult(sigs)
+	var ordering []string
+	for _, sg := range r.SignalsOf(cafe.SigOrdering) {
+		if sg.Via != cafe.ViaWord {
+			ordering = append(ordering, sg.Vendor)
+		}
+	}
+	return &leadrate.CafeFacts{
+		Category: l.PlaceCategory, Locality: l.PlaceLocality, Region: l.PlaceRegion,
+		OwnWebsite:  l.CafeWebsite != "",
+		LoyaltySeen: r.HasLoyalty, LoyaltyVendors: vendorNames(r.Vendors),
+		OrderingSeen: r.HasOrdering, OrderingVendors: vendorNames(ordering),
+		Instagram: r.HasInstagram, Language: cmp.Or(l.Language, r.Language),
+	}
+}
+
+// vendorNames are the signals.yaml names of the vendors ids, in order; an id it does not
+// list is left out, so an id never stands in for a name.
+func vendorNames(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if v := cafe.DefaultConfig().Vendor(id); v != nil && !v.Own {
+			out = append(out, v.Name)
+		}
+	}
+	return out
+}
+
+// trustedTypes are the rating types whose relevance passed its trust gate: the latest eval
+// of the type's own question (leadrate.QuestionFor) is trusted. The list, leads rate's order
+// and the batch queue sort the leads of these types by relevance.
+func trustedTypes(ctx context.Context, lq leadstore.Queries) ([]string, error) {
+	var out []string
+	for _, t := range leadstore.RatingTypes {
+		e, ok, err := lq.LatestRelevanceEval(ctx, leadrate.QuestionFor(t))
+		if err != nil {
+			return nil, err
+		}
+		if ok && e.Trusted {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // rateSummary is what one rating did.
@@ -240,14 +303,15 @@ type rateRun struct {
 }
 
 // rate asks about every lead in leads, in order, whose input hash differs from its latest
-// rating's, until --max calls, the cap, an unavailable provider, rateFailuresInARow failures
+// rating's under its own type's question (each lead is asked its type's question), until --max calls, the cap, an unavailable provider, rateFailuresInARow failures
 // in a row or a cancel. Only a store error (the rating's or the cap's usage store) is
 // returned. The writes run without the run's cancel.
 func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rateSummary, err error) {
 	type due struct {
-		lead leadstore.RateLead
-		in   leadrate.Input
-		hash []byte
+		lead  leadstore.RateLead
+		in    leadrate.Input
+		hash  []byte
+		rtype string // the lead's rating type, whose question it is asked
 	}
 	var todo []due
 	for _, l := range leads {
@@ -257,9 +321,8 @@ func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rat
 			sum.Unchanged++
 			continue
 		}
-		todo = append(todo, due{lead: l, in: in, hash: h})
+		todo = append(todo, due{lead: l, in: in, hash: h, rtype: leadstore.TypeOf(l.Kind)})
 	}
-	qs := []ai.Question{leadrate.AIQuestion(leadstore.TypeDrupal)}
 	wctx := context.WithoutCancel(ctx)
 	inARow := 0
 	defer func() { sum.Due = len(todo) - sum.Rated }() // a failed lead stays due
@@ -271,7 +334,8 @@ func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rat
 			sum.StopReason = rateStopMax
 			return sum, nil
 		}
-		answers, usage, err := rr.decider.Decide(ctx, leadrate.State(d.in), qs)
+		q := leadrate.AIQuestion(d.rtype)
+		answers, usage, err := rr.decider.Decide(ctx, leadrate.State(d.in), []ai.Question{q})
 		if !errors.Is(err, ai.ErrSpendCap) {
 			sum.Calls++
 		}
@@ -297,7 +361,7 @@ func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rat
 			}
 			continue
 		}
-		answer := answers[leadrate.AIQuestion(leadstore.TypeDrupal).Name]
+		answer := answers[q.Name]
 		score, band := leadrate.Score(answer)
 		if band == "" {
 			sum.Failures++ // an answer outside the bands; the decider checks its options, so never expected
@@ -305,7 +369,7 @@ func (rr rateRun) rate(ctx context.Context, leads []leadstore.RateLead) (sum rat
 		}
 		inARow = 0
 		if _, err := rr.lq.InsertRelevance(wctx, leadstore.RelevanceRow{
-			LeadID: d.lead.LeadID, Question: leadrate.Question, Decider: rr.kind,
+			LeadID: d.lead.LeadID, Question: leadrate.QuestionFor(d.rtype), Decider: rr.kind,
 			Model: cutRunes(cmp.Or(usage.Model, rr.name), rateModelRunes), InputSHA256: d.hash,
 			Band: band, Score: score, Probabilities: answer.Probabilities, InputTokens: usage.InputTokens, RunID: rr.runID,
 		}); err != nil {

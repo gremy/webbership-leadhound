@@ -38,7 +38,7 @@ func TestLeadLabelLatestWins(t *testing.T) {
 	}
 	labelled := func() map[int64]string {
 		t.Helper()
-		ls, err := f.q.LabelledLeads(ctx)
+		ls, err := f.q.LabelledLeads(ctx, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -46,11 +46,11 @@ func TestLeadLabelLatestWins(t *testing.T) {
 		for _, l := range ls {
 			out[l.LeadID] = *l.Band + " " + string(l.Input)
 		}
-		n, err := f.q.LabelCount(ctx)
+		n, err := f.q.LabelCount(ctx, "")
 		if err != nil || n != len(out) {
 			t.Errorf("LabelCount = %d, %v; want %d", n, err, len(out))
 		}
-		ids, err := f.q.LabelledLeadIDs(ctx)
+		ids, err := f.q.LabelledLeadIDs(ctx, "")
 		if err != nil || len(ids) != len(out) {
 			t.Errorf("LabelledLeadIDs = %v, %v; want %d ids", ids, err, len(out))
 		}
@@ -190,4 +190,44 @@ func dbCountQ(t *testing.T, f outreachFixture, q string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// TestLeadLabelsPerType: the labelled set, its ids and the count keep to one rating type
+// ("" every type): a café lead's call counts for café leads only, a Drupal lead's (a site
+// or an agency) for Drupal leads only, and a cleared café call counts nowhere.
+func TestLeadLabelsPerType(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	site := f.siteLead(t, "label-site.example", nil, 7, "")
+	agency := f.agencyLead(t, "label-agency.example", "")
+	c1 := f.cafeLead(t, "label-c1.example", nil, "")
+	c2 := f.cafeLead(t, "label-c2.example", nil, "")
+	cleared := f.cafeLead(t, "label-c3.example", nil, "")
+	band := leadstore.BandLikely
+	for _, id := range []int64{site, agency, c1, c2, cleared} {
+		if _, err := f.q.SetLeadLabel(ctx, id, &band, []byte(`{}`), leadstore.ActorOperator); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.q.SetLeadLabel(ctx, cleared, nil, nil, leadstore.ActorOperator); err != nil {
+		t.Fatal(err)
+	}
+	for tp, want := range map[string][]int64{
+		"": {site, agency, c1, c2}, leadstore.TypeDrupal: {site, agency}, leadstore.TypeCafe: {c1, c2},
+	} {
+		ls, err := f.q.LabelledLeads(ctx, tp)
+		var got []int64
+		for _, l := range ls {
+			got = append(got, l.LeadID)
+		}
+		if err != nil || !slices.Equal(got, want) {
+			t.Errorf("LabelledLeads(%q) = %v, %v; want %v", tp, got, err, want)
+		}
+		if ids, err := f.q.LabelledLeadIDs(ctx, tp); err != nil || !slices.Equal(ids, want) {
+			t.Errorf("LabelledLeadIDs(%q) = %v, %v; want %v", tp, ids, err, want)
+		}
+		if n, err := f.q.LabelCount(ctx, tp); err != nil || n != len(want) {
+			t.Errorf("LabelCount(%q) = %d, %v; want %d", tp, n, err, len(want))
+		}
+	}
 }

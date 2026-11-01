@@ -73,14 +73,14 @@ func TestScaleDataModelSeed(t *testing.T) {
 	})
 	var labelled []leadstore.LeadLabel
 	within(t, "LabelledLeads", 100*time.Millisecond, func() (err error) {
-		labelled, err = q.LabelledLeads(ctx)
+		labelled, err = q.LabelledLeads(ctx, "")
 		return err
 	})
 	if len(labelled) != 35 {
 		t.Errorf("labelled leads = %d, want 35 (40 called, 5 cleared since)", len(labelled))
 	}
 	within(t, "LabelCount", 100*time.Millisecond, func() error {
-		_, err := q.LabelCount(ctx)
+		_, err := q.LabelCount(ctx, "")
 		return err
 	})
 

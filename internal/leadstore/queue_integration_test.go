@@ -4,6 +4,7 @@ package leadstore_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
@@ -29,7 +31,7 @@ func TestQueueFollowsStarOrder(t *testing.T) {
 	e := f.siteLead(t, "e.localhost", intp(5), 7, "info@e.localhost")
 	order := func(byRelevance bool) []int64 {
 		t.Helper()
-		return leadIDs(candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile, SortByRelevance: byRelevance}))
+		return leadIDs(candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile, TrustedTypes: trustedIf(byRelevance)}))
 	}
 	if got := order(false); !reflect.DeepEqual(got, []int64{a, b, c, d, e}) {
 		t.Fatalf("no stars = %v", got)
@@ -77,7 +79,7 @@ func TestQueueFollowsStarOrder(t *testing.T) {
 	if got := order(true); !reflect.DeepEqual(got, []int64{e, b, d, c, a}) {
 		t.Errorf("rated, trusted = %v, want e, b, d, c, a (c rated, a unrated)", got)
 	}
-	cs = candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile, SortByRelevance: true})
+	cs = candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile, TrustedTypes: drupalTrusted})
 	if cs[3].Relevance == nil || *cs[3].Relevance != 90 || cs[4].Relevance != nil {
 		t.Errorf("relevance: %v / %v", cs[3].Relevance, cs[4].Relevance)
 	}
@@ -159,7 +161,7 @@ func TestQueueStarredStatusGrid(t *testing.T) {
 	for _, o := range []leadstore.CandidateOptions{
 		{Profile: testProfile},
 		{Profile: testProfile, StarredOnly: true},
-		{Profile: testProfile, SortByRelevance: true},
+		{Profile: testProfile, TrustedTypes: drupalTrusted},
 	} {
 		if got := leadIDs(candidates(t, f.q, o)); !reflect.DeepEqual(got, []int64{open}) {
 			t.Errorf("%+v: candidates = %v, want only the new lead %d", o, got, open)
@@ -293,5 +295,108 @@ func TestBatchMessagesInDraftOrder(t *testing.T) {
 	}
 	if f.leadState(t, c) != leadstore.LeadSkipped || f.leadState(t, a) != leadstore.LeadBatched || f.leadState(t, b) != leadstore.LeadBatched {
 		t.Errorf("skip item 1: c %s, a %s, b %s; want c skipped", f.leadState(t, c), f.leadState(t, a), f.leadState(t, b))
+	}
+}
+
+// drupalTrusted is the trust gate passed for Drupal leads alone, as before café leads had
+// their own question.
+var drupalTrusted = []string{leadstore.TypeDrupal}
+
+// trustedIf is drupalTrusted when on, else no type trusted.
+func trustedIf(on bool) []string {
+	if on {
+		return drupalTrusted
+	}
+	return nil
+}
+
+// cafeLead adds a site lead (rank, Drupal 7 probe, email) and makes it a café lead: its
+// rating type is café, whatever its probe says.
+func (f outreachFixture) cafeLead(t *testing.T, domain string, rank *int, email string) int64 {
+	t.Helper()
+	id := f.siteLead(t, domain, rank, 7, email)
+	f.ownerRun(t, `UPDATE lead SET kind = $2 WHERE id = $1`, id, cafe.KindNoDigitalLoyalty)
+	return id
+}
+
+// rateUnder appends one relevance rating of lead under question.
+func (f outreachFixture) rateUnder(t *testing.T, lead int64, question string, score int, band string) {
+	t.Helper()
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d-%s-%d", lead, question, score))
+	if _, err := f.q.InsertRelevance(context.Background(), leadstore.RelevanceRow{
+		LeadID: lead, Question: question, Decider: "fake", InputSHA256: sum[:], Band: band, Score: score,
+		Probabilities: map[string]float64{band: 1}, InputTokens: 10, RunID: f.runID,
+	}); err != nil {
+		t.Fatalf("rate lead %d under %s: %v", lead, question, err)
+	}
+}
+
+// TestQueueTrustGrid: the batch queue orders a rating type's leads by relevance only when
+// that type is trusted (drupal trusted × café trusted, 4 cells): the trusted types' rated
+// leads first, best first, then every other lead in points order. A café lead's relevance
+// is its latest rating under the café question: a café lead holding only a Drupal-question
+// rating reads as unrated, and a Drupal lead's café-question row is never its number.
+func TestQueueTrustGrid(t *testing.T) {
+	f := newOutreachFixture(t)
+	// Points (rank) order is the opposite of relevance within each type.
+	dLow := f.siteLead(t, "d-low.example", intp(1), 7, "info@d-low.example")
+	dHigh := f.siteLead(t, "d-high.example", intp(2), 7, "info@d-high.example")
+	cLow := f.cafeLead(t, "c-low.example", intp(3), "info@c-low.example")
+	cHigh := f.cafeLead(t, "c-high.example", intp(4), "info@c-high.example")
+	cStale := f.cafeLead(t, "c-stale.example", intp(5), "info@c-stale.example")
+	f.rateUnder(t, dLow, leadstore.QuestionDrupal, 10, leadstore.BandNo)
+	f.rateUnder(t, dHigh, leadstore.QuestionDrupal, 90, leadstore.BandStrong)
+	f.rateUnder(t, dLow, leadstore.QuestionCafe, 100, leadstore.BandStrong) // not a Drupal lead's number
+	f.rateUnder(t, cLow, leadstore.QuestionCafe, 20, leadstore.BandUnlikely)
+	f.rateUnder(t, cHigh, leadstore.QuestionCafe, 80, leadstore.BandStrong)
+	f.rateUnder(t, cStale, leadstore.QuestionDrupal, 100, leadstore.BandStrong) // the old question: unrated
+
+	order := func(types []string) ([]int64, map[int64]*int) {
+		t.Helper()
+		cs := candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile, TrustedTypes: types})
+		rel := map[int64]*int{}
+		for _, c := range cs {
+			rel[c.LeadID] = c.Relevance
+		}
+		return leadIDs(cs), rel
+	}
+	points, rel := order(nil)
+	if pos := func(id int64) int { return slices.Index(points, id) }; pos(dLow) > pos(dHigh) || pos(cLow) > pos(cHigh) || len(points) != 5 {
+		t.Fatalf("points order %v: want each type's low lead before its high one, 5 leads", points)
+	}
+	for id, want := range map[int64]*int{dLow: intp(10), dHigh: intp(90), cLow: intp(20), cHigh: intp(80), cStale: nil} {
+		if got := rel[id]; (got == nil) != (want == nil) || (got != nil && *got != *want) {
+			t.Errorf("lead %d relevance %v, want %v", id, got, want)
+		}
+	}
+	byRelevance := map[string][]int64{leadstore.TypeDrupal: {dHigh, dLow}, leadstore.TypeCafe: {cHigh, cLow}}
+	for _, drupalOn := range []bool{false, true} {
+		for _, cafeOn := range []bool{false, true} {
+			t.Run(fmt.Sprintf("drupal %v café %v", drupalOn, cafeOn), func(t *testing.T) {
+				var types, want []int64
+				var trusted []string
+				if drupalOn {
+					trusted = append(trusted, leadstore.TypeDrupal)
+				}
+				if cafeOn {
+					trusted = append(trusted, leadstore.TypeCafe)
+				}
+				// The trusted types' rated leads by relevance, best first …
+				for _, tp := range trusted {
+					types = append(types, byRelevance[tp]...)
+				}
+				slices.SortStableFunc(types, func(a, b int64) int { return *rel[b] - *rel[a] })
+				want = append(want, types...)
+				// … then every other lead in points order.
+				for _, id := range points {
+					if !slices.Contains(types, id) {
+						want = append(want, id)
+					}
+				}
+				if got, _ := order(trusted); !reflect.DeepEqual(got, want) {
+					t.Errorf("trusted %v: order %v, want %v", trusted, got, want)
+				}
+			})
+		}
 	}
 }

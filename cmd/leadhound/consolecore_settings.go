@@ -230,7 +230,7 @@ func (b *backend) LeadSettings(ctx context.Context) (console.LeadSettingsPage, e
 	if err != nil {
 		return console.LeadSettingsPage{}, err
 	}
-	labelled, err := b.lq().LabelCount(ctx)
+	labelled, err := b.lq().LabelCount(ctx, "")
 	if err != nil {
 		return console.LeadSettingsPage{}, err
 	}

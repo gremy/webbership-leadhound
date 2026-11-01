@@ -216,7 +216,11 @@ func scaleListContext(t *testing.T, q leadstore.Queries, trusted bool) (leadstor
 	if err != nil {
 		t.Fatal(err)
 	}
-	return leadstore.ListContext{ProfileJSON: pf, SkipRankOver: 100_000, SortByRelevance: trusted}, p
+	var types []string
+	if trusted {
+		types = leadstore.RatingTypes
+	}
+	return leadstore.ListContext{ProfileJSON: pf, SkipRankOver: 100_000, TrustedTypes: types}, p
 }
 
 // TestScaleLeadList: the Leads list's reads (D15: live, no snapshot) on the scale seed's

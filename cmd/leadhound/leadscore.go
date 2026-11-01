@@ -724,12 +724,12 @@ func crossCampaignSkips(ctx context.Context, lq leadstore.Queries, campaignID in
 // batchCandidateOptions is the queue a batch drafts from (D6, D11): starred leads only
 // unless batches_from is starred_then_rest (a campaign spec's own batches_from wins for its
 // batches: newBatch and starredOut set StarredOnly from batchPlan.batchesFrom), without the kinds turned off or the site leads
-// skip_rank_over leaves out, and the unstarred by relevance only once relevance passed its
-// trust gate (D9), as the Leads list sorts them. bs.leads is the effective config (leadsOpen
+// skip_rank_over leaves out, and the unstarred of each rating type by relevance only once that type's relevance
+// passed its trust gate (D9), as the Leads list sorts them. bs.leads is the effective config (leadsOpen
 // and backend.leadsSetup apply the console's saved settings), so batches_from, kinds_off,
 // kinds_priority and skip_rank_over are the values in force, not the file's alone.
 func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time) (leadstore.CandidateOptions, error) {
-	e, ok, err := lq.LatestRelevanceEval(ctx, relevanceQuestion)
+	trusted, err := trustedTypes(ctx, lq)
 	if err != nil {
 		return leadstore.CandidateOptions{}, err
 	}
@@ -738,7 +738,7 @@ func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSe
 		IncludeReserved: bs.shadow || leadsMail.allowReserved,
 		StarredOnly:     bs.leads.BatchesFrom() == leadconfig.BatchesStarred,
 		KindsOff:        bs.leads.KindsOff, SkipRankOver: bs.leads.SkipRankOver,
-		SortByRelevance: ok && e.Trusted,
+		TrustedTypes: trusted,
 	}, nil
 }
 

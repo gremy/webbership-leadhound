@@ -317,34 +317,45 @@ func leadSlots(c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Conf
 	return s, nil
 }
 
-// cafeVendorSlots are a café lead's VendorName and VendorLink: its loyalty vendor is the
-// first vendor of signals.yaml (cafe.DefaultConfig's order) its stored probe signals name
-// (probe.CafeResult; phrase matches and the own vendor never count), named as signals.yaml
-// names it; its link is the campaign's vendor_links entry for that vendor, else the
-// "default" entry, else none. A café on no known vendor gets no VendorName and the default
-// link. VendorName's source is the probe row; VendorLink's is the config (the spec).
+// cafeVendorSlots are a café lead's VendorName and VendorLink, as cafeVendor picks them from
+// the vendors its stored probe signals name (probe.CafeResult). A café with no probe row
+// names no vendor and gets the default link. VendorName's source is the probe row;
+// VendorLink's is the config (the spec).
 func cafeVendorSlots(ev leadstore.Evidence, links map[string]string) (name, link outreach.Slot) {
-	sigs := make([]leadstore.Signal, len(ev.Signals))
-	for i, sg := range ev.Signals {
-		sigs[i] = sg.Signal
-	}
-	found := probe.CafeResult(sigs).Vendors
-	id := ""
+	var found []string
 	if ev.ProbeID != nil {
-		for _, v := range cafe.DefaultConfig().Vendors {
-			if v.ID != cafe.OwnVendorID && v.Kind == cafe.SigLoyalty && slices.Contains(found, v.ID) {
-				id = v.ID
-				name = outreach.Slot{Value: v.Name, Source: outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}}
-				break
-			}
+		sigs := make([]leadstore.Signal, len(ev.Signals))
+		for i, sg := range ev.Signals {
+			sigs[i] = sg.Signal
 		}
+		found = probe.CafeResult(sigs).Vendors
 	}
-	if l, ok := links[id]; ok && id != "" {
-		link = outreach.ConfigSlot(l)
-	} else if l := links[campaign.VendorLinkDefault]; l != "" {
+	_, vendor, l := cafeVendor(found, links)
+	if vendor != "" {
+		name = outreach.Slot{Value: vendor, Source: outreach.Provenance{Table: slotProbe, ID: *ev.ProbeID}}
+	}
+	if l != "" {
 		link = outreach.ConfigSlot(l)
 	}
 	return name, link
+}
+
+// cafeVendor is a café's loyalty vendor among vendorIDs (the ids its probe signals name,
+// cafe.Result.Vendors): the first vendor of signals.yaml (cafe.DefaultConfig's order) in
+// vendorIDs, never the own vendor, its id and its name as signals.yaml names it; and the
+// link the campaign's vendor_links gives it, else the "default" entry, else "". A café on no
+// known vendor gets no id, no name and the default link.
+func cafeVendor(vendorIDs []string, links map[string]string) (id, name, link string) {
+	for _, v := range cafe.DefaultConfig().Vendors {
+		if v.ID != cafe.OwnVendorID && v.Kind == cafe.SigLoyalty && slices.Contains(vendorIDs, v.ID) {
+			id, name = v.ID, v.Name
+			break
+		}
+	}
+	if l, ok := links[id]; ok && id != "" {
+		return id, name, l
+	}
+	return id, name, links[campaign.VendorLinkDefault]
 }
 
 // isCafeKind reports whether kind is one of the café kinds (cafe@1).

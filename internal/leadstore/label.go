@@ -102,24 +102,31 @@ func (q Queries) LatestLabels(ctx context.Context, leadIDs []int64) (map[int64]L
 	return out, nil
 }
 
-// LabelledLeads returns every lead whose latest call names a band, by lead id: the answer
-// key of the relevance eval, each with the input the call was made on. A lead whose latest
-// call was cleared is not in it, whatever its earlier calls said.
-func (q Queries) LabelledLeads(ctx context.Context) ([]LeadLabel, error) {
+// labelTypeSQL keeps the leads (l) of rating type $1, or every lead when $1 is "".
+var labelTypeSQL = `($1::text = '' OR ` + typeSQL("l.kind") + ` = $1::text)`
+
+// LabelledLeads returns every lead of rating type t ("": every type) whose latest call
+// names a band, by lead id: the answer key of type t's relevance eval, each with the input
+// the call was made on. A lead whose latest call was cleared is not in it, whatever its
+// earlier calls said.
+func (q Queries) LabelledLeads(ctx context.Context, t string) ([]LeadLabel, error) {
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[LeadLabel],
-		`SELECT * FROM (`+latestLabelSQL+` ORDER BY x.lead_id, x.id DESC) m WHERE m.band IS NOT NULL ORDER BY m.lead_id`)
+		`SELECT * FROM (`+latestLabelSQL+` WHERE `+labelTypeSQL+` ORDER BY x.lead_id, x.id DESC) m
+		 WHERE m.band IS NOT NULL ORDER BY m.lead_id`, t)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: labelled leads: %w", err)
 	}
 	return rows, nil
 }
 
-// LabelledLeadIDs returns the ids of the leads whose latest call names a band, ascending.
-func (q Queries) LabelledLeadIDs(ctx context.Context) ([]int64, error) {
+// LabelledLeadIDs returns the ids of the leads of rating type t ("": every type) whose
+// latest call names a band, ascending.
+func (q Queries) LabelledLeadIDs(ctx context.Context, t string) ([]int64, error) {
 	rows, err := q.db.Query(ctx,
 		`SELECT m.lead_id FROM (
-		   SELECT DISTINCT ON (lead_id) lead_id, band FROM lead_label ORDER BY lead_id, id DESC
-		 ) m WHERE m.band IS NOT NULL ORDER BY m.lead_id`)
+		   SELECT DISTINCT ON (x.lead_id) x.lead_id, x.band FROM lead_label x JOIN lead l ON l.id = x.lead_id
+		   WHERE `+labelTypeSQL+` ORDER BY x.lead_id, x.id DESC
+		 ) m WHERE m.band IS NOT NULL ORDER BY m.lead_id`, t)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: labelled lead ids: %w", err)
 	}
@@ -130,13 +137,15 @@ func (q Queries) LabelledLeadIDs(ctx context.Context) ([]int64, error) {
 	return ids, nil
 }
 
-// LabelCount is how many leads have a call: their latest call names a band.
-func (q Queries) LabelCount(ctx context.Context) (int, error) {
+// LabelCount is how many leads of rating type t ("": every type) have a call: their latest
+// call names a band.
+func (q Queries) LabelCount(ctx context.Context, t string) (int, error) {
 	var n int
 	if err := q.db.QueryRow(ctx,
 		`SELECT count(*)::int FROM (
-		   SELECT DISTINCT ON (lead_id) band FROM lead_label ORDER BY lead_id, id DESC
-		 ) m WHERE m.band IS NOT NULL`).Scan(&n); err != nil {
+		   SELECT DISTINCT ON (x.lead_id) x.band FROM lead_label x JOIN lead l ON l.id = x.lead_id
+		   WHERE `+labelTypeSQL+` ORDER BY x.lead_id, x.id DESC
+		 ) m WHERE m.band IS NOT NULL`, t).Scan(&n); err != nil {
 		return 0, fmt.Errorf("leadstore: label count: %w", err)
 	}
 	return n, nil

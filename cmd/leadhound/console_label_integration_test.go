@@ -106,7 +106,7 @@ func TestConsoleLabel(t *testing.T) {
 	if second := rateInputOf(t, b, id); band != "no" || !reflect.DeepEqual(in, second) || in.EOL.Equal(first.EOL) {
 		t.Errorf("after a change: %q %+v, want no on the new facts %+v", band, in, second)
 	}
-	ls, err := b.lq().LabelledLeads(ctx)
+	ls, err := b.lq().LabelledLeads(ctx, leadstore.TypeDrupal)
 	if err != nil || len(ls) != 1 || *ls[0].Band != "no" {
 		t.Errorf("labelled set %+v %v, want lucerne as no", ls, err)
 	}

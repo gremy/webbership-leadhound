@@ -334,9 +334,11 @@ type CandidateOptions struct {
 	// SkipRankOver leaves out site leads (a lead with a probe) whose site's list rank is
 	// unknown or larger than it; 0 is off. An agency lead has no rank and is never left out.
 	SkipRankOver int
-	// SortByRelevance orders the unstarred leads by their latest relevance (unrated last)
-	// before their score: set only when the trust gate passed (D9).
-	SortByRelevance bool
+	// TrustedTypes are the rating types (TypeDrupal, TypeCafe) whose trust gate passed (D9):
+	// the unstarred leads of one of them are ordered by their latest relevance under their
+	// type's question (unrated last, every other lead after them) before their score. nil
+	// orders none by relevance.
+	TrustedTypes []string
 	// CampaignID offers only the leads of that campaign; 0 offers every campaign's of the
 	// account (today: campaign 1's alone).
 	CampaignID int64
@@ -363,7 +365,8 @@ type CandidateOptions struct {
 // the profile excludes, not on a reserved TLD unless o.IncludeReserved (ReservedTLDs;
 // RA25), not of a kind in o.KindsOff, not a site lead left out by o.SkipRankOver, and, with
 // o.StarredOnly, starred. They come starred first, by the operator's position (then id),
-// then the unstarred: by relevance (unrated last) when o.SortByRelevance, then by their
+// then the unstarred: those of a type in o.TrustedTypes by relevance (unrated last, every
+// other lead after them), then by their
 // score under the profile (EffectiveProfile over o.Profile, computed in SQL so the limit
 // stays in the database), then by their site's list rank (unranked last), then by id. A
 // legacy lead_priority pin no longer orders anything (D5); its defer still hides a lead.
@@ -415,7 +418,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     sc.score,
 		     coalesce(st.action <> 'unstar', false) AS starred,
 		     CASE WHEN st.action <> 'unstar' THEN st.position END AS position,
-		     rv.score AS relevance,
+		     rv.score AS relevance, `+typeSQL("l.kind")+` AS rtype,
 		     lower(a.addr) AS laddr, lower(o.domain) AS ldom, lower(split_part(a.addr, '@', 2)) AS sdom, ad.adom
 		   FROM lead l
 		   CROSS JOIN (SELECT $2::jsonb AS pf) pf
@@ -436,7 +439,8 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		   ) st ON true
 		   LEFT JOIN LATERAL (
 		     SELECT x.score FROM lead_relevance x
-		     WHERE x.lead_id = l.id ORDER BY x.id DESC LIMIT 1
+		     WHERE x.lead_id = l.id AND x.question = (`+typeQuestionSQL("l.kind")+`)
+		     ORDER BY x.id DESC LIMIT 1
 		   ) rv ON true
 		   CROSS JOIN LATERAL (
 		     SELECT CASE WHEN r.kind = 'email' THEN r.value ELSE '' END AS addr
@@ -494,10 +498,10 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		 FROM c
 		 WHERE lead_id NOT IN (SELECT lead_id FROM blocked)
 		 ORDER BY starred DESC, position, CASE WHEN starred THEN lead_id END,
-		   CASE WHEN $9::bool THEN relevance END DESC NULLS LAST,
+		   CASE WHEN rtype = ANY($9::text[]) THEN relevance END DESC NULLS LAST,
 		   score DESC, list_rank NULLS LAST, lead_id
 		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today,
-		kindsOff, o.SkipRankOver, o.StarredOnly, o.SortByRelevance,
+		kindsOff, o.SkipRankOver, o.StarredOnly, o.TrustedTypes,
 		orAccount(o.AccountID), o.CampaignID, o.Countries, o.PhoneOnlyCountries)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
