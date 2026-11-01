@@ -1,8 +1,9 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
-Run now for every scheduled job, on a rolling schedule (2026-11-01, on local main, not pushed or deployed; plan `leadhound-run-now-and-adaptive-timers`, Checkpoints 1-3 built, in CP4):
+Run now for every scheduled job, on a rolling schedule (2026-11-01, pushed and deployed; plan `leadhound-run-now-and-adaptive-timers`, done):
 - Committed: CP1 the due-check `timer-guard` (`c9120bb`), CP2 the units: 15-minute ticks, `ExecCondition=`/`ExecStopPost=`, three Run now watchers (`618e5f8`), CP3 the console: Run now on Contacts, Site probe and Morning batch, planned and overdue lines on Controls, Jobs home and Status (`a9d9c43`), review fixes (`14dd738`).
+- Live 2026-11-01: three Run now watchers active; `timer-guard --explain` planned every job from its old slot (contacts 10:00, probe 13:00, batch 06:15, ats 01:00, collect 18:30); the first 15-minute tick skipped all five cleanly (Result exec-condition, no failed units). Still to see: the first planned run (collect 18:30) and a live Run now press.
 - What exists: each guarded job (leads contacts, probe, batch, ATS, LinkedIn collect) runs one interval after its last start, by hand or timed, rounded to 15 minutes; with no history it keeps its old slot. The collect becomes every 12 hours (06:30, then 18:30).
 - Ship rule: CP1 and CP2 deploy together; a unit's `ExecCondition=` naming a missing subcommand would keep the job from ever starting.
 - Not verified: anything on real systemd (ExecCondition skips, `$SERVICE_RESULT` in ExecStopPost, the watchers); the planned lines with real timers (integration tests only).
