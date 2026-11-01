@@ -91,10 +91,17 @@ var controlJobs = []controlRow{
 
 // unitState is one unit as systemctl show reports it.
 type unitState struct {
-	Loaded  bool       // LoadState loaded
-	Enabled bool       // UnitFileState enabled (or enabled-runtime)
-	Active  bool       // ActiveState active
-	Next    *time.Time // a timer's next run; nil when none is planned
+	Loaded  bool // LoadState loaded
+	Enabled bool // UnitFileState enabled (or enabled-runtime)
+	Active  bool // ActiveState active
+	// Starting is ActiveState activating: a oneshot service (the backup) is activating for
+	// as long as it runs, never active.
+	Starting bool
+	Next     *time.Time // a timer's next run; nil when none is planned
+	// A service's last start (ExecMainStartTimestamp; nil when it never ran) and whether it
+	// ended badly (Result other than success).
+	LastStart *time.Time
+	LastBad   bool
 }
 
 // timerRead is every control unit's state, from systemd (fromSystemd) or, when it could not
@@ -116,7 +123,7 @@ const timersNotRead = "The timers could not be read from the server, so each one
 var systemctlShow = func(ctx context.Context, units []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, systemctlWait)
 	defer cancel()
-	args := append([]string{"show", "--timestamp=unix", "-p", "Id,LoadState,UnitFileState,ActiveState,NextElapseUSecRealtime"}, units...)
+	args := append([]string{"show", "--timestamp=unix", "-p", "Id,LoadState,UnitFileState,ActiveState,NextElapseUSecRealtime,ExecMainStartTimestamp,Result"}, units...)
 	return exec.CommandContext(ctx, "systemctl", args...).Output() // #nosec G204 -- fixed arguments and the fixed unit names
 }
 
@@ -204,15 +211,20 @@ func parseSystemctlShow(out []byte, units []string) (map[string]unitState, error
 			return nil, fmt.Errorf("systemctl show: unit %q was not asked for", id)
 		}
 		st := unitState{
-			Loaded:  b["LoadState"] == "loaded",
-			Enabled: b["UnitFileState"] == "enabled" || b["UnitFileState"] == "enabled-runtime",
-			Active:  b["ActiveState"] == "active",
+			Loaded:   b["LoadState"] == "loaded",
+			Enabled:  b["UnitFileState"] == "enabled" || b["UnitFileState"] == "enabled-runtime",
+			Active:   b["ActiveState"] == "active",
+			Starting: b["ActiveState"] == "activating",
 		}
 		next, err := parseSystemdTime(b["NextElapseUSecRealtime"])
 		if err != nil {
 			return nil, err
 		}
 		st.Next = next
+		if st.LastStart, err = parseSystemdTime(b["ExecMainStartTimestamp"]); err != nil {
+			return nil, err
+		}
+		st.LastBad = b["Result"] != "" && b["Result"] != "success"
 		res[id] = st
 	}
 	return res, nil
@@ -864,6 +876,13 @@ func controlView(r controlRow, name string, on bool, at time.Time, reason, actor
 	return v
 }
 
+// runNoteFailed is a run that ended on an error, which its note records as the brief reads
+// it (collectState): "failed: " for LinkedIn and the canary, "<ats>: failed: " for an ATS. It
+// may also have spent its budget or failed only a few requests; it still failed.
+func runNoteFailed(r store.Run) bool {
+	return strings.HasPrefix(r.Note, "failed: ") || (isATSCollect(r) && strings.Contains(r.Note, ": failed: "))
+}
+
 // runStuckAfter is how long a run may go unfinished before its row says it did not finish.
 const runStuckAfter = 24 * time.Hour
 
@@ -878,8 +897,14 @@ var stopWords = map[string]string{
 	"disk_budget":  "Stopped: the disk budget was used",
 }
 
+// budgetCarriesOn is a spent request budget that is not a fault: the next run carries on.
+const budgetCarriesOn = "Used its request budget; the next run carries on"
+
 // runView is a run's result in words: switched off, still running (or not finished after a
-// day), stopped and why, finished (with its failures), or sending paused.
+// day), stopped and why, finished (with its failures), or sending paused. A spent budget is
+// not a failure, as the brief judges it (collectState), except for an ATS, whose budget
+// covers every board. A finished run fails on its failures only when more than half of its
+// requests failed, the line the fetch breaker stops a run at; a few dead sites are not news.
 func runView(r store.Run, now time.Time) *console.ControlRun {
 	v := &console.ControlRun{StartedAt: r.StartedAt, FinishedAt: r.FinishedAt}
 	switch {
@@ -889,12 +914,18 @@ func runView(r store.Run, now time.Time) *console.ControlRun {
 		v.Result = "Running"
 	case r.Note == runNoteSwitchedOff:
 		v.Result = "Switched off"
+	case runNoteFailed(r):
+		v.Result, v.Failed = "Failed", true
+	case r.StopReason == "budget" && !isATSCollect(r):
+		v.Result = budgetCarriesOn
 	case r.StopReason != "":
 		v.Result, v.Failed = cmp.Or(stopWords[r.StopReason], "Stopped"), true
 	case r.Note == notePaused || leadbrief.NoteWords(r.Note)[notePaused]:
 		v.Result = "Sending was off"
 	case r.Note == noReoonKeyNote:
 		v.Result, v.Failed = "No Reoon key", true
+	case r.Failures > 0 && r.Failures*2 <= r.Requests:
+		v.Result = fmt.Sprintf("Finished; %d of %d requests failed", r.Failures, r.Requests)
 	case r.Failures > 0:
 		v.Result, v.Failed = "Finished with "+plural(r.Failures, "failure", "failures"), true
 	default:

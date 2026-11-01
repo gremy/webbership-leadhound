@@ -42,11 +42,13 @@ const reoonBalanceRequest = "leads-verify-balance"
 const refreshWait = 2 * time.Minute
 
 // statusUnit is one unit as the Status page lists it: its name, the systemd unit its next
-// run and switch are read from, and which run rows are its runs (nil: it records none).
+// run and switch are read from, and which run rows are its runs (nil: it records none), or
+// the service systemd remembers its last run on when it keeps no run rows.
 type statusUnit struct {
-	name string
-	unit string
-	runs func(store.Run) bool
+	name    string
+	unit    string
+	runs    func(store.Run) bool
+	service string
 }
 
 func commandIs(command string) func(store.Run) bool {
@@ -77,7 +79,7 @@ var statusUnits = []statusUnit{
 	{name: "prebrief", unit: "leadhound-prebrief.timer", runs: commandIs(linkedin.CommandCanary)},
 	{name: "brief", unit: "leadhound-brief.timer", runs: commandIs("brief")},
 	{name: "trim", unit: "leadhound-trim.timer", runs: commandIs("trim")},
-	{name: "backup", unit: "leadhound-backup.timer"}, // keeps no run record
+	{name: "backup", unit: "leadhound-backup.timer", service: "leadhound-backup.service"}, // keeps no run record
 }
 
 // statusCommands are the run commands statusUnits read.
@@ -338,8 +340,10 @@ func (b *backend) unitsStatus(ctx context.Context, now time.Time, health []leads
 	}
 	var asked []string
 	for _, u := range statusUnits {
-		if !slices.Contains(asked, u.unit) {
-			asked = append(asked, u.unit)
+		for _, n := range []string{u.unit, u.service} {
+			if n != "" && !slices.Contains(asked, n) {
+				asked = append(asked, n)
+			}
 		}
 	}
 	var units map[string]unitState
@@ -365,6 +369,10 @@ func (b *backend) unitsStatus(ctx context.Context, now time.Time, health []leads
 				at := last.StartedAt
 				us.LastRun = &at
 				us.Result, us.Note = runResult(*last, now)
+			}
+		case u.service != "":
+			if st, ok := units[u.service]; ok {
+				us.LastRun, us.Result, us.Note = serviceRun(st)
 			}
 		case u.name == "mailbox-check":
 			for _, r := range health {
@@ -394,6 +402,21 @@ func (b *backend) unitsStatus(ctx context.Context, now time.Time, health []leads
 		out = append(out, us)
 	}
 	return out, nil
+}
+
+// serviceRun is a service's last run as systemd remembers it: never when it has not started
+// since boot, running while it is (a oneshot is activating, not active), failed when its
+// last run ended badly, else ok.
+func serviceRun(st unitState) (lastRun *time.Time, result, note string) {
+	switch {
+	case st.LastStart == nil:
+		return nil, console.UnitNever, ""
+	case st.Active || st.Starting:
+		return st.LastStart, console.UnitRunning, ""
+	case st.LastBad:
+		return st.LastStart, console.UnitFailed, "The last run failed"
+	}
+	return st.LastStart, console.UnitOK, ""
 }
 
 // latestRunsBySource is the latest run of each command and source among commands: the units

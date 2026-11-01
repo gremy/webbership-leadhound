@@ -29,7 +29,8 @@ func noSystemd(t *testing.T) {
 }
 
 // statusSystemctl answers systemctl show for the units asked: the send timer enabled with
-// its next run at next, the backup timer loaded and disabled, every other unit unknown.
+// its next run at next, the backup timer loaded and disabled with its service last run
+// failed at next minus a day, every other unit unknown.
 func statusSystemctl(t *testing.T, next time.Time) {
 	t.Helper()
 	saved := systemctlShow
@@ -42,6 +43,8 @@ func statusSystemctl(t *testing.T, next time.Time) {
 				fmt.Fprintf(&b, "NextElapseUSecRealtime=@%d\nId=%s\nLoadState=loaded\nActiveState=active\nUnitFileState=enabled\n\n", next.Unix(), u)
 			case "leadhound-backup.timer":
 				fmt.Fprintf(&b, "NextElapseUSecRealtime=\nId=%s\nLoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n\n", u)
+			case "leadhound-backup.service":
+				fmt.Fprintf(&b, "Id=%s\nLoadState=loaded\nActiveState=inactive\nUnitFileState=static\nExecMainStartTimestamp=@%d\nResult=exit-code\n\n", u, next.Add(-24*time.Hour).Unix())
 			default:
 				fmt.Fprintf(&b, "NextElapseUSecRealtime=\nId=%s\nLoadState=not-found\nActiveState=inactive\nUnitFileState=\n\n", u)
 			}
@@ -234,7 +237,8 @@ func TestStatusFigures(t *testing.T) {
 	if u := units["leads-verify-balance"]; u.Result != console.UnitOK || u.LastRun == nil || !u.LastRun.Equal(*r.FetchedAt) {
 		t.Errorf("balance %+v", u)
 	}
-	if u := units["backup"]; u.Switch != console.SwitchOff || u.Result != console.UnitNever {
+	if u := units["backup"]; u.Switch != console.SwitchOff || u.Result != console.UnitFailed || u.LastRun == nil ||
+		!u.LastRun.Equal(next.Add(-24*time.Hour).Truncate(time.Second)) {
 		t.Errorf("backup %+v", u)
 	}
 	if u := units["ats"]; u.Switch != console.SwitchUnknown || u.Result != console.UnitNever {

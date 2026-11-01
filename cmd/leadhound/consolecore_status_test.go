@@ -15,6 +15,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/linkedin"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -29,6 +30,9 @@ func TestStatusUnitsMatchDeploy(t *testing.T) {
 	var asked []string
 	for _, u := range statusUnits {
 		asked = append(asked, u.unit)
+		if u.service != "" {
+			asked = append(asked, u.service)
+		}
 	}
 	for _, path := range timers {
 		if name := filepath.Base(path); !slices.Contains(asked, name) {
@@ -147,6 +151,15 @@ func TestRunResult(t *testing.T) {
 		{"stuck", store.Run{StartedAt: now.Add(-runStuckAfter - time.Minute)}, console.UnitFailed, "Did not finish"},
 		{"stopped", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), StopReason: "blocked"}, console.UnitFailed, "Stopped: it was blocked"},
 		{"failures", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), Failures: 2}, console.UnitFailed, "Finished with 2 failures"},
+		{"most failed", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), Requests: 5, Failures: 3}, console.UnitFailed, "Finished with 3 failures"},
+		{"few failed", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Hour - 41*time.Second), Requests: 735, Failures: 5}, console.UnitOK, "41 s · Finished; 5 of 735 requests failed"},
+		{"half failed", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Hour - 41*time.Second), Requests: 6, Failures: 3}, console.UnitOK, "41 s · Finished; 3 of 6 requests failed"},
+		{"budget", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Hour - 41*time.Second), StopReason: "budget"}, console.UnitOK, "41 s · " + budgetCarriesOn},
+		{"ats budget", store.Run{Command: linkedin.CommandCollect, Source: "greenhouse", StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), StopReason: "budget"}, console.UnitFailed, "Stopped: it used its request budget"},
+		{"linkedin budget then failed", store.Run{Command: linkedin.CommandCollect, Source: linkedin.Source, StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), StopReason: "budget", Note: "failed: detail: boom"}, console.UnitFailed, "Failed"},
+		{"failed with few failures", store.Run{Command: linkedin.CommandCollect, Source: linkedin.Source, StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), Requests: 10, Failures: 1, Note: "failed: boom"}, console.UnitFailed, "Failed"},
+		{"ats failed", store.Run{Command: linkedin.CommandCollect, Source: "greenhouse", StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Minute), Requests: 10, Failures: 1, Note: "greenhouse: failed: boom"}, console.UnitFailed, "Failed"},
+		{"linkedin budget", store.Run{Command: linkedin.CommandCollect, Source: linkedin.Source, StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Hour - 41*time.Second), StopReason: "budget"}, console.UnitOK, "41 s · " + budgetCarriesOn},
 		{"switched off", store.Run{StartedAt: now.Add(-time.Hour), FinishedAt: ago(time.Hour), Note: runNoteSwitchedOff}, console.UnitOK, "0 s · Switched off"},
 	}
 	for _, c := range cases {
@@ -365,5 +378,54 @@ func TestStatusHoldsNoKeyTurnsRed(t *testing.T) {
 	}
 	if sites := statusKeySites(t, read); !slices.ContainsFunc(sites, func(s string) bool { return strings.Contains(s, "serve.go") && strings.Contains(s, ".LoadKey") }) {
 		t.Errorf("a key load in Dashboard: sweep found %v", sites)
+	}
+}
+
+// TestServiceLastRun: a service's last start and result come from systemctl show, so a unit
+// that keeps no run rows (the backup) still shows when it last ran and whether that failed.
+func TestServiceLastRun(t *testing.T) {
+	units := []string{"a.service", "b.service", "c.service", "d.service"}
+	out := "Id=a.service\nLoadState=loaded\nActiveState=inactive\nUnitFileState=static\nNextElapseUSecRealtime=\nExecMainStartTimestamp=@1793500732\nResult=success\n\n" +
+		"Id=b.service\nLoadState=loaded\nActiveState=inactive\nUnitFileState=static\nNextElapseUSecRealtime=\nExecMainStartTimestamp=@1793500732\nResult=exit-code\n\n" +
+		"Id=c.service\nLoadState=loaded\nActiveState=inactive\nUnitFileState=static\nNextElapseUSecRealtime=\nExecMainStartTimestamp=\nResult=success\n\n" +
+		"Id=d.service\nLoadState=loaded\nActiveState=activating\nUnitFileState=static\nNextElapseUSecRealtime=\nExecMainStartTimestamp=@1793500732\nResult=success\n"
+	got, err := parseSystemctlShow([]byte(out), units)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Unix(1793500732, 0)
+	if a := got["a.service"]; a.LastStart == nil || !a.LastStart.Equal(want) || a.LastBad {
+		t.Errorf("a %+v", a)
+	}
+	if b := got["b.service"]; b.LastStart == nil || !b.LastBad {
+		t.Errorf("b %+v", b)
+	}
+	if c := got["c.service"]; c.LastStart != nil || c.LastBad {
+		t.Errorf("c %+v", c)
+	}
+	if d := got["d.service"]; !d.Starting || d.Active {
+		t.Errorf("d %+v", d)
+	}
+}
+
+// TestServiceRun: the backup row is never before its first start, running while the oneshot
+// is activating, failed after a bad result, else ok.
+func TestServiceRun(t *testing.T) {
+	at := time.Date(2026, 11, 1, 1, 38, 0, 0, time.UTC)
+	cases := []struct {
+		name   string
+		st     unitState
+		result string
+	}{
+		{"never", unitState{}, console.UnitNever},
+		{"ok", unitState{LastStart: &at}, console.UnitOK},
+		{"running", unitState{LastStart: &at, Starting: true}, console.UnitRunning},
+		{"failed", unitState{LastStart: &at, LastBad: true}, console.UnitFailed},
+	}
+	for _, c := range cases {
+		last, r, _ := serviceRun(c.st)
+		if r != c.result || (c.st.LastStart == nil) != (last == nil) {
+			t.Errorf("%s: %v %q; want %q", c.name, last, r, c.result)
+		}
 	}
 }
