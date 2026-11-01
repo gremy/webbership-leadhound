@@ -11,6 +11,7 @@ import (
 
 	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/campaign"
+	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -435,6 +436,28 @@ func TestRateInputCafe(t *testing.T) {
 	for _, c := range pinRateLeads() {
 		if in := rateInput(c.lead, pinRateConfig()); in.Cafe != nil {
 			t.Errorf("%s: a Drupal lead got café facts %+v", c.name, in.Cafe)
+		}
+	}
+}
+
+// TestPlaceOrgPrefixAgrees: the console hides a café's internal place id by the prefix it
+// keeps itself, so it must be the store's; and a call's outcome names such a café by its
+// name, never by that id.
+func TestPlaceOrgPrefixAgrees(t *testing.T) {
+	if console.PlaceOrgPrefix != leadstore.PlaceOrgPrefix {
+		t.Fatalf("console.PlaceOrgPrefix = %q, leadstore.PlaceOrgPrefix = %q", console.PlaceOrgPrefix, leadstore.PlaceOrgPrefix)
+	}
+	id := leadstore.PlaceOrgPrefix + "08f2a1b3-0c4d-4e5f-8a9b-0c1d2e3f4a5b"
+	for _, c := range []struct {
+		l    leadstore.RateLead
+		want string
+	}{
+		{leadstore.RateLead{Domain: "brewlane.example", SiteName: "Brewlane Corner"}, "brewlane.example"},
+		{leadstore.RateLead{Domain: id, SiteName: "Brewlane Corner"}, "Brewlane Corner"},
+		{leadstore.RateLead{Domain: id}, "lead 5"},
+	} {
+		if got := labelName(c.l, 5); got != c.want {
+			t.Errorf("labelName(%q, %q) = %q, want %q", c.l.Domain, c.l.SiteName, got, c.want)
 		}
 	}
 }

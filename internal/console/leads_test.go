@@ -1507,6 +1507,42 @@ func TestLeadDetailPageCafe(t *testing.T) {
 	cafeSweep(t, "the café with no place", body)
 }
 
+// TestCafeWithoutWebsiteHidesPlaceID: a café with no website of its own has the internal
+// place id ("overture:<id>") as its org's domain; its page and its list rows show its name and
+// never that id, and its Details say it has no domain of its own.
+func TestCafeWithoutWebsiteHidesPlaceID(t *testing.T) {
+	const id = PlaceOrgPrefix + "08f2a1b3-0c4d-4e5f-8a9b-0c1d2e3f4a5b"
+	b := richBackend("Brewlane Corner")
+	b.detail = cafeLeadDetail()
+	b.detail.Domain, b.detail.Place.Website = id, ""
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	body := h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{"<h1>Brewlane Corner</h1>", "<dt>Domain</dt><dd>none of its own</dd>",
+		`<span class="muted small">relevance 62 · likely</span>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the café with no website lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "overture:") {
+		t.Error("the café with no website shows its place id on its page")
+	}
+	// No name either: the page is headed by the lead's number, still never the place id.
+	b.detail.Name = ""
+	if body = h.do(get("/leads/5", c)).Body.String(); !strings.Contains(body, "<h1>Lead 5</h1>") || strings.Contains(body, "overture:") {
+		t.Error("the nameless café with no website is not headed Lead 5, or shows its place id")
+	}
+
+	b.list.Rows[0].Domain = id
+	body = h.do(get("/leads", c)).Body.String()
+	if strings.Contains(body, "overture:") {
+		t.Error("the list shows a café's place id")
+	}
+	if !strings.Contains(body, `<span class="item-meta">GB · `) {
+		t.Error("the narrow row with no domain does not start at its country")
+	}
+}
+
 // cafeSweep fails when a café lead's page shows the upgrade-risk report, a list rank, the
 // site card, or the word Drupal in any case anywhere on it.
 func cafeSweep(t *testing.T, what, body string) {

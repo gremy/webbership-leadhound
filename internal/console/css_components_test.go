@@ -69,3 +69,15 @@ func TestCSSBoardScoping(t *testing.T) {
 		t.Error(".table-wrap lost position: relative (it keeps visually-hidden labels in the scroll box)")
 	}
 }
+
+// TestCSSLongTextBreaks: a meta line, a hint and the page title break a long URL or domain
+// anywhere, so a lead's "Fetched … ended at <URL>" never scrolls the page sideways at 390px.
+func TestCSSLongTextBreaks(t *testing.T) {
+	b, err := staticFS.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), ".item-meta,\n:where(.page) .hint,\n:where(.page) .page-head h1,\n.page-sub {\n  overflow-wrap: anywhere;") {
+		t.Error("the meta lines, hints and page titles lost overflow-wrap: anywhere")
+	}
+}

@@ -396,6 +396,7 @@ func (s *server) funcs() template.FuncMap {
 		},
 		"controlNote":  func(job string) string { return controlNotes[job] },
 		"webURL":       webURL,
+		"siteDomain":   siteDomain,
 		"stepWhen":     stepWhen,
 		"writerWords":  writerWords,
 		"shortSHA":     shortSHA,

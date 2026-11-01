@@ -126,6 +126,19 @@ type LeadsPage struct {
 	Starred []StarredOut
 }
 
+// PlaceOrgPrefix starts the domain of a café's org when the café has no website of its own
+// ("overture:<source_id>"); it is leadstore.PlaceOrgPrefix, which this package does not import.
+const PlaceOrgPrefix = "overture:"
+
+// siteDomain is a lead's domain as the console shows it: "" for a café with no website of its
+// own, whose domain is the internal place id, never a name to show.
+func siteDomain(domain string) string {
+	if strings.HasPrefix(domain, PlaceOrgPrefix) {
+		return ""
+	}
+	return domain
+}
+
 // StarredOut is one starred lead a batch would not take, and why, in plain words.
 type StarredOut struct {
 	LeadID int64

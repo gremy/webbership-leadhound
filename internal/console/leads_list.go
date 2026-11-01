@@ -122,7 +122,7 @@ func (s *server) renderDetailCRM(w http.ResponseWriter, r *http.Request, code in
 	if s.leadsRead(w, r, code, err) {
 		return
 	}
-	title := cmp.Or(d.Name, d.Domain, "Lead "+strconv.FormatInt(id, 10))
+	title := cmp.Or(d.Name, siteDomain(d.Domain), "Lead "+strconv.FormatInt(id, 10))
 	s.render(w, r, code, "lead_detail", page{Title: title, Active: leadsPath, SignedIn: true,
 		Data: leadDetailView{Data: d, Fetches: signalFetches(d.Signals), Back: leadsPath + "/" + strconv.FormatInt(id, 10),
 			Message: msg, Error: isErr, AtCall: atCall, Seq: s.sequenceRows(seq), CRM: crm}})

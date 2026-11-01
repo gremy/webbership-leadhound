@@ -4,8 +4,8 @@
 <div class="page-head">
   <div>
     <span class="eyebrow"><a href="/leads">Leads</a>{{with $d.Campaign}} / {{.}}{{end}}</span>
-    <h1>{{or $d.Name $d.Domain}}</h1>
-    <p class="page-sub cluster"><span class="badge badge-accent">{{$d.State}}</span>{{if $d.SmallSite}}<span class="badge">small site</span>{{end}}<span class="muted small">{{$d.Domain}}{{with $d.Relevance}} · relevance {{.}}{{end}}</span></p>
+    <h1>{{or $d.Name (siteDomain $d.Domain) (printf "Lead %d" $d.LeadID)}}</h1>
+    <p class="page-sub cluster"><span class="badge badge-accent">{{$d.State}}</span>{{if $d.SmallSite}}<span class="badge">small site</span>{{end}}{{$dom := siteDomain $d.Domain}}{{if or $dom $d.Relevance}}<span class="muted small">{{$dom}}{{with $d.Relevance}}{{if $dom}} · {{end}}relevance {{.}}{{end}}</span>{{end}}</p>
   </div>
   <div class="btn-row">
     <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
@@ -147,7 +147,7 @@
     <div class="card-body">
     <dl class="kv">
       <dt>Lead</dt><dd>lead:{{$d.LeadID}}</dd>
-      <dt>Domain</dt><dd>{{$d.Domain}}</dd>
+      <dt>Domain</dt><dd>{{or (siteDomain $d.Domain) "none of its own"}}</dd>
       {{with $d.Country}}<dt>Country</dt><dd>{{.}}</dd>{{end}}
       {{with $d.Campaign}}<dt>Campaign</dt><dd>{{.}}</dd>{{end}}
       <dt>Kind</dt><dd>{{$d.Kind}}</dd>

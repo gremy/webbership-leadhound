@@ -629,6 +629,16 @@ main > .notice {
   font-size: 0.9rem;
 }
 
+/* Meta lines, hints and page titles can hold a long URL or domain with no space in it
+   ("Fetched … ended at <URL>"): break it anywhere rather than scroll the page sideways at
+   390px, as dd and the stacked lists already do. */
+.item-meta,
+:where(.page) .hint,
+:where(.page) .page-head h1,
+.page-sub {
+  overflow-wrap: anywhere;
+}
+
 .item-list li.disabled .item-head {
   color: var(--muted);
 }
