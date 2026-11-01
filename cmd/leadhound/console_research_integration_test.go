@@ -208,7 +208,7 @@ func TestResearchConsoleLookAgain(t *testing.T) {
 	}
 }
 
-// TestReportConsole: a probed Drupal site lead's page offers its report, and the Report link
+// TestReportConsole: a probed Drupal 7 site lead's page offers its report (and no café views), and the Report link
 // serves it as a file named after its domain; a lead that is not there is not found.
 func TestReportConsole(t *testing.T) {
 	researchScene(t, "northwind.example")
@@ -219,8 +219,11 @@ func TestReportConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Report.Ready {
-		t.Fatalf("the report is not offered: %q", d.Report.Why)
+	if !d.ShowReport || !d.Report.Ready {
+		t.Fatalf("the report is not offered: %v %q", d.ShowReport, d.Report.Why)
+	}
+	if d.Place != nil || d.Cafe != nil || d.ReachTitle != "From their site" {
+		t.Errorf("a Drupal site lead has café views: %+v %+v %q", d.Place, d.Cafe, d.ReachTitle)
 	}
 	rep, err := b.LeadReport(ctx, id)
 	if err != nil {

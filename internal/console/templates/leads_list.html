@@ -9,14 +9,14 @@
 </div>
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
-{{if and $p.LabelGoal (not $v.NoLeads)}}
+{{if and $p.Labelled (not $v.NoLeads)}}
 <section class="card label-progress mt-2" aria-labelledby="label-title">
   <div class="card-body">
     <h2 id="label-title" class="visually-hidden">Your calls</h2>
-    <p><strong>{{$p.Labelled}} of {{$p.LabelGoal}} labelled.</strong>
+    <p><strong>{{range $i, $n := $p.Labelled}}{{if $i}} · {{end}}{{with $n.Type}}{{.}}: {{end}}{{$n.Labelled}} of {{$n.Goal}} labelled{{end}}.</strong>
       {{if $v.ToLabel}}<a href="/leads">Show every lead</a>{{else}}<a href="/leads?to_label=1">To label</a>{{end}}</p>
-    {{if $v.ToLabel}}<p class="hint">These are {{$p.LabelGoal}} leads picked across kinds, Drupal versions and countries, plus every lead you have already labelled. Open one, read it, and give it your call. Jev's number only starts ordering your list once it agrees with your calls on at least {{$p.LabelGoal}} leads.</p>
-    {{else}}<p class="hint">Your calls are the answer key Jev is checked against. Label {{$p.LabelGoal}} leads to let relevance order your list.</p>{{end}}
+    {{if $v.ToLabel}}<p class="hint">These are up to {{$p.LabelGoal}} leads of each lead type, picked across kinds and countries, plus every lead you have already labelled. Open one, read it, and give it your call. Each type is checked on its own: Jev's number only starts ordering a type once it agrees with your calls on at least {{$p.LabelGoal}} leads of that type.</p>
+    {{else}}<p class="hint">Your calls are the answer key Jev is checked against, one lead type at a time. Label {{$p.LabelGoal}} leads of a type to let relevance order that type.</p>{{end}}
   </div>
 </section>
 {{end}}

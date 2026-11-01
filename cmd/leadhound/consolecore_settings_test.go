@@ -16,8 +16,8 @@ import (
 func TestTrustGateWords(t *testing.T) {
 	loc := time.UTC
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, loc)
-	const rule = "Sorting by relevance starts once Jev agrees with your calls on at least 30 leads: close to your call on 8 in 10 of them, and ranking them in roughly the same order."
-	const exact = "In exact terms: a check on at least 30 labelled leads, where Jev's band is your call or the one next to it on 80% or more of them, and the two orders agree with a rank correlation (Spearman) of 0.5 or more, where 1 is the same order."
+	const rule = "Sorting by relevance starts once Jev agrees with your calls on at least 30 Drupal leads: close to your call on 8 in 10 of them, and ranking them in roughly the same order."
+	const exact = "In exact terms: a check on at least 30 labelled Drupal leads, where Jev's band is your call or the one next to it on 80% or more of them, and the two orders agree with a rank correlation (Spearman) of 0.5 or more, where 1 is the same order."
 	cases := []struct {
 		name   string
 		e      leadstore.RelevanceEval
@@ -34,7 +34,7 @@ func TestTrustGateWords(t *testing.T) {
 			"The latest check, on 2 November 2026, read 40 of your calls: Jev was close to your call on 85% of them, and its order matched yours at 0.61."}},
 	}
 	for _, c := range cases {
-		g := trustGateWords(c.e, c.ok, loc)
+		g := trustGateWords(leadstore.TypeDrupal, c.e, c.ok, loc)
 		if !slices.Equal(g.Status, c.status) {
 			t.Errorf("%s: status %q, want %q", c.name, g.Status, c.status)
 		}
@@ -47,6 +47,9 @@ func TestTrustGateWords(t *testing.T) {
 				t.Errorf("%s: the plain words hold %q: %s", c.name, bad, plain)
 			}
 		}
+	}
+	if g := trustGateWords(leadstore.TypeCafe, leadstore.RelevanceEval{}, false, loc); !strings.Contains(g.Rule, "30 café leads") || strings.Contains(g.Rule+g.Exact, "Drupal") {
+		t.Errorf("café rule %q, exact %q", g.Rule, g.Exact)
 	}
 }
 

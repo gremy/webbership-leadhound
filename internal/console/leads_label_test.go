@@ -45,7 +45,7 @@ func TestLeadCallBlock(t *testing.T) {
 		`<button type="submit" name="band" value="no" title="Help for no &amp; more." class="btn btn-secondary">No</button>`,
 		`<button type="submit" name="band" value="clear" class="btn btn-ghost call-clear">Clear</button>`,
 		`<dt>Unlikely</dt><dd>Help for unlikely &amp; more.</dd>`,
-		"Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least 30 leads.",
+		"Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least 30 Drupal leads.",
 		`12 of 30 labelled · <a href="/leads?to_label=1">Leads to label</a>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -154,7 +154,7 @@ func TestLabelBadBand(t *testing.T) {
 // help; the list without it shows the progress and a link to it.
 func TestToLabelList(t *testing.T) {
 	b := richBackend("x")
-	b.list.Labelled, b.list.LabelGoal = 7, 30
+	b.list.Labelled, b.list.LabelGoal = []TypeCount{{Labelled: 7, Goal: 30}}, 30
 	b.list.Rows[0].Call = "maybe"
 	h := newHarness(t, b, false)
 	c := h.session(t)
@@ -164,7 +164,7 @@ func TestToLabelList(t *testing.T) {
 	}
 	for _, want := range []string{
 		"<strong>7 of 30 labelled.</strong>", `<a href="/leads">Show every lead</a>`,
-		"These are 30 leads picked across kinds, Drupal versions and countries, plus every lead you have already labelled.",
+		"These are up to 30 leads of each lead type, picked across kinds and countries, plus every lead you have already labelled.",
 		`<th scope="col">Your call</th>`, `<td class="call-cell"><span class="badge badge-accent">maybe</span></td>`, `title="x"`,
 		`Your call: <span class="badge badge-accent">maybe</span>`,
 		`name="to_label" value="1" checked`, "Filters · 1 on", "to_label=1",
@@ -183,7 +183,7 @@ func TestToLabelList(t *testing.T) {
 	}
 	body = h.do(get("/leads", c)).Body.String()
 	for _, want := range []string{"<strong>7 of 30 labelled.</strong>", `<a href="/leads?to_label=1">To label</a>`,
-		"Your calls are the answer key Jev is checked against."} {
+		"Your calls are the answer key Jev is checked against, one lead type at a time."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/leads lacks %q", want)
 		}
@@ -211,5 +211,46 @@ func TestLabelPagesKeepCSP(t *testing.T) {
 				t.Errorf("%s contains %q", p, bad)
 			}
 		}
+	}
+}
+
+// TestLeadCallByType: a café lead's call block offers the café help the backend gives its
+// bands, counts its own type's calls and names café leads in the answer-key line; a Drupal
+// lead's block names Drupal leads. The list header shows each type's count, in the order
+// the backend gives them.
+func TestLeadCallByType(t *testing.T) {
+	b := richBackend("x")
+	b.detail = cafeLeadDetail()
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	cafeBody := h.do(get("/leads/5", c)).Body.String()
+	b.detail = callDetail("")
+	drupalBody := h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{
+		`<dt>Likely</dt><dd>A café that would likely switch.</dd>`, `<span class="muted small">4 of 30 labelled</span>`,
+		"agrees with your calls on at least 30 café leads.", `4 of 30 labelled · <a href="/leads?to_label=1">Leads to label</a>`,
+	} {
+		if !strings.Contains(cafeBody, want) {
+			t.Errorf("the café call block lacks %q", want)
+		}
+	}
+	for _, want := range []string{`<dt>Likely</dt><dd>Help for likely &amp; more.</dd>`, "12 of 30 labelled", "at least 30 Drupal leads."} {
+		if !strings.Contains(drupalBody, want) {
+			t.Errorf("the Drupal call block lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"Help for likely", "12 of 30"} {
+		if strings.Contains(cafeBody, bad) {
+			t.Errorf("the café call block shows the Drupal lead's %q", bad)
+		}
+	}
+
+	b.list.Labelled, b.list.LabelGoal = []TypeCount{{Type: "Drupal leads", Labelled: 12, Goal: 30}, {Type: "Café leads", Labelled: 4, Goal: 30}}, 30
+	list := h.do(get("/leads", c)).Body.String()
+	if want := "<strong>Drupal leads: 12 of 30 labelled · Café leads: 4 of 30 labelled.</strong>"; !strings.Contains(list, want) {
+		t.Errorf("the list header lacks %q", want)
+	}
+	if strings.Contains(list, "across") && strings.Contains(list, "Drupal versions") {
+		t.Error("the list hint still picks across Drupal versions")
 	}
 }

@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 )
 
@@ -57,8 +60,14 @@ func whyWords(r leadstore.Reason) string {
 	return strings.ReplaceAll(r.Kind+" "+r.Label, "_", " ")
 }
 
-// kindWords is a lead kind in words.
+// kindWords is a lead kind in words. A café kind reads as its cafe.Kinds label, lower-cased
+// at the start to sit after "Lead type, ": "café with a website and no digital loyalty".
 func kindWords(kind string) string {
+	for _, k := range cafe.Kinds {
+		if k.Kind == kind {
+			return lowerFirst(k.Label)
+		}
+	}
 	switch kind {
 	case leadstore.LeadUnsupported:
 		return "out-of-support Drupal"
@@ -68,6 +77,12 @@ func kindWords(kind string) string {
 		return "agency that sells Drupal upgrades"
 	}
 	return strings.ReplaceAll(kind, "_", " ")
+}
+
+// lowerFirst is s with its first letter lower-cased.
+func lowerFirst(s string) string {
+	r, n := utf8.DecodeRuneInString(s)
+	return string(unicode.ToLower(r)) + s[n:]
 }
 
 // groupDigits writes n with a comma between each group of three digits: 10,000.

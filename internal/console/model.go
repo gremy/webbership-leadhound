@@ -328,9 +328,18 @@ type LeadListPage struct {
 	Filter        LeadListQuery
 	Options       LeadFilterOptions
 	Notes         []string
-	// Labelled is how many leads carry the operator's call; LabelGoal how many the trust gate
-	// needs (30).
-	Labelled, LabelGoal int
+	// Labelled is how many leads of each rating type carry the operator's call against the
+	// trust gate's goal, one entry per type the header names; LabelGoal how many the trust
+	// gate needs (30).
+	Labelled  []TypeCount
+	LabelGoal int
+}
+
+// TypeCount is how many leads of one rating type carry the operator's call: Type is the
+// type in words ("Drupal leads"), Goal how many the type's trust gate needs.
+type TypeCount struct {
+	Type           string
+	Labelled, Goal int
 }
 
 // LeadFilterOptions are the choices the filter form offers, each a value and its words.
@@ -347,10 +356,12 @@ type FilterOption struct{ Value, Label string }
 // Finding the finding in one line, Relevance the relevance in words ("" when not rated),
 // Position the lead's place in the outreach order ("" when it has none), Call the operator's
 // own band for it ("" when he has made no call), Campaign the name of the campaign the lead
-// belongs to.
+// belongs to. RType is the lead's rating type (leadstore's "drupal" or "cafe"), which picks
+// the relevance question, the call help and the trust gate that apply to it.
 type LeadListRow struct {
 	LeadID, OrgID                int64
 	Name, Domain, Country, Kind  string
+	RType                        string
 	Campaign                     string
 	Finding, Relevance, Position string
 	State, Call                  string
@@ -392,6 +403,11 @@ type LeadDetailPage struct {
 	ClaudeSpend      string          // what Claude has cost on this lead in words; "" when nothing
 	Research         LeadResearch    // the contact research of the lead's org: the "Contact research" line
 	Report           ReportLink      // the upgrade-risk report: offered, or why not
+	ShowReport       bool            // the lead's kind has an upgrade-risk report at all (Drupal sites, hand)
+	Place            *LeadPlaceView  // the map place a café lead came from; nil for a site lead
+	Cafe             *LeadCafeView   // the café finding in words; nil for a lead that is not a café
+	OriginWords      string          // where the lead was found, in words ("a map listing (Overture)")
+	ReachTitle       string          // the heading of what was read about it ("From their site")
 	// SendNowBlock is why Send now cannot send this lead, known from the lead alone (its
 	// state, or no channel to email it on); "" when the button is offered. The confirm page
 	// still checks the rest (suppression, mailboxes, limits).
@@ -431,6 +447,23 @@ type LeadResearch struct {
 
 // Open reports whether an attempt is queued or looking: "Look again" is hidden then.
 func (r LeadResearch) Open() bool { return r.Status == ResearchQueued || r.Status == ResearchLooking }
+
+// LeadPlaceView is the map place a café lead came from: its category, its address and its
+// own website ("" when it has none).
+type LeadPlaceView struct {
+	Category, Address, Website string
+}
+
+// LeadCafeView is a café lead's finding in words: the loyalty and ordering vendors seen by
+// display name (none when nothing was seen), whether an Instagram link was found, the site's
+// language, and the loyalty vendor it is compared with and that comparison page's link (""
+// when the campaign names none).
+type LeadCafeView struct {
+	Loyalty, Ordering      []string
+	Instagram              bool
+	Language               string
+	VendorName, VendorLink string
+}
 
 // ReportLink is the lead page's upgrade-risk report: Ready when it can be downloaded, else
 // Why in plain words ("" hides the line: nothing to say).
@@ -622,13 +655,21 @@ type SettingsSources struct {
 type LeadSettingsPage struct {
 	Values    LeadSettingsValues
 	Sources   SettingsSources
-	ServerCap int       // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the most a setting may allow a day
-	TrustGate TrustGate // whether the list and the queue sort by relevance yet, and the rule
-	// Labelled is how many leads carry the operator's call, LabelGoal how many the trust gate
-	// needs; the leads to label are at ToLabelPath.
-	Labelled, LabelGoal int
-	Notes               []string
-	ReadOnly            ReadOnlySettings
+	ServerCap int // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the most a setting may allow a day
+	// Trust is the relevance trust gate of each rating type, in display order.
+	Trust    []TrustRow
+	Notes    []string
+	ReadOnly ReadOnlySettings
+}
+
+// TrustRow is one rating type's relevance trust gate on the Settings page: Type is the type
+// in words ("Drupal leads"), Labelled how many of its leads carry the operator's call, Goal
+// how many its gate needs (0 hides the count), Gate whether the list and the queue sort that
+// type by relevance yet, and the rule.
+type TrustRow struct {
+	Type           string
+	Labelled, Goal int
+	Gate           TrustGate
 }
 
 // TrustGate is the relevance trust gate in words: Status says whether the list and the queue

@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
+	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
@@ -175,5 +179,168 @@ func TestConsoleLeadList(t *testing.T) {
 	}
 	if w := c.get("/leads/999999", false); w.Code != http.StatusNotFound {
 		t.Errorf("no such lead: %d", w.Code)
+	}
+}
+
+// TestConsoleLeadPageCafe: a café lead's page, through the real backend and the console
+// handler. The demo café import is probed with the Bean Example House homepage carrying a
+// Stamp Me loyalty script and an Uber Eats ordering link; the campaign spec's vendor_links
+// give Stamp Me its comparison page and a default page. That café's page shows the place
+// (category, address, its website), the loyalty and ordering vendors by name and the
+// Stamp Me comparison link, with no report and no Drupal anywhere; a café with nothing seen
+// gets the default comparison link, and the café with no website says so. A Drupal site
+// lead keeps its report.
+func TestConsoleLeadPageCafe(t *testing.T) {
+	dir := leadsDB(t)
+	cafesDataDir(t, dir)
+	importDemoPlaces(t, dir)
+	fixtures := cafeFixtures(t)
+	page, err := os.ReadFile("../../internal/cafe/testdata/loyalty_vendor.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtures, "bean-house.example.html"), page, 0o600); err != nil { // #nosec G703 -- a test temp dir
+		t.Fatal(err)
+	}
+	if out := sitesOut(t, "leads", "sites", "probe", "--dry-run", "--fixtures", fixtures); !strings.Contains(out, "· 4 sites probed") {
+		t.Fatalf("probe:\n%s", out)
+	}
+	mustRun(t, "leads", "build", "--campaign", "cafes-loyalty")
+
+	ctx := context.Background()
+	b := leadsBackend(t)
+	bean := leadIDOf(t, "bean-house.example")
+	d, err := b.LeadDetail(ctx, bean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ShowReport || d.Report.Ready || d.Report.Why != "" {
+		t.Errorf("a café lead has a report: %v %+v", d.ShowReport, d.Report)
+	}
+	if d.Place == nil || d.Place.Category != "cafe" || d.Place.Address != "3 Example Street, 000000 Springfield, United States" ||
+		d.Place.Website != "https://bean-house.example/" {
+		t.Errorf("the place %+v", d.Place)
+	}
+	if c := d.Cafe; c == nil || !slices.Equal(c.Loyalty, []string{"Stamp Me"}) || !slices.Contains(c.Ordering, "Uber Eats") || !c.Instagram ||
+		c.VendorName != "Stamp Me" || c.VendorLink != "https://compare.example/vs/stamp-me" {
+		t.Errorf("the café view %+v", d.Cafe)
+	}
+	if d.ReachTitle != "From their listing and site" || d.OriginWords != "a map listing (Overture)" || d.RType != leadstore.TypeCafe {
+		t.Errorf("reach %q, origin %q, type %q", d.ReachTitle, d.OriginWords, d.RType)
+	}
+
+	c := newConsoleClient(t, b, nil)
+	show := func(id int64) string {
+		t.Helper()
+		w := c.get(fmt.Sprintf("/leads/%d", id), false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("lead %d: %d\n%s", id, w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+	body := show(bean)
+	for _, want := range []string{
+		"<h2>The place</h2>", "3 Example Street, 000000 Springfield, United States", "<dt>Digital loyalty</dt><dd>Stamp Me</dd>",
+		`<a href="https://compare.example/vs/stamp-me" rel="noopener noreferrer nofollow">Compare with Stamp Me</a>`,
+		"<h2>From their listing and site</h2>", "<dt>Found through</dt><dd>a map listing (Overture)</dd>", "at least 30 café leads",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the café page lacks %q", want)
+		}
+	}
+	cafePageClean(t, "Bean Example House", body)
+
+	// A café with nothing seen gets the campaign's default comparison page.
+	harbour := leadIDOf(t, "harbour-lane-coffee.example")
+	if d, err := b.LeadDetail(ctx, harbour); err != nil || d.Cafe == nil || d.Cafe.VendorName != "" || d.Cafe.VendorLink != "https://compare.example/vs" ||
+		len(d.Cafe.Loyalty) != 0 || d.Place == nil {
+		t.Errorf("the café with nothing seen: %+v %+v %v", d.Cafe, d.Place, err)
+	}
+	body = show(harbour)
+	if want := `<a href="https://compare.example/vs" rel="noopener noreferrer nofollow">Compare loyalty apps</a>`; !strings.Contains(body, want) {
+		t.Errorf("the café with nothing seen lacks %q", want)
+	}
+	cafePageClean(t, "Harbour Lane Coffee", body)
+
+	// The café with no website of its own.
+	var noSite int64
+	if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT id FROM lead WHERE kind = 'cafe_no_website'`).Scan(&noSite); err != nil {
+		t.Fatalf("the café with no website: %v", err)
+	}
+	if d, err := b.LeadDetail(ctx, noSite); err != nil || d.Place == nil || d.Place.Website != "" || d.ShowReport {
+		t.Errorf("the café with no website: %+v %v", d.Place, err)
+	}
+	body = show(noSite)
+	if !strings.Contains(body, "<dt>Website</dt><dd>none of its own</dd>") {
+		t.Error("the café with no website does not say so")
+	}
+	cafePageClean(t, "the café with no website", body)
+}
+
+// cafePageClean fails when a café lead's page shows the upgrade-risk report, a list rank or
+// the word Drupal anywhere.
+func cafePageClean(t *testing.T, what, body string) {
+	t.Helper()
+	for _, bad := range []string{"Upgrade-risk", "List rank", "The site</h2>"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("%s's page shows %q", what, bad)
+		}
+	}
+	if i := strings.Index(strings.ToLower(body), "drupal"); i >= 0 {
+		t.Errorf("%s's page says Drupal: …%s…", what, body[max(i-200, 0):min(i+100, len(body))])
+	}
+}
+
+// TestConsoleCallsByType: the "Your call" block of a lead counts the calls of its own type
+// and offers its own type's help, and the list header shows each type's count. Two leads
+// are made cafés; two café calls and one Drupal call are given through the console.
+func TestConsoleCallsByType(t *testing.T) {
+	orderScene(t)
+	ctx := context.Background()
+	b := leadsBackend(t)
+	c1 := setLeadKind(t, "lucerne.example", cafe.KindNoDigitalLoyalty)
+	c2 := setLeadKind(t, "proseware.example", cafe.KindHasLoyalty)
+	margie := leadIDOf(t, "margie.example")
+	for id, band := range map[int64]string{c1: "likely", c2: "no", margie: "maybe"} {
+		if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadLabel, ID: id, Value: band}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cd, err := b.LeadDetail(ctx, c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dd, err := b.LeadDetail(ctx, margie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cd.YourCall.Labelled != 2 || dd.YourCall.Labelled != 1 || cd.YourCall.LabelGoal != labelGoal {
+		t.Errorf("café card %d of %d, Drupal card %d, want 2 and 1", cd.YourCall.Labelled, cd.YourCall.LabelGoal, dd.YourCall.Labelled)
+	}
+	for i, band := range cd.YourCall.Bands {
+		if band.Help == dd.YourCall.Bands[i].Help || strings.Contains(band.Help, "Drupal") {
+			t.Errorf("café band %s has the Drupal help %q", band.Value, band.Help)
+		}
+	}
+	if cd.ShowReport || cd.Report.Ready {
+		t.Errorf("a café lead has a report: %+v", cd.Report)
+	}
+
+	p, err := b.LeadList(ctx, console.LeadListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []console.TypeCount{{Type: "Drupal leads", Labelled: 1, Goal: labelGoal}, {Type: "Café leads", Labelled: 2, Goal: labelGoal}}
+	if !slices.Equal(p.Labelled, want) {
+		t.Errorf("the list header counts %+v, want %+v", p.Labelled, want)
+	}
+	c := newConsoleClient(t, b, nil)
+	body := c.get("/leads", false).Body.String()
+	if line := "<strong>Drupal leads: 1 of 30 labelled · Café leads: 2 of 30 labelled.</strong>"; !strings.Contains(body, line) {
+		t.Errorf("the list header lacks %q", line)
+	}
+	if body := c.get(fmt.Sprintf("/leads/%d", c1), false).Body.String(); !strings.Contains(body, "2 of 30 labelled") ||
+		!strings.Contains(body, "at least 30 café leads") {
+		t.Error("the café lead's call block does not count café calls")
 	}
 }

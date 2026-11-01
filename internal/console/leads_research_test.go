@@ -264,7 +264,7 @@ func TestLeadReportRoute(t *testing.T) {
 // and links nothing; with nothing to say, there is no report section.
 func TestLeadPageReportLink(t *testing.T) {
 	b := richBackend("Northwind Trading")
-	b.detail.Report = ReportLink{Ready: true}
+	b.detail.Report, b.detail.ShowReport = ReportLink{Ready: true}, true
 	h := newHarness(t, b, false)
 	c := h.session(t)
 	if body := h.do(get("/leads/5", c)).Body.String(); !strings.Contains(body, `<a href="/leads/reports/5" download>Report</a>`) {

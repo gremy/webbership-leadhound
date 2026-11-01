@@ -226,21 +226,24 @@ func (b *backend) LeadSettings(ctx context.Context) (console.LeadSettingsPage, e
 	if err != nil {
 		return console.LeadSettingsPage{}, err
 	}
-	eval, evalOK, err := b.lq().LatestRelevanceEval(ctx, relevanceQuestion)
-	if err != nil {
-		return console.LeadSettingsPage{}, err
-	}
-	labelled, err := b.lq().LabelCount(ctx, "")
-	if err != nil {
-		return console.LeadSettingsPage{}, err
+	var trust []console.TrustRow
+	for _, t := range leadstore.RatingTypes {
+		eval, evalOK, err := b.lq().LatestRelevanceEval(ctx, leadrate.QuestionFor(t))
+		if err != nil {
+			return console.LeadSettingsPage{}, err
+		}
+		labelled, err := b.lq().LabelCount(ctx, t)
+		if err != nil {
+			return console.LeadSettingsPage{}, err
+		}
+		trust = append(trust, console.TrustRow{Type: leadstore.TypeWords(t), Labelled: labelled, Goal: labelGoal,
+			Gate: trustGateWords(t, eval, evalOK, b.loc)})
 	}
 	cfg := setup.leads
 	p := console.LeadSettingsPage{
 		Values:    settingsValues(st, kinds),
 		ServerCap: setup.jevLeadsEnvCap,
-		TrustGate: trustGateWords(eval, evalOK, b.loc),
-		Labelled:  labelled,
-		LabelGoal: labelGoal,
+		Trust:     trust,
 		ReadOnly:  readOnlySettings(cfg, kinds, windowSourceWords(st.knob("schedule.business_hours"), b.loc)),
 		Sources: console.SettingsSources{
 			Who: st.whoSource(), KindsOn: st.knob("kinds_off"), KindsOrder: st.knob("kinds_priority"),
@@ -297,15 +300,20 @@ func settingsValues(st settingsState, kinds []leadKind) console.LeadSettingsValu
 	return v
 }
 
-// trustGateWords say whether the list and the queue sort by relevance yet and what the
-// latest check read, the rule in plain words, and the rule's exact thresholds for the fold.
-// How many leads carry a call is the page's own line, so it is not said here.
-func trustGateWords(e leadstore.RelevanceEval, ok bool, loc *time.Location) console.TrustGate {
+// trustGateWords say whether the list and the queue sort the leads of rating type t by
+// relevance yet and what the latest check of t's question read, the rule in plain words, and
+// the rule's exact thresholds for the fold. How many leads carry a call is the page's own
+// line, so it is not said here.
+func trustGateWords(t string, e leadstore.RelevanceEval, ok bool, loc *time.Location) console.TrustGate {
+	leads := "Drupal leads"
+	if t == leadstore.TypeCafe {
+		leads = "café leads"
+	}
 	g := console.TrustGate{
-		Rule: fmt.Sprintf("Sorting by relevance starts once Jev agrees with your calls on at least %d leads: close to your call on %d in 10 of them, and ranking them in roughly the same order.",
-			trustMinLeads, trustMinWithinOne/10),
-		Exact: fmt.Sprintf("In exact terms: a check on at least %d labelled leads, where Jev's band is your call or the one next to it on %d%% or more of them, and the two orders agree with a rank correlation (Spearman) of %.1f or more, where 1 is the same order.",
-			trustMinLeads, trustMinWithinOne, trustMinSpearman),
+		Rule: fmt.Sprintf("Sorting by relevance starts once Jev agrees with your calls on at least %d %s: close to your call on %d in 10 of them, and ranking them in roughly the same order.",
+			trustMinLeads, leads, trustMinWithinOne/10),
+		Exact: fmt.Sprintf("In exact terms: a check on at least %d labelled %s, where Jev's band is your call or the one next to it on %d%% or more of them, and the two orders agree with a rank correlation (Spearman) of %.1f or more, where 1 is the same order.",
+			trustMinLeads, leads, trustMinWithinOne, trustMinSpearman),
 	}
 	if !ok {
 		g.Status = []string{"For now the list and the queue sort leads that are not starred by points: Jev's numbers have not been checked against your calls yet."}

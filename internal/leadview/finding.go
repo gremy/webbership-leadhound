@@ -101,13 +101,14 @@ func dayOf(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// cafeLine is a café finding in words: the Decision's reason, capitalised, and where the
-// café's language was read ("Café: no digital loyalty on the homepage · language ro, from the
-// page's text").
+// cafeLine is a café finding in words: the Decision's reason, with any vendor ids named
+// as their vendors, and where the café's language was read ("Café: no digital loyalty on the
+// homepage · language ro, from the page's text"; "Café: digital loyalty on the homepage:
+// Stamp Me").
 func cafeLine(s leadstore.FindingSubject) string {
 	line := "Café"
 	if r := strings.TrimSpace(s.Reason); r != "" {
-		line += ": " + r
+		line += ": " + vendorNames(r)
 	}
 	if s.Language != "" {
 		via := map[string]string{cafe.LangViaHTML: "the page's lang attribute", cafe.LangViaMeta: "the page's meta tags", cafe.LangViaText: "the page's text"}[s.LanguageVia]
@@ -117,4 +118,21 @@ func cafeLine(s leadstore.FindingSubject) string {
 		}
 	}
 	return line
+}
+
+// vendorNames is a café reason with the vendor ids after its colon ("digital loyalty on the
+// homepage: stampme, loyalzoo") named as cafe.DefaultConfig's vendors ("…: Stamp Me,
+// Loyalzoo"). An id the config does not know, or a quoted phrase, is left as it is.
+func vendorNames(reason string) string {
+	head, ids, ok := strings.Cut(reason, ": ")
+	if !ok {
+		return reason
+	}
+	parts := strings.Split(ids, ", ")
+	for i, id := range parts {
+		if v := cafe.DefaultConfig().Vendor(id); v != nil && v.Name != "" {
+			parts[i] = v.Name
+		}
+	}
+	return head + ": " + strings.Join(parts, ", ")
 }

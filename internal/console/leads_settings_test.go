@@ -66,11 +66,9 @@ func richSettings(text string) LeadSettingsPage {
 		},
 		Sources:   SettingsSources{KindsOrder: console, BatchesFrom: console, Rating: console, Order: console},
 		ServerCap: 10000,
-		TrustGate: TrustGate{Status: []string{"Relevance is an early number: " + text},
-			Rule: "Sorting by relevance starts once Jev agrees with your calls on at least 30 leads.", Exact: "In exact terms: " + text},
-		Labelled:  12,
-		LabelGoal: 30,
-		Notes:     []string{"A saved change is ignored: " + text},
+		Trust: []TrustRow{{Labelled: 12, Goal: 30, Gate: TrustGate{Status: []string{"Relevance is an early number: " + text},
+			Rule: "Sorting by relevance starts once Jev agrees with your calls on at least 30 leads.", Exact: "In exact terms: " + text}}},
+		Notes: []string{"A saved change is ignored: " + text},
 		ReadOnly: ReadOnlySettings{
 			Countries:       []CountryPolicy{{Code: "GB", Label: text, Channel: "email", Language: "en", Timezone: "Europe/London", Footer: "uk"}},
 			Pace:            []string{"Batches of 20; " + text},
@@ -628,12 +626,12 @@ func TestSettingsHelp(t *testing.T) {
 			t.Errorf("the help still holds %q", bad)
 		}
 	}
-	b.settings.TrustGate = TrustGate{}
+	b.settings.Trust[0].Gate = TrustGate{}
 	noGate := h.do(get("/leads/settings", c)).Body.String()
 	if want := `12 of 30 labelled · <a href="/leads?to_label=1">Leads to label</a>`; !strings.Contains(noGate, want) {
 		t.Errorf("without the trust gate's lines the page lacks %q", want)
 	}
-	b.settings.LabelGoal = 0
+	b.settings.Trust[0].Goal = 0
 	if strings.Contains(h.do(get("/leads/settings", c)).Body.String(), "to_label") {
 		t.Error("with no label goal the page still links the leads to label")
 	}
@@ -649,6 +647,63 @@ func TestSettingsHelp(t *testing.T) {
 	for env, line := range envHelp {
 		if !strings.Contains(body, html.EscapeString(line)) {
 			t.Errorf("the page does not show the line for %s", env)
+		}
+	}
+}
+
+// TestSettingsTrustByType: Jev relevance shows one trust gate per lead type, each under its
+// own heading with its own count and lines; the section's intro and its fold speak of any
+// lead and the offer, not of Drupal versions or end-of-life dates.
+func TestSettingsTrustByType(t *testing.T) {
+	b := richBackend("x")
+	b.settings.Trust = []TrustRow{
+		{Type: "Drupal leads", Labelled: 12, Goal: 30, Gate: TrustGate{Status: []string{"Drupal leads are sorted by score for now."},
+			Rule: "Sorting Drupal leads by relevance starts once Jev agrees with your calls on at least 30 of them."}},
+		{Type: "Café leads", Labelled: 4, Goal: 30, Gate: TrustGate{Status: []string{"Café leads are sorted by score for now."},
+			Rule: "Sorting café leads by relevance starts once Jev agrees with your calls on at least 30 of them."}},
+	}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/settings", h.session(t))).Body.String()
+	at := func(s string) int {
+		i := strings.Index(body, s)
+		if i < 0 {
+			t.Errorf("Settings lacks %q", s)
+		}
+		return i
+	}
+	d, c := at("<h3>Sorting by relevance · Drupal leads</h3>"), at("<h3>Sorting by relevance · Café leads</h3>")
+	if d >= 0 && c >= 0 {
+		drupal, cafe := body[d:c], body[c:]
+		cafe = cafe[:strings.Index(cafe, "</div>")]
+		for _, want := range []string{"Drupal leads are sorted by score for now.", "12 of 30 labelled"} {
+			if !strings.Contains(drupal, want) {
+				t.Errorf("the Drupal gate lacks %q", want)
+			}
+		}
+		for _, want := range []string{"Café leads are sorted by score for now.", "4 of 30 labelled"} {
+			if !strings.Contains(cafe, want) {
+				t.Errorf("the café gate lacks %q", want)
+			}
+		}
+		if strings.Contains(cafe, "Drupal") || strings.Contains(cafe, "12 of 30") {
+			t.Errorf("the café gate carries the Drupal gate's lines:\n%s", cafe)
+		}
+	}
+	if n := strings.Count(body, `<div class="trust-gate">`); n != 2 {
+		t.Errorf("%d trust gates, want 2", n)
+	}
+
+	// The section's intro and its fold, up to the first field, name no Drupal version.
+	s := body[at(`<p id="relevance-intro"`):]
+	s = s[:strings.Index(s, `<form method="post" action="/leads/settings/relevance"`)]
+	for _, want := range []string{"how likely the lead is to want the offer", "for that lead type"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the relevance intro lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"Drupal", "version", "end-of-life", "end of life"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("the relevance intro says %q:\n%s", bad, s)
 		}
 	}
 }

@@ -155,10 +155,10 @@
   <div class="card-head"><h2 id="relevance-title">Jev relevance</h2></div>
   <div class="card-body">
   {{if eq $v.Section "relevance"}}{{template "settings_problems" $v}}{{end}}
-  <p id="relevance-intro" class="section-intro">Jev reads each lead and gives it a relevance number from 0 to 100: how likely the site is to want the work. The number shows on Leads; it orders the queue only once it has passed its check, below.</p>
+  <p id="relevance-intro" class="section-intro">Jev reads each lead and gives it a relevance number from 0 to 100: how likely the lead is to want the offer. The number shows on Leads; it orders the queue only once it has passed its check for that lead type, below.</p>
   <details class="more">
     <summary>More about this</summary>
-    <p>A lead is rated once, and again only when what Jev reads about it changes, such as its version or an end-of-life date. Rating costs little; the daily limit is there to stop a run that goes wrong, not to keep to a budget.</p>
+    <p>A lead is rated once, and again only when what Jev reads about it changes, such as what was found on its site or its map listing. Rating costs little; the daily limit is there to stop a run that goes wrong, not to keep to a budget.</p>
   </details>
   <form method="post" action="/leads/settings/relevance" class="settings-form">
     <div class="settings-field check-field">
@@ -174,19 +174,19 @@
       <p id="leads-cap-hint" class="hint">0 uses the server's limit{{if gt $p.ServerCap 0}} of {{thousands $p.ServerCap}} a day{{end}}; you can set a lower number here, not a higher one.</p>
       {{with changed "" $s.LeadsCap}}<p class="setting-source">{{.}}</p>{{end}}
     </div>
-    {{$g := $p.TrustGate}}
-    {{if or $g.Status $g.Rule $p.LabelGoal}}
+    {{range $r := $p.Trust}}{{$g := $r.Gate}}
+    {{if or $g.Status $g.Rule $r.Goal}}
     <div class="trust-gate">
-      <h3>Sorting by relevance</h3>
+      <h3>Sorting by relevance{{with $r.Type}} · {{.}}{{end}}</h3>
       {{range $g.Status}}<p class="hint">{{.}}</p>{{end}}
       {{with $g.Rule}}<p class="hint">{{.}}</p>{{end}}
       {{with $g.Exact}}<details class="more">
         <summary>More about this</summary>
         <p>{{.}}</p>
       </details>{{end}}
-      {{if $p.LabelGoal}}<p class="hint">{{$p.Labelled}} of {{$p.LabelGoal}} labelled · <a href="/leads?to_label=1">Leads to label</a></p>{{end}}
+      {{if $r.Goal}}<p class="hint">{{$r.Labelled}} of {{$r.Goal}} labelled · <a href="/leads?to_label=1">Leads to label</a></p>{{end}}
     </div>
-    {{end}}
+    {{end}}{{end}}
     {{template "settings_buttons"}}
   </form>
   </div>

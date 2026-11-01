@@ -1405,3 +1405,142 @@ func TestLeadsOutreachShadowServer(t *testing.T) {
 		t.Error("the panel shows with no starred lead out")
 	}
 }
+
+// cafeLeadDetail is a fictional café lead from a map listing: on Stamp Me with Uber Eats
+// ordering, its place, café findings and café call help, and the campaign's Stamp Me
+// comparison page.
+func cafeLeadDetail() LeadDetailPage {
+	at := testSent
+	d := LeadDetailPage{
+		LeadListRow: LeadListRow{LeadID: 5, OrgID: 2, Name: "Brewlane Corner", Domain: "brewlane.example", Country: "GB",
+			Kind: "Café already on a loyalty platform", RType: "cafe", Finding: "Digital loyalty on the homepage: Stamp Me",
+			Relevance: "62 · likely", State: "new", HasEmail: true, Campaign: "Café loyalty"},
+		Signals: []LeadSignal{{Name: "loyalty", Value: "stampme, via script: https://cdn.stampme.example/widget.js",
+			FetchURL: "https://brewlane.example/", Status: "200 OK", FetchedAt: &at}},
+		Routes:        []LeadRoute{{Kind: "email", Value: "hello@brewlane.example", PageURL: "https://brewlane.example/contact"}},
+		Social:        []LeadFact{{Label: "Instagram", Value: "https://social.example/brewlane"}},
+		Origin:        "place",
+		OriginWords:   "a map listing (Overture)",
+		ReachTitle:    "From their listing and site",
+		CountryPolicy: "United Kingdom: email, in English",
+		Place:         &LeadPlaceView{Category: "coffee shop", Address: "7 Example Lane, EX2 2BB Exampleton, United Kingdom", Website: "https://brewlane.example/"},
+		Cafe: &LeadCafeView{Loyalty: []string{"Stamp Me"}, Ordering: []string{"Uber Eats"}, Instagram: true, Language: "English",
+			VendorName: "Stamp Me", VendorLink: "https://compare.example/vs/stamp-me"},
+		// A report the backend would never send for a café: the page must not show it.
+		Report:   ReportLink{Ready: true},
+		Why:      []string{"Café already on a loyalty platform: +10"},
+		YourCall: LeadCall{Labelled: 4, LabelGoal: 30},
+	}
+	for _, b := range LabelBands {
+		d.YourCall.Bands = append(d.YourCall.Bands, CallBand{Value: b, Label: strings.ToUpper(b[:1]) + b[1:], Help: "A café that would " + b + " switch."})
+	}
+	return d
+}
+
+// TestLeadDetailPageCafe: a café lead's page shows the place, the café findings with vendor
+// names and the comparison link, and what was read under its own heading; no upgrade-risk
+// report, no list rank and no "Drupal" anywhere on the page. A café on no known vendor
+// shows the campaign's default comparison link in general words; a café with no website
+// says so.
+func TestLeadDetailPageCafe(t *testing.T) {
+	b := richBackend("Brewlane Corner")
+	b.detail = cafeLeadDetail()
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	body := h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{
+		"<h2>The place</h2>", "<dt>Category</dt><dd>coffee shop</dd>",
+		"<dt>Address</dt><dd>7 Example Lane, EX2 2BB Exampleton, United Kingdom</dd>",
+		`<dt>Website</dt><dd><a href="https://brewlane.example/" rel="noopener noreferrer nofollow">https://brewlane.example/</a></dd>`,
+		"<dt>Found through</dt><dd>a map listing (Overture)</dd>", "<dt>Country</dt><dd>United Kingdom: email, in English</dd>",
+		"<dt>Digital loyalty</dt><dd>Stamp Me</dd>", "<dt>Online ordering</dt><dd>Uber Eats</dd>",
+		"<dt>Instagram</dt><dd>found</dd>", "<dt>Language</dt><dd>English</dd>",
+		`<a href="https://compare.example/vs/stamp-me" rel="noopener noreferrer nofollow">Compare with Stamp Me</a>`,
+		"<h2>From their listing and site</h2>", "Found through a map listing: place data from Overture Maps Foundation",
+		"agrees with your calls on at least 30 café leads.", "4 of 30 labelled", `title="A café that would likely switch."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the café page lacks %q", want)
+		}
+	}
+	cafeSweep(t, "the café page", body)
+	// The place card stands where the site card stands on a site lead's page.
+	if i, j := strings.Index(body, "<h2>Details</h2>"), strings.Index(body, "<h2>The place</h2>"); i < 0 || j < i ||
+		strings.Index(body, "<h2>History</h2>") < j {
+		t.Error("The place is not between Details and History")
+	}
+
+	// No known vendor: the campaign's default comparison page, in general words.
+	b.detail.Cafe.VendorName, b.detail.Cafe.VendorLink, b.detail.Cafe.Loyalty = "", "https://compare.example/vs", nil
+	body = h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{
+		`<a href="https://compare.example/vs" rel="noopener noreferrer nofollow">Compare loyalty apps</a>`,
+		"<dt>Digital loyalty</dt><dd>none seen</dd>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the café on no vendor lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "Compare with") {
+		t.Error("the café on no vendor names a vendor to compare with")
+	}
+	cafeSweep(t, "the café on no vendor", body)
+
+	// No link at all (no vendor_links entry and no default), and no website of its own.
+	b.detail.Cafe.VendorLink, b.detail.Place.Website = "", ""
+	body = h.do(get("/leads/5", c)).Body.String()
+	if strings.Contains(body, "Compare loyalty apps") || !strings.Contains(body, "<dt>Website</dt><dd>none of its own</dd>") {
+		t.Error("the café with no link and no website")
+	}
+	cafeSweep(t, "the café with no website", body)
+}
+
+// cafeSweep fails when a café lead's page shows the upgrade-risk report, a list rank, the
+// site card, or the word Drupal in any case anywhere on it.
+func cafeSweep(t *testing.T, what, body string) {
+	t.Helper()
+	for _, bad := range []string{"Upgrade-risk", "upgrade-risk", "List rank", "<h2>The site</h2>", "/leads/reports/"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("%s shows %q", what, bad)
+		}
+	}
+	low := strings.ToLower(body)
+	for i := strings.Index(low, "drupal"); i >= 0; {
+		t.Errorf("%s says Drupal: …%s…", what, body[max(i-120, 0):min(i+60, len(body))])
+		j := strings.Index(low[i+1:], "drupal")
+		if j < 0 {
+			break
+		}
+		i += 1 + j
+	}
+}
+
+// TestLeadDetailReportByKind: a Drupal site lead's page shows the upgrade-risk report card
+// and its list rank; an agency lead's page has no report card even when a report is sent,
+// and keeps the site card with its list rank and the worded Found through.
+func TestLeadDetailReportByKind(t *testing.T) {
+	b := richBackend("Northwind Trading")
+	b.detail.ShowReport, b.detail.Report, b.detail.YourCall = true, ReportLink{Ready: true}, LeadCall{LabelGoal: 30}
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	body := h.do(get("/leads/5", c)).Body.String()
+	for _, want := range []string{"<h2>Upgrade-risk report</h2>", `<a href="/leads/reports/5" download>Report</a>`,
+		"<h2>The site</h2>", "<dt>List rank</dt><dd>12,345</dd>", "at least 30 Drupal leads."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the site lead's page lacks %q", want)
+		}
+	}
+
+	b.detail.Kind, b.detail.ShowReport, b.detail.OriginWords = "Drupal agency partner", false, "the agencies list"
+	body = h.do(get("/leads/5", c)).Body.String()
+	for _, bad := range []string{"Upgrade-risk", "/leads/reports/", "<h2>The place</h2>"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the agency lead's page shows %q", bad)
+		}
+	}
+	for _, want := range []string{"<h2>The site</h2>", "<dt>List rank</dt><dd>12,345</dd>", "<dt>Found through</dt><dd>the agencies list</dd>", "<h2>From their site</h2>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the agency lead's page lacks %q", want)
+		}
+	}
+}

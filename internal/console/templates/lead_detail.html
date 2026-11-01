@@ -29,6 +29,15 @@
     <div class="card-body">
     {{with $d.Finding}}<p>{{.}}</p>{{else}}<p class="muted">No finding on file.</p>{{end}}
     {{if eq $d.Origin "place"}}<p class="hint">Found through a map listing: place data from Overture Maps Foundation (overturemaps.org), CDLA Permissive 2.0.</p>{{end}}
+    {{with $d.Cafe}}
+    <dl class="kv">
+      <dt>Digital loyalty</dt><dd>{{if .Loyalty}}{{range $i, $n := .Loyalty}}{{if $i}}, {{end}}{{$n}}{{end}}{{else}}none seen{{end}}</dd>
+      <dt>Online ordering</dt><dd>{{if .Ordering}}{{range $i, $n := .Ordering}}{{if $i}}, {{end}}{{$n}}{{end}}{{else}}none seen{{end}}</dd>
+      <dt>Instagram</dt><dd>{{if .Instagram}}found{{else}}none seen{{end}}</dd>
+      {{with .Language}}<dt>Language</dt><dd>{{.}}</dd>{{end}}
+    </dl>
+    {{with .VendorLink}}<p class="mt-1">{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow">{{with $d.Cafe.VendorName}}Compare with {{.}}{{else}}Compare loyalty apps{{end}}</a>{{else}}{{.}}{{end}}</p>{{end}}
+    {{end}}
     {{range $v.Fetches}}
     <div class="signal-fetch">
       {{if or .FetchURL .Status .FetchedAt}}
@@ -40,7 +49,7 @@
     </div>
   </section>
 
-  {{with $d.Report}}{{if or .Ready .Why}}
+  {{if $d.ShowReport}}{{with $d.Report}}{{if or .Ready .Why}}
   <section class="card lead-report">
     <div class="card-head"><h2>Upgrade-risk report</h2></div>
     <div class="card-body">
@@ -48,7 +57,7 @@
     {{else}}<p class="muted">{{.Why}}</p>{{end}}
     </div>
   </section>
-  {{end}}{{end}}
+  {{end}}{{end}}{{end}}
 
   <section class="card">
     <div class="card-head"><h2>Ways to reach them</h2></div>
@@ -85,7 +94,7 @@
   </section>
 
   <section class="card">
-    <div class="card-head"><h2>From their site</h2></div>
+    <div class="card-head"><h2>{{or $d.ReachTitle "From their site"}}</h2></div>
     <div class="card-body">
     <h3>Phone numbers</h3>
     {{if $d.Phones}}<ul class="item-list">{{range $d.Phones}}{{template "lead_fact" .}}{{end}}</ul>{{else}}<p class="muted">None found.</p>{{end}}
@@ -121,7 +130,7 @@
       <summary>What each call means</summary>
       <dl>{{range $c.Bands}}<div><dt>{{.Label}}</dt><dd>{{.Help}}</dd></div>{{end}}</dl>
     </details>
-    <p class="hint">Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least {{$c.LabelGoal}} leads.</p>
+    <p class="hint">Your call is the answer key. Jev's number only starts ordering your list once it agrees with your calls on at least {{$c.LabelGoal}} {{if eq $d.RType "cafe"}}café leads{{else}}Drupal leads{{end}}.</p>
     <p class="hint">{{$c.Labelled}} of {{$c.LabelGoal}} labelled · <a href="/leads?to_label=1">Leads to label</a></p>
     </div>
   </section>
@@ -170,16 +179,31 @@
   </section>
   {{end}}
 
+  {{with $d.Place}}
+  <section class="card">
+    <div class="card-head"><h2>The place</h2></div>
+    <div class="card-body">
+    <dl class="kv">
+      {{with .Category}}<dt>Category</dt><dd>{{.}}</dd>{{end}}
+      {{with .Address}}<dt>Address</dt><dd>{{.}}</dd>{{end}}
+      <dt>Website</dt><dd>{{with .Website}}{{template "lead_link" .}}{{else}}none of its own{{end}}</dd>
+      {{with or $d.OriginWords $d.Origin}}<dt>Found through</dt><dd>{{.}}</dd>{{end}}
+      {{with $d.CountryPolicy}}<dt>Country</dt><dd>{{.}}</dd>{{end}}
+    </dl>
+    </div>
+  </section>
+  {{else}}
   <section class="card">
     <div class="card-head"><h2>The site</h2></div>
     <div class="card-body">
     <dl class="kv">
       <dt>List rank</dt><dd>{{or $d.ListRank "unknown"}}</dd>
-      {{with $d.Origin}}<dt>Found through</dt><dd>{{.}}</dd>{{end}}
+      {{with or $d.OriginWords $d.Origin}}<dt>Found through</dt><dd>{{.}}</dd>{{end}}
       {{with $d.CountryPolicy}}<dt>Country</dt><dd>{{.}}</dd>{{end}}
     </dl>
     </div>
   </section>
+  {{end}}
 
   <section class="card">
     <div class="card-head"><h2>History</h2></div>

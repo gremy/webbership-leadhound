@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -159,7 +160,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
-	opts := leadFilterOptions(kinds, w.cfg, len(w.trusted) > 0)
+	opts := leadFilterOptions(kinds, w.cfg, w.trusted)
 	lq := b.lq()
 	campaigns, err := lq.Campaigns(ctx, leadstore.DefaultAccountID)
 	if err != nil {
@@ -202,8 +203,16 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if p.TotalLeads, err = leadCount(ctx, b); err != nil {
 		return console.LeadListPage{}, err
 	}
-	if p.Labelled, err = lq.LabelCount(ctx, ""); err != nil {
+	types, err := openTypes(ctx, b)
+	if err != nil {
 		return console.LeadListPage{}, err
+	}
+	for _, t := range types {
+		labelled, err := lq.LabelCount(ctx, t)
+		if err != nil {
+			return console.LeadListPage{}, err
+		}
+		p.Labelled = append(p.Labelled, console.TypeCount{Type: leadstore.TypeWords(t), Labelled: labelled, Goal: labelGoal})
 	}
 	order, err := outreachOrder(ctx, b, starredIDs(rows))
 	if err != nil {
@@ -255,9 +264,28 @@ func campaignFilter(ctx context.Context, lq leadstore.Queries, slug string, f *l
 // labelGoal is how many leads with the operator's call the trust gate needs (D9).
 const labelGoal = leadrate.TrustMinN
 
-// toLabelIDs are the leads of the To label filter: labelGoal open leads spread over kinds,
-// Drupal majors and countries, as a golden draft picks them (spreadSample), and every lead
-// that has a call, whatever its state. Never nil, so an empty set lists no lead.
+// openTypes are the rating types that have an open lead (state new; never a selftest one),
+// in display order: the list header counts the calls of each.
+func openTypes(ctx context.Context, b *backend) ([]string, error) {
+	rows, err := b.s.Pool().Query(ctx,
+		`SELECT DISTINCT l.kind FROM lead l JOIN org o ON o.id = l.org_id
+		 WHERE l.state = 'new' AND l.kind <> 'selftest' AND o.kind <> 'selftest'`)
+	if err != nil {
+		return nil, fmt.Errorf("console: open lead kinds: %w", err)
+	}
+	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("console: open lead kinds: %w", err)
+	}
+	return slices.DeleteFunc(slices.Clone(leadstore.RatingTypes), func(t string) bool {
+		return !slices.ContainsFunc(kinds, func(k string) bool { return leadstore.TypeOf(k) == t })
+	}), nil
+}
+
+// toLabelIDs are the leads of the To label filter: for each rating type that has open leads,
+// labelGoal of them spread over kinds, Drupal majors and countries, as a golden draft picks
+// them (spreadSample), since each type's trust gate needs its own calls; and every lead that
+// has a call, whatever its state or type. Never nil, so an empty set lists no lead.
 func toLabelIDs(ctx context.Context, lq leadstore.Queries) ([]int64, error) {
 	open, err := lq.LeadsToRate(ctx, leadstore.ListContext{})
 	if err != nil {
@@ -267,9 +295,17 @@ func toLabelIDs(ctx context.Context, lq leadstore.Queries) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, labelGoal+len(labelled))
-	for _, l := range spreadSample(open, labelGoal) {
-		ids = append(ids, l.LeadID)
+	ids := make([]int64, 0, len(leadstore.RatingTypes)*labelGoal+len(labelled))
+	for _, t := range leadstore.RatingTypes {
+		var ofType []leadstore.RateLead
+		for _, l := range open {
+			if l.RType == t {
+				ofType = append(ofType, l)
+			}
+		}
+		for _, l := range spreadSample(ofType, labelGoal) {
+			ids = append(ids, l.LeadID)
+		}
 	}
 	for _, id := range labelled {
 		if !slices.Contains(ids, id) {
@@ -279,12 +315,12 @@ func toLabelIDs(ctx context.Context, lq leadstore.Queries) ([]int64, error) {
 	return ids, nil
 }
 
-// callBands are the bands the "Your call" block offers, best first, each with leadrate's
-// plain description as its help.
-func callBands() []console.CallBand {
+// callBands are the bands the "Your call" block offers a lead of rating type t, best first,
+// each with leadrate's plain description of that band for t as its help.
+func callBands(t string) []console.CallBand {
 	var out []console.CallBand
 	for _, name := range leadrate.Bands() {
-		out = append(out, console.CallBand{Value: name, Label: strings.ToUpper(name[:1]) + name[1:], Help: leadrate.Describe(leadstore.TypeDrupal, name)})
+		out = append(out, console.CallBand{Value: name, Label: strings.ToUpper(name[:1]) + name[1:], Help: leadrate.Describe(t, name)})
 	}
 	return out
 }
@@ -292,7 +328,7 @@ func callBands() []console.CallBand {
 // leadCall is lead id's "Your call" block: its latest call and when, the bands, and how many
 // leads of its rating type t have a call. The row's Call is set from the same read.
 func leadCall(ctx context.Context, lq leadstore.Queries, t string, row *console.LeadListRow) (console.LeadCall, error) {
-	c := console.LeadCall{Bands: callBands(), LabelGoal: labelGoal}
+	c := console.LeadCall{Bands: callBands(t), LabelGoal: labelGoal}
 	calls, err := lq.LatestLabels(ctx, []int64{row.LeadID})
 	if err != nil {
 		return console.LeadCall{}, err
@@ -307,13 +343,12 @@ func leadCall(ctx context.Context, lq leadstore.Queries, t string, row *console.
 }
 
 // leadFilterOptions are the choices the filter form offers: the outreach kinds, the
-// countries leads.yaml has a policy for, and the fixed channels, statuses and sorts. Until
-// relevance passes its trust gate, the relevance sort says it sorts by score.
-func leadFilterOptions(kinds []leadKind, cfg leadconfig.Config, trusted bool) console.LeadFilterOptions {
+// countries leads.yaml has a policy for, and the fixed channels, statuses and sorts. The
+// relevance sort says what it sorts by: by score while no rating type passed its trust gate,
+// by relevance for the trusted types only while some have not.
+func leadFilterOptions(kinds []leadKind, cfg leadconfig.Config, trusted []string) console.LeadFilterOptions {
 	o := console.LeadFilterOptions{Channels: leadChannelOptions, Statuses: leadStatusOptions, Sorts: slices.Clone(leadSortOptions)}
-	if !trusted {
-		o.Sorts[0].Label = "Relevance (by score for now)"
-	}
+	o.Sorts[0].Label = relevanceSortLabel(trusted)
 	for _, k := range kinds {
 		if k.Outreach {
 			o.Kinds = append(o.Kinds, console.FilterOption{Value: k.Name, Label: k.Label})
@@ -328,6 +363,25 @@ func leadFilterOptions(kinds []leadKind, cfg leadconfig.Config, trusted bool) co
 		o.Countries = append(o.Countries, console.FilterOption{Value: c, Label: countryName(c)})
 	}
 	return o
+}
+
+// relevanceSortLabel is the relevance sort's label given the trusted rating types:
+// "Relevance" when every type is trusted, "Relevance (by score for now)" when none is, else
+// the types it sorts by relevance ("Relevance (Drupal leads; the rest by score)").
+func relevanceSortLabel(trusted []string) string {
+	var words []string
+	for _, t := range leadstore.RatingTypes {
+		if slices.Contains(trusted, t) {
+			words = append(words, leadstore.TypeWords(t))
+		}
+	}
+	switch len(words) {
+	case 0:
+		return "Relevance (by score for now)"
+	case len(leadstore.RatingTypes):
+		return "Relevance"
+	}
+	return "Relevance (" + strings.Join(words, ", ") + "; the rest by score)"
 }
 
 // countryName is an ISO 3166-1 alpha-2 code's English name, or the code itself.
@@ -512,6 +566,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		LeadID: r.LeadID, OrgID: r.OrgID, Name: r.Name, Domain: r.Domain, Country: r.Country,
 		Kind:     kindLabel(kinds, r.Kind),
 		Campaign: r.CampaignName,
+		RType:    r.RType,
 		Finding:  leadview.FindingLine(r.Finding, w.cfg.Facts, today),
 		State:    leadStateWords(r.State),
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
@@ -582,7 +637,18 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		return console.LeadDetailPage{}, err
 	}
 	p.Research = consoleResearch(lr, w.research, d.State, w.research.listLead(d.ListRow))
-	p.Report = b.reportLink(ctx, w.cfg, id)
+	p.OriginWords, p.ReachTitle = originWords(d.Origin), "From their site"
+	switch {
+	case hasReport(d.Kind):
+		// Only a Drupal site kind (or a hand-added site) has an upgrade-risk report, so only
+		// its page builds one.
+		p.ShowReport, p.Report = true, b.reportLink(ctx, w.cfg, id)
+	case d.RType == leadstore.TypeCafe:
+		p.ReachTitle = "From their listing and site"
+		if p.Place, p.Cafe, err = b.cafeViews(ctx, w.cfg, d); err != nil {
+			return console.LeadDetailPage{}, err
+		}
+	}
 	// Every purpose together; 0 (no Claude call on this lead yet) shows nothing.
 	if spent, err := b.s.Q().ClaudeSpendForLead(ctx, id, ""); err != nil {
 		return console.LeadDetailPage{}, err
@@ -658,6 +724,121 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		p.RelevanceHistory = append(p.RelevanceHistory, console.LeadRelevance{Words: words, At: r.CreatedAt})
 	}
 	return p, nil
+}
+
+// hasReport reports whether a lead of this kind has an upgrade-risk report at all: the
+// Drupal site kinds and a hand-added site. A café or an agency lead has none, so its page
+// never builds one.
+func hasReport(kind string) bool {
+	switch kind {
+	case leadstore.LeadUnsupported, leadstore.LeadD10, leadstore.LeadHand:
+		return true
+	}
+	return false
+}
+
+// originWords is where a lead was found in words, from its site's origin (else its org's
+// source); an origin with no words stays as stored.
+func originWords(origin string) string {
+	switch origin {
+	case leadstore.OriginPlace:
+		return "a map listing (Overture)"
+	case leadstore.OriginMajestic, leadstore.OriginTranco, leadstore.OriginHTTPArchive:
+		return "the top-sites list"
+	case leadstore.OriginManual:
+		return "added by hand"
+	case leadstore.OriginAgency, leadstore.OrgSourceAgencies:
+		return "the agencies list"
+	}
+	return origin
+}
+
+// cafeViews are a café lead's place (its own campaign's latest place row; nil when that
+// campaign's imports hold none) and its finding in words. A campaign spec that cannot be
+// read leaves the comparison link out rather than break the page.
+func (b *backend) cafeViews(ctx context.Context, cfg leadconfig.Config, d leadstore.Detail) (*console.LeadPlaceView, *console.LeadCafeView, error) {
+	pl, ok, err := b.lq().LeadPlace(ctx, d.OrgID, d.CampaignID)
+	if err != nil {
+		return nil, nil, err
+	}
+	sigs := make([]leadstore.Signal, len(d.Signals))
+	for i, s := range d.Signals {
+		sigs[i] = leadstore.Signal{Signal: s.Name, Value: s.Value}
+	}
+	res := probe.CafeResult(sigs)
+	var links map[string]string
+	if spec, _, err := leadCampaignSpec(ctx, b.lq(), cfg, d.CampaignID); err != nil {
+		slog.Default().Warn("console café vendor link not read", "lead", d.LeadID, "err", err)
+	} else {
+		links = spec.Offer.VendorLinks
+	}
+	cv := cafeView(res, d.Finding.Language, links)
+	if !ok {
+		return nil, cv, nil
+	}
+	// Its own website by the rule the café kinds use (a Facebook page is not one), else
+	// the site the lead was built on.
+	website := places.Place{Websites: pl.Websites}.OwnWebsite()
+	if website == "" && d.Domain != "" && !strings.HasPrefix(d.Domain, leadstore.PlaceOrgPrefix) {
+		website = "https://" + d.Domain
+	}
+	return &console.LeadPlaceView{Category: strings.ReplaceAll(pl.Category, "_", " "), Address: placeAddress(pl), Website: website}, cv, nil
+}
+
+// cafeView words a café's probe result: its loyalty and ordering vendors by the name
+// signals.yaml gives them (a phrase seen with no vendor named reads as such), its Instagram
+// and language, and the vendor it is compared with and that page's link, as a batch picks
+// them (cafeVendor). lang is the finding's language, used when the signals name none.
+func cafeView(r cafe.Result, lang string, links map[string]string) *console.LeadCafeView {
+	v := &console.LeadCafeView{Instagram: r.HasInstagram, Language: languageName(cmp.Or(r.Language, lang))}
+	conf := cafe.DefaultConfig()
+	name := func(id string) string {
+		if x := conf.Vendor(id); x != nil && x.Name != "" {
+			return x.Name
+		}
+		return id
+	}
+	for _, s := range r.Signals {
+		var to *[]string
+		switch s.Kind {
+		case cafe.SigLoyalty:
+			to = &v.Loyalty
+		case cafe.SigOrdering:
+			to = &v.Ordering
+		default:
+			continue
+		}
+		if s.Via == cafe.ViaWord {
+			continue
+		}
+		if n := name(s.Vendor); !slices.Contains(*to, n) {
+			*to = append(*to, n)
+		}
+	}
+	const phraseOnly = "mentioned on their site, no platform named"
+	if r.HasLoyalty && len(v.Loyalty) == 0 {
+		v.Loyalty = []string{phraseOnly}
+	}
+	if r.HasOrdering && len(v.Ordering) == 0 {
+		v.Ordering = []string{phraseOnly}
+	}
+	_, v.VendorName, v.VendorLink = cafeVendor(r.Vendors, links)
+	return v
+}
+
+// placeAddress is a place's address on one line: its street line, its postcode and town,
+// and its country by name, whichever it has.
+func placeAddress(pl leadstore.LeadPlace) string {
+	var parts []string
+	for _, x := range []string{pl.Freeform, strings.TrimSpace(pl.Postcode + " " + pl.Locality)} {
+		if x = strings.TrimSpace(x); x != "" {
+			parts = append(parts, x)
+		}
+	}
+	if pl.Country != "" {
+		parts = append(parts, countryName(pl.Country))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // sendNowBlock is why Send now cannot send lead r, from the lead alone, in the words the

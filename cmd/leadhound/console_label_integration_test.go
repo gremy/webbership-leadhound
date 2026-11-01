@@ -255,7 +255,7 @@ func TestConsoleToLabel(t *testing.T) {
 		t.Errorf("with two calls outside the sample, to_label lists %d leads %v, want 32", len(got), got)
 	}
 	page := c.pages[len(c.pages)-1]
-	for _, want := range []string{"<strong>3 of 30 labelled.</strong>", `<th scope="col">Your call</th>`, `<span class="badge badge-accent">maybe</span>`} {
+	for _, want := range []string{"<strong>Drupal leads: 3 of 30 labelled.</strong>", `<th scope="col">Your call</th>`, `<span class="badge badge-accent">maybe</span>`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("to_label page lacks %q", want)
 		}
