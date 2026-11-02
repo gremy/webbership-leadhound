@@ -21,7 +21,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v7"
+	scaleLeadsVersion = "v8"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -301,6 +301,10 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			SELECT id, $1::timestamptz - interval '1 day', 'operator', $1::timestamptz - interval '1 day' + interval '1 minute',
 			       true, true, true, true, true, true, 'passed'
 			FROM sender_mailbox ORDER BY id`, []any{day}},
+		// Every mailbox assigned to the default campaign: migration 00024 did this only for a
+		// database that already held mailboxes, and a fresh seed has none when it runs.
+		{"campaign_mailbox", `INSERT INTO campaign_mailbox (campaign_id, mailbox_id, assigned, actor)
+			SELECT 1, id, true, 'gremy' FROM sender_mailbox ORDER BY id`, nil},
 		// Batch b drafted 401-b days before Day and approved the same day: the first 60 the
 		// shadow week, the rest live.
 		{"outreach_batch", `INSERT INTO outreach_batch (id, shadow, created_at, content_sha256, approved_at, approved_hash, templates_sha256)
