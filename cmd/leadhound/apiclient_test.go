@@ -960,7 +960,7 @@ func TestAPIClientDefaultEnv(t *testing.T) {
 	if code, _, stderr := apiClientRun(t, "next"); code != 2 || !strings.Contains(stderr, filepath.Join("data", "api.env")) {
 		t.Errorf("no file yet: exit %d, stderr %q", code, stderr)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "data", "api.env"), b, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "data", "api.env"), b, 0o600); err != nil { // #nosec G703 -- the test's own temp folder
 		t.Fatal(err)
 	}
 	t.Chdir(t.TempDir())

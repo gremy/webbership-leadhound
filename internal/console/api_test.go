@@ -21,13 +21,13 @@ import (
 )
 
 const (
-	apiTestToken = "api-test-token-0123456789abcdef-0123456789abcdef"
+	apiTestToken = "api-test-token-0123456789abcdef-0123456789abcdef" // #nosec G101 -- a made-up token for these tests
 	// apiJobMarker is in every job field a fake answers, so a refusal that leaks one shows.
 	apiJobMarker = "Zebra-Marker"
 )
 
-func apiTestHash(token string) string {
-	sum := sha256.Sum256([]byte(token))
+func apiTestHash() string {
+	sum := sha256.Sum256([]byte(apiTestToken))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -84,7 +84,7 @@ func newAPIHarness(t *testing.T, hash string) *apiHarness {
 	b := newAPIFake()
 	t.Cleanup(func() {
 		got := logs.String()
-		for _, secret := range []string{apiTestToken, apiTestHash(apiTestToken), "wrong-token"} {
+		for _, secret := range []string{apiTestToken, apiTestHash(), "wrong-token"} {
 			if strings.Contains(got, secret) {
 				t.Errorf("the log holds a token: %s", got)
 			}
@@ -107,7 +107,7 @@ func (h *apiHarness) sessionCookie(t *testing.T) *http.Cookie {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &http.Cookie{Name: h.name, Value: tok}
+	return &http.Cookie{Name: h.name, Value: tok, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}
 }
 
 // apiRequest is a request with the given bearer token ("" sends none).
@@ -194,7 +194,7 @@ func TestAPIEveryRouteRefusedWithoutToken(t *testing.T) {
 			},
 		} {
 			t.Run(rt.pattern+"/"+name, func(t *testing.T) {
-				h := newAPIHarness(t, apiTestHash(apiTestToken))
+				h := newAPIHarness(t, apiTestHash())
 				w := h.do(build(h))
 				body := w.Body.String()
 				wantAPIError(t, w, http.StatusUnauthorized)
@@ -215,7 +215,7 @@ func TestAPIEveryRouteRefusedWithoutToken(t *testing.T) {
 // Each route works with the token, so the sweep above refuses something real.
 func TestAPIEveryRouteOpensWithToken(t *testing.T) {
 	for _, rt := range apiRoutes {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		w := h.do(apiRouteRequest(rt, rt.sample, apiTestToken))
 		if w.Code != http.StatusOK {
 			t.Errorf("%s: status %d: %s", rt.pattern, w.Code, w.Body)
@@ -267,7 +267,7 @@ func TestAPIOffAnswers404(t *testing.T) {
 
 // An unknown path never reaches the session check: 401 first, then JSON 404.
 func TestAPIUnknownPaths(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	for _, p := range apiUnknownPaths() {
 		t.Run(p, func(t *testing.T) {
 			wantAPIError(t, h.do(apiRequest(http.MethodGet, p, "", "")), http.StatusUnauthorized)
@@ -281,7 +281,7 @@ func TestAPIUnknownPaths(t *testing.T) {
 }
 
 func TestAPIMethodMismatchIsJSON(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	for _, c := range []struct{ method, target, allow string }{
 		{http.MethodPost, "/api/jobs/next", "GET"},
 		{http.MethodPost, "/api/jobs/42", "GET"},
@@ -306,10 +306,10 @@ func TestAPIMalformedAuthorization(t *testing.T) {
 	for _, header := range []string{
 		"", " ", "Bearer", "Bearer ", "Bearer  " + apiTestToken, " Bearer " + apiTestToken, "Bearer " + apiTestToken + " ",
 		"bearer " + apiTestToken, "BEARER " + apiTestToken, "Basic " + apiTestToken, "Token " + apiTestToken, apiTestToken,
-		"Bearer " + apiTestHash(apiTestToken), "Bearer " + rightLengthWrong, "Bearer\t" + apiTestToken,
+		"Bearer " + apiTestHash(), "Bearer " + rightLengthWrong, "Bearer\t" + apiTestToken,
 		"Bearer " + strings.ToUpper(apiTestToken), "Bearer " + apiTestToken + "x", "Bearer " + apiTestToken[:len(apiTestToken)-1],
 	} {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		r := apiRequest(http.MethodGet, "/api/jobs/42", "", "")
 		r.Header.Set("Authorization", header)
 		w := h.do(r)
@@ -325,7 +325,7 @@ func TestAPIMalformedAuthorization(t *testing.T) {
 
 // A stored hash in the wrong shape matches nothing: the check fails closed.
 func TestAPIMalformedStoredHashOpensNothing(t *testing.T) {
-	for _, stored := range []string{" ", "abc", strings.ToUpper(apiTestHash(apiTestToken)), apiTestToken} {
+	for _, stored := range []string{" ", "abc", strings.ToUpper(apiTestHash()), apiTestToken} {
 		h := newAPIHarness(t, stored)
 		wantAPIError(t, h.do(apiGet("/api/jobs/42")), http.StatusUnauthorized)
 	}
@@ -342,7 +342,7 @@ func TestAPITokenOpensNothingOutside(t *testing.T) {
 				}
 				return get(rt.sample)
 			}
-			on := newAPIHarness(t, apiTestHash(apiTestToken))
+			on := newAPIHarness(t, apiTestHash())
 			r := build()
 			r.Header.Set("Authorization", "Bearer "+apiTestToken)
 			with := on.do(r)
@@ -368,7 +368,7 @@ func TestAPINeverASignInTarget(t *testing.T) {
 	}
 	targets = append(targets, "/api/", "/api/tracked?status=applied")
 	for _, next := range targets {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		w := h.do(post("/login", url.Values{"email": {testEmail}, "password": {testPassword}, "next": {next}}))
 		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
 			t.Errorf("next=%s: %d to %q, want / ", next, w.Code, w.Header().Get("Location"))
@@ -401,7 +401,7 @@ func TestAPIExposesJobsOnly(t *testing.T) {
 }
 
 func TestAPINextJobs(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	since := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
 	h.b.next = []NextJob{
 		{JobID: 1, Title: "Go Engineer", Company: "Acme", Location: "Remote", Status: "new", ListingStatus: "open", URL: "https://x.example/1?a=1&b=2",
@@ -436,7 +436,7 @@ func TestAPINextJobs(t *testing.T) {
 
 // Cold start: no brief ever sent is an empty list, never null.
 func TestAPINextJobsEmpty(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	h.b.next = nil
 	w := h.do(apiGet("/api/jobs/next"))
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"jobs":[]}` {
@@ -453,7 +453,7 @@ func TestAPINextJobsNumbers(t *testing.T) {
 		{"days=61", 20, 60}, {"limit=5&days=7", 5, 7}, {"limit=1000000&days=1000000", 50, 60},
 		{"limit=99999999999999999999999", 50, 14}, {"days=99999999999999999999999", 20, 60},
 	} {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		w := h.do(apiGet("/api/jobs/next?" + c.query))
 		if w.Code != http.StatusOK || h.b.limit != c.limit || h.b.days != c.days {
 			t.Errorf("?%s: %d, limit %d days %d, want %d %d", c.query, w.Code, h.b.limit, h.b.days, c.limit, c.days)
@@ -461,7 +461,7 @@ func TestAPINextJobsNumbers(t *testing.T) {
 	}
 	for _, q := range []string{"limit=0", "limit=-1", "limit=abc", "limit=", "limit=1.5", "limit=-99999999999999999999999", "limit=%20",
 		"days=0", "days=-1", "days=abc", "days=", "days=1.5", "days=-99999999999999999999999", "limit=5&days=x"} {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		wantAPIError(t, h.do(apiGet("/api/jobs/next?"+q)), http.StatusBadRequest)
 		if n := h.b.total(); n != 0 {
 			t.Errorf("?%s: backend called %d times", q, n)
@@ -470,7 +470,7 @@ func TestAPINextJobsNumbers(t *testing.T) {
 }
 
 func TestAPINextJobsFailure(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	h.b.nextErr = errors.New("database at db.internal gone")
 	w := h.do(apiGet("/api/jobs/next"))
 	if strings.Contains(w.Body.String(), "db.internal") {
@@ -482,7 +482,7 @@ func TestAPINextJobsFailure(t *testing.T) {
 }
 
 func TestAPIJob(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	posted := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	applicants := 12
@@ -514,7 +514,7 @@ func TestAPIJob(t *testing.T) {
 
 // Cold start: a job with no observation answers with empty fields, never null lists.
 func TestAPIJobColdStart(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	h.b.job = JobPage{JobID: 42, Criteria: []JobCriterion{{Name: "stack"}}}
 	w := h.do(apiGet("/api/jobs/42"))
 	raw := w.Body.String()
@@ -530,7 +530,7 @@ func TestAPIJobColdStart(t *testing.T) {
 }
 
 func TestAPIJobMissing(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	if msg := wantAPIError(t, h.do(apiGet("/api/jobs/7")), http.StatusNotFound); !strings.Contains(msg, "7") {
 		t.Errorf("message %q", msg)
 	}
@@ -546,7 +546,7 @@ func TestAPIJobMissing(t *testing.T) {
 // from its own Tracked filters, because it never imports the store outside this test.
 func TestAPITrackedStatuses(t *testing.T) {
 	for _, status := range store.JobStatuses {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		if w := h.do(apiGet("/api/tracked?status=" + status)); w.Code != http.StatusOK || h.b.status != status {
 			t.Errorf("%s: %d, asked for %q", status, w.Code, h.b.status)
 		}
@@ -557,7 +557,7 @@ func TestAPITrackedStatuses(t *testing.T) {
 		}
 	}
 	for _, status := range []string{"all", "ALL", "Applied", "offered", "' OR 1=1", "applied,new", "%20"} {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		wantAPIError(t, h.do(apiGet("/api/tracked?status="+url.QueryEscape(status))), http.StatusBadRequest)
 		if n := h.b.total(); n != 0 {
 			t.Errorf("%q: backend called %d times", status, n)
@@ -566,7 +566,7 @@ func TestAPITrackedStatuses(t *testing.T) {
 }
 
 func TestAPITracked(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	h.b.matched = 900 // more than the page's cap
 	for _, target := range []string{"/api/tracked", "/api/tracked?status="} {
 		h.b.status = ""
@@ -583,7 +583,7 @@ func TestAPITracked(t *testing.T) {
 
 // Cold start: an empty tracker is total 0 and an empty list, never null.
 func TestAPITrackedEmpty(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	h.b.tracked = nil
 	w := h.do(apiGet("/api/tracked"))
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"total":0,"rows":[]}` {
@@ -593,7 +593,7 @@ func TestAPITrackedEmpty(t *testing.T) {
 
 // Tracked's own refusal is a bad request here, not the 422 the track route answers.
 func TestAPITrackedRefusalIs400(t *testing.T) {
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	h.b.trackedErr = fmt.Errorf("%w: status must be one of these", ErrUserFixable)
 	if msg := wantAPIError(t, h.do(apiGet("/api/tracked")), http.StatusBadRequest); msg != "status must be one of these" {
 		t.Errorf("message %q", msg)
@@ -609,7 +609,7 @@ func TestAPITrackedRefusalIs400(t *testing.T) {
 func TestAPITrack(t *testing.T) {
 	allowed := map[string]string{"applied": "new shortlisted applied", "skip": "new shortlisted skipped", "maybe": ""}
 	for _, action := range apiActions {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		h.b.out = TrackOutcome{From: "new", To: "applied", NoOp: true, Noted: true, Message: "Already applied."}
 		w := h.do(apiPost("/api/jobs/42/track", `{"action":"`+action+`","reason":"note.md"}`))
 		raw := w.Body.String()
@@ -627,7 +627,7 @@ func TestAPITrack(t *testing.T) {
 		}
 	}
 	// Whitespace after the object is not trailing data, and the reason is optional.
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	if w := h.do(apiPost("/api/jobs/42/track", "{\"action\":\"skip\"}\n \n")); w.Code != http.StatusOK {
 		t.Errorf("%d %s", w.Code, w.Body)
 	}
@@ -655,7 +655,7 @@ func TestAPITrackRefusedBodies(t *testing.T) {
 		"truncated":     `{"action":"applied"`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newAPIHarness(t, apiTestHash(apiTestToken))
+			h := newAPIHarness(t, apiTestHash())
 			wantAPIError(t, h.do(apiPost("/api/jobs/42/track", body)), http.StatusBadRequest)
 			if n := h.b.total(); n != 0 {
 				t.Errorf("backend called %d times", n)
@@ -666,7 +666,7 @@ func TestAPITrackRefusedBodies(t *testing.T) {
 
 func TestAPITrackBadID(t *testing.T) {
 	for _, id := range []string{"abc", "0", "-1", "99999999999999999999999"} {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		wantAPIError(t, h.do(apiPost("/api/jobs/"+id+"/track", `{"action":"applied"}`)), http.StatusNotFound)
 		if n := h.b.total(); n != 0 {
 			t.Errorf("%s: backend called %d times", id, n)
@@ -681,7 +681,7 @@ func TestAPITrackBodyOverCap(t *testing.T) {
 		"junk":       strings.Repeat("x", maxBody+1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newAPIHarness(t, apiTestHash(apiTestToken))
+			h := newAPIHarness(t, apiTestHash())
 			wantAPIError(t, h.do(apiPost("/api/jobs/42/track", body)), http.StatusRequestEntityTooLarge)
 			if n := h.b.total(); n != 0 {
 				t.Errorf("backend called %d times", n)
@@ -689,7 +689,7 @@ func TestAPITrackBodyOverCap(t *testing.T) {
 		})
 	}
 	// Just under the cap reaches the backend, which judges the reason's length.
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	prefix, suffix := `{"action":"applied","reason":"`, `"}`
 	if w := h.do(apiPost("/api/jobs/42/track", prefix+strings.Repeat("x", maxBody-len(prefix)-len(suffix))+suffix)); w.Code != http.StatusOK {
 		t.Errorf("at the cap: %d", w.Code)
@@ -709,7 +709,7 @@ func TestAPITrackOutcomes(t *testing.T) {
 		{"a failure", errors.New("database at db.internal gone"), http.StatusInternalServerError, serverFailed},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h := newAPIHarness(t, apiTestHash(apiTestToken))
+			h := newAPIHarness(t, apiTestHash())
 			h.b.err = c.err
 			if msg := wantAPIError(t, h.do(apiPost("/api/jobs/42/track", `{"action":"skip","reason":"private-reason-words"}`)), c.code); msg != c.msg {
 				t.Errorf("message %q, want %q", msg, c.msg)
@@ -723,7 +723,7 @@ func TestAPITrackLogsNoReason(t *testing.T) {
 	a, _, _ := testAuth(t)
 	logs := &syncBuffer{}
 	b := newAPIFake()
-	h := New(b, a, Options{Location: time.UTC, Logger: slog.New(slog.NewTextHandler(logs, nil)), APITokenSHA256: apiTestHash(apiTestToken)})
+	h := New(b, a, Options{Location: time.UTC, Logger: slog.New(slog.NewTextHandler(logs, nil)), APITokenSHA256: apiTestHash()})
 	for _, err := range []error{nil, fmt.Errorf("%w: no", ErrUserFixable)} {
 		b.err = err
 		h.ServeHTTP(httptest.NewRecorder(), apiPost("/api/jobs/42/track", `{"action":"skip","reason":"private-reason-words"}`))
@@ -738,7 +738,7 @@ func TestAPITrackLogsNoReason(t *testing.T) {
 func TestAPICrossOrigin(t *testing.T) {
 	const body = `{"action":"applied"}`
 	for _, site := range []string{"cross-site", "same-site"} {
-		h := newAPIHarness(t, apiTestHash(apiTestToken))
+		h := newAPIHarness(t, apiTestHash())
 		r := apiPost("/api/jobs/42/track", body)
 		r.Header.Set("Sec-Fetch-Site", site)
 		wantAPIError(t, h.do(r), http.StatusForbidden)
@@ -746,7 +746,7 @@ func TestAPICrossOrigin(t *testing.T) {
 			t.Errorf("%s: backend called %d times", site, n)
 		}
 	}
-	h := newAPIHarness(t, apiTestHash(apiTestToken))
+	h := newAPIHarness(t, apiTestHash())
 	r := apiPost("/api/jobs/42/track", body)
 	r.Header.Set("Origin", "https://evil.example")
 	wantAPIError(t, h.do(r), http.StatusForbidden)

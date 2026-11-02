@@ -26,7 +26,7 @@ const (
 	apiTrackedDefault = "applied"
 
 	apiNotFound = "Not found."
-	apiNoToken  = "A valid bearer token is required."
+	apiRefused  = "A valid bearer token is required."
 )
 
 // apiActions are the marks the API makes: the only three the /apply skill uses.
@@ -191,7 +191,7 @@ func (s *server) api(cop *http.CrossOriginProtection) http.Handler {
 		case !s.apiTokenOK(r):
 			s.log.Info("console api refused", "reason", "token")
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeAPIError(w, http.StatusUnauthorized, apiNoToken)
+			writeAPIError(w, http.StatusUnauthorized, apiRefused)
 		case cop.Check(r) != nil:
 			s.log.Info("console api refused", "reason", "cross-origin")
 			writeAPIError(w, http.StatusForbidden, "Cross-origin requests are refused.")
@@ -316,9 +316,7 @@ func apiNextJobOf(j NextJob) APINextJob {
 	}
 	return APINextJob{JobID: j.JobID, Title: j.Title, Company: j.Company, Location: j.Location, Status: j.Status,
 		ListingStatus: j.ListingStatus, URL: j.URL, ApplyURL: j.ApplyURL, ApplyType: j.ApplyType, BriefDay: day, BriefN: j.BriefN,
-		Prior: apiList(j.Prior, func(p PriorJob) APIPriorJob {
-			return APIPriorJob{JobID: p.JobID, Title: p.Title, Status: p.Status, Since: p.Since}
-		})}
+		Prior: apiList(j.Prior, func(p PriorJob) APIPriorJob { return APIPriorJob(p) })}
 }
 
 // apiJob is GET /api/jobs/{id}: one job's whole record.
@@ -349,12 +347,10 @@ func apiJobOf(j JobPage) APIJob {
 		}),
 		Unclear:     apiList(j.Unclear, apiPointOf),
 		FailedGates: apiList(j.FailedGates, apiPointOf),
-		History: apiList(j.History, func(l StatusLine) APIStatusLine {
-			return APIStatusLine{Status: l.Status, Reason: l.Reason, Actor: l.Actor, At: l.At}
-		})}
+		History:     apiList(j.History, func(l StatusLine) APIStatusLine { return APIStatusLine(l) })}
 }
 
-func apiPointOf(p JobPoint) APIPoint { return APIPoint{Name: p.Name, Snippet: p.Snippet} }
+func apiPointOf(p JobPoint) APIPoint { return APIPoint(p) }
 
 // apiTracked is GET /api/tracked?status=S: the jobs at one status. S is one of the Tracked page's
 // filters that names a status, which a test pins to store.JobStatuses; "all" and the page's
@@ -378,9 +374,7 @@ func (s *server) apiTracked(w http.ResponseWriter, r *http.Request) {
 		s.apiFail(w, r, err)
 		return
 	}
-	writeAPIJSON(w, http.StatusOK, APITracked{Total: l.Total, Rows: apiList(l.Rows, func(t Tracked) APITrackedRow {
-		return APITrackedRow{JobID: t.JobID, Title: t.Title, Company: t.Company, Status: t.Status, Reason: t.Reason, Since: t.Since}
-	})})
+	writeAPIJSON(w, http.StatusOK, APITracked{Total: l.Total, Rows: apiList(l.Rows, func(t Tracked) APITrackedRow { return APITrackedRow(t) })})
 }
 
 // apiTrack is POST /api/jobs/{id}/track: the same mark as trackJob, through the same Track, so it
