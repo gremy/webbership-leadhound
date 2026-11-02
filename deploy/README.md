@@ -90,7 +90,7 @@ The brief and ATS buttons start the timed units unchanged, so a run from the con
 A press while the same service is starting or running would be merged into that run by systemd, so the console refuses it and says when the running one started.
 `PathChanged=` fires when the file is closed after a write, not while it exists, so the request files are never deleted, and arming a watcher on a deploy never starts its service.
 
-Check the watchers with `systemctl list-units 'leadhound-*.path'`: these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)), `leadhound-leads-research.path` (see [Contact research](#contact-research)), the Status page's `leadhound-leads-verify-balance.path` and Check email now's `leadhound-leads-verify-now.path` should all be `active` and `waiting`, and Send now's `leadhound-leads-send-now.path` too wherever the send timer is enabled (see [Send now](#send-now)).
+Check the watchers with `systemctl list-units 'leadhound-*.path'`: these four, the mailbox check's `leadhound-mailbox-check.path` (see [Mailboxes](#mailboxes)), `leadhound-leads-research.path` (see [Contact research](#contact-research)), Draft it's `leadhound-leads-draft.path` (see [Draft it](#draft-it)), the Status page's `leadhound-leads-verify-balance.path` and Check email now's `leadhound-leads-verify-now.path` should all be `active` and `waiting`, and Send now's `leadhound-leads-send-now.path` too wherever the send timer is enabled (see [Send now](#send-now)).
 The leads jobs' Run now watchers go with their timers: `leadhound-leads-contacts.path` and `leadhound-leads-probe.path` wherever the finding timers are enabled, and `leadhound-leads-batch.path` wherever the batch timer is.
 Check a run with `journalctl -u leadhound-preview.service` (or `leadhound-fetch`, `leadhound-brief`, `leadhound-ats`).
 The same preview runs by hand with `make remote HOST=… ARGS='preview' CONFIRM=1`, which takes the LinkedIn lock as the unit does.
@@ -177,7 +177,7 @@ The batch unit holds the Anthropic key, which systemd loads before the check run
 | `/opt/leadhound/bin/leadhound` | root, 0755 | the binary |
 | `/opt/leadhound/bin/leadhound-backup` | root, 0755 | `deploy/leadhound-backup.sh` |
 | `/opt/leadhound/data/` | leadhound, 0750 | `LEADHOUND_DATA_DIR`: `leadhound.yaml`, `ats-boards.yaml`, `leads.yaml`, `agencies.yaml` `leads-templates/` and `campaigns/` (root:leadhound 0640, from `make deploy-data`; see [Campaigns on the server](#campaigns-on-the-server)), the outbox of a brief that is not sent, `preview.json` (the latest Run now results) |
-| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) the Status page's Reoon refresh (`run/leads-verify-balance`), Send now and the manual send (`run/leads-send-now`), Check email now (`run/leads-verify-now`) and the leads jobs' Run now on Controls (`run/leads-contacts`, `run/leads-probe`, `run/leads-batch`), one file per action, read by the `leadhound-*.path` watchers |
+| `/opt/leadhound/data/run/` | leadhound, 0700 | the console's Run now requests, its mailbox check requests (`run/mailbox-check`) its contact research requests (`run/leads-research`) its Draft it requests (`run/leads-draft`) the Status page's Reoon refresh (`run/leads-verify-balance`), Send now and the manual send (`run/leads-send-now`), Check email now (`run/leads-verify-now`) and the leads jobs' Run now on Controls (`run/leads-contacts`, `run/leads-probe`, `run/leads-batch`), one file per action, read by the `leadhound-*.path` watchers |
 | `/etc/leadhound/env` | root, 0600, enforced | the units' environment (`deploy/env.example`) |
 | `/etc/leadhound/mailbox.key` | root, 0600 | the mailboxes' private key, made by the first deploy; see [Mailboxes](#mailboxes) |
 | `/etc/leadhound/anthropic.key` | root, 0600 | the Anthropic API key, placed by hand; see [The Anthropic key](#the-anthropic-key) |
@@ -343,6 +343,7 @@ Every deploy installs the units and decides the timers from `/etc/leadhound/env`
 - The deploy prints which leads timers are on, and for those that are off, which lines are missing.
 
 Whether an enabled timer does anything is the console's: see [Switches in the console](#switches-in-the-console).
+Draft it has no timer and no switch: see [Draft it](#draft-it).
 To turn finding on, add `LEADHOUND_LEADS_TIMERS=on` to `/etc/leadhound/env` and run `sudo systemctl enable --now leadhound-leads-probe.timer leadhound-leads-contacts.timer leadhound-leads-contacts.path leadhound-leads-probe.path` (or deploy).
 To turn sending on, first add a mailbox, assign it to its campaign and send its test, as [Mailboxes](#mailboxes) says; then, with `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` in the file, deploy (or run `sudo systemctl enable --now leadhound-leads-batch.timer leadhound-leads-send.timer leadhound-leads-sync.timer leadhound-leads-batch.path leadhound-leads-send-now.path` and `sudo systemctl restart leadhound-console.service`, so the console reads the new settings), and switch Sending on on the console's Controls page.
 Without `LEADHOUND_LEADS_TIMERS=on` the next deploy disables the sending timers again, even with `LEADHOUND_OUTREACH=live` set.
@@ -502,6 +503,37 @@ Selftest leads cannot be picked in the console; `--from-request` sends a batch o
 If a manual send stays "asked and not started", reset the watcher as above; the request still works if the run starts within 15 minutes of the confirm, and after that, use Send now again on the batch page.
 For "Check email now": `sudo systemctl reset-failed leadhound-leads-verify-now.path leadhound-leads-verify-now.service`, then `sudo systemctl start leadhound-leads-verify-now.path`.
 
+### Draft it
+
+The Draft it button on a lead's page drafts that one lead now, without waiting for the morning batch.
+The console never holds the Anthropic key and never calls Claude: it queues a `draft_request` row and writes the request time to `/opt/leadhound/data/run/leads-draft`.
+`leadhound-leads-draft.path` sees the write (`PathChanged=`, as the [Run now](#run-now) watchers do) and starts `leadhound-leads-draft.service`, which runs `leads drafts make --from-request` under `timeout 15m`, with the key as its credential.
+Nothing in this job sends.
+
+- **No timer.**
+  Every deploy enables the watcher, whatever the leads lines in `/etc/leadhound/env` say, and the job runs only on a press.
+- **What it makes**: a batch of its own with `origin = 'draft_it'`, manual and live, and its lead moves from new to batched.
+  It never blocks `leads batch new`, and the sweep that discards stale Send now batches leaves it alone.
+  Discard on the lead's page returns the lead to new.
+- **A run takes at most 5 requests**, oldest first, and asks for another run when it took 5.
+  A lead has at most one open request; a press on one still queued wakes the service again, then refuses with the time it was asked.
+- **What it refuses**, on the lead's page with a plain reason: a lead that is not new, already batched, suppressed or in a conversation elsewhere, and one with no contact on that channel or no mailbox for its campaign.
+- **No key or no `LEADHOUND_LIVE=1`.**
+  The unit fails at start while `/etc/leadhound/anthropic.key` is missing, and the request stays queued until the next press once the key is there.
+  With the key and without `LEADHOUND_LIVE=1`, or past a cap, the drafts come from the templates and the reason is shown.
+- **Status, not Controls.**
+  The Status page has a `leads-draft` row read from systemd, because a timeout or a failed start reaches no run row.
+  Controls has no row for it: a Controls row is a timer job's off switch, and this job runs only on a press.
+- **Locally** there is no watcher: run `go run ./cmd/leadhound leads drafts make --from-request` by hand after the press, with `--decider fake` to call no Claude.
+
+Check the watcher with `systemctl status leadhound-leads-draft.path` and a run with `journalctl -u leadhound-leads-draft.service`.
+If it hits its start limit, reset it as the Run now watchers are reset:
+
+```sh
+sudo systemctl reset-failed leadhound-leads-draft.path leadhound-leads-draft.service
+sudo systemctl start leadhound-leads-draft.path
+```
+
 ### Enrichment
 
 After the contact search, the contacts unit runs `leads enrich --max 300`, under `timeout 60m` and the same fetch lock, before `leads rate` and `leads build`.
@@ -624,7 +656,7 @@ Before the batch, `leads.yaml` must list your own product's hosts as `probe.cafe
 
 Production has never built a lead, so take these steps in order:
 
-1. Place the Anthropic key first, as [The Anthropic key](#the-anthropic-key) says: from the release with campaigns on, the batch and contact research units fail to start without it.
+1. Place the Anthropic key first, as [The Anthropic key](#the-anthropic-key) says: from the release with campaigns on, the batch, contact research and Draft it units fail to start without it.
 2. Deploy: `make deploy` migrates the core set up to 00009 and the leads set up to 00028 (see [Leads migrations 00026 to 00028](#leads-migrations-00026-to-00028)), with the new binary, before it puts that binary in place; a failed migration leaves the old release running.
 3. `make deploy-data` (it copies `campaigns/` too), then `leads campaigns register`, as [Campaigns on the server](#campaigns-on-the-server) says.
 4. Suppress the addresses and domains of people you already know (`leads suppress add address|domain VALUE`), before any finding.
@@ -884,7 +916,7 @@ It prints no lift line for a suppression that another opt-out still leans on ("a
 
 ## The Anthropic key
 
-LeadHound calls Claude to draft emails, to find a contact for a starred lead and to find a business phone, so the jobs that do that need an Anthropic API key.
+LeadHound calls Claude to draft emails and manual texts, to find a contact for a starred lead and to find a business phone, so the jobs that do that need an Anthropic API key.
 The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600`), holding the key alone on one line.
 
 - **Place it by hand.**
@@ -892,7 +924,7 @@ The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600
   Then ssh to the server, open the file in your own editor as root (for example `sudo -e /etc/leadhound/anthropic.key`), paste the key, save, and run `sudo chmod 0600 /etc/leadhound/anthropic.key`.
   Never type the key into a command line, where it lands in your shell history, and never paste it into a chat.
 - **Who reads it.**
-  Only the units that call Claude get it, as a systemd credential (`LoadCredential=anthropic-key:/etc/leadhound/anthropic.key`): `leadhound-leads-batch.service`, because drafting runs at batch time, and `leadhound-leads-research.service` (see [Contact research](#contact-research)).
+  Only the units that call Claude get it, as a systemd credential (`LoadCredential=anthropic-key:/etc/leadhound/anthropic.key`): `leadhound-leads-batch.service`, because drafting runs at batch time, `leadhound-leads-research.service` (see [Contact research](#contact-research)) and `leadhound-leads-draft.service` (see [Draft it](#draft-it)).
   No other unit gets it, and never the console; `make remote` hands it on only when you add `REMOTE_CLAUDE=1` (see "Running a Claude command by hand" below).
   This is why it is not a line in `/etc/leadhound/env`: the env file reaches every unit, the console included, and a credential reaches only the units that need it.
 - **No `ANTHROPIC_API_KEY` line is read anywhere.**
@@ -900,7 +932,7 @@ The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600
 - **The console refuses to start** when it can see the key: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `LEADHOUND_ANTHROPIC_KEY_FILE` set to anything, or an `anthropic-key` credential handed to it.
   It exits 2, naming what it found, and systemd does not restart it.
 - **Every deploy** makes the file `root:root 0600` again if it is there, and never creates, reads or prints it.
-  Until you place it, the deploy says `install: no Anthropic key at /etc/leadhound/anthropic.key`, and `leadhound-leads-batch.service` and `leadhound-leads-research.service` cannot start, because systemd fails a unit whose `LoadCredential=` file is missing.
+  Until you place it, the deploy says `install: no Anthropic key at /etc/leadhound/anthropic.key`, and `leadhound-leads-batch.service`, `leadhound-leads-research.service` and `leadhound-leads-draft.service` cannot start, because systemd fails a unit whose `LoadCredential=` file is missing.
   That holds even for a batch that drafts from templates only and never calls Claude, so place the key before you deploy this release with sending on, or the morning batch stops.
   `ImportCredential=` would let the units start without the file, but it needs systemd 254 or later; the units do not use it yet, so check the server's version (`systemctl --version`) before that change.
 - **Locally**, put the key in a file outside the repository, made `0600` (`chmod 0600`), and set `LEADHOUND_ANTHROPIC_KEY_FILE=/path/outside/the/repo/anthropic.key` in your local `.env`.
@@ -914,13 +946,13 @@ The key is a file on the server, `/etc/leadhound/anthropic.key` (`root:root 0600
 - **Every Claude command needs `LEADHOUND_LIVE=1`** as well as the key; without it, it prints one line saying no Claude call was made and exits 0.
 
 **Running a Claude command by hand.**
-`leads drafts sample`, `leads drafts eval --decider claude`, `leads phones research` and `leads research run` call Claude, and `make remote` hands the Anthropic key to none of them unless you add `REMOTE_CLAUDE=1`, for example:
+`leads drafts sample`, `leads drafts make`, `leads drafts eval --decider claude`, `leads phones research` and `leads research run` call Claude, and `make remote` hands the Anthropic key to none of them unless you add `REMOTE_CLAUDE=1`, for example:
 
 ```sh
 make remote HOST=<ssh host> CONFIRM=1 REMOTE_CLAUDE=1 ARGS='leads phones research --campaign drupal-eol --max 3'
 ```
 
-`REMOTE_CLAUDE=1` adds `-p LoadCredential=anthropic-key:/etc/leadhound/anthropic.key` to the run, the same credential the batch and research units get.
+`REMOTE_CLAUDE=1` adds `-p LoadCredential=anthropic-key:/etc/leadhound/anthropic.key` to the run, the same credential the batch, research and Draft it units get.
 It refuses, before anything runs, without `CONFIRM=1` (it spends money), for the console (`serve`, `console …`), and for a command that gets the mailbox key (no command holds both keys).
 
 Each prints what it spent; a run stops at the caps below.
@@ -1004,6 +1036,11 @@ The console never holds the Anthropic key and never calls Claude: it queues an a
   The next `leads build` gives the lead its channel.
 - **One attempt per organisation every 90 days**, counted from the attempt that ran; an attempt the spend cap stopped before calling counts for nothing.
   The lead page's "Contact research" line says the latest attempt in plain words, and "Look again" asks for another, refused inside the 90 days with the date it can run.
+- **LinkedIn.**
+  A star on a lead with no channel also looks for its LinkedIn page, and so does Look again on a form lead or a lead with no channel; `leads research request LEAD --linkedin` asks the same by hand, and without the flag it stays email and phone.
+  A country written to by form only, where calls are not allowed, queues LinkedIn alone.
+  An attempt that did not look for LinkedIn does not count against the 90 days when the new request does, once.
+  What counts as found is in [LinkedIn and your own contacts](#linkedin-and-your-own-contacts).
 - **Caps.** Research has its own daily cap and a per-lead cap (see [Claude spend caps](#claude-spend-caps)); a run past them leaves the attempt paused, and it can be asked again.
 - **A run takes at most 20 attempts**, starred leads first, oldest first; the rest wait for the next request.
   A request while the service runs is merged into that run by systemd.
@@ -1082,6 +1119,58 @@ It has no unit and no timer: run it by hand with the key, as "Running a Claude c
 
 A database that applied an earlier draft of 00027 during development needs it rolled back and applied again; production has not run any 00027 yet.
 
+## Leads migration 00029
+
+`make deploy` applies it with the new binary, as the owner role, before the binary is put in place.
+It adds outreach by hand:
+
+| Adds | For |
+| --- | --- |
+| `lead_channel` row `linkedin`, `contact_route.kind` `linkedin`, `contact_route.person_id` | LinkedIn as a channel, and the person a route belongs to |
+| `org_person`, `contact_mark` | people at an organisation, and the append-only claim and retire marks on a route, fact or person |
+| the `operator@1` marker on `contact_route`, `org_fact` and `org_person` | a row you typed in, which came from no page and no place |
+| `message_edit` | each saved edit of a draft, the text before and after |
+| `org_sector`, `proof`, `proof_retire` | a lead's sector and your proof library |
+| `lead_proposal`, `lead_proposal_status` | proposals and their statuses |
+| `draft_request`, `outreach_batch.origin` | Draft it, and what made each batch; existing manual batches become `send_now` |
+| `draft_generation.channel`, `contact_research.want` may name `linkedin` | manual drafts kept out of the email gate, and research that looks for LinkedIn |
+
+It also copies every stored LinkedIn company page fact into a `linkedin` route, with that fact's own source, and a value already there is left alone.
+Every new table is append-only for the app role, apart from a `draft_request`'s status, reason, batch and times.
+
+**The app role can now re-hash an unapproved batch.**
+An email edit has to change the text the batch's hash covers, so the app role gains `UPDATE` on `outreach_message (subject, body_text)` and `outreach_batch (content_sha256)`.
+The grants name columns only, so the limit to an unapproved batch is the `WHERE approved_at IS NULL` in the statement itself, and an edit after approval is refused there.
+You still approve the hash you are shown, and an edit after you read it makes that approval fail.
+The send-time recheck of each message against its `approved_sha256` stays the backstop.
+A form or LinkedIn edit touches none of these: it writes only `message_edit`, so an approved batch is never called changed.
+
+## LinkedIn and your own contacts
+
+- **LeadHound's leads side never fetches LinkedIn's own site.**
+  Every leads fetch client (`siteClients`: the probe, contact search, enrichment, research, phone research and the agency import) refuses LinkedIn's host and its subdomains, on the first request and on every redirect, whatever the live setting says.
+  The job-search side is unchanged: `collect linkedin`, `canary linkedin` and the brief's recheck read LinkedIn on purpose, through their own clients.
+- **Where a link comes from.**
+  A LinkedIn link counts only as an `href` on a page fetched from the organisation's own domain.
+  Enrichment keeps a company page; contact research may keep a company or school page, or a person's profile with a role title printed beside the link.
+  A name is stored only if it is printed beside the link, and only in `org_person`.
+- **What is stored**: a `contact_route` of kind `linkedin`, whose value is one canonical form with no `www`, a lower-case slug and no query or sub-page, so a link is never stored twice for one organisation.
+  A person's profile also points at its `org_person` row.
+  A lead may use either; among your own rows a person's profile outranks a company page, and among research's rows the company page comes first, as the safer default.
+- **Your own contacts** carry `derived_by = 'operator@1'` and no page or place, plus a `claim` mark in the same transaction.
+  Marks are append-only and the latest per row decides: `claim` is yours and carries your note, `retire` is gone.
+  A value exists once per organisation, so adding one already there writes a claim on that row, and changing a value is a new or claimed row plus a retire on the old one, in one transaction.
+- **Your email skips two checks.**
+  The role-address filter does not apply, and the address counts as having a working mail server, because the console's unit cannot look up DNS (`IPAddressDeny=any`); `mx_ok` is stored false.
+  The email check before any send stays the gate; see [The email check](#the-email-check).
+- **Retiring a contact** cancels every unsent message or call aimed at it, with the reason "contact retired", so a sequence never stalls on a value that is gone.
+  A batched lead with nothing live left returns to new, and the send path skips a retired address.
+  A claim does not revive what was cancelled: Draft it makes a new draft.
+  Research, the crawl and enrichment never bring a retired value back; only your claim does.
+- **`leads transfer`** skips retired routes, and marks do not cross, so a claimed route crosses unclaimed.
+  A lead on a route with no page crosses with no route and channel `none`.
+- **Erasure** covers all of this; see [Erasure](#erasure).
+
 ## Reply snippets
 
 Reply sync used to keep no text of a reply.
@@ -1095,6 +1184,10 @@ Any other event, and a reply matched to no lead, keeps no snippet, and nothing e
 `leads forget org ID --reason TEXT` erases one organisation's personal data when someone asks, in one transaction: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts, and the phones and emails of its map listing.
 It also suppresses the organisation's domain and its numbers (as hashes, with the source `forget: <reason>`), so it is never collected, enriched, researched or called again, moves its leads to suppressed and cancels their pending messages.
 It also erases its lead's CRM: every reply snippet of its mailbox events is emptied (the event rows stay), and its `lead_crm` row (note, next action, deal, tenant link) and its stage changes (`lead_stage_event`) are deleted; the counts line names them.
+It also erases outreach by hand, in this order: the organisation's contact marks; any lead's use of a person's route (the lead goes to channel `none`); those routes and its `org_person` rows, with the pages people were read from and the email checks of their addresses; the before and after text of its draft edits, the subject and body of its edited emails, and any form or LinkedIn target that was a person's profile, or an email target that was a person's address.
+Then its proposal titles become `(erased)`, its proposal notes are blanked, and its sector and Draft it request rows are deleted.
+The counts line names each.
+It does not yet empty the bodies of its unedited email messages, or the values of routes that belong to no person.
 The reason is one line of at most 200 characters with no `@` in it; it prints counts only, never a number or a page.
 ID is the organisation's id in the database (the `id` column of the `org` table), not the lead's number; the console does not show it yet.
 

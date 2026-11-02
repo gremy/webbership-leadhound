@@ -41,7 +41,7 @@
   - Account (`/account`): who is signed in, and Sign out.
   - Controls (`/controls`): one sentence on why nothing is going out (or when the next email does), the Sending switch, a switch per leads job (morning batch, inbox sync, site probe, contacts, research, and the email check, with today's checks and the Reoon credits left) with its timer read from systemd and its last run, and the three server-only lines (`LEADHOUND_OUTREACH`, `LEADHOUND_LIVE`, `LEADHOUND_LEADS_TIMERS`) shown read-only; see "Switches in the console" in `deploy/README.md`.
     The sending window (start, end, days, in each recipient's local time) is set there and saved over `leads.yaml`, the card says when the hourly send runs (Monday to Friday, 10:00 to 19:00 Bucharest), and a Send now button beside the sentence sends the due emails outside the window for one run, every limit still applying, wherever the send timer is enabled; see "The sending window" and "Send now" in `deploy/README.md`.
-  - Leads, in ten pages on its sub-nav: Home (`/leads/home`), List (`/leads`, with a page per lead), Outreach (`/leads/outreach`, with each batch's page), Today (`/leads/today`), Replies (`/leads/replies`), Pipeline (`/leads/pipeline`), Calls (`/leads/calls`), Drafts (`/leads/drafts`), Campaigns (`/leads/campaigns`) and Reports (`/leads/reports`); Settings (`/leads/settings`) sits in the gear menu.
+  - Leads, in eleven pages on its sub-nav: Home (`/leads/home`), List (`/leads`, with a page per lead), Outreach (`/leads/outreach`, with each batch's page), Today (`/leads/today`), Replies (`/leads/replies`), Pipeline (`/leads/pipeline`), Calls (`/leads/calls`), Drafts (`/leads/drafts`), Proof (`/leads/proof`), Campaigns (`/leads/campaigns`) and Reports (`/leads/reports`); Settings (`/leads/settings`) sits in the gear menu.
     See "The Leads console", "Calls" and "The CRM" under Campaigns and leads.
     Send now picks leads by hand: "Send now" on a lead's page, the List's tick boxes with "Send now (N)", or "Approve and send now" on a batch; each shows a confirm page first (see "Shadow and live" below).
     Outreach is the summary and the sending state with the pause switch, under the Controls sentence on why nothing is going out (also on the dashboard's Leads card); each batch waiting for approval read in full, with its approve form shown only while the messages still match their hash, and discard; replies with suppress, suppressions, manual items to mark done, mark contacted, and a message to check by hand as sent or not sent.
@@ -59,6 +59,7 @@
 Each kind of outreach is a campaign: websites still running an old or ending Drupal major version (`drupal-eol`) is the first, independent cafés (`cafes-loyalty`, see "Café places" below) the second.
 Nothing leaves the machine that the operator did not approve.
 A draft is either a template filled with stored facts or, once a campaign has earned it, written by Claude; Claude never decides a fact, and a deterministic check refuses any claim that is not a stored row.
+A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Claude writes it whenever it can.
 
 - **Data directory**: the leads commands read `leads.yaml` from `LEADHOUND_DATA_DIR`, with the templates under `leads-templates/` (the `templates_dir` key), the agency list in `agencies.yaml` and the campaigns under `campaigns/`.
   `examples/leads.yaml`, `examples/leads-templates/`, `examples/agencies.demo.yaml` and `examples/campaigns/` are a fictional demo with reserved names only.
@@ -76,7 +77,7 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   `leads agencies import [FILE]` reads the agency list, and `leads contacts [--max N] [--org ID]...` looks for contact routes on each organisation's own site; `leads export routes [--limit N]` writes them to a file.
 - **Fetching rules**: site fetching needs `LEADHOUND_LIVE=1`, and `--dry-run --fixtures DIR` runs probe, contacts and agencies import on local files instead.
   Only hosts that resolve to public network addresses are fetched, robots.txt is honoured on every path, and a bot check is recorded and skipped, never worked around.
-  Only role addresses (the `role_local_parts` list) are stored; an address that looks like a person's is counted and dropped.
+  Only role addresses (the `role_local_parts` list) are stored; an address that looks like a person's is counted and dropped, and only an address you add yourself skips this.
   `LEADHOUND_PROBE_CONCURRENCY` and `LEADHOUND_PROBE_RATE` set how many sites run at once and the requests per second across a run.
 - **The daily loop**: `leads sites probe` → `leads contacts` → `leads enrich` → `leads rate` → `leads build` → star and order leads on the console's List → `leads verify [--max N]` → `leads batch new [--size N]` → read `leads batch show N` → `leads batch approve N --hash H [--skip 3,5]` → `leads send [--max N]` → `leads sync`.
   `leads build` turns every organisation with a finding (an unsupported Drupal, a Drupal 10 site, an agency partner) into a lead and reads no web page.
@@ -84,7 +85,7 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   `batch show` prints the approve line with the batch's hash, and approval is refused if the messages changed since they were drafted; the console's Outreach tab shows and approves the same batches.
   A new batch is refused while one of its kind waits, and a live batch is sized to what the warm-up ramp can send over the next three business days; `leads batch discard N` returns its leads to new.
   The ramp starts on a fixed date or, with `caps.start_date: first-send`, on the first real send.
-  Contact-form and LinkedIn items are done by hand and closed with `leads done MESSAGE`; `leads mark-contacted DOMAIN [--note TEXT]` records a lead reached some other way, and `leads resolve MESSAGE sent|not-sent` settles a message whose send is uncertain, after checking the mailbox's Sent folder.
+  Contact-form and LinkedIn items are done by hand and closed with Mark sent on the lead's page or `leads done MESSAGE`; `leads mark-contacted DOMAIN [--note TEXT]` records a lead reached some other way, and `leads resolve MESSAGE sent|not-sent` settles a message whose send is uncertain, after checking the mailbox's Sent folder.
   Calls are made by hand from the console's Today tab and recorded there or with `leads calls outcome`; `leads send` never touches a call.
 - **Email check**: `leads verify [--max N]` checks with Reoon the email addresses the next live batches would draft (starred first, in the batch's order), two at a time, within the credits left and `LEADHOUND_REOON_DAILY_CAP` (default 200 a day), and stores each answer; it needs `LEADHOUND_LIVE=1` and the key file (`/etc/leadhound/reoon.key` on the server, `LEADHOUND_REOON_KEY_FILE` locally).
   While the Email check job is on (Controls), a live batch drafts an email lead only when its address has a sendable answer from the last 90 days: safe and role addresses go, invalid, disabled, disposable, full and trap addresses never do, catch-all goes unless Leads → Settings → Email check leaves them out, and unknown is asked again the next day and blocked after a second unknown.
@@ -147,12 +148,14 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   The file is written at mode 0600, outside the repository, never over an existing file; the lead page's Report link (`/leads/reports/{id}`) serves the same page to the signed-in operator.
   The emails offer the report and you send it when the lead replies: no email carries a link to it or attaches it, and there is no public address for it.
 - **Erasure**: `leads forget org ID --reason TEXT` erases an organisation's personal data in one transaction, as the owner role: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts and its map listing's phones and emails.
+  It deletes the people named at it, their contact routes and the email checks of their addresses, your contact marks, its sector and its Draft it requests, and empties your draft edits and any target that was a person's profile or address.
   It suppresses the organisation's domain and its numbers (hashed), so it is never collected, researched, enriched or called again, and cancels its pending messages.
-  It also erases its lead's CRM: the reply snippets are emptied, and the note, next action, deal, tenant link and stage history are deleted.
+  It also erases its lead's CRM: the reply snippets are emptied, proposal titles and notes are erased, and the note, next action, deal, tenant link and stage history are deleted.
   It prints counts only, and run again it finds nothing left; see "Erasure" in `deploy/README.md` for backups.
-- **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, phone), its relevance and a star.
+- **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, LinkedIn, phone), its relevance and a star.
   It filters by kind, country, channel, starred, has a phone, minimum relevance and status (not contacted yet, contacted, all), and sorts by relevance, newest or your outreach order; the filters survive paging.
   A lead's page (`/leads/{id}`) shows the finding with its evidence, the ways to reach them and the pages they came from, phone numbers, description and social links, the agency page, the site, its history, its place in the queue, its messages and one line per reason it ranks where it does.
+  It also has a Next step card, its drafts, its contacts, its proposals and its sector.
   The page shows only the cards that fit the lead's type.
   A café's page shows The place (category, address, its own website or "none of its own", where it was found and the country's policy), its café findings with the loyalty vendors by name, and the campaign's comparison page for that vendor, or its default one when no vendor was seen.
   The upgrade-risk report card shows only on a Drupal site lead; an agency or café page has none, and a café page never shows a list rank.
@@ -160,12 +163,69 @@ A draft is either a template filled with stored facts or, once a campaign has ea
 - **The CRM**: once a lead replies or a call gets through, it shows as Talking, and you move it to Proposal, Won or Lost (Lost needs a reason).
   Replies (`/leads/replies`) lists the leads that answered, newest first, with the first lines of what they said, stage buttons, and Snooze for 1 day or 1 week.
   Pipeline (`/leads/pipeline`) is four columns of cards with stage buttons; it needs no drag and no JavaScript.
-  A lead's page adds its timeline (events, messages sent, replies, calls, email checks and stage changes, newest first), a note and a next action with its date, and a deal value in GBP, EUR, RON or USD; a won lead can link to its Webbership tenant.
+  A lead's page adds its timeline (events, messages sent, replies, calls, email checks, stage changes, drafts, your edits, texts marked sent, contact changes, research attempts, proposals and your sector choices, newest first), a note and a next action with its date, and a deal value in GBP, EUR, RON or USD; a won lead can link to its Webbership tenant.
   Expected revenue is the value times the stage's weight (Talking 20%, Proposal 50%, Won 100%, Lost 0), summed per currency and never converted.
   A next action due today or earlier puts the lead on the Dashboard's Needs me card; a snoozed lead or one whose next action is still ahead stays off it.
   Calls (`/leads/calls`) is the call queue: calls due today and call-backs due, with the outcome buttons and a call-back date on the outcome form.
   Reports (`/leads/reports`) is the funnel per campaign, with won leads and revenue, plus the Claude cost per lead contacted and per reply and the email checks as a count.
   Reply sync keeps one thing from a reply's text: a snippet of at most 300 characters, its opening plain-text lines with quoted history, signature and our own lines taken out; nothing else of the body is stored.
+- **Channels**: a lead's channel is `email`, `form`, `linkedin` or `none`, and LinkedIn is a way to reach someone like any other.
+  Where a country is emailed, the pick is email with a working mail server, then form, then LinkedIn; where it is written to by form only, form and then LinkedIn.
+  A country that is off stays `none`, unless you added a form or LinkedIn contact yourself: that picks the manual channel, with one warning line on the card, because it is your own contact and your own hand.
+  Email stays with the country's rule, because the machine sends it.
+  A LinkedIn contact is a company page or a person's profile, stored as one canonical link.
+  LeadHound reads such a link only from the organisation's own pages and never requests linkedin.com; see "LinkedIn and your own contacts" in `deploy/README.md`.
+- **Lists by next action**: the List's tabs are Email-ready, Manual, Dead end, Contacted and All, each next action with its count.
+  Manual is a form or LinkedIn lead, or a lead with no channel and a phone number.
+  Dead end is a new lead with nothing to reach it, and it says why: not searched yet, looking for a contact, nothing found, a contact found that the next build picks up, or the country is off.
+  One SQL definition computes the next action on every read and nothing stores it, so the tabs, their counts and the lead page's Next step card always agree.
+  Skipped, suppressed and closed leads are on no next-action tab; All with the status "all" shows them.
+- **Manual drafts**: a LinkedIn lead gets a connection note and a message for after they accept.
+  A form lead gets a form message, plus the note and the message when it has a LinkedIn contact.
+  Claude writes these whenever a key is present and the caps allow, with the same citations and the same grounding check as an email.
+  They skip the trust gate for drafts, because you read each one before you paste it.
+  A text refused twice, a cap or no key falls back to the templates, with the reason shown.
+  Each draft card on the lead's page has Copy and Mark sent.
+  Mark sent approves the batch at the hash you were shown, if it is not approved yet, and records the text as sent, in one transaction; `leads done MESSAGE` does the same.
+  It refuses a draft that changed, a shadow batch and an unapproved batch that also holds an email.
+  Marking the note sent makes the message due at once, and you send it when they accept.
+  Edit and Mark sent stay open on a contacted lead; a lead that replied, bounced or opted out refuses them.
+- **Editing a draft**: each draft card has an editor while its text may still change, or `leads drafts edit MESSAGE [--subject S] --body-file F`, and the original stays beside your version.
+  A form or LinkedIn edit is stored beside the message, so no batch hash moves, and it is allowed while the message is a draft or approved.
+  An email edit is allowed only while its batch is unapproved and the message is a draft, and it re-hashes the batch, so you approve the text you see.
+  Every save passes the checks the first draft passed, and a refused save writes nothing.
+- **Draft it**: the button on a lead's page drafts that one lead now, into a batch of its own, instead of waiting for the morning batch.
+  `leads drafts make LEAD [--channel email|form|linkedin] [--decider claude|fake]` does the same by hand, and `--from-request` is the service's own road.
+  It refuses a lead that is not new, already batched, suppressed or in a conversation elsewhere, and one with no contact on that channel or no mailbox for its campaign.
+  An email follows the campaign's writer rule and goes through "Approve and send now" on its batch's page; Discard on the lead's page returns the lead to new.
+  The console never calls Claude: it queues the request and a watcher starts the job; see "Draft it" in `deploy/README.md`.
+- **Your own contacts**: add an email, phone, form page, LinkedIn page or named person on the lead's Contacts card, or with `leads contacts add LEAD --kind email|phone|form|linkedin|person [--value V] [--name N] [--role R] [--note T] [--person ID]`.
+  `leads contacts list LEAD` names each contact, and `leads contacts edit LEAD CONTACT [--value V] [--name N] [--role R] [--note T]` and `leads contacts retire LEAD CONTACT [--note T]` take that name.
+  A contact you add is marked as yours, outranks research and is never overwritten; adding a value that is already there marks it as yours.
+  A changed value keeps the old one in the timeline, and a new lead's channel is picked again at once, so it moves list straight away.
+  Your email skips the role-address filter and counts as having a working mail server, and the email check before any send stays the real gate.
+  An address that looks personal, in a country whose rule is not on for individuals, gets one warning line and no block.
+  Retiring a contact cancels anything unsent aimed at it, and marking it yours again does not bring those back: Draft it makes a new draft.
+- **Proof and sector**: the Proof page (`/leads/proof`) or `leads proof add --title T --line L [--url U] --sector S [--sector S]... [--public]`, `leads proof list` and `leads proof retire PROOF [--reason R]` keep your past work, written once and tagged by sector.
+  Proof lives in the database only, never in a tracked file.
+  The sectors are `education`, `government`, `healthcare`, `nonprofit`, `agency`, `hospitality`, `retail`, `media` and `other`.
+  A rule guesses a lead's sector from its domain and kind; the Sector card or `leads sector set LEAD SECTOR` sets it, and your choice beats the rule.
+  Claude's fact sheet carries up to two active proofs for that sector, newest first, or the campaign's `offer.proof_line` when there is none.
+  A draft uses at most one, word for word, and never in the first paragraph; a proof's link reaches a draft only with `--public`.
+- **Proposals**: the lead's Proposals card or `leads proposals add LEAD --title T [--url U] [--value-cents N] [--currency C] [--status S] [--note N]`, `leads proposals status PROPOSAL STATUS [--note N]` and `leads proposals list LEAD` record what you sent: a link, a value in GBP, EUR, RON or USD, and a status.
+  The status is `sent` (the default), `accepted`, `declined` or `withdrawn`, every change is kept, and the latest wins.
+  A sent proposal moves a lead with no stage or at Talking to Proposal; accepted offers Won and never forces it.
+  There are no file uploads.
+- **Learning from your edits**: the writer gets your latest saved versions for the same campaign and channel group as examples of voice and length, at most two, one per lead, newest first.
+  The organisation's name, its domain and any person's name are taken out first.
+  They sit beside the examples from Claude's own approved drafts, and an answer must still cite its facts.
+- **Look again with LinkedIn**: a star on a lead with no channel looks for an email, where the country allows it, and for LinkedIn; Look again on a form lead or a lead with no channel adds LinkedIn.
+  `leads research request LEAD --linkedin` asks the same by hand; without the flag it stays email and phone.
+  The 90-day rule ignores an attempt that did not look for LinkedIn when the new request does, once, so a lead searched under the old rules can be searched again at once.
+- **The note limit**: `sender.linkedin_note_max` in `leads.yaml` is the longest LinkedIn note, 1 to 300 characters, 200 when left out (a free account's limit); set 300 on Premium.
+  A note is measured after rendering: Claude's is retried and then falls back to the template, and your own edit is refused.
+  `leads campaigns check` and `leads check-config` refuse a template note too long with one-letter slots, naming the place, the length and the limit.
+  A template note that a real lead's longer values push over drops that LinkedIn lead from the batch with the reason, and a form lead keeps its form text without the LinkedIn steps.
 - **Stars and the order**: a star puts a lead at the bottom of your outreach order; Up, Down and Top move it, Unstar takes it out, Push back defers it (14 days by default), Skip drops it for good and Clear puts it back in its place by score.
   Up, Down and Top on a lead that is not starred are refused with "Star it first."
   Starred leads always come first, in your order; every star and move is kept as a row, and the latest per lead wins.
@@ -176,7 +236,7 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   No secret is ever shown or stored, and every save is kept as a row.
   `leads settings show` prints each setting in force and where it comes from (`file`, or `console` and the day); `leads settings reset [--section who|kinds|small-sites|batches|dates|relevance|order|all]` puts one section, or every one (the default), back to `leads.yaml`, and refuses any other section name.
 - **Enrichment**: `leads enrich [--max N] [--dry-run --fixtures DIR]` reads phone numbers, a description and social links from each organisation's own pages, for up to N organisations with a lead not enriched in the last 30 days (300 by default; `--max` below 1 is refused).
-  A phone is a fact, never a contact route, so nothing drafts or sends to it; no fact ever holds an email address, and only a LinkedIn company page is kept.
+  A phone is a fact, never a contact route, so nothing drafts or sends to it; no fact ever holds an email address, and only a LinkedIn company page is kept, which also becomes a `linkedin` route.
   It needs `LEADHOUND_LIVE=1`, and without it fetches nothing and exits 0; the details are in "Enrichment" in `deploy/README.md`.
 - **Relevance**: `leads rate [--max N] [--decider jev|fake]` asks Jev how likely each open lead is to want the work and stores a number from 0 to 100 with its band (strong, likely, maybe, unlikely, no).
   It asks only about leads whose facts changed since their last rating, starred leads first, and stops after `--max` calls (10,000 by default; below 1 is refused).
@@ -242,9 +302,9 @@ A draft is either a template filled with stored facts or, once a campaign has ea
   Sending (batch, send and sync) needs both lines, `LEADHOUND_LEADS_TIMERS=on` and `LEADHOUND_OUTREACH=live` (without the first, the next deploy turns them off again), Sending switched on on the Controls page, and a ready mailbox assigned to the campaign; even then every batch is read and approved by the operator before anything is sent.
   `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
-  The batch and contact research units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00028: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM).
-  The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches and campaign mailbox assignments: every change is a new row, and the app role cannot update or delete them.
+  The batch, contact research and Draft it units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00029: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand).
+  The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches, campaign mailbox assignments, contact marks, people, draft edits, sectors, proof and proposals: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 
 ### Café places

@@ -1073,6 +1073,11 @@ func splitEmail(text string) (subject, body string, err error) {
 	return strings.TrimSpace(subject), body, nil
 }
 
+// SampleSlots is the one-letter value of every slot that a template is test-rendered with, for a
+// caller measuring a rendered template: a real lead's slots are at least as long, so a text over a
+// limit here is over it for every lead.
+func SampleSlots() map[string]string { return sampleSlots(true) }
+
 // sampleSlots returns a value for every slot name, Footer included or not.
 func sampleSlots(withFooter bool) map[string]string {
 	m := map[string]string{}

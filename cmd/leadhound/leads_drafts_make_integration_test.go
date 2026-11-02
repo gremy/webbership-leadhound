@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -331,6 +332,30 @@ func TestBatchNewManualLeads(t *testing.T) {
 	}
 	if len(form) != 3 || form[0].Channel != "form" || form[2].Step != 2 || form[2].Why != fbOff {
 		t.Fatalf("form lead rows %+v", form)
+	}
+}
+
+// TestBatchNewNoteOverLimit: a template note over the limit neither stores the note nor stops the
+// batch: the LinkedIn lead is dropped with the length named, and the form lead keeps its form text.
+func TestBatchNewNoteOverLimit(t *testing.T) {
+	dir := leadsScene(t)
+	lead, _ := linkedInLead(t, "tailspin.example")
+	formURL, _ := linkedInOf(t, "contoso.example")
+	setNoteMax(t, dir, 10)
+	out := mustRun(t, "leads", "batch", "new")
+	wantLines(t, "batch new", out, "tailspin.example", "the note is", "at most 10")
+	if got := draftLeadState(t, lead); got != leadstore.LeadNew {
+		t.Fatalf("the dropped lead is %s", got)
+	}
+	form := leadOf(t, "contoso.example")
+	rows := batchRows(t, latestBatch(t, form))
+	for _, r := range rows {
+		if r.Channel == "linkedin" || r.To == formURL {
+			t.Fatalf("a LinkedIn text was stored over the limit: %+v", rows)
+		}
+	}
+	if !slices.ContainsFunc(rows, func(r draftMsg) bool { return r.Channel == "form" }) {
+		t.Fatalf("the form lead lost its form text: %+v", rows)
 	}
 }
 

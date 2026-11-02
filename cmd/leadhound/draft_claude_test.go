@@ -457,6 +457,28 @@ func TestDraftsLinkedInTemplateRows(t *testing.T) {
 	}
 }
 
+// TestDraftsLinkedInNoteLongLead: a template note that fits a short name can pass the limit and
+// still be too long for a real lead: that lead's draft is refused with the length and no row.
+func TestDraftsLinkedInNoteLongLead(t *testing.T) {
+	w := newDraftWorld(t, "unsupported", 7)
+	c := w.c
+	c.Channel, c.RouteKind, c.Route = leadconfig.ChannelLinkedIn, leadconfig.ChannelLinkedIn, "https://linkedin.com/company/northfield"
+	rows, err := draftSequence(w.plan, c, w.rs.ev, w.cfg, nil, "", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.cfg.Sender.LinkedInNoteMax = outreach.NoteRunes(rows[0].Body)
+	if _, err := draftSequence(w.plan, c, w.rs.ev, w.cfg, nil, "", bytes.NewReader(nil)); err != nil {
+		t.Fatalf("exactly at the limit: %v", err)
+	}
+	ev := w.rs.ev
+	ev.FinalHost = "www." + ev.FinalHost
+	got, err := draftSequence(w.plan, c, ev, w.cfg, nil, "", bytes.NewReader(nil))
+	if err == nil || got != nil || !strings.Contains(err.Error(), "linkedin step 0: the note is") {
+		t.Fatalf("a longer lead: rows %+v, err %v", got, err)
+	}
+}
+
 // TestDraftsLinkedInNoteIsFirstRow: the note is the lead's first LinkedIn step wherever that falls.
 func TestDraftsLinkedInNoteIsFirstRow(t *testing.T) {
 	form := []leadstore.Message{{LeadID: 1, Step: 0, Channel: "form"}, {LeadID: 1, Step: 1, Channel: "linkedin"}, {LeadID: 1, Step: 2, Channel: "linkedin"}}

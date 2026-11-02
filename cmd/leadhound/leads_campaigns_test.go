@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +219,88 @@ func TestCampaignWarningsPrivacy(t *testing.T) {
 	lc.Sender.PrivacyURL = "https://sender.example.test/privacy"
 	if got := campaignWarnings([]campaign.Spec{calls, named}, lc); len(got) != 0 {
 		t.Fatalf("warnings with the URL set: %q", got)
+	}
+}
+
+// TestCampaignsCheckNoteLimit: a campaign's or leads.yaml's LinkedIn note over the limit is a
+// problem naming the place, its length and the limit, and a higher limit lets the same note pass.
+func TestCampaignsCheckNoteLimit(t *testing.T) {
+	t.Setenv("LEADHOUND_DATABASE_URL", "postgres://nobody@127.0.0.1:1/none") // never reached
+	dir := campaignsDataDir(t, map[string]string{"agencies": specYAML(t, "agencies")})
+	long := strings.Repeat("é", 250) + "\n"
+	tdir := filepath.Join(dir, campaign.Dir, "agencies", defaultTemplatesDir)
+	if err := os.WriteFile(filepath.Join(tdir, "d10", "en", leadconfig.LinkedInFile), []byte(long), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tdir, "d10", "en", leadconfig.FormFile), []byte("Hello.\n"), 0o600); err != nil { // the two come as a pair
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leads-templates", "unsupported", "en", leadconfig.LinkedInFile), []byte(long), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCampaigns(t, "check")
+	if code != 2 || out != "" {
+		t.Fatalf("over the limit exited %d:\n%s%s", code, out, errOut)
+	}
+	for _, want := range []string{
+		`campaign "agencies": template d10/en/linkedin.txt: the note is 250 characters, at most 200`,
+		`leads.yaml: template unsupported/en/linkedin.txt: the note is 250 characters, at most 200`,
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("check does not name %q:\n%s", want, errOut)
+		}
+	}
+	setNoteMax(t, dir, 300)
+	if code, out, errOut := runCampaigns(t, "check"); code != 0 {
+		t.Errorf("under a limit of 300: exited %d:\n%s%s", code, out, errOut)
+	}
+}
+
+// TestCheckConfigNoteLimit: check-config refuses a set's note over the limit in the same words.
+func TestCheckConfigNoteLimit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("../../examples")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEADHOUND_DATABASE_URL", "")
+	t.Setenv("LEADHOUND_DATA_DIR", dir)
+	check := func() (int, string) {
+		var out, errOut bytes.Buffer
+		saved := stdout
+		stdout = &out
+		defer func() { stdout = saved }()
+		return run(context.Background(), []string{"leads", "check-config", "--agencies", filepath.Join(dir, "agencies.demo.yaml")}, &errOut), errOut.String()
+	}
+	if code, errOut := check(); code != 0 {
+		t.Fatalf("the examples: exited %d: %s", code, errOut)
+	}
+	long := strings.Repeat("x", 201)
+	if err := os.WriteFile(filepath.Join(dir, "leads-templates", "d10", "en", leadconfig.LinkedInFile), []byte(long), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, errOut := check()
+	if want := "template d10/en/linkedin.txt: the note is 201 characters, at most 200"; code != 2 || !strings.Contains(errOut, want) {
+		t.Errorf("exited %d, want 2 naming %q: %s", code, want, errOut)
+	}
+	setNoteMax(t, dir, 201)
+	if code, errOut := check(); code != 0 {
+		t.Errorf("at the limit: exited %d: %s", code, errOut)
+	}
+}
+
+// setNoteMax sets sender.linkedin_note_max in dir's leads.yaml.
+func setNoteMax(t *testing.T, dir string, limit int) {
+	t.Helper()
+	path := filepath.Join(dir, leadconfig.FileName)
+	b, err := os.ReadFile(path) // #nosec G304 -- the test's own temp copy
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`linkedin_note_max: \d+`)
+	if !re.Match(b) {
+		t.Fatal("the example leads.yaml has no linkedin_note_max")
+	}
+	if err := os.WriteFile(path, re.ReplaceAll(b, []byte("linkedin_note_max: "+strconv.Itoa(limit))), 0o600); err != nil { //nolint:gosec // the test's own temp copy
+		t.Fatal(err)
 	}
 }

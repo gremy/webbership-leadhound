@@ -171,11 +171,43 @@ func runCampaignsCheck(ctx context.Context, args []string) error {
 	if err != nil {
 		return gates.explain(err)
 	}
+	problems, err := campaignNoteProblems(specs, lc)
+	if err != nil {
+		return err
+	}
+	if len(problems) > 0 {
+		return usageError("the campaigns do not pass their checks:\n%s", strings.Join(problems, "\n"))
+	}
 	printCampaignSpecs(stdout, specs)
 	for _, w := range campaignWarnings(specs, lc) {
 		_, _ = fmt.Fprintln(stdout, w)
 	}
 	return nil
+}
+
+// campaignNoteProblems is templateNoteProblems for what `campaigns check` reads: leads.yaml's sets,
+// which a campaign without its own LinkedIn text falls back on, and each campaign folder's.
+func campaignNoteProblems(specs []campaign.Spec, lc leadconfig.Config) ([]string, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	out := templateNoteProblems("leads.yaml: ", lc.Templates, lc.Sender.LinkedInNoteMax)
+	for _, sp := range specs {
+		_, ok, err := campaignFile(cfg.DataDir, sp.Slug)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		t, err := campaignTemplates(cfg.DataDir, sp, lc)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, templateNoteProblems(fmt.Sprintf("campaign %q: ", sp.Slug), t, lc.Sender.LinkedInNoteMax)...)
+	}
+	return out, nil
 }
 
 func printCampaignSpecs(w io.Writer, specs []campaign.Spec) {

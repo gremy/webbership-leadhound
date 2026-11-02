@@ -1,17 +1,21 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/gremy/webbership-leadhound/internal/agencies"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
+	"github.com/gremy/webbership-leadhound/internal/outreach"
 )
 
 func init() { leadsCommands["check-config"] = runLeadsCheckConfig }
@@ -55,6 +59,7 @@ func runLeadsCheckConfig(_ context.Context, args []string) error {
 	for _, p := range ap {
 		problems = append(problems, agencies.FileName+": "+valueFree(agencyRowName.ReplaceAllString(p, "$1")))
 	}
+	problems = append(problems, templateNoteProblems("", lc.Templates, lc.Sender.LinkedInNoteMax)...)
 	if len(problems) > 0 {
 		return usageError("%s (values are not shown; open the file at each place named)", strings.Join(problems, "; "))
 	}
@@ -114,4 +119,27 @@ func valueFree(p string) string {
 		}
 	}
 	return p
+}
+
+// templateNoteProblems measures every set's LinkedIn note against sender.linkedin_note_max, one
+// plain problem per note over it, each opening with where. It renders with the sample slots, so it
+// catches a note too long for every lead; a lead whose slots push a note over is dropped when drafted.
+func templateNoteProblems(where string, t leadconfig.Templates, noteMax int) []string {
+	var out []string
+	for _, key := range slices.SortedFunc(maps.Keys(t.Sets), func(a, b leadconfig.SetKey) int {
+		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Lang, b.Lang))
+	}) {
+		note := t.Sets[key].LinkedIn
+		if note == nil {
+			continue
+		}
+		var b strings.Builder
+		if err := note.Execute(&b, leadconfig.SampleSlots()); err != nil {
+			continue // loading already named a template that does not render
+		}
+		for _, f := range outreach.CheckNote(b.String(), noteMax) {
+			out = append(out, fmt.Sprintf("%stemplate %s/%s/%s: %s (sender.linkedin_note_max)", where, key.Kind, key.Lang, leadconfig.LinkedInFile, f.Msg))
+		}
+	}
+	return out
 }
