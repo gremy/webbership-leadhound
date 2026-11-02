@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -171,6 +172,7 @@ func timelineItem(it leadstore.TimelineItem) console.TimelineItem {
 	switch it.Kind {
 	case leadstore.TimelineEvent:
 		out.Kind, out.Line = console.TimelineEvent, leadEventWords(it.State)
+		out.Detail = leadEventReason(it.Detail)
 	case leadstore.TimelineSent:
 		out.Kind, out.Line = console.TimelineEmail, shadow(sentWords(it.Channel, it.State, it.Step))
 	case leadstore.TimelineMailbox:
@@ -226,6 +228,30 @@ func timelineItem(it leadstore.TimelineItem) console.TimelineItem {
 		out.Kind, out.Line = console.TimelineEvent, strings.ReplaceAll(it.Kind, "_", " ")
 	}
 	return out
+}
+
+// A stored lead_event reason that names a message or a call by its id, which means nothing on a page.
+var (
+	reasonMessage = regexp.MustCompile(`^message \d+ (done by hand|found sent by hand|sent)$`)
+	reasonCall    = regexp.MustCompile(`^call \d+: (.+)$`)
+)
+
+// leadEventReason is a lead_event's stored reason as the page shows it, with no row id: the stored
+// text keeps the id, for the record. A batch keeps its number, because a batch has its own page.
+func leadEventReason(reason string) string {
+	if m := reasonMessage.FindStringSubmatch(reason); m != nil {
+		switch m[1] {
+		case "done by hand":
+			return "Marked sent by hand"
+		case "found sent by hand":
+			return "Found sent by hand"
+		}
+		return "Sent"
+	}
+	if m := reasonCall.FindStringSubmatch(reason); m != nil {
+		return "Call: " + console.OutcomeWords(m[1])
+	}
+	return reason
 }
 
 // foldFirstMarks folds the rows one act writes together into one item: an operator's new contact

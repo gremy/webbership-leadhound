@@ -21,7 +21,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v6"
+	scaleLeadsVersion = "v7"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -223,15 +223,16 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			       CASE WHEN i % 2 = 0 THEN 'GB' ELSE 'DE' END, 'agencies-file', $1::timestamptz - interval '300 days'
 			FROM generate_series(1, ` + fmt.Sprint(scaleAgencies) + `) i`, []any{day}},
 		// About 2.2 routes an org: info@ (with MX on 7 in 10), a contact form on 6 in 10,
-		// office@ on 3 in 10, web@ on 5 in 10; a fifth found in the last 30 days.
+		// office@ on 3 in 10, web@ on 5 in 10, a LinkedIn page on 3 in 10; a fifth found in the last 30 days.
 		{"contact_route", `INSERT INTO contact_route (org_id, kind, value, fetch_id, mx_ok, derived_by, found_at)
-			SELECT o.id, r.kind, CASE WHEN r.kind = 'email' THEN r.local || '@' || o.domain ELSE 'https://' || o.domain || '/contact' END,
+			SELECT o.id, r.kind, CASE r.kind WHEN 'email' THEN r.local || '@' || o.domain WHEN 'linkedin' THEN 'https://linkedin.com/company/' || o.id
+			         ELSE 'https://' || o.domain || '/contact' END,
 			       $2::bigint + 1 + o.id % 400000, r.kind = 'email' AND o.id % 10 < 7, 'contacts@1',
 			       $1::timestamptz - CASE WHEN o.id % 5 = 0 THEN o.id % 30 ELSE 31 + o.id % 300 END * interval '1 day'
 			FROM org o
-			CROSS JOIN (VALUES (1, 'email', 'info'), (2, 'form', ''), (3, 'email', 'office'), (4, 'email', 'web')) r(ord, kind, local)
+			CROSS JOIN (VALUES (1, 'email', 'info'), (2, 'form', ''), (3, 'email', 'office'), (4, 'email', 'web'), (5, 'linkedin', '')) r(ord, kind, local)
 			WHERE (r.ord = 1 AND o.id % 10 < 8) OR (r.ord = 2 AND o.id % 10 >= 4)
-			   OR (r.ord = 3 AND o.id % 10 < 3) OR (r.ord = 4 AND o.id % 10 < 5)
+			   OR (r.ord = 3 AND o.id % 10 < 3) OR (r.ord = 4 AND o.id % 10 < 5) OR (r.ord = 5 AND o.id % 10 >= 7)
 			ORDER BY o.id, r.ord`, []any{day, fetchBase}},
 		{"agency_finding", `INSERT INTO agency_finding (org_id, url, phrase, fetch_id, derived_by, created_at)
 			SELECT o.id, 'https://' || o.domain || '/drupal-' || n, 'Drupal 7 upgrade', $2::bigint + o.id, 'agencies@1',

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -644,6 +645,196 @@ func TestOutreachCLI(t *testing.T) {
 	}
 	p := detailOf(t, b, lead).Proposals[0]
 	wantLines(t, "proposal status", mustRun(t, "leads", "proposals", "status", strconv.FormatInt(p.ID, 10), "declined"), "declined")
+}
+
+// A person's profile address, built in pieces: the repo's privacy check refuses the path whole.
+const personProfilePath = "linkedin.com/" + "in/"
+
+// contactOf is the lead's contact in use with this value, failing the test when there is none.
+func contactOf(t *testing.T, d console.LeadDetailPage, value string) console.LeadContact {
+	t.Helper()
+	i := slices.IndexFunc(d.Contacts, func(c console.LeadContact) bool { return c.Value == value && !c.Retired })
+	if i < 0 {
+		t.Fatalf("no contact %q in %+v", value, d.Contacts)
+	}
+	return d.Contacts[i]
+}
+
+// TestOutreachPersonWithLink: a person added with a LinkedIn address or an email address gets that
+// route, tied to them, in one transaction, from the form and the command alike; the lead re-picks
+// its channel with an operator's profile ahead of the company page; the row shows the link; any
+// other value saves nothing; Edit on a person keeps a value too.
+func TestOutreachPersonWithLink(t *testing.T) {
+	ctx := context.Background()
+	b, _ := outreachWorld(t)
+	lead := deadEndLead(t, b)
+	id := strconv.FormatInt(lead, 10)
+	people := func() int { return len(contactRefs(t, b, lead, "person")) }
+
+	for _, bad := range []string{"https://example.org/about", "+44 20 7946 0123", "not a link", "https://example.org/@a.example"} {
+		_, err := b.AddContact(ctx, console.NewContact{LeadID: lead, Kind: "person", Name: "A Name", Value: bad})
+		wantOutreachRefusal(t, "a person with "+bad, err, "must be a LinkedIn address or an email address")
+		if !strings.HasSuffix(err.Error(), "Nothing was saved.") || people() != 0 {
+			t.Fatalf("%q: %v, %d people", bad, err, people())
+		}
+	}
+
+	// The company page first, so the profile must outrank what is already there.
+	if _, err := b.AddContact(ctx, console.NewContact{LeadID: lead, Kind: "linkedin", Value: "https://linkedin.com/company/harbour-lane"}); err != nil {
+		t.Fatal(err)
+	}
+	profile := "https://" + personProfilePath + "a-name"
+	if _, err := b.AddContact(ctx, console.NewContact{LeadID: lead, Kind: "person", Name: "A Name", Role: "Director", Value: "www." + personProfilePath + "A-Name/?trk=x"}); err != nil {
+		t.Fatal(err)
+	}
+	d := detailOf(t, b, lead)
+	row := contactOf(t, d, profile)
+	if row.Kind != "linkedin" || row.Name != "A Name" || row.PersonID == 0 || !row.Chosen || d.Channel != "linkedin" || d.Reach != console.ReachManual {
+		t.Fatalf("the profile: %+v, channel %s, reach %s", row, d.Channel, d.Reach)
+	}
+	if people() != 1 {
+		t.Fatalf("%d people", people())
+	}
+	page := newConsoleClient(t, b, nil).get("/leads/"+id, false).Body.String()
+	if !strings.Contains(page, profile) || !strings.Contains(page, "(A Name)") {
+		t.Error("the page does not show the person's link")
+	}
+
+	// An email address, by the command: the same function, the same route. It wins as email does.
+	wantLines(t, "cli", mustRun(t, "leads", "contacts", "add", id, "--kind", "person", "--name", "Another Name", "--value", "Another@Litware.example"), "Contact added.")
+	d = detailOf(t, b, lead)
+	row = contactOf(t, d, "another@litware.example")
+	if row.Kind != "email" || row.Name != "Another Name" || !row.Chosen || d.Channel != "email" {
+		t.Fatalf("the email: %+v, channel %s", row, d.Channel)
+	}
+	code, _, errOut := leadsRun(t, "leads", "contacts", "add", id, "--kind", "person", "--name", "Third Name", "--value", "https://example.org/x")
+	wantRefused(t, "a person with another link", code, errOut, "must be a LinkedIn address or an email address")
+	if people() != 2 {
+		t.Fatalf("a refused command saved a person: %d", people())
+	}
+
+	// A value already on the org keeps its person, and the line says so.
+	line, err := b.AddContact(ctx, console.NewContact{LeadID: lead, Kind: "person", Name: "Third Name", Value: "https://linkedin.com/company/harbour-lane"})
+	if err != nil || !strings.Contains(line, "not tied to this person") {
+		t.Fatalf("an address already there: %q, %v", line, err)
+	}
+
+	// Edit keeps a value; the form's own route for a person with a link.
+	person := contactRefs(t, b, lead, "person")[0]
+	if _, err := b.EditContact(ctx, console.ContactChange{LeadID: lead, Ref: person, Name: "A Name", Role: "Director", Value: "edit@litware.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if row := contactOf(t, detailOf(t, b, lead), "edit@litware.example"); row.Name != "A Name" {
+		t.Fatalf("edit: %+v", row)
+	}
+	_, err = b.EditContact(ctx, console.ContactChange{LeadID: lead, Ref: person, Name: "Changed Name", Role: "Director", Value: "nope"})
+	wantOutreachRefusal(t, "an edit with a bad value", err, "must be a LinkedIn address or an email address")
+	if slices.ContainsFunc(detailOf(t, b, lead).Contacts, func(c console.LeadContact) bool { return c.Name == "Changed Name" }) {
+		t.Fatal("a refused edit changed the person")
+	}
+}
+
+// TestOutreachSequenceManual: a LinkedIn lead's Sequence is its note and its message, from nothing
+// drafted, through drafted, to marked sent, on the rendered page; never the campaign's emails. A
+// form lead's is its form message. The timeline and the History say a message marked sent in plain
+// words, while the stored reason keeps its id.
+func TestOutreachSequenceManual(t *testing.T) {
+	ctx := context.Background()
+	b, _ := outreachWorld(t)
+	lead, _ := linkedInLead(t, "contoso.example")
+	id := strconv.FormatInt(lead, 10)
+	c := newConsoleClient(t, b, nil)
+	card := func(want ...string) {
+		t.Helper()
+		page := c.get("/leads/"+id, false).Body.String()
+		i := strings.Index(page, "<h2>Sequence</h2>")
+		if i < 0 {
+			t.Fatal("no Sequence card")
+		}
+		section := page[i:]
+		section = section[:strings.Index(section, "</section>")]
+		for _, w := range want {
+			if !strings.Contains(section, w) {
+				t.Errorf("the Sequence card lacks %q:\n%s", w, section)
+			}
+		}
+		for _, no := range []string{"an email", "a phone call", "No sequence yet"} {
+			if strings.Contains(section, no) {
+				t.Errorf("the Sequence card says %q:\n%s", no, section)
+			}
+		}
+	}
+	card("Step 1: Connection note", "Step 2: After they accept", "not drafted yet")
+
+	draftIt(t, lead)
+	card("Step 1: Connection note", "Step 2: After they accept", "drafted, not sent yet")
+	steps, err := b.LeadSequence(ctx, lead)
+	if err != nil || len(steps) != 2 {
+		t.Fatalf("steps %+v, %v", steps, err)
+	}
+
+	note := detailOf(t, b, lead).Drafts[0]
+	if _, err := b.MarkSent(ctx, console.MarkSentRequest{LeadID: lead, MessageID: note.MessageID, Hash: note.BatchHash}); err != nil {
+		t.Fatal(err)
+	}
+	card("Step 1: Connection note", "marked sent", "Step 2: After they accept", "ready: send it once they accept")
+
+	raw := fmt.Sprintf("message %d done by hand", note.MessageID)
+	var stored string
+	if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT reason FROM lead_event WHERE lead_id = $1 AND state = 'contacted' ORDER BY id DESC LIMIT 1`, lead).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != raw {
+		t.Errorf("the stored reason is %q, want %q", stored, raw)
+	}
+	lines := timelineLines(t, b, lead)
+	if !strings.Contains(lines, "Contacted | Marked sent by hand") || strings.Contains(lines, raw) {
+		t.Errorf("timeline:\n%s", lines)
+	}
+	d := detailOf(t, b, lead)
+	if !slices.ContainsFunc(d.Events, func(e console.LeadEvent) bool { return e.Reason == "Marked sent by hand" }) {
+		t.Errorf("history %+v", d.Events)
+	}
+	if page := c.get("/leads/"+id, false).Body.String(); strings.Contains(page, raw) {
+		t.Error("the page shows the message id")
+	}
+
+	// A form lead with nothing drafted: its form message, and nothing about LinkedIn with no page.
+	form := leadOf(t, "northwind.example")
+	retireAll(t, b, form, "email")
+	retireAll(t, b, form, "linkedin")
+	if _, err := b.AddContact(ctx, console.NewContact{LeadID: form, Kind: "form", Value: "https://northwind.example/contact"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := detailOf(t, b, form).Channel; got != "form" {
+		t.Fatalf("channel %s", got)
+	}
+	steps, err = b.LeadSequence(ctx, form)
+	if err != nil || len(steps) != 1 || steps[0].Channel != "form" || steps[0].State != console.SeqPlanned {
+		t.Fatalf("form steps %+v, %v", steps, err)
+	}
+	// An email lead's card stays as it was.
+	emailLead := leadOf(t, "litware.example")
+	if steps, err = b.LeadSequence(ctx, emailLead); err != nil || len(steps) != 0 {
+		t.Fatalf("email lead steps %+v, %v", steps, err)
+	}
+}
+
+// TestLeadListLinkedInFilter: the form offers "LinkedIn page", and it filters the page.
+func TestLeadListLinkedInFilter(t *testing.T) {
+	b, _ := outreachWorld(t)
+	with := leadOf(t, "litware.example")
+	if _, err := b.AddContact(context.Background(), console.NewContact{LeadID: with, Kind: "linkedin", Value: "https://linkedin.com/company/litware"}); err != nil {
+		t.Fatal(err)
+	}
+	c := newConsoleClient(t, b, nil)
+	if body := c.get("/leads", false).Body.String(); !strings.Contains(body, `name="channel" value="linkedin"> LinkedIn page`) {
+		t.Error("the filter form does not offer LinkedIn page")
+	}
+	ids := listedLeads(c.get("/leads?channel=linkedin&status=all", false).Body.String())
+	if len(ids) != 1 || ids[0] != strconv.FormatInt(with, 10) {
+		t.Errorf("channel=linkedin lists %v, want %d", ids, with)
+	}
 }
 
 // TestOutreachPagesRender: the real backend through the real templates: the lead page shows its

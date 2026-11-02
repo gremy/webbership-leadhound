@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -354,7 +355,8 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 		return nil, err
 	}
 	lq := b.lq()
-	if _, err := lq.LeadByID(ctx, leadID); errors.Is(err, leadstore.ErrLeadNotFound) {
+	lead, err := lq.LeadByID(ctx, leadID)
+	if errors.Is(err, leadstore.ErrLeadNotFound) {
 		return nil, console.ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -364,6 +366,15 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 		return nil, err
 	}
 	out := sequenceSteps(steps)
+	if lead.State == leadstore.LeadNew && !slices.ContainsFunc(out, func(s console.SequenceStep) bool { return s.State != console.SeqCancelled }) {
+		planned, err := plannedManualSteps(ctx, lq, lead)
+		if err != nil {
+			return nil, err
+		}
+		if len(planned) > 0 {
+			return planned, nil
+		}
+	}
 	rules, err := loadCallRules(ctx, lq)
 	if err != nil {
 		return nil, err
@@ -397,11 +408,36 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 	return out, nil
 }
 
+// plannedManualSteps is what Draft it would write for a new form or LinkedIn lead with nothing
+// drafted (the manual sequence: a form message, then a note and a message when the form lead also
+// has a LinkedIn route); none for any other channel.
+func plannedManualSteps(ctx context.Context, lq leadstore.Queries, lead leadstore.Lead) ([]console.SequenceStep, error) {
+	var channels []string
+	switch lead.Channel {
+	case leadconfig.ChannelLinkedIn:
+		channels = []string{leadconfig.ChannelLinkedIn, leadconfig.ChannelLinkedIn}
+	case leadconfig.ChannelForm:
+		channels = []string{leadconfig.ChannelForm}
+		routes, err := lq.RoutesFor(ctx, lead.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		if slices.ContainsFunc(routes, func(r leadstore.Route) bool { return r.Kind == leadstore.RouteLinkedIn }) {
+			channels = append(channels, leadconfig.ChannelLinkedIn, leadconfig.ChannelLinkedIn)
+		}
+	}
+	out := make([]console.SequenceStep, 0, len(channels))
+	for i, ch := range channels {
+		out = append(out, console.SequenceStep{Step: i, Type: campaign.StepEmail, Channel: ch, State: console.SeqPlanned})
+	}
+	return out, nil
+}
+
 // sequenceSteps maps the store's steps onto the console's states.
 func sequenceSteps(steps []leadstore.SequenceStep) []console.SequenceStep {
 	out := make([]console.SequenceStep, 0, len(steps))
 	for _, st := range steps {
-		s := console.SequenceStep{Step: st.Step, Type: st.Type, MessageID: st.MessageID, Reason: st.CancelReason, Outcome: st.Outcome, CallNote: st.Note}
+		s := console.SequenceStep{Step: st.Step, Type: st.Type, Channel: st.Channel, MessageID: st.MessageID, Reason: st.CancelReason, Outcome: st.Outcome, CallNote: st.Note}
 		switch st.State {
 		case leadstore.MsgDraft:
 			s.State = console.SeqDraft

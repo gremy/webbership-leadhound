@@ -98,18 +98,18 @@ func TestOutreachSavedGoesToItsCard(t *testing.T) {
 				c := b.lastContact
 				return c.LeadID == 5 && c.Kind == ContactEmail && c.Value == "hello@harbourlane.example" && c.Note == "mine" && c.Name == "" && c.PersonID == 3
 			}},
-		{"add a person", "/leads/5/contacts", vals("kind", "person", "value", "ignored", "name", "A Name", "role", "Director", "person_id", "nope"), "/leads/5#contacts",
+		{"add a person keeps the value they typed", "/leads/5/contacts", vals("kind", "person", "value", " their-link ", "name", "A Name", "role", "Director", "person_id", "nope"), "/leads/5#contacts",
 			func(b *fakeBackend) bool {
 				c := b.lastContact
-				return c.Kind == ContactPerson && c.Value == "" && c.Name == "A Name" && c.Role == "Director" && c.PersonID == 0
+				return c.Kind == ContactPerson && c.Value == "their-link" && c.Name == "A Name" && c.Role == "Director" && c.PersonID == 0
 			}},
 		{"edit a phone", "/leads/5/contacts/f7/edit", vals("value", "+44 20 7946 0177", "note", "n"), "/leads/5#contacts",
 			func(b *fakeBackend) bool {
 				return b.lastEdit.Ref == ContactRef{FactID: 7} && b.lastEdit.Value == "+44 20 7946 0177" && b.lastEdit.Note == "n"
 			}},
-		{"edit a person", "/leads/5/contacts/p3/edit", vals("value", "ignored", "role", "Director"), "/leads/5#contacts",
+		{"edit a person keeps a value too", "/leads/5/contacts/p3/edit", vals("value", "their-link", "role", "Director"), "/leads/5#contacts",
 			func(b *fakeBackend) bool {
-				return b.lastEdit.Ref == ContactRef{PersonID: 3} && b.lastEdit.Value == "" && b.lastEdit.Role == "Director"
+				return b.lastEdit.Ref == ContactRef{PersonID: 3} && b.lastEdit.Value == "their-link" && b.lastEdit.Role == "Director"
 			}},
 		{"retire", "/leads/5/contacts/r13/retire", vals("note", " gone "), "/leads/5#contacts",
 			func(b *fakeBackend) bool { return *b.lastRetire == ContactRef{RouteID: 13} && b.lastRetired == "gone" }},

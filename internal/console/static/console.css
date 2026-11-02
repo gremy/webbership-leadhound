@@ -1739,6 +1739,11 @@ details.inline summary {
 .fact-more {
   margin-top: 0.15rem;
 }
+/* A closed one is only as wide as its summary, and a browser keeps laying out what it hides: a
+   hidden form's button reached past the screen at 390px. Closed, the form has no box at all. */
+.fact-more:not([open]) > :not(summary) {
+  display: none;
+}
 .fact-more summary {
   padding: 0;
   border: 0;

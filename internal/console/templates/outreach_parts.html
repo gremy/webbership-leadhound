@@ -133,7 +133,7 @@
     <ul class="item-list">
       {{range $d.Contacts}}{{$on := $p.On "contact" .CID}}{{$off := $p.On "contact-retire" .CID}}
       <li class="contact-row{{if .Retired}} is-retired{{end}}" id="contact-{{.CID}}">
-        <span class="item-head">{{contactKindWords .Kind}}: {{if eq .Kind "person"}}{{.Name}}{{with .Role}}, {{.}}{{end}}{{else}}{{template "lead_link" .Value}}{{with .Name}} ({{.}}){{end}}{{end}}</span>
+        <span class="item-head">{{contactKindWords .Kind}}: {{if eq .Kind "person"}}{{.Name}}{{with .Role}}, {{.}}{{end}}{{else}}{{template "lead_link" .Value}}{{if .Name}} ({{.Name}}){{else if .Role}} ({{.Role}}){{end}}{{end}}</span>
         <span class="cluster">{{with provenanceWords .Provenance}}<span class="badge">{{.}}</span>{{end}}{{if .Chosen}}<span class="badge badge-accent">used for this lead</span>{{end}}{{if .Retired}}<span class="badge">retired</span>{{end}}{{with when .FoundAt}}<span class="item-meta">{{.}}</span>{{end}}</span>
         {{with .Note}}<span class="item-meta">{{.}}</span>{{end}}
         {{with .ReplacedBy}}<span class="item-meta">Replaced by {{template "lead_link" .}}</span>{{end}}

@@ -80,6 +80,28 @@ type wrapped struct {
 func (w *wrapped) Error() string { return w.msg }
 func (w *wrapped) Unwrap() error { return w.err }
 
+// TestLeadEventReason: a reason naming a message or a call by its row id is worded without it,
+// wherever it shows; a batch keeps its number, and anything else passes through.
+func TestLeadEventReason(t *testing.T) {
+	for in, want := range map[string]string{
+		"message 1566 done by hand":     "Marked sent by hand",
+		"message 12 found sent by hand": "Found sent by hand",
+		"message 12 sent":               "Sent",
+		"call 77: no_answer":            "Call: " + console.OutcomeWords("no_answer"),
+		"batch 9 discarded":             "batch 9 discarded",
+		"skipped from the queue":        "skipped from the queue",
+		"":                              "",
+	} {
+		if got := leadEventReason(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+	got := timelineItem(leadstore.TimelineItem{Kind: leadstore.TimelineEvent, State: leadstore.LeadContacted, Detail: "message 1566 done by hand"})
+	if got.Detail != "Marked sent by hand" {
+		t.Errorf("the timeline shows %q", got.Detail)
+	}
+}
+
 // TestTimelineItemWords: each store item is one plain line with its kind's dot, no codes.
 func TestTimelineItemWords(t *testing.T) {
 	cb := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)

@@ -143,6 +143,7 @@ func addOperatorContact(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig.
 		return "", err
 	}
 	var added leadstore.ContactAdded
+	line := ""
 	err = contactTx(ctx, pool, cfg, orgID, func(tq leadstore.Queries) error {
 		var err error
 		switch c.Kind {
@@ -151,6 +152,9 @@ func addOperatorContact(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig.
 		case console.ContactPerson:
 			added.Added = true
 			added.ID, err = tq.AddPerson(ctx, leadstore.PersonRow{OrgID: orgID, Name: c.Name, Role: c.Role, Note: c.Note})
+			if err == nil {
+				line, err = addPersonRoute(ctx, tq, orgID, added.ID, c.Value)
+			}
 		default:
 			added, err = tq.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: orgID, Kind: c.Kind, Value: c.Value, Note: c.Note, PersonID: c.PersonID})
 		}
@@ -159,7 +163,29 @@ func addOperatorContact(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig.
 	if err != nil {
 		return "", contactErr(err)
 	}
-	return contactAddedWords(added), nil
+	return orWords(line, contactAddedWords(added)), nil
+}
+
+// addPersonRoute writes value as a route of person personID, in the caller's transaction: a
+// LinkedIn address or an email address; a blank value writes nothing. Anything else is refused, so
+// the caller's transaction saves nothing. It returns the line to show when the value was already on
+// the org: that row keeps the person it was written with (a route's person is fixed at insert).
+func addPersonRoute(ctx context.Context, tq leadstore.Queries, orgID, personID int64, value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	kind, err := leadstore.PersonRouteKind(value)
+	if err != nil {
+		return "", err
+	}
+	added, err := tq.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: orgID, Kind: kind, Value: value, PersonID: personID})
+	if err != nil {
+		return "", err
+	}
+	if !added.Added {
+		return "The person is saved. That address was already here, so it is now marked as yours and is not tied to this person.", nil
+	}
+	return "", nil
 }
 
 // contactAddedWords says what happened when the value was already on the org; "" when a new row
@@ -181,16 +207,22 @@ func editOperatorContact(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig
 		return "", err
 	}
 	var res leadstore.ContactAdded
+	line := ""
 	err = contactTx(ctx, pool, cfg, orgID, func(tq leadstore.Queries) error {
 		var err error
 		res, err = tq.EditOperatorContact(ctx, leadstore.ContactEdit{OrgID: orgID, RouteID: c.Ref.RouteID, FactID: c.Ref.FactID,
 			PersonID: c.Ref.PersonID, Value: c.Value, Name: c.Name, Role: c.Role, Note: c.Note})
+		if err == nil && c.Ref.PersonID != 0 {
+			line, err = addPersonRoute(ctx, tq, orgID, res.ID, c.Value)
+		}
 		return err
 	})
 	if err != nil {
 		return "", contactErr(err)
 	}
 	switch {
+	case line != "":
+		return line, nil
 	case res.Replaced:
 		return "Saved. The old one stays on the page as retired.", nil
 	case res.WasRetired:

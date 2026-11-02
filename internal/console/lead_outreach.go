@@ -147,8 +147,8 @@ func contactRefusal(person bool, value, name, role, note string) string {
 	return ""
 }
 
-// leadContactAdd is POST /leads/{id}/contacts, through leadAct: kind, value (or name and role for a
-// person), note, and person_id tying an email or LinkedIn page to a person already on the org.
+// leadContactAdd is POST /leads/{id}/contacts, through leadAct: kind, value, name and role for a
+// person (the value, when given, is the person's own LinkedIn or email route), note, and person_id tying an email or LinkedIn page to a person already on the org.
 func (s *server) leadContactAdd(w http.ResponseWriter, r *http.Request, id int64) {
 	const do = "contact add"
 	if !leadsForm(w, r) {
@@ -163,9 +163,7 @@ func (s *server) leadContactAdd(w http.ResponseWriter, r *http.Request, id int64
 		return
 	}
 	person := c.Kind == ContactPerson
-	if person {
-		c.Value = ""
-	} else {
+	if !person {
 		c.Name, c.Role = "", ""
 	}
 	if refusal := contactRefusal(person, c.Value, c.Name, c.Role, c.Note); refusal != "" {
@@ -196,8 +194,8 @@ func contactPath(w http.ResponseWriter, r *http.Request) (int64, ContactRef, boo
 	return id, ref, true
 }
 
-// leadContactEdit is POST /leads/{id}/contacts/{cid}/edit; {cid} is a ContactRef. It takes value (a
-// person has none), name, role and note.
+// leadContactEdit is POST /leads/{id}/contacts/{cid}/edit; {cid} is a ContactRef. It takes value (for a
+// person, a new LinkedIn or email route of theirs), name, role and note.
 func (s *server) leadContactEdit(w http.ResponseWriter, r *http.Request) {
 	const do = "contact edit"
 	id, ref, ok := contactPath(w, r)
@@ -209,9 +207,6 @@ func (s *server) leadContactEdit(w http.ResponseWriter, r *http.Request) {
 	c := ContactChange{LeadID: id, Ref: ref, Value: formText(f.Get("value")), Name: formText(f.Get("name")),
 		Role: formText(f.Get("role")), Note: formText(f.Get("note"))}
 	person := ref.PersonID > 0
-	if person {
-		c.Value = ""
-	}
 	if refusal := contactRefusal(person, c.Value, c.Name, c.Role, c.Note); refusal != "" {
 		s.outreachRefuse(w, r, do, id, posted, refusal)
 		return

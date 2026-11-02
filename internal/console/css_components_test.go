@@ -35,6 +35,19 @@ func TestCSSHasBoardComponents(t *testing.T) {
 	}
 }
 
+// TestCSSClosedDetailsHaveNoBox: what a closed Edit or Retire section hides takes no box, because a
+// closed section is only as wide as its summary and its form's button would reach past the screen.
+func TestCSSClosedDetailsHaveNoBox(t *testing.T) {
+	css, err := staticFS.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := regexp.MustCompile(`\.fact-more:not\(\[open\]\) > :not\(summary\) \{\s*display: none;`)
+	if !rule.Match(css) {
+		t.Error("console.css lets a closed .fact-more keep the box of what it hides")
+	}
+}
+
 // TestCSSBoardScoping: the board's rules for names the older pages used with another meaning
 // reach only a .page, never the shell around it. The older pages' rules are gone: every page's
 // content sits in a .page, so a rule that stopped at .page would reach nothing a page shows.

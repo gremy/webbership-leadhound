@@ -890,6 +890,7 @@ const (
 	SeqCancelled = "cancelled" // cancelled for Reason
 	SeqNoNumber  = "no_number" // a call step with no row: there was no number we may call
 	SeqCheck     = "check"     // an email that may have gone out: check it by hand
+	SeqPlanned   = "planned"   // a form or LinkedIn message that would come: nothing is drafted yet
 )
 
 // SequenceStep is one step of a lead's sequence. Step counts from 0; Type is "email" or
@@ -899,6 +900,7 @@ const (
 type SequenceStep struct {
 	Step      int
 	Type      string
+	Channel   string // the row's channel; a form or LinkedIn step is worded as that message
 	MessageID int64
 	State     string
 	At        *time.Time

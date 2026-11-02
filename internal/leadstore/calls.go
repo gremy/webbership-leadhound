@@ -748,8 +748,9 @@ type SequenceStep struct {
 // SequenceOf returns each step of lead leadID's latest batch (the newest one not discarded, else
 // the newest), in step order: the batch's frozen sequence for the lead, each step with its row
 // when it has one. A step with no row reads NoNumber when the sequence has a call step (no
-// callable number at batch time), else "not drafted". A legacy batch (no stored sequence)
-// lists its rows as they are. No batch: an empty list.
+// callable number at batch time), else "not drafted". A legacy batch (no stored sequence) lists
+// its rows as they are, and so does a form or LinkedIn lead's, because the frozen sequence is the
+// campaign's emails and calls, none of which it was drafted. No batch: an empty list.
 func (q Queries) SequenceOf(ctx context.Context, leadID int64) ([]SequenceStep, error) {
 	var (
 		batchID int64
@@ -811,7 +812,8 @@ func (q Queries) SequenceOf(ctx context.Context, leadID int64) ([]SequenceStep, 
 	}
 	seq := seqs.For(name)
 	out := []SequenceStep{}
-	if seq == nil { // a legacy batch: its rows as they are
+	manual := slices.ContainsFunc(rows, func(r row) bool { return r.Channel == RouteForm || r.Channel == RouteLinkedIn })
+	if seq == nil || manual { // its rows as they are
 		for _, r := range rows {
 			s := SequenceStep{BatchID: batchID, Shadow: shadow, Step: r.Step, Type: stepType(r.Channel), When: r.Condition}
 			fill(&s, r)

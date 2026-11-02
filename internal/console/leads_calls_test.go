@@ -404,6 +404,46 @@ func TestLeadSequenceSection(t *testing.T) {
 	}
 }
 
+// TestSequenceManualWords: a form or LinkedIn lead's steps name its own messages with their real
+// state, and never say an email or a call.
+func TestSequenceManualWords(t *testing.T) {
+	at := testSent
+	linkedIn := func(state string) SequenceStep {
+		return SequenceStep{Type: "email", Channel: ChannelLinkedIn, MessageID: 8, State: state, At: &at}
+	}
+	two := func(a, b SequenceStep) []SequenceStep {
+		b.Step = 1
+		return []SequenceStep{a, b}
+	}
+	planned := SequenceStep{Type: "email", Channel: ChannelLinkedIn, State: SeqPlanned}
+	for name, c := range map[string]struct {
+		steps []SequenceStep
+		kinds []string
+		words []string
+	}{
+		"nothing drafted": {two(planned, planned), []string{"Connection note", "After they accept"}, []string{"not drafted yet", "not drafted yet"}},
+		"drafted": {two(linkedIn(SeqDraft), linkedIn(SeqDraft)), []string{"Connection note", "After they accept"},
+			[]string{"drafted, not sent yet", "drafted, not sent yet"}},
+		"approved, note not sent": {two(linkedIn(SeqDue), linkedIn(SeqWaiting)), []string{"Connection note", "After they accept"},
+			[]string{"due Sat 24 Oct 04:50", "waiting on the connection note"}},
+		"note marked sent": {two(linkedIn(SeqDone), linkedIn(SeqDue)), []string{"Connection note", "After they accept"},
+			[]string{"marked sent Sat 24 Oct 04:50", "ready: send it once they accept"}},
+		"note marked sent, the message with no due time": {two(linkedIn(SeqDone), linkedIn(SeqWaiting)), []string{"Connection note", "After they accept"},
+			[]string{"marked sent Sat 24 Oct 04:50", "ready: send it once they accept"}},
+		"form": {[]SequenceStep{{Type: "email", Channel: ChannelForm, MessageID: 3, State: SeqWaiting}}, []string{"Form message"}, []string{"ready to send"}},
+		"discarded": {[]SequenceStep{{Type: "email", Channel: ChannelForm, MessageID: 3, State: SeqCancelled, Reason: "batch discarded"}},
+			[]string{"Form message"}, []string{"cancelled: the batch was discarded"}},
+	} {
+		s := &server{opt: Options{Location: testSent.Location()}}
+		rows := s.sequenceRows(c.steps)
+		for i, r := range rows {
+			if r.Kind != c.kinds[i] || r.Words != c.words[i] {
+				t.Errorf("%s step %d: %q %q, want %q %q", name, i, r.Kind, r.Words, c.kinds[i], c.words[i])
+			}
+		}
+	}
+}
+
 // TestSequenceWords: every state and the store's own cancel reasons are worded, with no
 // internal code left in.
 func TestSequenceWords(t *testing.T) {

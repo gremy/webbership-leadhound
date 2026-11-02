@@ -125,7 +125,7 @@ func telHref(dial string) string {
 // seqRow is one step of a lead's Sequence section, worded.
 type seqRow struct {
 	Step  int
-	Kind  string // "an email" | "a phone call"
+	Kind  string // "an email" | "a phone call" | a form or LinkedIn message's label
 	Words string
 	Card  string // the call card's path, for a call row; ""
 }
@@ -139,6 +139,7 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		return " " + t.In(s.opt.Location).Format("Mon 2 Jan 15:04")
 	}
 	out := make([]seqRow, 0, len(steps))
+	labels := manualLabels(steps)
 	for i, st := range steps {
 		r := seqRow{Step: st.Step, Kind: "an email"}
 		if st.Type == "call" {
@@ -147,37 +148,12 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 				r.Card = leadCallPath + strconv.FormatInt(st.MessageID, 10)
 			}
 		}
-		switch st.State {
-		case SeqDraft:
-			r.Words = "drafted, waiting for the batch to be approved"
-		case SeqDue:
-			r.Words = "due" + at(st.At)
-		case SeqWaiting:
-			r.Words = "waiting"
-			if p, ok := waitsOn(steps, i); ok {
-				r.Words = "waiting on " + WaitsOnWords(p.Type, p.Step, st.Step)
-			}
-		case SeqSent:
-			r.Words = "sent" + at(st.At)
-			if st.Shadow {
-				r.Words = "sent in shadow" + at(st.At) + " (nothing left the server)"
-			}
-		case SeqDone:
-			r.Words = "called" + at(st.At)
-			if st.Outcome != "" {
-				r.Words += ": " + strings.ToLower(OutcomeWords(st.Outcome))
-			}
-			if n := shortNote(st.CallNote); n != "" {
-				r.Words += ` · "` + n + `"`
-			}
-		case SeqCancelled:
-			r.Words = "cancelled: " + cancelWords(st.Reason)
-		case SeqNoNumber:
-			r.Words = "skipped because there was no number we may call"
-		case SeqCheck:
-			r.Words = "may have gone out: check it on the Outreach page"
-		default:
-			r.Words = strings.ReplaceAll(st.State, "_", " ")
+		if labels[i] != "" {
+			r.Kind = labels[i]
+			r.Words = manualStepWords(steps, labels, i, at(st.At))
+		}
+		if r.Words == "" {
+			r.Words = stepWords(steps, i, at)
 		}
 		if st.Note != "" {
 			r.Words += " · " + st.Note
@@ -185,6 +161,102 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 		out = append(out, r)
 	}
 	return out
+}
+
+// ManualLabel names a form or LinkedIn message of a batch; linkedIn counts the batch's LinkedIn
+// messages so far, this one included. Both the Drafts cards and the Sequence section say it.
+func ManualLabel(channel string, linkedIn int) string {
+	switch {
+	case channel != ChannelLinkedIn:
+		return "Form message"
+	case linkedIn == 1:
+		return "Connection note"
+	}
+	return "After they accept"
+}
+
+// manualLabels is each step's ManualLabel, "" for a step that is not a form or LinkedIn message.
+func manualLabels(steps []SequenceStep) []string {
+	out := make([]string, len(steps))
+	linkedIn := 0
+	for i, st := range steps {
+		switch st.Channel {
+		case ChannelLinkedIn:
+			linkedIn++
+			out[i] = ManualLabel(st.Channel, linkedIn)
+		case ChannelForm:
+			out[i] = ManualLabel(st.Channel, linkedIn)
+		}
+	}
+	return out
+}
+
+// manualStepWords words what a message sent by hand is doing, when that differs from an email or a
+// call; "" leaves it to stepWords. at is the step's time as words.
+func manualStepWords(steps []SequenceStep, labels []string, i int, at string) string {
+	ready := "ready to send"
+	if labels[i] == ManualLabel(ChannelLinkedIn, 2) {
+		ready = "ready: send it once they accept"
+	}
+	switch steps[i].State {
+	case SeqPlanned:
+		return "not drafted yet"
+	case SeqDraft:
+		return "drafted, not sent yet"
+	case SeqDone:
+		return "marked sent" + at
+	case SeqDue:
+		if labels[i] == ManualLabel(ChannelLinkedIn, 2) {
+			return ready
+		}
+		return "due" + at
+	case SeqWaiting: // an approved message with no due time waits only on the step before it
+		p, ok := waitsOn(steps, i)
+		if !ok || p.State == SeqDone {
+			return ready
+		}
+		if j := slices.IndexFunc(steps, func(x SequenceStep) bool { return x.Step == p.Step }); j >= 0 && labels[j] != "" {
+			return "waiting on the " + strings.ToLower(labels[j])
+		}
+	}
+	return ""
+}
+
+// stepWords words the state of steps[i]; at gives a time as words.
+func stepWords(steps []SequenceStep, i int, at func(*time.Time) string) string {
+	st := steps[i]
+	switch st.State {
+	case SeqDraft:
+		return "drafted, waiting for the batch to be approved"
+	case SeqDue:
+		return "due" + at(st.At)
+	case SeqWaiting:
+		if p, ok := waitsOn(steps, i); ok {
+			return "waiting on " + WaitsOnWords(p.Type, p.Step, st.Step)
+		}
+		return "waiting"
+	case SeqSent:
+		if st.Shadow {
+			return "sent in shadow" + at(st.At) + " (nothing left the server)"
+		}
+		return "sent" + at(st.At)
+	case SeqDone:
+		words := "called" + at(st.At)
+		if st.Outcome != "" {
+			words += ": " + strings.ToLower(OutcomeWords(st.Outcome))
+		}
+		if n := shortNote(st.CallNote); n != "" {
+			words += ` · "` + n + `"`
+		}
+		return words
+	case SeqCancelled:
+		return "cancelled: " + cancelWords(st.Reason)
+	case SeqNoNumber:
+		return "skipped because there was no number we may call"
+	case SeqCheck:
+		return "may have gone out: check it on the Outreach page"
+	}
+	return strings.ReplaceAll(st.State, "_", " ")
 }
 
 // seqNoteMax is how many characters of the operator's call note the Sequence section shows.

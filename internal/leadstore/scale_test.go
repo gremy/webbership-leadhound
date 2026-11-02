@@ -255,6 +255,7 @@ func TestScaleLeadList(t *testing.T) {
 		{"channel email", leadstore.ListFilter{Channels: []string{leadstore.ListChannelEmail}}},
 		{"channel form", leadstore.ListFilter{Channels: []string{leadstore.ListChannelForm}}},
 		{"channel phone", leadstore.ListFilter{Channels: []string{leadstore.ListChannelPhone}}},
+		{"channel linkedin", leadstore.ListFilter{Channels: []string{leadstore.ListChannelLinkedIn}}},
 		{"starred", leadstore.ListFilter{Starred: &yes}},
 		{"not starred", leadstore.ListFilter{Starred: &no}},
 		{"has phone", leadstore.ListFilter{HasPhone: true}},

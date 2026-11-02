@@ -488,6 +488,22 @@ func operatorRouteValue(kind, raw string) (string, error) {
 	return value, nil
 }
 
+// PersonRouteKind is the kind of route a value typed for a person makes: a LinkedIn company, school
+// or profile address is RouteLinkedIn, an email address RouteEmail. Anything else is ErrBadContact,
+// because a route with a person can only be one of those two (contact_route_person_check).
+func PersonRouteKind(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if _, _, _, ok := enrich.LinkedInURL(value); ok {
+		return RouteLinkedIn, nil
+	}
+	if !strings.Contains(value, "/") {
+		if _, err := operatorRouteValue(RouteEmail, value); err == nil {
+			return RouteEmail, nil
+		}
+	}
+	return "", fmt.Errorf("%w: a person's address or link must be a LinkedIn address or an email address", ErrBadContact)
+}
+
 // contactNote is note trimmed, nil when blank, or ErrBadContact.
 func contactNote(note string) (*string, error) {
 	note = strings.TrimSpace(note)

@@ -41,6 +41,7 @@ var (
 	leadChannelOptions = []console.FilterOption{
 		{Value: leadstore.ListChannelEmail, Label: "Email address"},
 		{Value: leadstore.ListChannelForm, Label: "Contact form"},
+		{Value: leadstore.ListChannelLinkedIn, Label: "LinkedIn page"},
 		{Value: leadstore.ListChannelPhone, Label: "Phone number"},
 	}
 	leadStatusOptions = []console.FilterOption{
@@ -224,14 +225,8 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		return console.LeadListPage{}, err
 	}
 	ids := make([]int64, 0, len(rows))
-	orgs := make([]int64, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, r.LeadID)
-		orgs = append(orgs, r.OrgID)
-	}
-	linkedIn, err := b.linkedInOrgs(ctx, orgs)
-	if err != nil {
-		return console.LeadListPage{}, err
 	}
 	calls, err := lq.LatestLabels(ctx, ids)
 	if err != nil {
@@ -243,7 +238,6 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	today := b.now().In(b.loc)
 	for _, r := range rows {
 		row := leadListRow(r, kinds, w, order, today)
-		row.HasLinkedIn = linkedIn[r.OrgID]
 		if l := calls[r.LeadID]; l.Band != nil {
 			row.Call = *l.Band
 		}
@@ -594,7 +588,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		RType:    r.RType,
 		Finding:  leadview.FindingLine(r.Finding, w.cfg.Facts, today),
 		State:    leadStateWords(r.State),
-		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
+		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone, HasLinkedIn: r.HasLinkedIn,
 		Starred: r.Starred, SmallSite: r.SmallSite,
 		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
 		Reach:    r.Reach, ReachReason: r.ReachReason, Channel: r.Channel,
@@ -736,7 +730,7 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		}
 	}
 	for _, e := range d.Events {
-		p.Events = append(p.Events, console.LeadEvent{State: leadStateWords(e.State), Reason: e.Reason, Actor: e.Actor, At: e.At})
+		p.Events = append(p.Events, console.LeadEvent{State: leadStateWords(e.State), Reason: leadEventReason(e.Reason), Actor: e.Actor, At: e.At})
 	}
 	if pr := d.Priority; pr != nil {
 		p.Priority = &console.LeadPriority{Words: priorityWords(*pr), Actor: pr.Actor, At: pr.At}

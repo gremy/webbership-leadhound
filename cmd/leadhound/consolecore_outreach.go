@@ -524,15 +524,11 @@ func (b *backend) leadDrafts(ctx context.Context, d leadstore.Detail) ([]console
 		default:
 			dr.TargetURL = x.To
 			dr.Subject = ""
-			dr.Label = "Form message"
 			if m.Channel == leadconfig.ChannelLinkedIn {
 				at.linkedIn++
 				dr.Note = at.linkedIn == 1
-				dr.Label = "After they accept"
-				if dr.Note {
-					dr.Label = "Connection note"
-				}
 			}
+			dr.Label = console.ManualLabel(m.Channel, at.linkedIn)
 			dr.Editable = open && !answered
 			dr.CanMarkSent = open && !answered && !m.Shadow && (x.Approved || (x.Manual && !x.HoldsEmail))
 			dr.DueNow = dr.CanMarkSent && (m.DueAt == nil || !m.DueAt.After(now))
@@ -555,27 +551,4 @@ func draftStateWords(state string) string {
 		return "May have gone"
 	}
 	return capitalised(strings.ReplaceAll(state, "_", " "))
-}
-
-// linkedInOrgs are the orgs among orgIDs with a LinkedIn route still in use.
-func (b *backend) linkedInOrgs(ctx context.Context, orgIDs []int64) (map[int64]bool, error) {
-	out := map[int64]bool{}
-	if len(orgIDs) == 0 {
-		return out, nil
-	}
-	rows, err := b.s.Pool().Query(ctx,
-		`SELECT DISTINCT r.org_id FROM contact_route r
-		 WHERE r.org_id = ANY($1) AND r.kind = 'linkedin'
-		   AND (SELECT cm.mark FROM contact_mark cm WHERE cm.route_id = r.id ORDER BY cm.id DESC LIMIT 1) IS DISTINCT FROM 'retire'`, orgIDs)
-	if err != nil {
-		return nil, fmt.Errorf("console: linkedin orgs: %w", err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
-		return nil, fmt.Errorf("console: linkedin orgs: %w", err)
-	}
-	for _, id := range ids {
-		out[id] = true
-	}
-	return out, nil
 }

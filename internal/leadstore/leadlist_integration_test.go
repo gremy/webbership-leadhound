@@ -93,6 +93,37 @@ func sortedIDs(ids ...int64) []int64 {
 
 func boolp(b bool) *bool { return &b }
 
+// TestLeadListLinkedInChannel: "Can be reached by" takes a LinkedIn page, as flag and as filter, and
+// a retired page counts for nothing.
+func TestLeadListLinkedInChannel(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	with := f.siteLead(t, "with.localhost", intp(5000), 7, "info@with.localhost")
+	f.siteLead(t, "without.localhost", intp(6000), 7, "info@without.localhost")
+	l, err := f.q.LeadByID(ctx, with)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := f.q.AddOperatorRoute(ctx, leadstore.OperatorRoute{OrgID: l.OrgID, Kind: leadstore.RouteLinkedIn, Value: "https://linkedin.com/company/with"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := leadstore.ListFilter{Channels: []string{leadstore.ListChannelLinkedIn}}
+	rows, total, err := f.q.LeadList(ctx, filter, leadstore.ListContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].LeadID != with || !rows[0].HasLinkedIn {
+		t.Fatalf("total %d, rows %+v", total, rows)
+	}
+	if err := f.q.MarkContact(ctx, leadstore.Mark{OrgID: l.OrgID, RouteID: added.ID, Mark: leadstore.MarkRetire}); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, err = f.q.LeadList(ctx, filter, leadstore.ListContext{}); err != nil || total != 0 {
+		t.Fatalf("retired: total %d, %v", total, err)
+	}
+}
+
 func TestLeadListFilters(t *testing.T) {
 	f := newOutreachFixture(t)
 	page := f.pageFetch(t, "https://a.localhost/contact", "", "<html>contact</html>")
