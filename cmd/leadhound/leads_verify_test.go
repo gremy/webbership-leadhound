@@ -54,10 +54,10 @@ func TestEmailCheckWords(t *testing.T) {
 	day := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
 	rows := []leadstore.EmailCheck{{Status: verify.StatusSafe, CheckedAt: now}, {Status: verify.StatusCatchAll, CheckedAt: now},
 		{Status: verify.StatusSpamtrap, CheckedAt: now}, {Status: verify.StatusUnknown, CheckedAt: now}}
-	if got := countEmailChecks(rows, leadconfig.CatchAllSend); got != (emailCheckToday{4, 2, 1}) {
+	if got := countEmailChecks(rows, leadconfig.CatchAllSend); got != (emailCheckToday{4, 3, 1}) {
 		t.Errorf("counts (send) %+v", got)
 	}
-	if got := countEmailChecks(rows, leadconfig.CatchAllBlock); got != (emailCheckToday{4, 1, 2}) {
+	if got := countEmailChecks(rows, leadconfig.CatchAllBlock); got != (emailCheckToday{4, 2, 2}) {
 		t.Errorf("counts (block) %+v", got)
 	}
 
@@ -68,12 +68,12 @@ func TestEmailCheckWords(t *testing.T) {
 		{nil, "Email check: not checked yet"},
 		{[]leadstore.EmailCheck{{Status: verify.StatusRole, CheckedAt: now}}, "Email check: role address, may be sent"},
 		{[]leadstore.EmailCheck{{Status: verify.StatusInboxFull, CheckedAt: now}}, "Email check: inbox full, not sent"},
-		{[]leadstore.EmailCheck{{Status: verify.StatusUnknown, CheckedAt: now}}, "Email check: unknown, checked again the next day"},
+		{[]leadstore.EmailCheck{{Status: verify.StatusUnknown, CheckedAt: now}}, "Email check: unknown, may be sent"},
 		{[]leadstore.EmailCheck{{Status: verify.StatusUnknown, CheckedAt: now}, {Status: verify.StatusUnknown, CheckedAt: day.Add(-time.Hour)}},
-			"Email check: unknown, not sent (unknown twice in a row)"},
+			"Email check: unknown, may be sent"},
 		{[]leadstore.EmailCheck{{Status: verify.StatusSafe, CheckedAt: now.Add(-verify.FreshFor - time.Hour)}}, "Email check: safe, too old: checked again before sending"},
 	} {
-		got, at := emailCheckLine(tc.hist, leadconfig.CatchAllSend, now, day)
+		got, at := emailCheckLine(tc.hist, leadconfig.CatchAllSend, now)
 		if got != tc.want || (at == nil) != (len(tc.hist) == 0) {
 			t.Errorf("%+v: %q %v, want %q", tc.hist, got, at, tc.want)
 		}
@@ -89,7 +89,7 @@ func TestEmailCheckWords(t *testing.T) {
 	}{
 		{true, emailCheckToday{}, nil, []string{"No address checked today."}},
 		{false, emailCheckToday{}, nil, []string{emailCheckOffLine, "No address checked today."}},
-		{true, emailCheckToday{3, 2, 1}, run("checked 3 · sendable 2 · blocked 1 · waiting 0 · credits left 17 today, 0 one-off"),
+		{true, emailCheckToday{3, 2, 1}, run("checked 3 · sendable 2 · blocked 1 · credits left 17 today, 0 one-off"),
 			[]string{"Today: 3 addresses checked, 2 may be sent, 1 blocked.", "Credits left at the last run (Tue 27 Oct 09:00): 17 today, 0 one-off."}},
 		{true, emailCheckToday{1, 1, 0}, run(noCreditsLine), []string{"Today: 1 address checked, 1 may be sent, 0 blocked.", "Reoon had no credits left at the last run (Tue 27 Oct 09:00)."}},
 		{true, emailCheckToday{}, run(noReoonKeyNote), []string{"No address checked today.",

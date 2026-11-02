@@ -110,7 +110,6 @@ type emailGate struct {
 	on       bool
 	catchAll string // verify.catch_all in force
 	now      time.Time
-	dayStart time.Time // the start of the operator's day, for the next-day recheck of an unknown
 	checks   map[string][]verify.Check
 	supp     *outreach.SuppressionSet
 }
@@ -118,7 +117,7 @@ type emailGate struct {
 // loadEmailGate is the gate for a batch drafted now with bs: off for a shadow batch or while
 // the verify job is switched off.
 func loadEmailGate(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time) (*emailGate, error) {
-	g := &emailGate{catchAll: bs.leads.Verify.CatchAllRule(), now: now, dayStart: startOfDay(now, bs.loc), checks: map[string][]verify.Check{}}
+	g := &emailGate{catchAll: bs.leads.Verify.CatchAllRule(), now: now, checks: map[string][]verify.Check{}}
 	if bs.shadow {
 		return g, nil
 	}
@@ -158,12 +157,12 @@ func (g *emailGate) load(ctx context.Context, lq leadstore.Queries, addrs ...str
 
 // verdict is addr's verdict over the answers read (load first).
 func (g *emailGate) verdict(addr string) verify.Verdict {
-	return verify.Decide(g.checks[strings.ToLower(strings.TrimSpace(addr))], g.catchAll, g.now, g.dayStart)
+	return verify.Decide(g.checks[strings.ToLower(strings.TrimSpace(addr))], g.catchAll, g.now)
 }
 
 // route applies the email check to candidate c, whose country's channel policy is policy: a
 // lead whose route is not an email goes as it is. A sendable address goes. An address with no
-// answer yet, or a first unknown, waits (need names it when a check is due now). A blocked
+// answer yet waits (need names it, a check being due now). A blocked
 // address makes the lead fall to its next route, as a missing email does at build time
 // (outreach.PickChannel over its routes without the blocked addresses): another email route,
 // judged the same way, or a form or LinkedIn page; with none it is skipped with the first blocked status. An
@@ -186,12 +185,8 @@ func (g *emailGate) route(ctx context.Context, lq leadstore.Queries, policy stri
 		switch v.Decision {
 		case verify.Send:
 			return cur, gateResult{kind: gateSend, fell: fell}, nil
-		case verify.Unchecked, verify.Wait:
-			res := gateResult{kind: gateWait}
-			if v.Recheck {
-				res.need = strings.ToLower(strings.TrimSpace(cur.Route))
-			}
-			return cur, res, nil
+		case verify.Unchecked:
+			return cur, gateResult{kind: gateWait, need: strings.ToLower(strings.TrimSpace(cur.Route))}, nil
 		}
 		blocked[strings.ToLower(strings.TrimSpace(cur.Route))] = true
 		if first == "" {
@@ -251,14 +246,14 @@ func (g *emailGate) fallbackRoutes(ctx context.Context, lq leadstore.Queries, c 
 
 // verifyOutcome is what one leads verify run did.
 type verifyOutcome struct {
-	Checked, Sendable, Blocked, Waiting, Failed int
-	Balance                                     verify.Balance
-	BalanceRead                                 bool
+	Checked, Sendable, Blocked, Failed int
+	Balance                            verify.Balance
+	BalanceRead                        bool
 }
 
 // note is the run's note: its counts and the credits left after it.
 func (o verifyOutcome) note() string {
-	n := fmt.Sprintf("checked %d · sendable %d · blocked %d · waiting %d", o.Checked, o.Sendable, o.Blocked, o.Waiting)
+	n := fmt.Sprintf("checked %d · sendable %d · blocked %d", o.Checked, o.Sendable, o.Blocked)
 	if o.Failed > 0 {
 		n += fmt.Sprintf(" · %d failed", o.Failed)
 	}
@@ -444,13 +439,11 @@ func verifyRun(ctx context.Context, s *store.Store, client reoonClient, bs batch
 			continue
 		}
 		out.Checked++
-		switch d := verify.Decide([]verify.Check{{Status: a.res.Status, CheckedAt: now}}, bs.leads.Verify.CatchAllRule(), now, now).Decision; d {
+		switch d := verify.Decide([]verify.Check{{Status: a.res.Status, CheckedAt: now}}, bs.leads.Verify.CatchAllRule(), now).Decision; d {
 		case verify.Send:
 			out.Sendable++
 		case verify.Block:
 			out.Blocked++
-		default:
-			out.Waiting++
 		}
 	}
 	if storeErr != nil {
@@ -542,7 +535,7 @@ func runReoonBalance(ctx context.Context) error {
 // addresses would spend credits for nothing), the candidates its next live batch would draft, in the batch's own order (starred first, then
 // the outreach order), taken in turn from each campaign; for each lead the address the gate
 // waits on (its own, or the one it would fall to), each once. An address with a fresh answer
-// is not due, except a first unknown from an earlier day. First come the addresses on the
+// is not due. First come the addresses on the
 // operator's word that approved messages are held on: their leads have left the batch queue,
 // and with no check they would wait for ever.
 func verifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, limit int) ([]string, error) {
@@ -593,7 +586,7 @@ func verifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, now t
 		if err := gate.load(ctx, lq, a); err != nil {
 			return nil, err
 		}
-		if gate.verdict(a).Recheck {
+		if gate.verdict(a).Decision == verify.Unchecked {
 			out = append(out, a)
 		}
 	}
@@ -644,7 +637,7 @@ func countEmailChecks(rows []leadstore.EmailCheck, catchAll string) emailCheckTo
 	var t emailCheckToday
 	for _, r := range rows {
 		t.Checked++
-		switch verify.Decide([]verify.Check{{Status: r.Status, CheckedAt: r.CheckedAt}}, catchAll, r.CheckedAt, r.CheckedAt).Decision {
+		switch verify.Decide([]verify.Check{{Status: r.Status, CheckedAt: r.CheckedAt}}, catchAll, r.CheckedAt).Decision {
 		case verify.Send:
 			t.Sendable++
 		case verify.Block:
@@ -658,7 +651,7 @@ func countEmailChecks(rows []leadstore.EmailCheck, catchAll string) emailCheckTo
 // words, with when it was made: "Email check: safe, may be sent"; "Email check: not checked
 // yet" with no time when it never was. A result older than verify.FreshFor says it is checked
 // again before the address can be sent to.
-func emailCheckLine(history []leadstore.EmailCheck, catchAll string, now, dayStart time.Time) (string, *time.Time) {
+func emailCheckLine(history []leadstore.EmailCheck, catchAll string, now time.Time) (string, *time.Time) {
 	if len(history) == 0 {
 		return "Email check: not checked yet", nil
 	}
@@ -668,16 +661,11 @@ func emailCheckLine(history []leadstore.EmailCheck, catchAll string, now, daySta
 	}
 	at := history[0].CheckedAt
 	words := "Email check: " + emailCheckWords(history[0].Status)
-	switch v := verify.Decide(hs, catchAll, now, dayStart); v.Decision {
+	switch verify.Decide(hs, catchAll, now).Decision {
 	case verify.Send:
 		words += ", may be sent"
 	case verify.Block:
 		words += ", not sent"
-		if v.Status == verify.StatusUnknown {
-			words += " (unknown twice in a row)"
-		}
-	case verify.Wait:
-		words += ", checked again the next day"
 	default:
 		words += ", too old: checked again before sending"
 	}
@@ -736,8 +724,7 @@ func readVerifyNowRequest(dataDir string) (int64, error) {
 }
 
 // batchVerifyQueue is what Check email now checks: the first-email addresses of batch batchID,
-// once each and at most limit, that have no sendable or blocking answer yet (unchecked, or an
-// unknown due its next-day recheck). A batch approved, discarded or missing checks nothing.
+// once each and at most limit, that have no sendable or blocking answer yet. A batch approved, discarded or missing checks nothing.
 func batchVerifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, batchID int64, limit int) ([]string, error) {
 	b, err := lq.BatchByID(ctx, batchID)
 	if errors.Is(err, leadstore.ErrBatchNotFound) {
@@ -768,7 +755,7 @@ func batchVerifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, 
 		if err := gate.load(ctx, lq, a); err != nil {
 			return nil, err
 		}
-		if v := gate.verdict(a); v.Decision == verify.Unchecked || (v.Decision == verify.Wait && v.Recheck) {
+		if gate.verdict(a).Decision == verify.Unchecked {
 			out = append(out, a)
 		}
 	}

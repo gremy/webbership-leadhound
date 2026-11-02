@@ -168,6 +168,26 @@ func TestOperatorEmailGate(t *testing.T) {
 	}
 }
 
+// TestOperatorEmailUnsure: an unsure answer holds no address, on any road: the message goes.
+func TestOperatorEmailUnsure(t *testing.T) {
+	for _, road := range opRoads {
+		t.Run(road.name, func(t *testing.T) {
+			w := newSendWorld(t, true, 10)
+			lead := w.lead(t, "alpha.example")
+			addr := opAddress
+			if _, err := w.lq.AddOperatorRoute(context.Background(), leadstore.OperatorRoute{OrgID: w.orgOfLead(t, lead), Kind: leadstore.RouteEmail, Value: addr}); err != nil {
+				t.Fatal(err)
+			}
+			send := road.open(t, w, lead, addr)
+			w.addCheck(t, addr, verify.StatusUnknown)
+			out := send()
+			if got := w.smtp.recipients(); !slices.Equal(got, []string{addr}) {
+				t.Fatalf("unsure: sent to %v\n%s", got, out)
+			}
+		})
+	}
+}
+
 // TestOperatorEmailClaimed: a claimed address found by a contacts run is his word too: unchecked
 // it waits, with a passing check it sends. The same address unclaimed goes as it always has.
 func TestOperatorEmailClaimed(t *testing.T) {

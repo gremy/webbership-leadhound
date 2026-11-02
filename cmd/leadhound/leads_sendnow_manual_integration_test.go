@@ -400,6 +400,113 @@ func TestSendNowPlanWaitsForEmailCheck(t *testing.T) {
 	}
 }
 
+// TestSendNowPlanOthersGoWithoutTheWaiting: a lead whose address is not checked yet does not hold
+// back the others: the plan can send, the confirm approves the checked lead and sends the waiting
+// one back to new. An unsure answer is no wait at all: that lead goes.
+func TestSendNowPlanOthersGoWithoutTheWaiting(t *testing.T) {
+	ctx := context.Background()
+	b, _, ids := manualScene(t)
+	setVerify(t, true)
+	p, err := b.SendNowPreview(ctx, console.ManualSendRequest{LeadIDs: ids[:2]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CanSend || planLead(p, ids[0]).Waiting == "" || planLead(p, ids[1]).Waiting == "" {
+		t.Fatalf("both waiting: %+v", p)
+	}
+	if _, err := b.lq().AddEmailCheck(ctx, leadstore.EmailCheck{Address: planLead(p, ids[1]).Email, Provider: verify.Provider,
+		Status: verify.StatusUnknown, CheckedAt: leadsNow()}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = b.SendNowPlan(ctx, p.BatchID); err != nil {
+		t.Fatal(err)
+	}
+	if !p.CanSend || planLead(p, ids[0]).Waiting == "" || !planLead(p, ids[1]).OK {
+		t.Fatalf("one waiting, one unsure: %+v", p)
+	}
+	if _, err := b.SendNowConfirm(ctx, confirmOf(p)); err != nil {
+		t.Fatal(err)
+	}
+	state := func(id int64) (st string) {
+		t.Helper()
+		if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT state FROM lead WHERE id = $1`, id).Scan(&st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	if st := state(ids[0]); st != "new" {
+		t.Errorf("the waiting lead is %s, want back to new", st)
+	}
+	if st := state(ids[1]); st != "batched" {
+		t.Errorf("the unsure lead is %s, want batched", st)
+	}
+}
+
+// TestSendNowPlanBatchWaitHoldsTheButton: Approve and send now has no skip list and an approved
+// address would go unchecked on the next hourly send, so a waiting address holds its button,
+// and the page says how to send the others.
+func TestSendNowPlanBatchWaitHoldsTheButton(t *testing.T) {
+	ctx := context.Background()
+	b, _, _ := manualScene(t)
+	setVerify(t, false)
+	out, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadNewBatch})
+	if err != nil || out.BatchID == 0 {
+		t.Fatalf("daily batch: %+v %v", out, err)
+	}
+	setVerify(t, true)
+	p, err := b.SendNowPreview(ctx, console.ManualSendRequest{BatchID: out.BatchID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waiting []string
+	for _, l := range p.Leads {
+		if l.Waiting != "" {
+			waiting = append(waiting, l.Email)
+		}
+	}
+	if len(waiting) < 2 {
+		t.Fatalf("%d waiting in %+v", len(waiting), p)
+	}
+	for _, a := range waiting[1:] {
+		if _, err := b.lq().AddEmailCheck(ctx, leadstore.EmailCheck{Address: a, Provider: verify.Provider, Status: verify.StatusSafe, CheckedAt: leadsNow()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p, err = b.SendNowPlan(ctx, out.BatchID); err != nil {
+		t.Fatal(err)
+	}
+	if p.CanSend || !slices.ContainsFunc(p.Notes, func(n string) bool { return strings.Contains(n, "pick the other leads") }) {
+		t.Errorf("plan %+v", p)
+	}
+}
+
+// TestSendNowAgainWaitingSaysSo: a waiting address on an approved batch does not hold Send now
+// again, and the page says the hourly send takes it with no check.
+func TestSendNowAgainWaitingSaysSo(t *testing.T) {
+	ctx := context.Background()
+	b, _, ids := manualScene(t)
+	setVerify(t, false)
+	p, err := b.SendNowPreview(ctx, console.ManualSendRequest{LeadIDs: ids[:2]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendNowConfirm(ctx, confirmOf(p)); err != nil {
+		t.Fatal(err)
+	}
+	setVerify(t, true)
+	if _, err := b.lq().AddEmailCheck(ctx, leadstore.EmailCheck{Address: planLead(p, ids[1]).Email, Provider: verify.Provider, Status: verify.StatusSafe, CheckedAt: leadsNow()}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := b.SendNowAgainPlan(ctx, p.BatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.CanSend || planLead(a, ids[0]).Waiting == "" || !planLead(a, ids[1]).OK ||
+		!slices.ContainsFunc(a.Notes, func(n string) bool { return strings.Contains(n, "the hourly send takes") }) {
+		t.Errorf("again plan %+v", a)
+	}
+}
+
 func mustSetup(t *testing.T, b *backend) leadsSetup {
 	t.Helper()
 	s, err := b.leadsSetup(context.Background(), leadsForOutreach)

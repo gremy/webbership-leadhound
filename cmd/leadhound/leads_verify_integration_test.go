@@ -132,7 +132,7 @@ func sweepSendable(t *testing.T, id int, catchAll string) {
 		for _, r := range got[strings.ToLower(a)] {
 			hs = append(hs, verify.Check{Status: r.Status, CheckedAt: r.CheckedAt})
 		}
-		if v := verify.Decide(hs, catchAll, leadsTuesday, startOfDay(leadsTuesday, time.UTC)); v.Decision != verify.Send {
+		if v := verify.Decide(hs, catchAll, leadsTuesday); v.Decision != verify.Send {
 			t.Errorf("a live batch emails %s, whose check is %+v", a, v)
 		}
 	}
@@ -199,7 +199,7 @@ func TestVerifyBatchGate(t *testing.T) {
 	}}
 	useReoon(t, f)
 	out = mustRun(t, "leads", "verify")
-	wantLines(t, "verify", out, "leads verify: checked 4 · sendable 2 · blocked 1 · waiting 1 · credits left 20 today, 0 one-off")
+	wantLines(t, "verify", out, "leads verify: checked 4 · sendable 3 · blocked 1 · credits left 20 today, 0 one-off")
 	if got := f.checked(); len(got) != 4 {
 		t.Errorf("checked %v, want the 4 email addresses", got)
 	}
@@ -209,19 +209,22 @@ func TestVerifyBatchGate(t *testing.T) {
 	if n := batchCount(t, `SELECT count(*) FROM run WHERE command = 'leads-verify' AND note LIKE 'checked 4 %' AND finished_at IS NOT NULL`); n != 1 {
 		t.Errorf("verify run rows: %d", n)
 	}
-	// Re-run: every answer is fresh (the unknown is today's), so nothing is asked again.
+	// Re-run: every answer is fresh, so nothing is asked again.
 	mustRun(t, "leads", "verify")
 	if got := f.checked(); len(got) != 4 {
 		t.Errorf("re-run checked again: %v", got)
 	}
 
 	out = mustRun(t, "leads", "batch", "new")
-	wantLines(t, "gated", out, "1 lead waits for its email check.")
+	if strings.Contains(out, "email check.") {
+		t.Errorf("an unsure answer waits:\n%s", out)
+	}
 	if strings.Contains(out, "skipped tailspin") {
 		t.Errorf("tailspin has a form, so it is not skipped:\n%s", out)
 	}
 	got := draftedRoutes(t, 3)
 	wantGated := map[string]string{"northwind.example": "email info@northwind.example", "litware.example": "email office@litware.example",
+		"wingtip.example":  "email hello@wingtip.example",
 		"tailspin.example": "form https://tailspin.example/contact", "contoso.example": "form https://contoso.example/contact"}
 	if len(got) != len(wantGated) {
 		t.Errorf("gated batch %v, want %v", got, wantGated)
@@ -261,7 +264,7 @@ func TestVerifyBatchGate(t *testing.T) {
 	wantLines(t, "blocked", out, "skipped tailspin.example (unsupported, email): email check: invalid",
 		"skipped litware.example (unsupported, email): email check: catch-all")
 	got = draftedRoutes(t, 4)
-	if len(got) != 2 || got["northwind.example"] != "email info@northwind.example" || got["contoso.example"] != "form https://contoso.example/contact" {
+	if len(got) != 3 || got["northwind.example"] != "email info@northwind.example" || got["wingtip.example"] != "email hello@wingtip.example" || got["contoso.example"] != "form https://contoso.example/contact" {
 		t.Errorf("blocked batch %v", got)
 	}
 	sweepSendable(t, 4, verify.CatchAllBlock)
@@ -320,7 +323,7 @@ func TestVerifyRunLimits(t *testing.T) {
 	t.Setenv(reoonDailyCapEnv, "")
 	delete(f.status, "hello@wingtip.example") // its check fails
 	out := mustRun(t, "leads", "verify")
-	wantLines(t, "failure", out, "hello@wingtip.example not checked: verify: reoon /api/v1/verify: HTTP 500", "checked 1 · sendable 1 · blocked 0 · waiting 0 · 1 failed")
+	wantLines(t, "failure", out, "hello@wingtip.example not checked: verify: reoon /api/v1/verify: HTTP 500", "checked 1 · sendable 1 · blocked 0 · 1 failed")
 	if n := batchCount(t, `SELECT count(*) FROM email_check WHERE address = 'hello@wingtip.example'`); n != 0 {
 		t.Errorf("a failed check stored %d rows", n)
 	}
@@ -395,7 +398,7 @@ func TestVerifyConsole(t *testing.T) {
 	r = row()
 	lines := strings.Join(r.Lines, "\n")
 	// The run's start is the real clock's (a run row's started_at is the database's now()).
-	for _, want := range []string{"Today: 4 addresses checked, 2 may be sent, 1 blocked.", "Credits left at the last run (", "): 18 today, 3 one-off."} {
+	for _, want := range []string{"Today: 4 addresses checked, 3 may be sent, 1 blocked.", "Credits left at the last run (", "): 18 today, 3 one-off."} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("Controls lines lack %q:\n%s", want, lines)
 		}
@@ -431,7 +434,7 @@ func TestVerifyConsole(t *testing.T) {
 	if p.Values.CatchAll != console.CatchAllBlock || !p.Sources.CatchAll.Console {
 		t.Errorf("saved: %q %+v", p.Values.CatchAll, p.Sources.CatchAll)
 	}
-	if r = row(); !strings.Contains(strings.Join(r.Lines, "\n"), "Today: 4 addresses checked, 1 may be sent, 2 blocked.") {
+	if r = row(); !strings.Contains(strings.Join(r.Lines, "\n"), "Today: 4 addresses checked, 2 may be sent, 2 blocked.") {
 		t.Errorf("Controls after catch-all block: %q", r.Lines)
 	}
 	if err := b.SaveLeadSettings(ctx, console.SettingsEmailCheck, console.LeadSettingsValues{}, true); err != nil {
@@ -489,21 +492,21 @@ func TestVerifyFallbackRoutes(t *testing.T) {
 	}
 	check("hello@wingtip.example", verify.StatusDisabled, at)
 	check("team@wingtip.example", verify.StatusSafe, at)
-	// tailspin: unknown yesterday and again today.
+	// tailspin: unknown yesterday and again today; it is drafted.
 	check("info@tailspin.example", verify.StatusUnknown, leadsTuesday.Add(-30*time.Hour))
 	check("info@tailspin.example", verify.StatusUnknown, at)
 
 	out := mustRun(t, "leads", "batch", "new")
 	wantLines(t, "fallbacks", out,
 		"skipped litware.example (unsupported, email): email check: invalid",
-		"skipped wingtip.example (agency_partner, email): email check: disabled",
-		"skipped tailspin.example (unsupported, email): email check: unknown")
+		"skipped wingtip.example (agency_partner, email): email check: disabled")
 	if strings.Contains(out, "wait for") || strings.Contains(out, "waits for") {
 		t.Errorf("nothing should wait:\n%s", out)
 	}
 	got := draftedRoutes(t, 1)
-	if len(got) != 2 || got["northwind.example"] != "email sales@northwind.example" || got["contoso.example"] != "form https://contoso.example/contact" {
-		t.Errorf("drafted %v, want northwind on its second address and the form lead", got)
+	if len(got) != 3 || got["northwind.example"] != "email sales@northwind.example" || got["contoso.example"] != "form https://contoso.example/contact" ||
+		got["tailspin.example"] != "email info@tailspin.example" {
+		t.Errorf("drafted %v, want northwind on its second address, the form lead and the unsure address", got)
 	}
 	sweepSendable(t, 1, verify.CatchAllSend)
 	var ch, to string

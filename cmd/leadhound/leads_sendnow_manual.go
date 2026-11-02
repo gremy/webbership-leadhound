@@ -56,7 +56,7 @@ const (
 // manualMemo is what the console remembers of each manual batch between the preview and the
 // confirm, in memory only: the chosen leads newBatch left out (they never reach the batch, so
 // only the preview knows them), its notes, and the lead ids the page last showed with a hard
-// stop, so confirm can tell a stop that is new. Lost on a restart, which is safe: a forgotten
+// stop or waiting, so confirm can tell a stop that is new or a wait that ended. Lost on a restart, which is safe: a forgotten
 // left-out lead is not sent, and a forgotten shown set makes confirm show the plan again.
 type manualMemo struct {
 	mu sync.Mutex
@@ -68,14 +68,15 @@ type manualEntry struct {
 	extra   []console.SendPlanLead // chosen leads not in the batch, each with its Stop
 	notes   []string
 	shown   map[int64]bool // lead ids shown with a hard stop
-	showned bool           // shown was set by a plan the page showed
+	waited  map[int64]bool // lead ids shown waiting for the email check
+	showned bool           // shown and waited were set by a plan the page showed
 }
 
 func (mm *manualMemo) get(id int64) manualEntry {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 	if e := mm.m[id]; e != nil {
-		return manualEntry{at: e.at, extra: slices.Clone(e.extra), notes: slices.Clone(e.notes), shown: maps.Clone(e.shown), showned: e.showned}
+		return manualEntry{at: e.at, extra: slices.Clone(e.extra), notes: slices.Clone(e.notes), shown: maps.Clone(e.shown), waited: maps.Clone(e.waited), showned: e.showned}
 	}
 	return manualEntry{}
 }
@@ -105,15 +106,18 @@ func (mm *manualMemo) built(id int64, now time.Time, extra []console.SendPlanLea
 	e.at, e.extra, e.notes = now, extra, notes
 }
 
-// showed records the hard stops of a plan the page is about to show.
+// showed records the hard stops and waits of a plan the page is about to show.
 func (mm *manualMemo) showed(id int64, now time.Time, p console.SendPlan) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 	e := mm.entry(id, now)
-	e.shown, e.showned = map[int64]bool{}, true
+	e.shown, e.waited, e.showned = map[int64]bool{}, map[int64]bool{}, true
 	for _, l := range p.Leads {
 		if l.Stop != "" {
 			e.shown[l.LeadID] = true
+		}
+		if l.Waiting != "" {
+			e.waited[l.LeadID] = true
 		}
 	}
 }
@@ -121,7 +125,7 @@ func (mm *manualMemo) showed(id int64, now time.Time, p console.SendPlan) {
 // manualFacts is what confirm needs from a plan besides what the page shows.
 type manualFacts struct {
 	batch    leadstore.Batch
-	skip     []int // item numbers of the leads with a hard stop the approval leaves out
+	skip     []int // item numbers of the leads with a hard stop or a wait the approval leaves out
 	now      int   // emails this send's run sends
 	later    int   // OK leads held for a shared recipient domain: they go in the next runs
 	codes    []string
@@ -363,8 +367,9 @@ func goLater(n int) string {
 }
 
 // manualChanged reports whether the press no longer matches the plan now: it cannot send,
-// its hash is not the one shown, a warning now is not one the page showed, or a lead has a
-// hard stop the page did not show (with nothing remembered of the page, any stop is new).
+// its hash is not the one shown, a warning now is not one the page showed, a lead has a hard
+// stop the page did not show (with nothing remembered of the page, any stop is new), or a lead
+// the page showed waiting would now go: the send would be bigger than the page said.
 func manualChanged(p console.SendPlan, c console.ManualConfirm, seen manualEntry) bool {
 	if !p.CanSend || strings.ToLower(strings.TrimSpace(c.HashPrefix)) != p.HashPrefix {
 		return true
@@ -376,6 +381,9 @@ func manualChanged(p console.SendPlan, c console.ManualConfirm, seen manualEntry
 	}
 	for _, l := range p.Leads {
 		if l.Stop != "" && (!seen.showned || !seen.shown[l.LeadID]) {
+			return true
+		}
+		if l.Waiting == "" && seen.waited[l.LeadID] {
 			return true
 		}
 	}
@@ -959,7 +967,7 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 		loc  *time.Location
 	}
 	var ok []cand
-	// skippable are the item numbers of the leads with a hard stop the approval must leave out
+	// skippable are the item numbers of the leads with a hard stop or a wait the approval must leave out
 	// by its skip list; ApproveManualBatch sends each back to new, since most stops hold only
 	// today. A suppressed lead and one no longer in the batch's state are left out by
 	// ApproveBatch's own re-check (the first moves to suppressed there), so they are not listed.
@@ -1034,8 +1042,9 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 			switch vd := gate.verdict(addr); vd.Decision {
 			case verify.Unchecked:
 				l.Waiting = "Email not checked yet"
-			case verify.Wait:
-				l.Waiting = "Email check unsure; it is checked again tomorrow"
+				// Not in this send: on the chosen-leads road it goes back to new, where the check
+				// reaches it, and the others go. The roads with no skip list decide below.
+				skippable[it.Lead.ID] = it.N
 			case verify.Block:
 				l.Stop = "Email check: " + emailCheckWords(vd.Status) + ". It is never sent to."
 				skippable[it.Lead.ID] = it.N
@@ -1213,8 +1222,18 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 		if pending {
 			plan.Waiting = fmt.Sprintf("Checking %s now; this page updates itself.", plural(waiting, "email address", "email addresses"))
 		} else {
-			plan.Notes = append(plan.Notes, fmt.Sprintf("%s for the email check. Check it now, or send the others without %s.",
-				waitWords2(waiting), pronoun(waiting)))
+			switch {
+			case again:
+				// Already approved, so the hourly send takes it whatever this send does.
+				plan.Notes = append(plan.Notes, fmt.Sprintf("%s for the email check. This send leaves %s out; the hourly send takes %s with no check.",
+					waitWords2(waiting), pronoun(waiting), pronoun(waiting)))
+			case batchMode:
+				plan.Notes = append(plan.Notes, fmt.Sprintf("%s for the email check. Check it now, or pick the other leads on the Leads list to send them without %s.",
+					waitWords2(waiting), pronoun(waiting)))
+			default:
+				plan.Notes = append(plan.Notes, fmt.Sprintf("%s for the email check. Check it now, or send the others without %s.",
+					waitWords2(waiting), pronoun(waiting)))
+			}
 		}
 	}
 	if live && !v.Batch.Shadow && !sw.On {
@@ -1239,6 +1258,8 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 	}
 	if batchMode {
 		f.skip = nil
+		// Approved with the batch, a waiting address would go unchecked on the next hourly send.
+		blocked = waiting > 0
 		if byHand > 0 {
 			what := plural(byHand, "contact form, LinkedIn note or call is", "contact forms, LinkedIn notes or calls are")
 			plan.Notes = append(plan.Notes, what+" approved for you to do by hand.")
@@ -1251,7 +1272,7 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 			}
 		}
 	}
-	plan.CanSend = len(ok) > 0 && waiting == 0 && plan.Waiting == "" && all == "" && !blocked
+	plan.CanSend = len(ok) > 0 && plan.Waiting == "" && all == "" && !blocked
 	return plan, f, nil
 }
 

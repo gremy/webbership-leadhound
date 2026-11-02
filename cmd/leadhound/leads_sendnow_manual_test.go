@@ -28,8 +28,9 @@ func TestOverrideCodesInSync(t *testing.T) {
 	}
 }
 
-// TestManualChanged: the press matches the plan only with its hash, every warning shown and no
-// hard stop the page did not show; a plan that cannot send never matches.
+// TestManualChanged: the press matches the plan only with its hash, every warning shown, no
+// hard stop the page did not show and no lead it showed waiting now going; a plan that cannot
+// send never matches.
 func TestManualChanged(t *testing.T) {
 	p := console.SendPlan{HashPrefix: "abcdef012345", CanSend: true,
 		Warnings: []console.SendWarning{{Code: console.WarnRamp}, {Code: console.WarnWindow}},
@@ -49,6 +50,7 @@ func TestManualChanged(t *testing.T) {
 		"new stop":    {p, c, manualEntry{showned: true, shown: map[int64]bool{}}},
 		"no memory":   {p, c, manualEntry{}},
 		"cannot send": {func() console.SendPlan { q := p; q.CanSend = false; return q }(), c, shown},
+		"wait ended":  {p, c, manualEntry{showned: true, shown: map[int64]bool{2: true}, waited: map[int64]bool{1: true}}},
 	} {
 		if !manualChanged(tc.p, tc.c, tc.seen) {
 			t.Errorf("%s: not changed", name)

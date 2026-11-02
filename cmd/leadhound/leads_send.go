@@ -1252,8 +1252,6 @@ func operatorHoldWords(v verify.Verdict, checkOn bool) string {
 		return "your own address failed its email check (" + emailCheckWords(v.Status) + "). Retire it or add another on the lead's page; nothing goes to it."
 	case !checkOn:
 		return "your own address has no passing email check, and the Email check is off, so nothing can check it. Switch it on in Controls."
-	case v.Decision == verify.Wait:
-		return "your own address got an unsure email check; leads verify asks again tomorrow, and the message goes if it passes."
 	}
 	return "your own address has not had its email check yet; the next leads verify checks it, and the message goes if it passes."
 }

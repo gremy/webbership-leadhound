@@ -213,60 +213,40 @@ func TestLoadKey(t *testing.T) {
 	}
 }
 
-// TestDecide: the verdict for every status, the catch-all setting, the second unknown, the
-// next-day recheck and the 90-day freshness.
+// TestDecide: the verdict for every status, the catch-all setting, an unknown that never holds a
+// send and the 90-day freshness.
 func TestDecide(t *testing.T) {
 	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
-	day := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
 	one := func(st string) []Check { return []Check{{Status: st, CheckedAt: now.Add(-time.Hour)}} }
 	for st, want := range map[string]Decision{
 		StatusSafe: Send, StatusRole: Send, StatusCatchAll: Send,
 		StatusInvalid: Block, StatusDisabled: Block, StatusDisposable: Block, StatusInboxFull: Block, StatusSpamtrap: Block,
-		StatusUnknown: Wait, "some_new_word": Block,
+		StatusUnknown: Send, "some_new_word": Block,
 	} {
-		if v := Decide(one(st), "", now, day); v.Decision != want || v.Status != st {
+		if v := Decide(one(st), "", now); v.Decision != want || v.Status != st {
 			t.Errorf("%s: %+v, want decision %d", st, v, want)
 		}
 	}
-	if v := Decide(one(StatusCatchAll), CatchAllBlock, now, day); v.Decision != Block {
+	if v := Decide(one(StatusCatchAll), CatchAllBlock, now); v.Decision != Block {
 		t.Errorf("catch_all with block: %+v", v)
 	}
-	if v := Decide(one(StatusCatchAll), CatchAllSend, now, day); v.Decision != Send {
+	if v := Decide(one(StatusCatchAll), CatchAllSend, now); v.Decision != Send {
 		t.Errorf("catch_all with send: %+v", v)
 	}
-	if v := Decide(nil, "", now, day); v.Decision != Unchecked || !v.Recheck {
+	if v := Decide(nil, "", now); v.Decision != Unchecked {
 		t.Errorf("no result: %+v", v)
 	}
-	// unknown today: wait, no recheck today; unknown yesterday: wait and recheck now.
-	if v := Decide(one(StatusUnknown), "", now, day); v.Decision != Wait || v.Recheck {
-		t.Errorf("unknown today: %+v", v)
-	}
-	yesterday := []Check{{Status: StatusUnknown, CheckedAt: day.Add(-time.Hour)}}
-	if v := Decide(yesterday, "", now, day); v.Decision != Wait || !v.Recheck {
-		t.Errorf("unknown yesterday: %+v", v)
-	}
-	two := []Check{{Status: StatusUnknown, CheckedAt: now.Add(-time.Hour)}, {Status: StatusUnknown, CheckedAt: day.Add(-time.Hour)}}
-	if v := Decide(two, "", now, day); v.Decision != Block || v.Status != StatusUnknown {
+	// An unknown never holds a send, however many stand in a row and whatever the catch-all rule.
+	two := []Check{{Status: StatusUnknown, CheckedAt: now.Add(-time.Hour)}, {Status: StatusUnknown, CheckedAt: now.Add(-30 * time.Hour)}}
+	if v := Decide(two, CatchAllBlock, now); v.Decision != Send || v.Status != StatusUnknown {
 		t.Errorf("second unknown: %+v", v)
-	}
-	// An unknown after a safe is a first unknown; a safe after an unknown sends.
-	if v := Decide([]Check{two[0], {Status: StatusSafe, CheckedAt: day.Add(-48 * time.Hour)}}, "", now, day); v.Decision != Wait {
-		t.Errorf("unknown after safe: %+v", v)
-	}
-	if v := Decide([]Check{{Status: StatusSafe, CheckedAt: now}, two[0]}, "", now, day); v.Decision != Send {
-		t.Errorf("safe after unknown: %+v", v)
 	}
 	// Older than 90 days: unchecked, even an invalid.
 	old := []Check{{Status: StatusInvalid, CheckedAt: now.Add(-FreshFor - time.Hour)}}
-	if v := Decide(old, "", now, day); v.Decision != Unchecked {
+	if v := Decide(old, "", now); v.Decision != Unchecked {
 		t.Errorf("stale invalid: %+v", v)
 	}
-	// An old unknown does not count toward a second one.
-	staleRun := []Check{two[0], {Status: StatusUnknown, CheckedAt: now.Add(-FreshFor - time.Hour)}}
-	if v := Decide(staleRun, "", now, day); v.Decision != Wait {
-		t.Errorf("unknown after a stale unknown: %+v", v)
-	}
-	if !Sendable(StatusRole, "") || Sendable(StatusUnknown, "") || Sendable(StatusCatchAll, CatchAllBlock) {
+	if !Sendable(StatusRole, "") || !Sendable(StatusUnknown, "") || Sendable(StatusCatchAll, CatchAllBlock) {
 		t.Error("Sendable is wrong")
 	}
 }

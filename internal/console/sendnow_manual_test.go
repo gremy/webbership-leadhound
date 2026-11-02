@@ -192,6 +192,19 @@ func TestSendConfirmNoButton(t *testing.T) {
 	}
 }
 
+// A lead waiting for its email check does not take the button from the lead that can go.
+func TestSendConfirmWaitingLeadKeepsTheButton(t *testing.T) {
+	h := newSendHarness(t)
+	h.b.plan.Warnings = nil
+	h.b.plan.Leads = []SendPlanLead{{LeadID: 1, Name: "Goes", OK: true}, {LeadID: 2, Name: "Waits", Waiting: "Email not checked yet"}}
+	body := h.do(get("/leads/send-now/7", h.session(t))).Body.String()
+	for _, want := range []string{"Send now (1)", "Leads with a hard stop or still waiting are left out", "Email not checked yet", "Check email now"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("lacks %q", want)
+		}
+	}
+}
+
 func TestSendConfirmWaitingPolls(t *testing.T) {
 	h := newSendHarness(t)
 	h.b.plan.Waiting = "Claude is writing 2 drafts for this batch."

@@ -362,7 +362,7 @@ type NewBatchOutcome struct {
 	ClaudeDrafted int
 	Fallbacks     map[string]int
 	// EmailWaiting counts the live leads left for a later batch because their address has no
-	// sendable answer from the email check yet (unchecked, or a first unknown).
+	// answer from the email check yet.
 	EmailWaiting int
 	Sizing       *BatchSizing  // a live batch's sizing; nil for shadow
 	Rooms        map[int64]int // a live batch's room per mailbox over the sizing window, by mailbox id
@@ -1144,7 +1144,7 @@ type ApproveRequest struct {
 	// DueNow is a manual Send now's approval: each first email is due at the approval's time,
 	// not at its next business slot (the confirm page warned about the hours).
 	DueNow bool
-	// Manual is a manual Send now's approval: Skip names the leads a hard stop left out, and
+	// Manual is a manual Send now's approval: Skip names the leads a hard stop or a wait left out, and
 	// they go back to new instead of to skipped (leadstore.ApproveManualBatch).
 	Manual bool
 	// before and after, when set, run in the approval's transaction, before it and after it

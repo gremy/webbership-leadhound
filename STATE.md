@@ -1,6 +1,11 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+An unsure email check no longer holds a send (2026-11-02, committed; deploy waits on the operator's yes):
+- What exists: Reoon's `unknown` sends on every road (morning batch, hourly, `--now`, Send now, your own addresses), whatever `verify.catch_all` says, and is not asked again until the 90-day answer expires. Invalid, disabled, throwaway, full and trap addresses stay refused. Send now on chosen leads: an unchecked lead no longer takes the button from the others and goes back to new, where the check reaches it. Approve and send now keeps the button held on an unchecked address (no skip list, and an approved address goes unchecked on the hourly send). Send now again goes and says the hourly send takes it with no check.
+- Open: with Reoon down or out of credits an address stays unchecked and waits; a lone unchecked lead still needs Check email now. A hand-added address with the Email check off still stops.
+- Not verified: the page on a real console; proven by tests and a render test.
+
 Lead outreach for every channel (2026-11-02, plan `leadhound-lead-outreach-manual-channels`, pushed and deployed):
 - What exists: LinkedIn as a channel and a route (found only as a link on the organisation's own pages; the leads fetch clients refuse linkedin.com, the job-search side is unchanged); the List's tabs by next action (Email-ready, Manual, Dead end, Contacted) and the Next step card, one SQL definition; Claude LinkedIn notes and messages and form messages, with Copy and Mark sent; editing any draft (`leads drafts edit`), keeping the original; Draft it (`leads drafts make`, `leadhound-leads-draft.path`, a Status row and no Controls row); your own contacts (`leads contacts add|edit|retire|list`), claimed and retired by marks; the proof library and sectors (`leads proof add|list|retire`, `leads sector set`); proposals (`leads proposals add|status|list`); the wider timeline; learning from your saved versions; Look again with LinkedIn (`leads research request --linkedin`); the note limit (`sender.linkedin_note_max`); erasure of all of it.
 - Migrations: leads up to 00029, applied in production.

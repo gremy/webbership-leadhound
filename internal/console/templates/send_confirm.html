@@ -12,7 +12,7 @@
     <span class="eyebrow">Manual batch {{$p.BatchID}} · {{if $p.Again}}Send now again{{else}}{{plural (len $p.Leads) "lead" "leads"}} chosen{{end}}</span>
     <h1 id="confirm-h">{{if $v.ShowSend}}Send {{plural $v.SendNow "email" "emails"}} now?{{else if $p.Waiting}}Getting the send ready{{else}}Nothing can go now{{end}}</h1>
     {{if $p.Again}}<p class="page-sub">This batch was approved when you first confirmed it, but its send never ran. Sending again asks for the run once more; nothing is approved again.</p>{{end}}
-    <p class="page-sub">{{if $v.ShowSend}}Leads with a hard stop are left out; {{if $nw}}the rest can go past the warnings below.{{else}}the rest go now.{{end}}{{else if $p.Waiting}}This page updates itself when it is ready.{{else}}Every chosen lead has a hard stop or is still waiting, so there is no send button.{{end}}</p>
+    <p class="page-sub">{{if $v.ShowSend}}{{if $v.WaitingN}}Leads with a hard stop or still waiting are left out{{else}}Leads with a hard stop are left out{{end}}; {{if $nw}}the rest can go past the warnings below.{{else}}the rest go now.{{end}}{{else if $p.Waiting}}This page updates itself when it is ready.{{else}}Every chosen lead has a hard stop or is still waiting, so there is no send button.{{end}}</p>
   </div>
   <div class="confirm-body">
     <dl class="confirm-tally">

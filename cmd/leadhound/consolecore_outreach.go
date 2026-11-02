@@ -396,7 +396,6 @@ func (b *backend) leadContacts(ctx context.Context, w leadsWeighing, d leadstore
 		return nil, err
 	}
 	now := b.now()
-	dayStart := startOfDay(now, b.loc)
 	law, lawKnown := w.research.table.Lookup(d.Country)
 	personalCare := lawKnown && law.Individuals.Email != compliance.IndividualsSame
 	off := w.countryOff(d.Country)
@@ -423,7 +422,7 @@ func (b *backend) leadContacts(ctx context.Context, w leadsWeighing, d leadstore
 					if r.DerivedBy != leadstore.DerivedByOperator {
 						lc.MailServer = routeNote(r)
 					}
-					lc.Check, lc.CheckedAt = emailCheckLine(checks[strings.ToLower(c.Value)], w.cfg.Verify.CatchAllRule(), now, dayStart)
+					lc.Check, lc.CheckedAt = emailCheckLine(checks[strings.ToLower(c.Value)], w.cfg.Verify.CatchAllRule(), now)
 				}
 			}
 			switch {

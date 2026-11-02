@@ -1340,7 +1340,7 @@ type SendPlan struct {
 	Warnings   []SendWarning // overridable, each with numbers
 	Notes      []string      // e.g. two leads share a domain so one goes in the next run; more than 25 must be split
 	Waiting    string        // non-empty while drafts are still being written (page polls)
-	CanSend    bool          // at least one lead OK and nothing waiting
+	CanSend    bool          // at least one lead OK and no check running
 	Again      bool          // Send now again: the batch is approved, and its confirm only asks for the send
 }
 

@@ -443,7 +443,7 @@ It rides the same watcher, unit and send lock as Send now; the console still nev
    The confirm page (`/leads/send-now/{id}`) lists each lead as going, waiting, or stopped with its reason, and every warning as a sentence with its numbers.
    A manual batch never blocks the morning batch, and one left unconfirmed is discarded after 30 minutes (on the next preview).
 3. **Waiting on the email check.**
-   With the Email check on, an address not checked yet holds the send button, and so does an unsure answer, which is asked again the next day.
+   With the Email check on, an address not checked yet waits, left out of the send until you press Check email now, and an unsure answer goes. On chosen leads the others can go without it; Approve and send now holds its button until the batch is checked, since an approved address would go unchecked on the hourly send.
    "Check email now" (`POST /leads/send-now/{id}/check-email`) writes `run/leads-verify-now`; `leadhound-leads-verify-now.path` starts `leadhound-leads-verify-now.service`, which runs `leads verify --from-request --max 25` on that batch's addresses only, with the Reoon key, and the page updates itself while it waits.
 4. **Confirm** (`POST /leads/send-now/{id}/confirm`).
    You tick "I have read the warnings" and press send.
@@ -996,7 +996,7 @@ While the Email check job is on, every address must pass a Reoon check before it
   Each answer is stored (`email_check`, append-only); the run is recorded with how many were checked, may be sent and are blocked, and the credits left.
   A check that fails (Reoon down, an error answer) is counted, stores nothing, and the address is tried again on the next run.
 - **What each answer does**, in one place (`internal/verify`, whose comment records Reoon's own meanings):
-  safe and role addresses (info@, contact@) are sent; invalid, disabled, disposable, inbox full and spam trap are blocked; catch-all is sent unless Leads → Settings → Email check says to leave catch-all addresses out (`verify.catch_all: block` in `leads.yaml` does the same); unknown is checked again the next day and blocked after a second unknown in a row.
+  safe and role addresses (info@, contact@) are sent; invalid, disabled, disposable, inbox full and spam trap are blocked; catch-all is sent unless Leads → Settings → Email check says to leave catch-all addresses out (`verify.catch_all: block` in `leads.yaml` does the same); an unknown answer is sent.
   An answer older than 90 days counts as no answer, so the address is checked again.
 - **Your own addresses** (added by you, or marked as yours) stand on your word and no mail server check, so the live send asks for a passing answer at the moment of sending, on every road: the hourly send, `leads send --now` and Send now, whichever batch the message came from, and with the Email check on or off.
   Without one the message stays approved and unsent, takes none of the day's room, and the run prints why and what to do and notes `email check`; it goes on the run after a pass, and a failed answer holds it the same way until you retire the address.

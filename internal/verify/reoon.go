@@ -33,8 +33,9 @@
 //   - spamtrap: an address that exists to catch senders with poor list hygiene; delete
 //     immediately. Blocked.
 //   - unknown: the server gave no definitive answer; Reoon says re-verify after a few days and
-//     treat addresses that stay unknown like catch-alls or leave them out. LeadHound checks it
-//     again the next day and blocks it after the second unknown in a row.
+//     treat addresses that stay unknown like catch-alls or leave them out. An unsure answer
+//     never holds a send, and the sync pauses a mailbox on bounces: sent, whatever
+//     verify.catch_all says, which is about catch-alls only.
 //
 // A response that is not a check (an HTTP error, a status LeadHound does not know, an error
 // body) is an error, never a status: nothing is stored and the address stays unchecked.
@@ -317,9 +318,6 @@ type Decision int
 const (
 	// Unchecked: no fresh result; it must be checked before it can enter a live batch.
 	Unchecked Decision = iota
-	// Wait: the latest fresh result is the first unknown; not sent yet, checked again the
-	// next day (Recheck once that day comes).
-	Wait
 	// Send: the address may enter a live batch.
 	Send
 	// Block: the address must not enter a live batch; Status says why.
@@ -332,21 +330,19 @@ type Check struct {
 	CheckedAt time.Time
 }
 
-// Verdict is Decide's answer: the decision, the latest status it rests on ("" when
-// unchecked) and whether a check is due now (unchecked, or an unknown from an earlier day).
+// Verdict is Decide's answer: the decision and the latest status it rests on ("" when
+// unchecked).
 type Verdict struct {
 	Decision Decision
 	Status   string
-	Recheck  bool
 }
 
 // Decide is the email check's one rule, over an address's results newest first: only those
-// checked after now-FreshFor count; none is Unchecked. The latest decides: safe and
-// role_account send; invalid, disabled, disposable, inbox_full and spamtrap block; catch_all
-// sends unless catchAll is CatchAllBlock; unknown waits for a second check on a later day than
-// dayStart (the start of the operator's day) and blocks once two unknowns in a row stand. Any
-// other word blocks: a status this code does not know never sends.
-func Decide(history []Check, catchAll string, now, dayStart time.Time) Verdict {
+// checked after now-FreshFor count; none is Unchecked. The latest decides: safe, role_account
+// and unknown send; invalid, disabled, disposable, inbox_full and spamtrap block; catch_all
+// sends unless catchAll is CatchAllBlock. Any other word blocks: a status this code does not
+// know never sends.
+func Decide(history []Check, catchAll string, now time.Time) Verdict {
 	cutoff := now.Add(-FreshFor)
 	var fresh []Check
 	for _, h := range history {
@@ -355,30 +351,17 @@ func Decide(history []Check, catchAll string, now, dayStart time.Time) Verdict {
 		}
 	}
 	if len(fresh) == 0 {
-		return Verdict{Decision: Unchecked, Recheck: true}
+		return Verdict{Decision: Unchecked}
 	}
 	latest := fresh[0]
 	v := Verdict{Status: latest.Status}
 	switch latest.Status {
-	case StatusSafe, StatusRole:
+	case StatusSafe, StatusRole, StatusUnknown:
 		v.Decision = Send
 	case StatusCatchAll:
 		v.Decision = Send
 		if catchAll == CatchAllBlock {
 			v.Decision = Block
-		}
-	case StatusUnknown:
-		run := 0
-		for _, h := range fresh {
-			if h.Status != StatusUnknown {
-				break
-			}
-			run++
-		}
-		if run >= 2 {
-			v.Decision = Block
-		} else {
-			v.Decision, v.Recheck = Wait, latest.CheckedAt.Before(dayStart)
 		}
 	default:
 		v.Decision = Block
@@ -387,7 +370,7 @@ func Decide(history []Check, catchAll string, now, dayStart time.Time) Verdict {
 }
 
 // Sendable reports whether status alone sends (catch_all by the setting), for counting a
-// day's results; an unknown counts as not sendable.
+// day's results.
 func Sendable(status, catchAll string) bool {
-	return Decide([]Check{{Status: status, CheckedAt: time.Now()}}, catchAll, time.Now(), time.Now()).Decision == Send
+	return Decide([]Check{{Status: status, CheckedAt: time.Now()}}, catchAll, time.Now()).Decision == Send
 }

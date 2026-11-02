@@ -704,7 +704,7 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		lr := console.LeadRoute{Kind: routeKindWords(r.Kind), Value: r.Value, Note: routeNote(r),
 			PageURL: r.FinalURL, FoundAt: new(r.FoundAt)}
 		if r.Kind == leadstore.RouteEmail {
-			lr.Check, lr.CheckedAt = emailCheckLine(checks[strings.ToLower(r.Value)], w.cfg.Verify.CatchAllRule(), b.now(), startOfDay(b.now(), b.loc))
+			lr.Check, lr.CheckedAt = emailCheckLine(checks[strings.ToLower(r.Value)], w.cfg.Verify.CatchAllRule(), b.now())
 		}
 		p.Routes = append(p.Routes, lr)
 	}
