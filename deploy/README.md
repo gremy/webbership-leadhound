@@ -998,6 +998,11 @@ While the Email check job is on, every address must pass a Reoon check before it
 - **What each answer does**, in one place (`internal/verify`, whose comment records Reoon's own meanings):
   safe and role addresses (info@, contact@) are sent; invalid, disabled, disposable, inbox full and spam trap are blocked; catch-all is sent unless Leads → Settings → Email check says to leave catch-all addresses out (`verify.catch_all: block` in `leads.yaml` does the same); unknown is checked again the next day and blocked after a second unknown in a row.
   An answer older than 90 days counts as no answer, so the address is checked again.
+- **Your own addresses** (added by you, or marked as yours) stand on your word and no mail server check, so the live send asks for a passing answer at the moment of sending, on every road: the hourly send, `leads send --now` and Send now, whichever batch the message came from, and with the Email check on or off.
+  Without one the message stays approved and unsent, takes none of the day's room, and the run prints why and what to do and notes `email check`; it goes on the run after a pass, and a failed answer holds it the same way until you retire the address.
+  `leads verify` asks for these addresses first, because their leads have left the batch queue and Check email now covers only an unapproved batch.
+  With the Email check off nothing can check them, so they wait until you switch it on, and the Send now confirm page stops them with that reason.
+  Other addresses behave as described above; shadow runs and selftests are not asked.
 - **The batch's gate.**
   A live lead whose email goes to its own address needs a sendable fresh answer for it.
   A blocked address makes the lead fall to its next route, as a missing email does when the list is built: another email address of the same domain, judged the same way, or a contact form; the lead is then drafted there and its page shows that route.
@@ -1162,6 +1167,7 @@ A form or LinkedIn edit touches none of these: it writes only `message_edit`, so
   A value exists once per organisation, so adding one already there writes a claim on that row, and changing a value is a new or claimed row plus a retire on the old one, in one transaction.
 - **Your email skips two checks.**
   The role-address filter does not apply, and the address counts as having a working mail server, because the console's unit cannot look up DNS (`IPAddressDeny=any`); `mx_ok` is stored false.
+  So the email check is its only gate: see [The email check](#the-email-check).
   The email check before any send stays the gate; see [The email check](#the-email-check).
 - **Retiring a contact** cancels every unsent message or call aimed at it, with the reason "contact retired", so a sequence never stalls on a value that is gone.
   A batched lead with nothing live left returns to new, and the send path skips a retired address.
@@ -1187,6 +1193,9 @@ It also erases its lead's CRM: every reply snippet of its mailbox events is empt
 It also erases outreach by hand, in this order: the organisation's contact marks; any lead's use of a person's route (the lead goes to channel `none`); those routes and its `org_person` rows, with the pages people were read from and the email checks of their addresses; the before and after text of its draft edits, the subject and body of its edited emails, and any form or LinkedIn target that was a person's profile, or an email target that was a person's address.
 Then its proposal titles become `(erased)`, its proposal notes are blanked, and its sector and Draft it request rows are deleted.
 The counts line names each.
+Last it re-hashes each batch those changes reach, because a batch's hash covers every row: `content_sha256` is recomputed, and on an approved batch `approved_hash` moves with it, since the two are one value at approval and the Send now checks refuse a difference.
+The hash a page showed before the erasure is refused, so reload the page; each other lead's approved message stays bound by its own `approved_sha256`, which the erasure does not touch and the send compares byte for byte.
+A batch that already failed its hash before the erasure is left as it is and stays refused.
 It does not yet empty the bodies of its unedited email messages, or the values of routes that belong to no person.
 The reason is one line of at most 200 characters with no `@` in it; it prints counts only, never a number or a page.
 ID is the organisation's id in the database (the `id` column of the `org` table), not the lead's number; the console does not show it yet.

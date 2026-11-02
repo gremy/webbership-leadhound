@@ -74,6 +74,43 @@ func MessageTargetRetiredSQL(msg, org string) string {
 	   AND lower(tr.value) = lower(` + msg + `.to_address) AND ` + contactLatestMarkSQL("route_id", "tr.id") + ` IS NOT DISTINCT FROM 'retire')`
 }
 
+// operatorEmailSQL is a SQL condition true when address (an SQL expression) is an email route of
+// org (an SQL expression) that stands on the operator's word: he added it, or his latest mark on
+// it is a claim. No mail server check backs such an address, so the email check is its only gate.
+func operatorEmailSQL(address, org string) string {
+	return `EXISTS (SELECT 1 FROM contact_route ou WHERE ou.org_id = ` + org + ` AND ou.kind = 'email'
+	   AND lower(ou.value) = lower(` + address + `)
+	   AND (ou.derived_by = '` + DerivedByOperator + `' OR ` + contactLatestMarkSQL("route_id", "ou.id") + ` IS NOT DISTINCT FROM 'claim'))`
+}
+
+// IsOperatorEmail reports whether address is an email route of org orgID that stands on the
+// operator's word (operatorEmailSQL).
+func (q Queries) IsOperatorEmail(ctx context.Context, orgID int64, address string) (bool, error) {
+	var ok bool
+	if err := q.db.QueryRow(ctx, `SELECT `+operatorEmailSQL("$2::text", "$1::bigint"), orgID, address).Scan(&ok); err != nil {
+		return false, fmt.Errorf("leadstore: is operator email: %w", err)
+	}
+	return ok, nil
+}
+
+// ApprovedOperatorEmails are the addresses of live approved emails that stand on the operator's
+// word, soonest due first, lower case: what a send holds until it passes the email check. The
+// batch queue no longer sees their leads, so leads verify asks for these too.
+func (q Queries) ApprovedOperatorEmails(ctx context.Context) ([]string, error) {
+	rows, err := collect(ctx, q.db, pgx.RowTo[string],
+		`SELECT lower(m.to_address) FROM outreach_message m
+		 JOIN outreach_batch b ON b.id = m.batch_id
+		 JOIN lead l ON l.id = m.lead_id
+		 JOIN org o ON o.id = l.org_id
+		 WHERE m.state = 'approved' AND m.channel = 'email' AND m.to_address <> '' AND NOT b.shadow AND l.kind <> 'selftest'
+		   AND `+operatorEmailSQL("m.to_address", "o.id")+` AND NOT `+MessageTargetRetiredSQL("m", "o.id")+`
+		 GROUP BY 1 ORDER BY min(m.due_at) NULLS LAST, 1`)
+	if err != nil {
+		return nil, fmt.Errorf("leadstore: approved operator emails: %w", err)
+	}
+	return rows, nil
+}
+
 // OperatorRoute is a route the operator adds.
 type OperatorRoute struct {
 	OrgID    int64

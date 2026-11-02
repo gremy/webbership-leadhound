@@ -150,6 +150,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
 - **Erasure**: `leads forget org ID --reason TEXT` erases an organisation's personal data in one transaction, as the owner role: its phone facts, phone research and screenings, its call notes, its kept page bodies, its description and social facts and its map listing's phones and emails.
   It deletes the people named at it, their contact routes and the email checks of their addresses, your contact marks, its sector and its Draft it requests, and empties your draft edits and any target that was a person's profile or address.
   It suppresses the organisation's domain and its numbers (hashed), so it is never collected, researched, enriched or called again, and cancels its pending messages.
+  A batch it shares with other leads gets a new hash and stays approvable and sendable for them: reload the batch's page before you approve or send it.
   It also erases its lead's CRM: the reply snippets are emptied, proposal titles and notes are erased, and the note, next action, deal, tenant link and stage history are deleted.
   It prints counts only, and run again it finds nothing left; see "Erasure" in `deploy/README.md` for backups.
 - **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, LinkedIn, phone), its relevance and a star.
@@ -204,6 +205,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   A contact you add is marked as yours, outranks research and is never overwritten; adding a value that is already there marks it as yours.
   A changed value keeps the old one in the timeline, and a new lead's channel is picked again at once, so it moves list straight away.
   Your email skips the role-address filter and counts as having a working mail server, and the email check before any send stays the real gate.
+  On every road (the morning batch, a Draft it batch, Send now), an address you added or marked as yours goes only with a passing email check, even with the Email check switched off; without one its message stays approved and unsent, the send says why and what to do, and it goes on the run after the check passes.
   An address that looks personal, in a country whose rule is not on for individuals, gets one warning line and no block.
   Retiring a contact cancels anything unsent aimed at it, and marking it yours again does not bring those back: Draft it makes a new draft.
 - **Proof and sector**: the Proof page (`/leads/proof`) or `leads proof add --title T --line L [--url U] --sector S [--sector S]... [--public]`, `leads proof list` and `leads proof retire PROOF [--reason R]` keep your past work, written once and tagged by sector.

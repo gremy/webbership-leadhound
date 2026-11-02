@@ -23,7 +23,8 @@ const leadsForgetUsage = "usage: leadhound leads forget org ID --reason TEXT"
 // screenings, blanks its call notes, empties its kept page bodies and deletes its
 // description and social facts, erases its lead's CRM (reply snippets, note, deal and stage
 // history), and erases its people and what names them (their routes, emails' targets and
-// email checks, marks, edits, proposals, sectors and draft requests). It prints counts only, never a number or a page. Run again (after a
+// email checks, marks, edits, proposals, sectors and draft requests), and re-hashes the batches
+// those changes reach, so the other leads in them can still be approved and sent. It prints counts only, never a number or a page. Run again (after a
 // backup restore, say) it finds nothing left and counts zero; its log line keeps the org id,
 // so the erasures to re-apply can be listed.
 func runLeadsForget(ctx context.Context, args []string) error {
@@ -67,7 +68,7 @@ func runLeadsForget(ctx context.Context, args []string) error {
 		"marks", f.ContactMarks, "lead_routes", f.LeadRoutes, "person_pages", f.PersonPages, "email_checks", f.EmailChecks,
 		"person_emails", f.PersonEmails, "person_routes", f.PersonRoutes, "people", f.People, "edits", f.EditsBlanked,
 		"edited_emails", f.EditedEmails, "profile_targets", f.ProfileTargets, "proposals", f.Proposals,
-		"proposal_notes", f.ProposalNotes, "sectors", f.Sectors, "draft_requests", f.DraftRequests)
+		"proposal_notes", f.ProposalNotes, "sectors", f.Sectors, "draft_requests", f.DraftRequests, "batches_rehashed", f.BatchesRehashed)
 	_, _ = fmt.Fprintln(stdout, forgetWords(id, f, p))
 	return nil
 }
@@ -125,6 +126,7 @@ func forgetWords(id int64, f leadstore.Forgotten, p leadstore.ForgottenPages) st
 		{f.ProposalNotes, "proposal note blanked", "proposal notes blanked"},
 		{f.Sectors, "sector deleted", "sectors deleted"},
 		{f.DraftRequests, "draft request deleted", "draft requests deleted"},
+		{f.BatchesRehashed, "batch re-hashed (reload its page before you approve or send it)", "batches re-hashed (reload their pages before you approve or send them)"},
 	} {
 		if c.n > 0 {
 			places += ", " + plural(int(c.n), c.one, c.many)

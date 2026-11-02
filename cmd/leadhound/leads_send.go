@@ -72,7 +72,7 @@ const (
 	noteNoRequest = "no request"
 	// noteRequestRefused: the Send now request, or the batch it names, did not pass its checks.
 	noteRequestRefused = "request refused"
-	// noteEmailCheck: a manual send held or refused a message on its email check.
+	// noteEmailCheck: a send held or refused a message on its email check.
 	noteEmailCheck = "email check"
 	// noteFirstGone: a first email was refused because its lead's first email already went in
 	// another batch.
@@ -92,8 +92,9 @@ const sendRequestMax = 25
 // checked, its DNS or sync failed, its login refused, or no mailbox at all.
 const holdMailbox outreach.HoldReason = "mailbox"
 
-// holdEmailCheck holds a due message of a manual send whose address has no fresh passing
-// email check while the email check is on.
+// holdEmailCheck holds a due message whose address has no fresh passing email check: on a manual
+// send while the email check is on, and on any live send when the address stands on the
+// operator's word (operatorHold).
 const holdEmailCheck outreach.HoldReason = "email_check"
 
 // holdUnassigned holds a due live message whose mailbox is not (or no longer) assigned to
@@ -174,7 +175,8 @@ type sendReport struct {
 	sent      []string // the recipient domains, in send order
 	refused   []string // "message 7 (tampered)"
 	maybe     []int64
-	stuck     []int64 // left in sending by an earlier run that broke off
+	stuck     []int64  // left in sending by an earlier run that broke off
+	ownHeld   []string // "message 7: your own address ...", why each was held and what to do
 	retry     int
 	cancelled int64
 	skipped   int
@@ -273,6 +275,9 @@ func (r *sendReport) print(w io.Writer) {
 	}
 	if len(held) > 0 {
 		p("Held for a later run: %s.\n", strings.Join(held, " · "))
+	}
+	for _, line := range r.ownHeld {
+		p("Held, %s\n", line)
 	}
 	if r.pausedAt != nil {
 		p("Sending is paused by the operator (since %s); nothing more is sent until leadhound leads send resume.\n",
@@ -417,6 +422,9 @@ type sendRun struct {
 	skipWindow, skipHours bool
 	// gate is a manual send's email check, read again at send time; nil for other runs.
 	gate *emailGate
+	// ownGate is the email check of the addresses on the operator's word on a run with no gate,
+	// read when the first one comes up.
+	ownGate *emailGate
 
 	// key opens the sealed passwords (live only; shadow never opens one).
 	key secretbox.PrivateKey
@@ -875,6 +883,12 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 				continue
 			}
 		}
+		// So is one on the operator's word with no passing check: the leads behind it still go.
+		if held, err := r.operatorHold(ctx, row, row.Recipient(), fmt.Sprintf("message %d", row.ID)); err != nil {
+			return err
+		} else if held {
+			continue
+		}
 		items = append(items, outreach.PlanItem{
 			MessageID: row.ID, BatchID: row.BatchID, LeadID: row.LeadID, Step: row.Step,
 			Domain: recipientDomain(row.Recipient()), Loc: r.rowLoc(row.LeadKind, row.OrgCountry),
@@ -1175,6 +1189,9 @@ func (r *sendRun) recordOverride(ctx context.Context, row leadstore.SendRow) err
 // the check is on, an address without a fresh passing check is held. ok is false when the
 // message must not go now. A selftest (the operator's own address) is never checked.
 func (r *sendRun) emailCheck(ctx context.Context, row leadstore.SendRow, to, label string) (ok bool, err error) {
+	if held, err := r.operatorHold(ctx, row, to, label); err != nil || held {
+		return false, err
+	}
 	if r.gate == nil || row.LeadKind == leadstore.LeadSelftest {
 		return true, nil
 	}
@@ -1192,6 +1209,53 @@ func (r *sendRun) emailCheck(ctx context.Context, row leadstore.SendRow, to, lab
 		return false, nil
 	}
 	return true, nil
+}
+
+// operatorHold is the email check of an address on the operator's word (Decision 4): his word
+// stood in for a mail server when the channel was chosen, so on every live road, whatever batch
+// it came from and with the Email check on or off, the message goes only with a passing check.
+// Without one it stays approved and unsent, the way a manual send holds an unchecked address, and
+// goes on the run after it has one; he can act on the printed reason, and a retire cancels it. A
+// shadow run sends to nobody and a selftest goes to his own mailbox. Other addresses never come
+// here. It reports whether row is held.
+func (r *sendRun) operatorHold(ctx context.Context, row leadstore.SendRow, to, label string) (bool, error) {
+	if !r.live || !row.OperatorEmail || row.LeadKind == leadstore.LeadSelftest {
+		return false, nil
+	}
+	g := r.gate
+	if g == nil {
+		if r.ownGate == nil {
+			var err error
+			if r.ownGate, err = loadEmailGate(ctx, r.lq, batchSetup{leads: r.setup.leads, loc: r.loc}, leadsNow()); err != nil {
+				return false, err
+			}
+		}
+		g = r.ownGate
+	}
+	if err := g.load(ctx, r.lq, to); err != nil {
+		return false, err
+	}
+	v := g.verdict(to)
+	if v.Decision == verify.Send {
+		return false, nil
+	}
+	r.rep.note(noteEmailCheck)
+	r.rep.held[holdEmailCheck]++
+	r.rep.ownHeld = append(r.rep.ownHeld, label+": "+operatorHoldWords(v, g.on))
+	return true, nil
+}
+
+// operatorHoldWords is why an address on the operator's word is held, and what he can do.
+func operatorHoldWords(v verify.Verdict, checkOn bool) string {
+	switch {
+	case v.Decision == verify.Block:
+		return "your own address failed its email check (" + emailCheckWords(v.Status) + "). Retire it or add another on the lead's page; nothing goes to it."
+	case !checkOn:
+		return "your own address has no passing email check, and the Email check is off, so nothing can check it. Switch it on in Controls."
+	case v.Decision == verify.Wait:
+		return "your own address got an unsure email check; leads verify asks again tomorrow, and the message goes if it passes."
+	}
+	return "your own address has not had its email check yet; the next leads verify checks it, and the message goes if it passes."
 }
 
 // anyInHours reports whether any of items is inside its business hours at t.

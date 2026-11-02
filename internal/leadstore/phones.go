@@ -1,6 +1,7 @@
 package leadstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -454,6 +455,64 @@ func (q Queries) markWrongNumber(ctx context.Context, messageID, factID, outcome
 // LinkedIn person profile that names none (erasure takes the safe side).
 const personRouteSQL = `(person_id IS NOT NULL OR (kind = 'linkedin' AND value LIKE '%/in/%'))`
 
+// intactBatchesOf locks every batch holding a message of org orgID (the lock approveBatch takes,
+// so no approval reads a batch half erased) and returns those whose rows still match their
+// stored hash, and whose approved hash, if any, still equals it. A batch that fails either is
+// left out and stays refused: the erasure's re-hash repairs its own change, and never launders
+// one made elsewhere.
+func (q Queries) intactBatchesOf(ctx context.Context, orgID int64) ([]int64, error) {
+	type row struct {
+		ID       int64  `db:"id"`
+		Content  []byte `db:"content_sha256"`
+		Approved []byte `db:"approved_hash"`
+	}
+	rows, err := collect(ctx, q.db, pgx.RowToStructByName[row],
+		`SELECT b.id, b.content_sha256, b.approved_hash FROM outreach_batch b
+		 WHERE b.id IN (SELECT m.batch_id FROM outreach_message m JOIN lead l ON l.id = m.lead_id WHERE l.org_id = $1)
+		 ORDER BY b.id FOR UPDATE OF b`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for _, b := range rows {
+		sum, err := q.BatchContentSHA256(ctx, b.ID)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Equal(sum, b.Content) && (b.Approved == nil || bytes.Equal(b.Approved, b.Content)) {
+			out = append(out, b.ID)
+		}
+	}
+	return out, nil
+}
+
+// rehashErased stores the new hash of each of batches (intactBatchesOf, read before the erasure
+// changed them) whose rows the erasure changed, with the code that made the old one, and counts
+// them. An unapproved batch then shows a new prefix and the operator approves what he reloads. An
+// approved batch moves approved_hash with it, because at approval the two are one value and the
+// Send now checks refuse any difference: the erasure changed only the erased org's rows, and each
+// other message stays bound by its own approved_sha256, which the erasure never touches and send
+// compares byte for byte. Runs only here, as the owner: the app role's re-hash is guarded on
+// approved_at IS NULL.
+func (q Queries) rehashErased(ctx context.Context, batches []int64) (int64, error) {
+	var n int64
+	for _, id := range batches {
+		sum, err := q.BatchContentSHA256(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		tag, err := q.db.Exec(ctx,
+			`UPDATE outreach_batch SET content_sha256 = $2,
+			   approved_hash = CASE WHEN approved_at IS NULL THEN approved_hash ELSE $2 END
+			 WHERE id = $1 AND content_sha256 <> $2`, id, sum)
+		if err != nil {
+			return 0, err
+		}
+		n += tag.RowsAffected()
+	}
+	return n, nil
+}
+
 // Forgotten counts what ForgetOrg did; a second run on the same org counts zero everywhere.
 type Forgotten struct {
 	PhoneFacts      int64 // org_fact phone rows deleted
@@ -484,6 +543,7 @@ type Forgotten struct {
 	ProposalNotes   int64 // lead_proposal_status notes blanked (the rows stay)
 	Sectors         int64 // org_sector rows deleted
 	DraftRequests   int64 // draft_request rows deleted
+	BatchesRehashed int64 // batches whose content hash was recomputed because the erasure changed rows in them
 }
 
 // ForgetOrg erases org orgID's phone data, for `leads forget` (run on the owner's
@@ -493,7 +553,8 @@ type Forgotten struct {
 // domain suppression of the org's domain and a phone suppression of each of its numbers
 // (PhoneSuppressionValue of the stored value and of its E.164 form), all reason manual with
 // source "forget: <reason>", so the org is never collected or called again and its pending
-// messages are cancelled; then deletes the org's phone research rows, the screenings of
+// messages are cancelled (a batch holding one of its leads is locked first, and re-hashed last:
+// see rehashErased); then deletes the org's phone research rows, the screenings of
 // its numbers (both forms), and its phone facts (their statuses go by ON DELETE CASCADE,
 // outreach_message.phone_fact_id is cleared by ON DELETE SET NULL), and blanks the notes of
 // the call outcomes on its leads' messages, keeping the rows, deletes its email_consent
@@ -558,6 +619,10 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 		}
 		if len(accounts) == 0 {
 			accounts = []int64{DefaultAccountID}
+		}
+		intact, err := tq.intactBatchesOf(ctx, orgID)
+		if err != nil {
+			return err
 		}
 		source := "forget: " + reason
 		add := func(s Suppressed) {
@@ -652,7 +717,8 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 			}
 			*step.n = tag.RowsAffected()
 		}
-		return nil
+		res.BatchesRehashed, err = tq.rehashErased(ctx, intact)
+		return err
 	})
 	if err != nil {
 		return Forgotten{}, fmt.Errorf("leadstore: forget org %d: %w", orgID, err)

@@ -369,6 +369,9 @@ type SendRow struct {
 	// agreed on the call (the latest call outcome on the lead's calls of the batch, when it
 	// came with consent); "" when there is none, and for every other step.
 	ConsentAddress string `db:"consent_address"`
+	// OperatorEmail: the stored address stands on the operator's word (operatorEmailSQL), so a
+	// live send takes it only with a passing email check.
+	OperatorEmail bool `db:"operator_email"`
 }
 
 // Recipient is the address the message goes to: the consented address for an
@@ -405,8 +408,9 @@ const consentAddressSQL = `CASE WHEN m.condition = 'email_consent' THEN coalesce
 	  WHERE cm.lead_id = m.lead_id AND cm.batch_id = m.batch_id
 	  ORDER BY co.id DESC LIMIT 1), '') ELSE '' END`
 
-const sendRowSQL = `SELECT ` + messageCols + `, b.shadow, b.campaign_id, l.state AS lead_state, l.kind AS lead_kind,
-	  o.domain AS org_domain, o.country AS org_country, ` + consentAddressSQL + ` AS consent_address
+var sendRowSQL = `SELECT ` + messageCols + `, b.shadow, b.campaign_id, l.state AS lead_state, l.kind AS lead_kind,
+	  o.domain AS org_domain, o.country AS org_country, ` + consentAddressSQL + ` AS consent_address,
+	  ` + operatorEmailSQL("m.to_address", "o.id") + ` AS operator_email
 	 FROM outreach_message m
 	 JOIN outreach_batch b ON b.id = m.batch_id
 	 JOIN lead l ON l.id = m.lead_id

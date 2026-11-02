@@ -925,7 +925,8 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 	}
 	supp := outreach.NewSuppressionSet(s.Addresses, s.Domains)
 	gate := &emailGate{checks: map[string][]verify.Check{}}
-	if live && sw.On && !v.Batch.Shadow {
+	if live && !v.Batch.Shadow {
+		// Switched off it still answers for an address on the operator's word (below).
 		if gate, err = loadEmailGate(ctx, lq, newBatchSetup(setup, b.loc), now); err != nil {
 			return plan, f, err
 		}
@@ -1038,6 +1039,22 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 			case verify.Block:
 				l.Stop = "Email check: " + emailCheckWords(vd.Status) + ". It is never sent to."
 				skippable[it.Lead.ID] = it.N
+			}
+		}
+		// The send holds an address on his word with no passing check even with the check off.
+		if l.Stop == "" && live && !v.Batch.Shadow && !gate.on && addr != "" {
+			own, err := lq.IsOperatorEmail(ctx, it.Org.ID, addr)
+			if err != nil {
+				return plan, f, err
+			}
+			if own {
+				if err := gate.load(ctx, lq, addr); err != nil {
+					return plan, f, err
+				}
+				if gate.verdict(addr).Decision != verify.Send {
+					l.Stop = "Your own address needs its email check, and the Email check is off. Switch it on in Controls."
+					skippable[it.Lead.ID] = it.N
+				}
 			}
 		}
 		if l.Stop == "" && l.Waiting == "" && addr != "" {

@@ -542,7 +542,9 @@ func runReoonBalance(ctx context.Context) error {
 // addresses would spend credits for nothing), the candidates its next live batch would draft, in the batch's own order (starred first, then
 // the outreach order), taken in turn from each campaign; for each lead the address the gate
 // waits on (its own, or the one it would fall to), each once. An address with a fresh answer
-// is not due, except a first unknown from an earlier day.
+// is not due, except a first unknown from an earlier day. First come the addresses on the
+// operator's word that approved messages are held on: their leads have left the batch queue,
+// and with no check they would wait for ever.
 func verifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time, limit int) ([]string, error) {
 	gate, err := loadEmailGate(ctx, lq, bs, now)
 	if err != nil {
@@ -580,6 +582,21 @@ func verifyQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, now t
 		queues = append(queues, queue{plan, cands})
 	}
 	var out []string
+	held, err := lq.ApprovedOperatorEmails(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range held {
+		if len(out) >= limit {
+			break
+		}
+		if err := gate.load(ctx, lq, a); err != nil {
+			return nil, err
+		}
+		if gate.verdict(a).Recheck {
+			out = append(out, a)
+		}
+	}
 	for i := 0; len(out) < limit; i++ {
 		more := false
 		for _, qu := range queues {
