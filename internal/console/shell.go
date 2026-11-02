@@ -25,6 +25,7 @@ var leadsNav = []shellLink{
 	{Label: "Pipeline", Path: "/leads/pipeline"},
 	{Label: "Calls", Path: "/leads/calls", Under: []string{"/leads/calls/"}},
 	{Label: "Drafts", Path: "/leads/drafts"},
+	{Label: "Proof", Path: "/leads/proof"},
 	{Label: "Campaigns", Path: "/leads/campaigns"},
 	{Label: "Reports", Path: "/leads/reports"},
 }

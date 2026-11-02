@@ -143,6 +143,21 @@ func (s *server) leadAct(w http.ResponseWriter, r *http.Request) {
 	case ok && do == "snooze":
 		s.leadSnooze(w, r, id)
 		return
+	case ok && do == "contacts":
+		s.leadContactAdd(w, r, id)
+		return
+	case ok && do == "draft-it":
+		s.leadDraftIt(w, r, id)
+		return
+	case ok && do == "draft-discard":
+		s.leadDraftDiscard(w, r, id)
+		return
+	case ok && do == "sector":
+		s.leadSector(w, r, id)
+		return
+	case ok && do == "proposals":
+		s.leadProposalAdd(w, r, id)
+		return
 	}
 	if !ok || !slices.Contains(leadActions, do) {
 		http.NotFound(w, r)

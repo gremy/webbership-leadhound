@@ -117,11 +117,15 @@ var routes = []route{
 	{"GET /leads/pipeline", "/leads/pipeline", false, (*server).leadsPipeline},
 	{"GET /leads/calls", "/leads/calls", false, (*server).leadsCalls},
 	{"GET /leads/reports", "/leads/reports", false, (*server).leadsReports},
+	{"GET /leads/proof", "/leads/proof", false, (*server).leadsProof},
 	{"GET /leads/calls/{message}", "/leads/calls/9", false, (*server).leadCall},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
 	{"GET /leads/reports/{id}", "/leads/reports/5", false, (*server).leadReport},
 	{"GET /leads/send-now/{id}", "/leads/send-now/7", false, (*server).sendConfirm},
 	{"GET /leads/send-now/{id}/again", "/leads/send-now/7/again", false, (*server).sendAgain},
+	// An htmx fragment under its own prefix: GET /leads/{id}/draft-status would conflict with
+	// GET /leads/batches/{id}.
+	{"GET /leads/draft-status/{id}", "/leads/draft-status/5", false, (*server).leadDraftStatus},
 	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
 	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
 	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
@@ -149,6 +153,20 @@ var routes = []route{
 	// rows put their samples through every route sweep.
 	{"POST /leads/{id}/{action}", "/leads/5/crm", false, (*server).leadAct},
 	{"POST /leads/{id}/{action}", "/leads/5/snooze", false, (*server).leadAct},
+	// So do the lead page's two-segment outreach writes, for the same reason.
+	{"POST /leads/{id}/{action}", "/leads/5/contacts", false, (*server).leadAct},
+	{"POST /leads/{id}/{action}", "/leads/5/draft-it", false, (*server).leadAct},
+	{"POST /leads/{id}/{action}", "/leads/5/draft-discard", false, (*server).leadAct},
+	{"POST /leads/{id}/{action}", "/leads/5/sector", false, (*server).leadAct},
+	{"POST /leads/{id}/{action}", "/leads/5/proposals", false, (*server).leadAct},
+	// These have five segments, so no other pattern can clash with them. {cid} is a ContactRef.
+	{"POST /leads/{id}/contacts/{cid}/edit", "/leads/5/contacts/r12/edit", false, (*server).leadContactEdit},
+	{"POST /leads/{id}/contacts/{cid}/retire", "/leads/5/contacts/r12/retire", false, (*server).leadContactRetire},
+	{"POST /leads/{id}/drafts/{mid}/save", "/leads/5/drafts/9/save", false, (*server).leadDraftSave},
+	{"POST /leads/{id}/drafts/{mid}/sent", "/leads/5/drafts/9/sent", false, (*server).leadDraftSent},
+	{"POST /leads/{id}/proposals/{pid}/status", "/leads/5/proposals/3/status", false, (*server).leadProposalStatus},
+	{"POST /leads/proof", "/leads/proof", false, (*server).addProof},
+	{"POST /leads/proof/{pid}/retire", "/leads/proof/3/retire", false, (*server).retireProof},
 	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
 	{"GET /mailboxes/new", "/mailboxes/new", false, (*server).newMailbox},
 	{"POST /mailboxes", "/mailboxes", false, (*server).addMailbox},
@@ -311,18 +329,20 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
-		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html", "templates/crm_parts.html"))
+		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html", "templates/crm_parts.html",
+		"templates/outreach_parts.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
 		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status", "send_confirm",
-		"leads_replies", "leads_pipeline", "leads_calls", "leads_reports"} {
+		"leads_replies", "leads_pipeline", "leads_calls", "leads_reports", "leads_proof"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}
 	pages["job_row"] = base
 	pages["run_now"] = base
 	pages["mailbox_check"] = base
+	pages["outreach_parts"] = base
 	return pages
 }
 
@@ -479,12 +499,36 @@ func (s *server) funcs() template.FuncMap {
 			return m
 		},
 		// The CRM pages.
-		"stageWords":  StageWords,
-		"money":       func(c any, currency string) string { return moneyOf(c, currency) },
-		"moneyLine":   moneyLine,
-		"replyRate":   replyRate,
-		"costPer":     costPer,
-		"timelineDot": timelineDot,
+		"stageWords":          StageWords,
+		"reachTabs":           func() []string { return ReachTabs },
+		"reachWords":          ReachWords,
+		"reachReasonWords":    ReachReasonWords,
+		"channelWords":        ChannelWords,
+		"contactKinds":        func() []string { return ContactKinds },
+		"contactKindWords":    ContactKindWords,
+		"provenanceWords":     ProvenanceWords,
+		"proposalStatuses":    func() []string { return ProposalStatuses },
+		"proposalStatusWords": ProposalStatusWords,
+		"draftStatusIn": func(id int64, req *LeadDraftRequest) draftStatusView {
+			return draftStatusView{LeadID: id, Request: req}
+		},
+		"maxContactNote":   func() int { return MaxContactNote },
+		"maxContactValue":  func() int { return MaxContactValue },
+		"maxPersonName":    func() int { return MaxPersonName },
+		"maxPersonRole":    func() int { return MaxPersonRole },
+		"maxDraftBody":     func() int { return MaxDraftBody },
+		"maxDraftSubject":  func() int { return MaxDraftSubject },
+		"maxProposalTitle": func() int { return MaxProposalTitle },
+		"maxProposalNote":  func() int { return MaxProposalNote },
+		"maxOutreachURL":   func() int { return MaxOutreachURL },
+		"maxProofTitle":    func() int { return MaxProofTitle },
+		"maxProofLine":     func() int { return MaxProofLine },
+		"maxProofReason":   func() int { return MaxProofReason },
+		"money":            func(c any, currency string) string { return moneyOf(c, currency) },
+		"moneyLine":        moneyLine,
+		"replyRate":        replyRate,
+		"costPer":          costPer,
+		"timelineDot":      timelineDot,
 		"stageBtns": func(id int64, stage, back, name string) stageBtnView {
 			return stageBtnView{ID: id, Stage: stage, Back: back, Name: name}
 		},

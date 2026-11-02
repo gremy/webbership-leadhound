@@ -43,6 +43,66 @@ const (
 	consoleMailboxText = 320
 )
 
+// The console's OutreachBackend, until consolecore_outreach.go takes these over: reads answer
+// empty and writes are refused, so the routes exist and nothing is stored.
+const outreachNotBuilt = "This is not on this server yet."
+
+func (b *backend) AddContact(context.Context, console.NewContact) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) EditContact(context.Context, console.ContactChange) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) RetireContact(context.Context, int64, console.ContactRef, string) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) SaveDraft(context.Context, console.DraftEdit) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) MarkSent(context.Context, console.MarkSentRequest) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) RequestDraft(context.Context, int64, string) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) DraftStatus(context.Context, int64) (*console.LeadDraftRequest, error) {
+	return nil, nil
+}
+
+func (b *backend) DiscardDraft(context.Context, int64, int64) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) SetSector(context.Context, int64, string) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) AddProposal(context.Context, console.NewProposal) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) SetProposalStatus(context.Context, console.ProposalStatusChange) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) Proofs(context.Context) (console.ProofPage, error) {
+	return console.ProofPage{}, nil
+}
+
+func (b *backend) AddProof(context.Context, console.NewProof) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
+func (b *backend) RetireProof(context.Context, int64, string) (string, error) {
+	return "", refused(outreachNotBuilt)
+}
+
 // refused is the console's refusal with words, wrapped as one the operator can fix.
 func refused(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", console.ErrUserFixable, fmt.Sprintf(format, a...))

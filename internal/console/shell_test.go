@@ -33,6 +33,7 @@ var shellProduct = map[string]string{
 	"/leads/pipeline":         "leads",
 	"/leads/calls":            "leads",
 	"/leads/reports":          "leads",
+	"/leads/proof":            "leads",
 	"/leads/calls/9":          "leads",
 	"/leads/batches/3":        "leads",
 	"/leads/5":                "leads",
@@ -46,7 +47,7 @@ var shellProduct = map[string]string{
 
 // notPages are the signed-in GETs that answer with something other than a console page: a
 // redirect, an htmx fragment, or a report download.
-var notPages = []string{"/leads/next", "/leads/priorities", "/run/status", "/mailboxes/1/check", "/leads/reports/5"}
+var notPages = []string{"/leads/next", "/leads/priorities", "/run/status", "/mailboxes/1/check", "/leads/reports/5", "/leads/draft-status/5"}
 
 // TestEveryPageRendersTheShell: every signed-in GET route's sample path answers 200 inside
 // the shell (switcher, theme button, gear menu with Sign out), with the switcher marking its
@@ -114,6 +115,7 @@ func TestShellCurrentLink(t *testing.T) {
 		{"/leads/replies", "Replies", "page"},
 		{"/leads/pipeline", "Pipeline", "page"},
 		{"/leads/reports", "Reports", "page"},
+		{"/leads/proof", "Proof", "page"},
 		{"/leads/reports/5", "List", "true"},
 		{"/jobs/42", "Jobs", "true"},
 		{"/jobs/home", "Home", "page"},

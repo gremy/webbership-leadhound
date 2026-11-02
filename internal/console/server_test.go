@@ -107,6 +107,7 @@ type fakeBackend struct {
 	statusFake
 	sendNowFake
 	crmFake
+	outreachFake
 }
 
 func (f *fakeBackend) count(name string) {
@@ -305,13 +306,14 @@ func richBackend(text string) *fakeBackend {
 			ClaudeMonthMicros: 23_400_000,
 			ReoonChecksToday:  36, ReoonDailyLimit: 50,
 		},
-		statusFake:  statusFake{status: richStatus(text)},
-		sendNowFake: sendNowFake{plan: richSendPlan(text)},
-		crmFake:     richCRM(text),
-		brief:       BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
-		tracked:     []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
-		runs:        []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
-		rules:       []RuleRow{{ID: 7, Kind: "skip", Field: "company", Pattern: text, Reason: text, FromJobID: &from, CreatedAt: testSent, DisabledReason: text}},
+		statusFake:   statusFake{status: richStatus(text)},
+		sendNowFake:  sendNowFake{plan: richSendPlan(text)},
+		crmFake:      richCRM(text),
+		outreachFake: richOutreach(text),
+		brief:        BriefJobs{Day: testDay, SentAt: &sent, Jobs: []BriefJob{job}},
+		tracked:      []Tracked{{JobID: 42, Title: text, Company: text, Status: "applied", Reason: text, Since: testSent}},
+		runs:         []RunRow{{ID: 1, Command: text, Source: text, StartedAt: testSent, FinishedAt: &finished, StopReason: text, Note: text}},
+		rules:        []RuleRow{{ID: 7, Kind: "skip", Field: "company", Pattern: text, Reason: text, FromJobID: &from, CreatedAt: testSent, DisabledReason: text}},
 		out: TrackOutcome{
 			Job:  BriefJob{N: 1, JobID: 42, Title: "Go Engineer", Company: "Acme", Status: "applied", URL: "https://jobs.example/42"},
 			From: "shortlisted", To: "applied", Message: "shortlisted → applied",
@@ -322,8 +324,8 @@ func richBackend(text string) *fakeBackend {
 		batch:     richBatch(text),
 		settings:  richSettings(text),
 		leadOut:   LeadOutcome{Message: text},
-		list:      richLeadList(text),
-		detail:    richLeadDetail(text),
+		list:      richReachList(richLeadList(text)),
+		detail:    richOutreachDetail(richLeadDetail(text), text),
 		campaigns: richCampaigns(text),
 		today:     richToday(text),
 		call:      richCall(text),
@@ -431,6 +433,96 @@ func cookieNamed(w *httptest.ResponseRecorder, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+// TestOutreachRoutes: New starts with every outreach route in the table, which is the proof none
+// conflicts (ServeMux panics on a conflict). Each two-segment action goes through leadAct to its
+// own handler, never the backend's LeadAct; an unknown action and a lead id that is not one are
+// 404; each five-segment write is a POST only.
+func TestOutreachRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		code int // what it must be; 0 is reached: anything but 404, 405 or 500
+	}{
+		{"/leads/5/contacts", 0},
+		{"/leads/5/draft-it", 0},
+		{"/leads/5/draft-discard", 0},
+		{"/leads/5/sector", 0},
+		{"/leads/5/proposals", 0},
+		{"/leads/5/contacts/r12/edit", 0},
+		{"/leads/5/contacts/f7/retire", 0},
+		{"/leads/5/drafts/9/save", 0},
+		{"/leads/5/drafts/9/sent", 0},
+		{"/leads/5/proposals/3/status", 0},
+		{"/leads/proof", 0},
+		{"/leads/proof/3/retire", 0},
+		{"/leads/5/no-such-action", http.StatusNotFound},
+		{"/leads/5/draft_it", http.StatusNotFound},
+		{"/leads/nope/contacts", http.StatusNotFound},
+		{"/leads/0/draft-it", http.StatusNotFound},
+		{"/leads/5/contacts/r12/nope", http.StatusNotFound},
+	} {
+		b := richBackend("x")
+		h := newHarness(t, b, false)
+		w := h.do(post(tc.path, url.Values{}, h.session(t)))
+		switch {
+		case tc.code != 0 && w.Code != tc.code:
+			t.Errorf("POST %s: %d, want %d", tc.path, w.Code, tc.code)
+		case tc.code == 0 && (w.Code == http.StatusNotFound || w.Code == http.StatusMethodNotAllowed || w.Code >= 500 && w.Code != http.StatusNotImplemented):
+			t.Errorf("POST %s: %d, it did not reach its handler", tc.path, w.Code)
+		}
+		if n := b.n("LeadAct"); n != 0 {
+			t.Errorf("POST %s reached the backend's LeadAct %d times", tc.path, n)
+		}
+	}
+	h := newHarness(t, richBackend("x"), false)
+	for _, p := range []string{"/leads/5/contacts/r12/edit", "/leads/5/contacts/r12/retire", "/leads/5/drafts/9/save",
+		"/leads/5/drafts/9/sent", "/leads/5/proposals/3/status", "/leads/proof/3/retire"} {
+		if w := h.do(get(p, h.session(t))); w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s: %d, want 405", p, w.Code)
+		}
+	}
+}
+
+// TestDraftStatusIsARead: the Draft it fragment answers a GET with no layout and writes nothing.
+func TestDraftStatusIsARead(t *testing.T) {
+	b := richBackend("x")
+	h := newHarness(t, b, false)
+	c := h.session(t)
+	w := h.do(hx(get("/leads/draft-status/5", c)))
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "<html") {
+		t.Errorf("status %d, body %q", w.Code, w.Body.String())
+	}
+	if b.n("DraftStatus") != 1 || b.n("RequestDraft") != 0 {
+		t.Errorf("DraftStatus %d, RequestDraft %d", b.n("DraftStatus"), b.n("RequestDraft"))
+	}
+	if w := h.do(get("/leads/draft-status/nope", c)); w.Code != http.StatusNotFound {
+		t.Errorf("a bad id: %d", w.Code)
+	}
+	if w := h.do(post("/leads/draft-status/5", url.Values{}, c)); w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("a POST: %d", w.Code)
+	}
+}
+
+// TestContactRef: a {cid} names one row of one table and reads back as it was written; nothing
+// else parses, so a typed-in path cannot reach another kind of row.
+func TestContactRef(t *testing.T) {
+	for cid, want := range map[string]ContactRef{"r12": {RouteID: 12}, "f7": {FactID: 7}, "p3": {PersonID: 3}} {
+		got, ok := ParseContactRef(cid)
+		if !ok || got != want || got.String() != cid {
+			t.Errorf("ParseContactRef(%q) = %+v, %v", cid, got, ok)
+		}
+	}
+	for _, bad := range []string{"", "r", "12", "x12", "r0", "r-1", "r+5", "r05", "R12", "r12x", "r 1", "r99999999999999999999"} {
+		if got, ok := ParseContactRef(bad); ok {
+			t.Errorf("ParseContactRef(%q) = %+v, want no", bad, got)
+		}
+	}
+	for _, r := range []ContactRef{{}, {RouteID: 1, FactID: 1}, {RouteID: -1}} {
+		if s := r.String(); s != "" {
+			t.Errorf("%+v.String() = %q, want none", r, s)
+		}
+	}
 }
 
 // trackForm is a valid action on job 1 of the brief of testDay.
@@ -1279,7 +1371,7 @@ func TestNoInlineScriptOrStyle(t *testing.T) {
 	h := newHarness(t, richBackend("x"), false)
 	c := h.session(t)
 	for _, p := range []string{"/login", "/", "/status", "/jobs/home", "/leads/home", "/jobs", "/tracked", "/runs", "/rules", "/results",
-		"/mailboxes", "/mailboxes/new", "/mailboxes/1", "/mailboxes/1/edit", "/leads/send-now/7", "/leads", "/leads/5", "/leads/batches/3"} {
+		"/mailboxes", "/mailboxes/new", "/mailboxes/1", "/mailboxes/1/edit", "/leads/send-now/7", "/leads", "/leads/5", "/leads/batches/3", "/leads/proof"} {
 		cookies := []*http.Cookie{c}
 		if p == "/login" {
 			cookies = nil

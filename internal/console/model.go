@@ -5,9 +5,12 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Backend is everything the console reads and writes. The command that serves
@@ -33,6 +36,7 @@ type Backend interface {
 	ControlsBackend
 	StatusBackend
 	ManualSendBackend
+	OutreachBackend
 }
 
 // The Run now actions. Each name is the request file, the .path unit and the
@@ -316,6 +320,9 @@ type LeadListQuery struct {
 	Page                       string   // 1 and up
 	ToLabel                    string   // "" any | "1" the leads to label: the spread sample and the leads with a call
 	Campaign                   string   // "" every campaign | one campaign's slug
+	// Reach is the tab: "" every next action, or a Reach* bucket. A bucket picks its own states,
+	// so with Reach set a blank Status means every state: the tabs must not default Status to open.
+	Reach string
 }
 
 // LeadListPage is one page of the Leads list. Total is how many leads match the filter,
@@ -335,6 +342,8 @@ type LeadListPage struct {
 	// gate needs (30).
 	Labelled  []TypeCount
 	LabelGoal int
+	// ReachCounts is the List's tabs' numbers: the rest of the filter, counted by next action.
+	ReachCounts ReachCounts
 }
 
 // TypeCount is how many leads of one rating type carry the operator's call: Type is the
@@ -372,6 +381,12 @@ type LeadListRow struct {
 	// StarNote says up front what starring the lead does besides ordering it, when it has
 	// no usable way to reach it: StarNoteEmail or StarNotePhone; "" otherwise.
 	StarNote string
+	// Reach is the lead's next action (a Reach* bucket) and ReachReason why it is a dead end (a
+	// Reach* reason, "" for any other bucket). ReachWords and ReachReasonWords say them.
+	Reach, ReachReason string
+	// Channel is the lead's channel (ChannelEmail, ChannelForm, ChannelLinkedIn, or "none").
+	Channel     string
+	HasLinkedIn bool
 }
 
 // The star control's notes (LeadListRow.StarNote): a lead with no usable route, in a country
@@ -384,7 +399,8 @@ const (
 // LeadDetailPage is everything stored about one lead, in the order the page shows it: the
 // lead and its finding, the finding's signals, the contact routes, the facts found on its
 // pages, the agency page, the site, the lead's history, its outreach order, its messages,
-// its relevance history and why it ranks where it does. ErrNotFound for no such lead.
+// its relevance history and why it ranks where it does. ErrNotFound for no such lead. Its next
+// action is LeadListRow.Reach and ReachReason, one definition with the List's tabs.
 type LeadDetailPage struct {
 	LeadListRow
 	Signals          []LeadSignal
@@ -414,6 +430,31 @@ type LeadDetailPage struct {
 	// state, or no channel to email it on); "" when the button is offered. The confirm page
 	// still checks the rest (suppression, mailboxes, limits).
 	SendNowBlock string
+	// Contacts is every contact of the lead's org: routes by kind, then phones, then people;
+	// within each, live before retired, the operator's first. It replaces Routes and Phones on
+	// the page.
+	Contacts []LeadContact
+	// Drafts is every message of the lead in sequence order, for every channel and state. It
+	// replaces Messages on the page.
+	Drafts []LeadDraft
+	// DraftRequest is the latest Draft it request, nil when it never had one.
+	DraftRequest *LeadDraftRequest
+	// DraftItBlock is why Draft it cannot run, in plain words ("It already has a draft", "Already
+	// contacted", "Asked for at 09:12"); "" when the button is offered.
+	DraftItBlock string
+	// DiscardBatchID is the batch Discard throws away: an unapproved batch holding this lead
+	// alone; 0 hides the button, so a morning batch of many leads is never discarded from here.
+	DiscardBatchID int64
+	Proposals      []LeadProposal
+	// Sector is the org's sector as its stored name, and SectorWords in words; "" when neither the operator nor
+	// the rule gives one; SectorByRule says the rule guessed it ("guessed from the domain").
+	Sector, SectorWords string
+	SectorByRule        bool
+	SectorOptions       []FilterOption // the closed list, each a stored name and its words
+	// NoteMax is the longest LinkedIn connection note in characters (sender.linkedin_note_max).
+	NoteMax int
+	// Posted is a refused form to show again. The console sets it; the backend leaves it zero.
+	Posted OutreachPosted
 }
 
 // The contact research statuses LeadResearch.Status names (the store's own).
@@ -1436,6 +1477,14 @@ const (
 	TimelineCall  = "call"  // a call outcome recorded
 	TimelineCheck = "check" // an email check
 	TimelineStage = "stage" // a pipeline stage change
+
+	TimelineDraft    = "draft"    // a message drafted
+	TimelineEdit     = "edit"     // the operator edited a draft
+	TimelineDone     = "done"     // a form or LinkedIn message marked sent
+	TimelineContact  = "contact"  // a contact added, changed, retired or brought back
+	TimelineResearch = "research" // a contact search finished
+	TimelineProposal = "proposal" // a proposal added or its status changed
+	TimelineSector   = "sector"   // the operator set the sector
 )
 
 // TimelineItem is one thing that happened to a lead. Line is one plain sentence with no
@@ -1573,4 +1622,523 @@ type CallOutcomeRequest struct {
 	Consent        bool
 	ConsentAddress string
 	CallBackOn     *time.Time
+}
+
+// OutreachBackend is the manual side of a lead: its contacts, its drafts, Draft it, its sector,
+// its proposals and the proof library. Like the rest of the leads backend every method returns
+// ErrLeadsNotSetUp when this server has no usable leads settings, ErrNotFound for no such lead,
+// message, contact, proposal or proof (or one that is not that lead's), and a refusal the
+// operator can fix as any error wrapping ErrUserFixable, with one plain sentence; a refused write
+// saves nothing. A write returns the line to show ("" for the console's own). The console never
+// imports the store: these are its own types.
+type OutreachBackend interface {
+	// AddContact adds c to the lead's org, or marks the value the org already has as the
+	// operator's, bringing it back if it was retired: the line says which ("Already there; now
+	// marked as yours."). Contacts belong to the org, so every lead of it shows the contact. A
+	// new lead's channel is picked again at once.
+	AddContact(ctx context.Context, c NewContact) (string, error)
+	// EditContact changes a contact. The same value with a new note, or on a retired contact, is
+	// a new mark; a new value retires the old one, which stays on the page and the timeline. A
+	// new lead's channel is picked again at once.
+	EditContact(ctx context.Context, c ContactChange) (string, error)
+	// RetireContact takes a contact out of use, with an optional note; research never brings it
+	// back. A new lead's channel is picked again at once.
+	RetireContact(ctx context.Context, leadID int64, ref ContactRef, note string) (string, error)
+	// SaveDraft saves a new text for one of the lead's messages. A form or LinkedIn text is kept
+	// beside the original and moves no batch; an email text moves its unapproved batch's hash. A
+	// text that fails the checks is refused with the reasons and nothing is written.
+	SaveDraft(ctx context.Context, e DraftEdit) (string, error)
+	// MarkSent records that the operator sent a form or LinkedIn message by hand, approving its
+	// manual batch at the hash he was shown if it was not yet approved. A hash that is no longer
+	// the batch's is refused ("This draft changed; reload.").
+	MarkSent(ctx context.Context, m MarkSentRequest) (string, error)
+	// RequestDraft queues Draft it for the lead on channel (ChannelEmail, ChannelForm,
+	// ChannelLinkedIn; "" is the lead's own) and wakes the drafting service. A request already
+	// open is refused, naming when it was asked for.
+	RequestDraft(ctx context.Context, leadID int64, channel string) (string, error)
+	// DraftStatus is the lead's latest Draft it request, nil when it never had one. It never
+	// writes: the page polls it while a request is open.
+	DraftStatus(ctx context.Context, leadID int64) (*LeadDraftRequest, error)
+	// DiscardDraft discards batchID, LeadDetailPage.DiscardBatchID, and returns the lead to new.
+	// A batch that is not that lead's alone, or is approved, is refused.
+	DiscardDraft(ctx context.Context, leadID, batchID int64) (string, error)
+	// SetSector records the operator's sector for the lead's org, one of SectorOptions.
+	SetSector(ctx context.Context, leadID int64, sector string) (string, error)
+	// AddProposal adds a proposal to the lead. A sent one moves the stage to proposal when the
+	// lead has no stage or is still talking.
+	AddProposal(ctx context.Context, p NewProposal) (string, error)
+	// SetProposalStatus records a proposal's new status, the latest of which wins. Accepted
+	// offers Won; it never sets it.
+	SetProposalStatus(ctx context.Context, c ProposalStatusChange) (string, error)
+	// Proofs is the proof library: every proof still in use, newest first, and the sectors a
+	// proof may name. It never writes.
+	Proofs(ctx context.Context) (ProofPage, error)
+	// AddProof adds a line of proof.
+	AddProof(ctx context.Context, p NewProof) (string, error)
+	// RetireProof takes a proof out of use, with an optional reason.
+	RetireProof(ctx context.Context, proofID int64, reason string) (string, error)
+}
+
+// What the outreach forms take, in characters; the store's checks hold the same limits.
+const (
+	MaxContactNote   = 200
+	MaxContactValue  = 500
+	MaxPersonName    = 120
+	MaxPersonRole    = 60
+	MaxDraftBody     = 5000
+	MaxDraftSubject  = 200
+	MaxProposalTitle = 120
+	MaxProposalNote  = 300
+	MaxOutreachURL   = 500 // a proposal's or a proof's link
+	MaxProofTitle    = 80
+	MaxProofLine     = 240
+	MaxProofReason   = 200
+)
+
+// A lead's next action (LeadListRow.Reach, LeadListQuery.Reach), the store's buckets: worked out
+// from the lead, never stored. ReachOther is skipped, suppressed or closed: it has no tab and
+// shows only under Status "all".
+const (
+	ReachEmail     = "email"     // new or batched, on channel email
+	ReachManual    = "manual"    // new or batched, on form or LinkedIn, or on no channel with a phone
+	ReachDead      = "dead"      // new, on no channel, with no phone: ReachReason says why
+	ReachContacted = "contacted" // someone was reached
+	ReachOther     = "other"
+)
+
+// ReachTabs are the List's tabs by next action, in the order it shows them.
+var ReachTabs = []string{ReachEmail, ReachManual, ReachDead, ReachContacted}
+
+// Why a lead is a dead end (LeadListRow.ReachReason); "" for every other bucket.
+const (
+	ReachLooking     = "looking"      // a search is queued or running
+	ReachNothing     = "nothing"      // the latest search found nothing
+	ReachFound       = "found"        // the latest search found a contact: the next build gives it its channel
+	ReachNotSearched = "not_searched" // no search has finished
+	ReachCountry     = "country"      // its country is off
+)
+
+// ReachCounts is how many leads match the rest of the filter in each next action: the List's
+// tabs' numbers.
+type ReachCounts struct {
+	Email, Manual, Dead, Contacted, Other int
+}
+
+// All is every lead counted, for the All tab.
+func (c ReachCounts) All() int { return c.Email + c.Manual + c.Dead + c.Contacted + c.Other }
+
+// Of is the count of one bucket, for a template ranging over ReachTabs.
+func (c ReachCounts) Of(bucket string) int {
+	switch bucket {
+	case ReachEmail:
+		return c.Email
+	case ReachManual:
+		return c.Manual
+	case ReachDead:
+		return c.Dead
+	case ReachContacted:
+		return c.Contacted
+	case ReachOther:
+		return c.Other
+	}
+	return 0
+}
+
+// ReachWords is a next action as a tab or badge says it.
+func ReachWords(bucket string) string {
+	switch bucket {
+	case ReachEmail:
+		return "Email-ready"
+	case ReachManual:
+		return "Manual"
+	case ReachDead:
+		return "Dead end"
+	case ReachContacted:
+		return "Contacted"
+	}
+	return "Other"
+}
+
+// ReachReasonWords is why a lead is a dead end, as one plain sentence; "" for no reason.
+func ReachReasonWords(reason string) string {
+	switch reason {
+	case ReachLooking:
+		return "Looking for a contact now."
+	case ReachNothing:
+		return "Searched; nothing found."
+	case ReachFound:
+		return "A contact was found. The next lead build puts it to use."
+	case ReachNotSearched:
+		return "Star it or press Look for a contact."
+	case ReachCountry:
+		return "Its country is off in your settings."
+	}
+	return ""
+}
+
+// The channels a draft is written for (LeadDraft.Channel).
+const (
+	ChannelEmail    = "email"
+	ChannelForm     = "form"
+	ChannelLinkedIn = "linkedin"
+)
+
+// ChannelWords is a draft's channel as the page says it.
+func ChannelWords(channel string) string {
+	switch channel {
+	case ChannelEmail:
+		return "Email"
+	case ChannelForm:
+		return "Contact form"
+	case ChannelLinkedIn:
+		return "LinkedIn"
+	}
+	return channel
+}
+
+// Where a draft's batch came from (LeadDraft.Origin).
+const (
+	OriginBatch   = "batch"    // a morning batch, or a Send now batch
+	OriginSendNow = "send_now" // a Send now batch from before origins were kept
+	OriginDraftIt = "draft_it" // Draft it, on the lead's page
+)
+
+// Who wrote a draft (LeadDraft.Writer). writerWords says them.
+const (
+	WriterClaude   = "claude"
+	WriterTemplate = "template"
+)
+
+// LeadDraft is one message of the lead as its card shows it, for every channel and state: a
+// message already sent stays on the page with neither Editable nor CanMarkSent.
+type LeadDraft struct {
+	MessageID int64
+	Channel   string // ChannelEmail, ChannelForm or ChannelLinkedIn
+	Step      int    // its place in the sequence, from 0
+	Label     string // the step in words: "Connection note", "After they accept", "Follow-up 1"
+	// Note is true for a LinkedIn connection note: the card counts it against
+	// LeadDetailPage.NoteMax with NoteLength.
+	Note bool
+	// To is an email's address and TargetURL a form's or LinkedIn page, which the card links;
+	// the other is "".
+	To, TargetURL string
+	// Subject and Body are the text as it stands: the operator's latest version when Edited.
+	// Subject is "" on a form or LinkedIn message.
+	Subject, Body string
+	// Edited says the operator changed it; OriginalSubject and OriginalBody then hold the text
+	// before his first edit ("Show the original"), else they are "".
+	Edited                        bool
+	OriginalSubject, OriginalBody string
+	// Editable says Edit is offered: a form or LinkedIn message still draft or approved, or an
+	// email draft of an unapproved batch; never once the lead replied, bounced or opted out.
+	Editable bool
+	// CanMarkSent says Mark sent is offered: a form or LinkedIn message still draft or approved,
+	// live, on a lead that did not reply, bounce or opt out, whose batch is approved or holds no
+	// email. A contacted lead keeps it: the message after they accept follows the note.
+	CanMarkSent bool
+	// BatchID, BatchHash and Origin are its batch. BatchHash is the start of the batch's hash,
+	// as shown; Mark sent posts it back as hash, so a batch that changed since is refused.
+	BatchID   int64
+	BatchHash string
+	Origin    string // an Origin constant
+	Shadow    bool   // a shadow batch: nothing is really sent or marked sent
+	Writer    string // WriterClaude or WriterTemplate
+	// Fallback is why the template wrote it when Claude was meant to, in plain words ("Claude
+	// refused twice"); "" otherwise. The card says "from the template, because ...".
+	Fallback string
+	// State is the message's state in words ("Draft", "Approved", "Marked sent", "Cancelled").
+	State string
+	// DueNow says it is the operator's to send now; Due is when it falls due, nil when it has no
+	// date; Sent is when it was sent or marked sent, nil before that.
+	DueNow    bool
+	Due, Sent *time.Time
+}
+
+// NoteLength is the text's length in characters, as the note limit counts it.
+func (d LeadDraft) NoteLength() int { return utf8.RuneCountInString(d.Body) }
+
+// The kinds of a contact (LeadContact.Kind, NewContact.Kind), in the order the Add form offers
+// them (ContactKinds). The first three and LinkedIn are ways to reach the org; a person is who
+// is there.
+const (
+	ContactEmail    = "email"
+	ContactPhone    = "phone"
+	ContactForm     = "form"
+	ContactLinkedIn = "linkedin"
+	ContactPerson   = "person"
+)
+
+// ContactKinds lists the kinds of contact the Add form offers.
+var ContactKinds = []string{ContactEmail, ContactPhone, ContactForm, ContactLinkedIn, ContactPerson}
+
+// ContactKindWords is a contact's kind as the page says it.
+func ContactKindWords(kind string) string {
+	switch kind {
+	case ContactEmail:
+		return "Email"
+	case ContactPhone:
+		return "Phone"
+	case ContactForm:
+		return "Contact form"
+	case ContactLinkedIn:
+		return "LinkedIn"
+	case ContactPerson:
+		return "Person"
+	}
+	return kind
+}
+
+// Where a contact came from (LeadContact.Provenance), the store's words. A contact the operator
+// has claimed is ProvenanceOperator whatever found it.
+const (
+	ProvenanceOperator = "operator"
+	ProvenanceResearch = "research"
+	ProvenanceCrawl    = "crawl"
+	ProvenanceOverture = "overture"
+	ProvenanceEnrich   = "enrich"
+)
+
+// ProvenanceWords is where a contact came from, as its badge says it.
+func ProvenanceWords(p string) string {
+	switch p {
+	case ProvenanceOperator:
+		return "added by you"
+	case ProvenanceResearch:
+		return "found by research"
+	case ProvenanceCrawl, ProvenanceEnrich:
+		return "from their site"
+	case ProvenanceOverture:
+		return "from the map"
+	}
+	return ""
+}
+
+// ContactRef names one contact: exactly one of its fields is set. A contact lives in one of three
+// tables, each with its own ids, so the {cid} path segment carries which: r12 is route 12 (an
+// email, a form or a LinkedIn page), f7 is fact 7 (a phone), p3 is person 3. These strings stay
+// in the HTML and the path, never on screen.
+type ContactRef struct {
+	RouteID, FactID, PersonID int64
+}
+
+// String is the ref as a {cid} segment; "" for a ref that names no one contact.
+func (r ContactRef) String() string {
+	switch {
+	case r.RouteID > 0 && r.FactID == 0 && r.PersonID == 0:
+		return "r" + strconv.FormatInt(r.RouteID, 10)
+	case r.FactID > 0 && r.RouteID == 0 && r.PersonID == 0:
+		return "f" + strconv.FormatInt(r.FactID, 10)
+	case r.PersonID > 0 && r.RouteID == 0 && r.FactID == 0:
+		return "p" + strconv.FormatInt(r.PersonID, 10)
+	}
+	return ""
+}
+
+// ParseContactRef reads a {cid} segment: r, f or p and a whole number above zero, written the way
+// String writes it, so r+5, r05 and r0 are not refs.
+func ParseContactRef(cid string) (ContactRef, bool) {
+	if cid == "" {
+		return ContactRef{}, false
+	}
+	n, err := strconv.ParseInt(cid[1:], 10, 64)
+	if err != nil {
+		return ContactRef{}, false
+	}
+	var r ContactRef
+	switch cid[0] {
+	case 'r':
+		r.RouteID = n
+	case 'f':
+		r.FactID = n
+	case 'p':
+		r.PersonID = n
+	}
+	return r, r.String() == cid
+}
+
+// LeadContact is one contact of the lead's org on its Contacts card, retired ones included: the
+// page marks them, and their value stays visible. The card replaces the old "Ways to reach them"
+// list, so it carries what that list showed.
+type LeadContact struct {
+	CID        string // ContactRef.String: the {cid} of its Edit and Retire forms
+	Kind       string // a Contact* kind
+	Value      string // the address, number or URL as shown; for a person, "" (see Name and Role)
+	Name, Role string // a person's, or the person a route belongs to; "" when none
+	PersonID   int64  // the person a route belongs to; 0 for none
+	Provenance string // a Provenance constant; ProvenanceWords says it
+	FoundAt    time.Time
+	Note       string // the operator's own note: the latest mark's; "" for none
+	Operator   bool   // the operator's own: added or claimed by him, outranking research
+	Retired    bool   // out of use: not picked, not sent to, offered no Retire
+	// ReplacedBy is the value that replaced a retired contact; "" for none.
+	ReplacedBy string
+	// Chosen is true for the route this lead is reached on now.
+	Chosen bool
+	// Warning is one plain line the card shows, never a block: this manual contact is used
+	// although its country is off in leads.yaml, or this email looks personal and the country
+	// does not allow emailing individuals; "" for neither.
+	Warning string
+	// PageURL is the page it was found on; "" for the operator's own. Check is an email's latest
+	// email check in words and CheckedAt when, nil when never; MailServer what was checked of its
+	// mail server, in words. All "" for any other kind.
+	PageURL    string
+	Check      string
+	CheckedAt  *time.Time
+	MailServer string
+}
+
+// A Draft it request's status (LeadDraftRequest.Status).
+const (
+	DraftQueued   = "queued"
+	DraftDrafting = "drafting"
+	DraftDone     = "done"
+	DraftFailed   = "failed"
+)
+
+// LeadDraftRequest is the lead's latest Draft it request.
+type LeadDraftRequest struct {
+	Channel     string // the channel it asked for; "" is the lead's own
+	Status      string // a Draft* status
+	Reason      string // why it failed, in plain words; "" otherwise
+	BatchID     int64  // the batch it made; 0 for none
+	RequestedAt time.Time
+	FinishedAt  *time.Time
+}
+
+// Open reports whether it is queued or drafting: the page keeps polling, and Draft it is refused.
+func (r LeadDraftRequest) Open() bool { return r.Status == DraftQueued || r.Status == DraftDrafting }
+
+// The statuses of a proposal (LeadProposal.Status), the order the page offers them.
+const (
+	ProposalSent      = "sent"
+	ProposalAccepted  = "accepted"
+	ProposalDeclined  = "declined"
+	ProposalWithdrawn = "withdrawn"
+)
+
+// ProposalStatuses lists every proposal status.
+var ProposalStatuses = []string{ProposalSent, ProposalAccepted, ProposalDeclined, ProposalWithdrawn}
+
+// ProposalStatusWords is a proposal's status as the page says it.
+func ProposalStatusWords(status string) string {
+	switch status {
+	case ProposalSent:
+		return "Sent"
+	case ProposalAccepted:
+		return "Accepted"
+	case ProposalDeclined:
+		return "Declined"
+	case ProposalWithdrawn:
+		return "Withdrawn"
+	}
+	return status
+}
+
+// LeadProposal is one proposal of the lead with its latest status.
+type LeadProposal struct {
+	ID         int64
+	Title      string
+	URL        string // https; "" when none
+	ValueCents *int64 // nil when no value is set
+	Currency   string // one of Currencies
+	At         time.Time
+	Status     string // a Proposal* status
+	StatusNote string
+	StatusAt   time.Time
+}
+
+// OutreachPosted is a refused form of the lead's page: what the operator typed and why it was
+// refused, kept in that form when the page is shown again with a 422. The console sets it on
+// LeadDetailPage.Posted, never the backend. The zero value is no form.
+type OutreachPosted struct {
+	// Form names the form: "contact-add", "contact" (ID is its CID), "contact-retire" (ID is its
+	// CID), "draft" (ID is its MessageID), "draft-it", "sector", "proposal-add", "proposal" (ID
+	// is its ID).
+	Form, ID string
+	Refusal  string            // one plain sentence
+	Values   map[string]string // what was typed, by form field name
+}
+
+// On says the refusal belongs to this form, for a template: {{if $p.On "draft" $d.MessageID}}.
+func (p OutreachPosted) On(form string, id any) bool {
+	return p.Form != "" && p.Form == form && p.ID == fmt.Sprint(id)
+}
+
+// Field is what was typed in a form field, or stored when nothing was: a form On is true for
+// shows it in place of the stored value.
+func (p OutreachPosted) Field(name, stored string) string {
+	if v, ok := p.Values[name]; ok {
+		return v
+	}
+	return stored
+}
+
+// NewContact is a contact the operator adds. Value is the address, number or URL (a person has
+// none); Name and Role are a person's. PersonID ties an email or LinkedIn route to a person
+// already on the org; 0 for none.
+type NewContact struct {
+	LeadID                  int64
+	Kind                    string // a Contact* kind
+	Value, Name, Role, Note string
+	PersonID                int64
+}
+
+// ContactChange is an edit of one contact, by the form on its card.
+type ContactChange struct {
+	LeadID                  int64
+	Ref                     ContactRef
+	Value, Name, Role, Note string
+}
+
+// DraftEdit is a new text for one message. Subject is only an email's: the backend ignores it on
+// a form or LinkedIn message.
+type DraftEdit struct {
+	LeadID, MessageID int64
+	Subject, Body     string
+}
+
+// MarkSentRequest marks one form or LinkedIn message sent; Hash is LeadDraft.BatchHash as the
+// card showed it.
+type MarkSentRequest struct {
+	LeadID, MessageID int64
+	Hash              string
+}
+
+// NewProposal is a proposal to add. URL is "" or https; ValueCents nil when no value is set;
+// Currency one of Currencies; Status one of ProposalStatuses ("" is ProposalSent).
+type NewProposal struct {
+	LeadID                             int64
+	Title, URL, Currency, Status, Note string
+	ValueCents                         *int64
+}
+
+// ProposalStatusChange is a proposal's new status.
+type ProposalStatusChange struct {
+	LeadID, ProposalID int64
+	Status, Note       string
+}
+
+// ProofPage is the proof library's page: the proofs in use, newest first, and the sectors a proof
+// may name, each a stored name and its plain words.
+type ProofPage struct {
+	Proofs  []Proof
+	Sectors []FilterOption
+}
+
+// Proof is one line of proof in use. A proof that is not Public is used without its link.
+type Proof struct {
+	ID      int64
+	Title   string
+	Line    string         // the sentence a draft may use, word for word
+	URL     string         // https; "" when none
+	Public  bool           // its link may go in a draft
+	Sectors []FilterOption // the sectors it serves, each a stored name and its plain words
+	At      time.Time
+}
+
+// NewProof is a line of proof to add. Sectors are stored names, at least one.
+type NewProof struct {
+	Title, Line, URL string
+	Sectors          []string
+	Public           bool
 }
