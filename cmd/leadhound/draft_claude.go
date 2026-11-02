@@ -19,6 +19,7 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/claude"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/leadview"
 	"github.com/gremy/webbership-leadhound/internal/outreach"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
@@ -37,6 +38,7 @@ const (
 	fbOff         = "Claude drafting off for this run"
 	fbUnavailable = "Claude unavailable"
 	fbNoInput     = "no fact sheet for Claude"
+	fbNoLinkedIn  = "no LinkedIn text could be drafted"
 )
 
 // failStop is the failure code a generation row carries for an attempt the model stopped
@@ -67,16 +69,40 @@ type generationRecorder interface {
 
 // claudeDrafting is what a batch may draft with Claude: the capped caller (nil: off, with
 // off saying why) and where the attempts are recorded. A batchSetup without one (the
-// console) drafts every lead from templates.
+// console) drafts every lead from templates. open, when set, makes the caller the first time a
+// manual lead asks for it: a template campaign with no form or LinkedIn lead never needs the key.
 type claudeDrafting struct {
 	caller outreach.Caller
 	off    string
 	rec    generationRecorder
+	open   func() (outreach.Caller, string)
+}
+
+// manualCaller is the caller of a manual text, or nil and why not.
+func (c *claudeDrafting) manualCaller() (outreach.Caller, string) {
+	if c == nil {
+		return nil, fbOff
+	}
+	if c.open != nil {
+		c.caller, c.off = c.open()
+		c.open = nil
+	}
+	if c.caller == nil {
+		return nil, cmp.Or(c.off, fbOff)
+	}
+	return c.caller, ""
 }
 
 // recordAttempts stores every attempt of one lead's write as a draft_generation row, in
 // order, and returns their ids.
 func recordAttempts(ctx context.Context, rec generationRecorder, leadID, campaignID int64, sheet outreach.FactSheet,
+	attempts []outreach.Attempt, purpose string) ([]int64, error) {
+	return recordChannelAttempts(ctx, rec, leadID, campaignID, leadconfig.ChannelEmail, sheet, attempts, purpose)
+}
+
+// recordChannelAttempts is recordAttempts for a draft on channel: a manual draft's rows stay out of
+// the email gate, its reviews and its samples.
+func recordChannelAttempts(ctx context.Context, rec generationRecorder, leadID, campaignID int64, channel string, sheet outreach.FactSheet,
 	attempts []outreach.Attempt, purpose string) ([]int64, error) {
 	ids := make([]int64, 0, len(attempts))
 	for i, a := range attempts {
@@ -88,7 +114,7 @@ func recordAttempts(ctx context.Context, rec generationRecorder, leadID, campaig
 		cost := a.CostMicros
 		id, err := rec.RecordGeneration(ctx, leadstore.GenerationRow{
 			LeadID: leadID, CampaignID: campaignID, Attempt: i + 1, Model: cmp.Or(a.Model, claude.FakeModel),
-			Facts: sheet, Output: a.Output, CheckOK: a.OK(), Failures: fails, CostMicros: &cost, Purpose: purpose,
+			Facts: sheet, Output: a.Output, CheckOK: a.OK(), Failures: fails, CostMicros: &cost, Purpose: purpose, Channel: channel,
 		})
 		if err != nil {
 			return ids, err
@@ -112,7 +138,13 @@ func capReason(err error) string {
 // Claude wrote (a fake decider's sample never counts), newest review first, with each
 // reviewed generation by id.
 func claudeReviews(ctx context.Context, lq leadstore.Queries, campaignID int64) ([]leadstore.Review, map[int64]leadstore.Generation, error) {
-	all, err := lq.ReviewsForCampaign(ctx, campaignID, leadconfig.ChannelEmail, 0)
+	return claudeChannelReviews(ctx, lq, campaignID, leadconfig.ChannelEmail)
+}
+
+// claudeChannelReviews is claudeReviews on channel: every draft group is reviewed and learnt from
+// apart, so a manual draft's review never moves the email gate.
+func claudeChannelReviews(ctx context.Context, lq leadstore.Queries, campaignID int64, channel string) ([]leadstore.Review, map[int64]leadstore.Generation, error) {
+	all, err := lq.ReviewsForCampaign(ctx, campaignID, channel, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -191,6 +223,47 @@ func approvedExamples(ctx context.Context, lq leadstore.Queries, campaignID int6
 	return ex, approved, nil
 }
 
+// approvedManualExamples are at most outreach.MaxExamples approved Claude drafts of the campaign on
+// channel (form or linkedin), newest review first, one per lead.
+func approvedManualExamples(ctx context.Context, lq leadstore.Queries, campaignID int64, channel string) ([]outreach.ManualWritten, error) {
+	rs, gens, err := claudeChannelReviews(ctx, lq, campaignID, channel)
+	if err != nil {
+		return nil, err
+	}
+	var ex []outreach.ManualWritten
+	leads := map[int64]bool{}
+	for _, r := range rs {
+		g := gens[r.GenerationID]
+		if r.Verdict != leadstore.VerdictApprove || !g.CheckOK || g.Output == nil || leads[g.LeadID] {
+			continue
+		}
+		m, err := outreach.DecodeManual(g.Output)
+		if err != nil {
+			continue // a stored answer that no longer decodes is no example
+		}
+		leads[g.LeadID] = true
+		if ex = append(ex, m); len(ex) == outreach.MaxExamples {
+			break
+		}
+	}
+	return ex, nil
+}
+
+// operatorVersions are the operator's latest saved texts on channel of the campaign for the writer
+// to match: newest first, one per lead, at most outreach.MaxOperatorVersions, each scrubbed by the
+// store of its own lead's org name, domain and people, and an erased one left out.
+func operatorVersions(ctx context.Context, lq leadstore.Queries, campaignID int64, channel string) ([]outreach.OperatorVersion, error) {
+	vs, err := lq.OperatorVersions(ctx, campaignID, channel, outreach.MaxOperatorVersions)
+	if err != nil {
+		return nil, err
+	}
+	var out []outreach.OperatorVersion
+	for _, v := range vs {
+		out = append(out, outreach.OperatorVersion{Subject: v.Subject, Body: v.Body})
+	}
+	return out, nil
+}
+
 // --- one lead's input ---
 
 // draftCtx is what every lead of one campaign is written with. plan is the batch's plan;
@@ -200,6 +273,34 @@ type draftCtx struct {
 	plan       batchPlan
 	campaignID int64
 	examples   []outreach.WrittenDraft
+	versions   []outreach.OperatorVersion // the operator's own email texts
+}
+
+// draftReads is what one lead's input reads; leadstore.Queries is one.
+type draftReads interface {
+	reportStore
+	leadview.OperatorSectors
+	ProofsFor(ctx context.Context, accountID int64, sector string, limit int) ([]leadstore.Proof, error)
+}
+
+var _ draftReads = leadstore.Queries{}
+
+// leadProofs are the proofs of the org's sector for its fact sheet: the operator's sector, else the
+// rule's on its domain and lead kind. An org with no sector, or a sector with none, has none.
+func leadProofs(ctx context.Context, rs draftReads, orgID int64, domain, kind string) ([]outreach.ProofFact, error) {
+	sector, err := leadview.SectorOf(ctx, rs, orgID, domain, kind)
+	if err != nil || sector == "" {
+		return nil, err
+	}
+	rows, err := rs.ProofsFor(ctx, leadstore.DefaultAccountID, sector, outreach.MaxProofFacts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]outreach.ProofFact, 0, len(rows))
+	for _, p := range rows {
+		out = append(out, outreach.ProofFact{Line: p.Line, URL: p.URL, Public: p.Public, Source: outreach.Provenance{Table: "proof", ID: p.ID}})
+	}
+	return out, nil
 }
 
 // stepNeedsPhone reports whether st gets a row only when the lead has a callable number
@@ -215,7 +316,21 @@ func stepNeedsPhone(st campaign.Step) bool {
 // for (so a lead without a number is not asked for the "I tried to call" email), and the
 // template path's slots and footer for the rendering tail. plan is the lead's own plan
 // (batchPlan.forLead): a call-first lead is written to the call_first sequence's steps.
-func (d draftCtx) writeInput(ctx context.Context, rs reportStore, plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, phone bool) (outreach.WriteInput, error) {
+func (d draftCtx) writeInput(ctx context.Context, rs draftReads, plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, phone bool) (outreach.WriteInput, error) {
+	in, err := d.leadInput(ctx, rs, plan, c, ev, phone)
+	if err != nil {
+		return outreach.WriteInput{}, err
+	}
+	in.Render.Footer = plan.footerFor(c.Country, d.cfg)
+	if in.Render.Footer == nil {
+		return outreach.WriteInput{}, fmt.Errorf("no footer for country %q", c.Country)
+	}
+	return in, nil
+}
+
+// leadInput is writeInput without the footer, which a manual text does not have. Person names never
+// enter the sheet: it holds the org, the finding, the sender and the offer.
+func (d draftCtx) leadInput(ctx context.Context, rs draftReads, plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, phone bool) (outreach.WriteInput, error) {
 	spec := plan.spec
 	lead, err := rs.LeadByID(ctx, c.LeadID)
 	if err != nil {
@@ -236,6 +351,10 @@ func (d draftCtx) writeInput(ctx context.Context, rs reportStore, plan batchPlan
 	if spec.Offer.CallToAction != "" {
 		si.Offer.CallToAction, si.Offer.Source = spec.Offer.CallToAction, ref
 	}
+	if si.Proofs, err = leadProofs(ctx, rs, lead.OrgID, si.Org.Domain, lead.Kind); err != nil {
+		return outreach.WriteInput{}, err
+	}
+	sheet := outreach.BuildFactSheet(si)
 	major := 0
 	if si.Finding != nil {
 		major = si.Finding.Major
@@ -264,18 +383,16 @@ func (d draftCtx) writeInput(ctx context.Context, rs reportStore, plan batchPlan
 	}
 	rules.ConfigBanned = slices.Clone(d.cfg.Copy.BannedWords)
 	rules.CallStep = len(calls) > 0
+	// This lead's proof pages are allowed in this lead's checks alone: the plan's slice is shared.
+	rules.Links = slices.Concat(rules.Links, sheet.ProofLinks())
 	slots, err := leadSlots(c, ev, d.cfg, spec)
 	if err != nil {
 		return outreach.WriteInput{}, err
 	}
-	footer := plan.footerFor(c.Country, d.cfg)
-	if footer == nil {
-		return outreach.WriteInput{}, fmt.Errorf("no footer for country %q", c.Country)
-	}
 	return outreach.WriteInput{
 		LeadID: c.LeadID, Campaign: spec.Name, Lang: policy.Lang,
-		Sheet: outreach.BuildFactSheet(si), Rules: rules, CallSteps: calls, AfterCall: afterCall, Examples: d.examples,
-		Render: outreach.WriteRender{Cfg: d.cfg, Footer: footer, Slots: slots, Greeting: greetings[policy.Lang]},
+		Sheet: sheet, Rules: rules, CallSteps: calls, AfterCall: afterCall, Examples: d.examples, OperatorVersions: d.versions,
+		Render: outreach.WriteRender{Cfg: d.cfg, Slots: slots, Greeting: greetings[policy.Lang]},
 	}, nil
 }
 
@@ -360,12 +477,27 @@ type batchDrafter struct {
 	capped    bool           // today's cap stopped a call: no more calls this batch
 	fallbacks map[string]int
 	drafted   int // leads Claude's draft went into the batch for
+	// claude is what a manual text is written with: no gate holds it (Decision 9), because the
+	// operator reads and sends each one by hand.
+	claude *claudeDrafting
+	// manual is what a manual text learns from, read once per channel.
+	manual map[string]manualLearning
+	// fresh asks Claude anew instead of reusing a stored generation: the operator pressed Draft it,
+	// perhaps because he discarded what the last one wrote.
+	fresh bool
+}
+
+// manualLearning is what the writer of one manual channel is shown.
+type manualLearning struct {
+	examples []outreach.ManualWritten
+	versions []outreach.OperatorVersion
 }
 
 // newBatchDrafter reads the campaign's writer and, for claude, its trust gate now: a
 // campaign the gate does not trust drafts from templates, whatever its spec says.
 func newBatchDrafter(ctx context.Context, lq leadstore.Queries, bs batchSetup, plan batchPlan, campaignID int64) (*batchDrafter, error) {
-	d := &batchDrafter{fallbacks: map[string]int{}}
+	d := &batchDrafter{fallbacks: map[string]int{}, claude: bs.claude, manual: map[string]manualLearning{},
+		dc: draftCtx{cfg: bs.leads, plan: plan, campaignID: campaignID}}
 	if plan.spec.Writer != campaign.WriterClaude {
 		return d, nil
 	}
@@ -386,8 +518,12 @@ func newBatchDrafter(ctx context.Context, lq leadstore.Queries, bs batchSetup, p
 		if err != nil {
 			return nil, err
 		}
+		versions, err := operatorVersions(ctx, lq, campaignID, leadconfig.ChannelEmail)
+		if err != nil {
+			return nil, err
+		}
 		d.on, d.approved = true, approved
-		d.dc = draftCtx{cfg: bs.leads, plan: plan, campaignID: campaignID, examples: ex}
+		d.dc.examples, d.dc.versions = ex, versions
 		d.writer = &outreach.Writer{Caller: bs.claude.caller, Log: slog.Default()}
 		d.rec = bs.claude.rec
 	}
@@ -399,6 +535,15 @@ func newBatchDrafter(ctx context.Context, lq leadstore.Queries, bs batchSetup, p
 // except a usage-store failure, which stops the batch (stopBatchError).
 func (d *batchDrafter) draft(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate,
 	ev leadstore.Evidence, cfg leadconfig.Config, phone *leadstore.Fact, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
+	if d != nil && (c.Channel == leadconfig.ChannelForm || c.Channel == leadconfig.ChannelLinkedIn) {
+		return d.manualRows(ctx, lq, plan, c, ev, cfg, rnd)
+	}
+	if d != nil {
+		var err error
+		if plan.proofLinks, err = leadProofLinks(ctx, lq, c); err != nil {
+			return nil, err
+		}
+	}
 	if d == nil || (!d.on && d.off == "") || c.Channel != leadconfig.ChannelEmail ||
 		c.RouteKind != leadstore.RouteEmail || c.Route == "" {
 		return draftSequence(plan, c, ev, cfg, phone, idDomain, rnd)
@@ -499,6 +644,241 @@ func (d *batchDrafter) reuse(ctx context.Context, lq leadstore.Queries, leadID i
 	return 0, outreach.WriteResult{}, false, nil
 }
 
+// --- a manual lead ---
+
+// manualRows are a form or LinkedIn lead's rows (Decision 10): a form lead's message at step 0, and
+// its LinkedIn note and message at steps 1 and 2 only when it has a LinkedIn route that is not
+// retired; a LinkedIn lead's note at step 0 and message at step 1. Each channel's text is Claude's
+// or falls back to the templates on its own. Only the lead's own channel failing drops the lead.
+func (d *batchDrafter) manualRows(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate,
+	ev leadstore.Evidence, cfg leadconfig.Config, rnd io.Reader) ([]leadstore.DraftRow, error) {
+	var err error
+	if plan.proofLinks, err = leadProofLinks(ctx, lq, c); err != nil {
+		return nil, err
+	}
+	rows, why, err := d.manualChannel(ctx, lq, plan, c, ev, cfg, c.Channel, c.Route, 0, rnd)
+	if err != nil {
+		return nil, err
+	}
+	byClaude := why == ""
+	templated := []string{why}
+	if c.Channel == leadconfig.ChannelForm {
+		routes, err := lq.RoutesFor(ctx, c.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		if i := slices.IndexFunc(routes, func(r leadstore.Route) bool { return r.Kind == leadstore.RouteLinkedIn }); i >= 0 {
+			more, moreWhy, err := d.manualChannel(ctx, lq, plan, c, ev, cfg, leadconfig.ChannelLinkedIn, routes[i].Value, 1, rnd)
+			if sb := (*stopBatchError)(nil); errors.As(err, &sb) {
+				return nil, err
+			}
+			if err != nil {
+				moreWhy = fbNoLinkedIn
+			}
+			rows = append(rows, more...)
+			byClaude = byClaude || moreWhy == ""
+			templated = append(templated, moreWhy)
+		}
+	}
+	if byClaude {
+		d.drafted++
+	}
+	// The line counts leads, so a lead counts once per reason.
+	slices.Sort(templated)
+	for _, r := range slices.Compact(templated) {
+		if r != "" {
+			d.fallbacks[r]++
+		}
+	}
+	return rows, nil
+}
+
+// leadProofLinks are the public proof pages lead c's own checks allow.
+func leadProofLinks(ctx context.Context, rs draftReads, c leadstore.Candidate) ([]string, error) {
+	proofs, err := leadProofs(ctx, rs, c.OrgID, c.Domain, c.Kind)
+	if err != nil {
+		return nil, err
+	}
+	return outreach.BuildFactSheet(outreach.SheetInput{Proofs: proofs}).ProofLinks(), nil
+}
+
+// manualChannel is one channel's rows for lead c, target their recipient and offset added to their
+// steps. why is "" when Claude wrote them; otherwise they are the templates', and each says why.
+func (d *batchDrafter) manualChannel(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate,
+	ev leadstore.Evidence, cfg leadconfig.Config, channel, target string, offset int, rnd io.Reader) (rows []leadstore.DraftRow, why string, err error) {
+	c.Channel, c.RouteKind, c.Route = channel, channel, target
+	if rows, why, err = d.claudeManual(ctx, lq, plan, c, ev, offset); err != nil || why == "" {
+		return rows, "", err
+	}
+	if rows, err = draftSequence(plan, c, ev, cfg, nil, "", rnd); err != nil {
+		return nil, why, fmt.Errorf("%s; no template draft either: %w", why, err)
+	}
+	for i := range rows {
+		rows[i].Step += offset
+		if rows[i].Slots, err = templateBecause(rows[i].Slots, why); err != nil {
+			return nil, why, err
+		}
+	}
+	return rows, why, nil
+}
+
+// templateBecause adds the writer and why to a template row's slots, for the lead page's "from the
+// template, because ...". They sit beside the slots: every reader of a slot asks for it by name.
+func templateBecause(slots json.RawMessage, why string) (json.RawMessage, error) {
+	m := map[string]any{}
+	if err := json.Unmarshal(slots, &m); err != nil {
+		return nil, fmt.Errorf("leads: slots: %w", err)
+	}
+	m["writer"], m["fallback"] = campaign.WriterTemplate, why
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("leads: slots: %w", err)
+	}
+	return b, nil
+}
+
+// draftOrigin is who wrote a message and, for a manual text the templates wrote, why: the lead page's
+// "from the template, because ...". A row with no word on it is the templates', with no reason.
+func draftOrigin(slots json.RawMessage) (writer, fallback string) {
+	var s struct {
+		Writer   string `json:"writer"`
+		Fallback string `json:"fallback"`
+	}
+	_ = json.Unmarshal(slots, &s) // slots that cannot be read say nothing
+	return cmp.Or(s.Writer, campaign.WriterTemplate), s.Fallback
+}
+
+// claudeManual writes channel c.Channel's texts with Claude (or reuses a stored generation) and
+// returns their rows, or why not in plain words. err is a stopBatchError.
+func (d *batchDrafter) claudeManual(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate,
+	ev leadstore.Evidence, offset int) ([]leadstore.DraftRow, string, error) {
+	if d.claude == nil {
+		return nil, fbOff, nil
+	}
+	in, err := d.manualInput(ctx, lq, plan, c, ev)
+	if err != nil {
+		var stop *stopBatchError
+		if errors.As(err, &stop) {
+			return nil, "", err
+		}
+		return nil, fbNoInput, nil
+	}
+	genID, res, ok, err := d.reuseManual(ctx, lq, c.LeadID, in)
+	if err != nil {
+		return nil, "", &stopBatchError{err}
+	}
+	if !ok {
+		caller, off := d.claude.manualCaller()
+		switch {
+		case caller == nil:
+			return nil, off, nil
+		case d.capped:
+			return nil, fbCap, nil
+		}
+		var werr error
+		res, werr = (&outreach.Writer{Caller: caller, Log: slog.Default()}).WriteManual(ctx, in)
+		ids, rerr := recordChannelAttempts(ctx, d.claude.rec, c.LeadID, d.dc.campaignID, c.Channel, in.Sheet, res.Attempts, leadstore.PurposeBatch)
+		if rerr != nil {
+			return nil, "", &stopBatchError{rerr}
+		}
+		switch {
+		case werr != nil && errors.Is(werr, ai.ErrUsageStore):
+			return nil, "", &stopBatchError{werr}
+		case werr != nil && errors.Is(werr, ai.ErrSpendCap):
+			r := capReason(werr)
+			d.capped = d.capped || r == fbCap
+			return nil, r, nil
+		case werr != nil:
+			return nil, fbUnavailable, nil
+		case res.Fallback != "":
+			return nil, fbRefused, nil
+		}
+		genID = ids[len(ids)-1]
+	}
+	rows, err := manualDraftRows(c, in, res, genID, offset)
+	if err != nil {
+		return nil, fbRefused, nil
+	}
+	return rows, "", nil
+}
+
+// manualInput builds lead c's job on channel c.Channel. A failed read of what the writer learns from
+// is a stopBatchError; any other error is a lead with no input.
+func (d *batchDrafter) manualInput(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence) (outreach.ManualInput, error) {
+	learn, ok := d.manual[c.Channel]
+	if !ok {
+		var err error
+		if learn.examples, err = approvedManualExamples(ctx, lq, d.dc.campaignID, c.Channel); err != nil {
+			return outreach.ManualInput{}, &stopBatchError{err}
+		}
+		if learn.versions, err = operatorVersions(ctx, lq, d.dc.campaignID, c.Channel); err != nil {
+			return outreach.ManualInput{}, &stopBatchError{err}
+		}
+		d.manual[c.Channel] = learn
+	}
+	dc := d.dc
+	dc.examples, dc.versions = nil, learn.versions
+	in, err := dc.leadInput(ctx, lq, plan, c, ev, false)
+	if err != nil {
+		return outreach.ManualInput{}, err
+	}
+	return outreach.ManualInput{WriteInput: in, Channel: c.Channel, NoteMax: d.dc.cfg.Sender.LinkedInNoteMax, ManualExamples: learn.examples}, nil
+}
+
+// reuseManual is reuse for a manual text: a generation on the same channel and fact sheet that was
+// drafted for a batch, never a fake decider's, checked and rendered again under today's rules. Draft
+// it asks anew (batchDrafter.fresh).
+func (d *batchDrafter) reuseManual(ctx context.Context, lq leadstore.Queries, leadID int64, in outreach.ManualInput) (int64, outreach.ManualResult, bool, error) {
+	if d.fresh {
+		return 0, outreach.ManualResult{}, false, nil
+	}
+	gens, err := lq.GenerationsForLead(ctx, leadID, d.dc.campaignID, in.Channel)
+	if err != nil {
+		return 0, outreach.ManualResult{}, false, err
+	}
+	sha := in.Sheet.SHA256()
+	for _, g := range gens {
+		if !g.CheckOK || g.Output == nil || g.FactSHA256 != sha || g.Model == claude.FakeModel || g.Purpose != leadstore.PurposeBatch {
+			continue
+		}
+		res, err := (&outreach.Writer{Caller: manualReplay{out: g.Output}}).WriteManual(ctx, in)
+		if err == nil && res.Written != nil {
+			return g.ID, res, true, nil
+		}
+	}
+	return 0, outreach.ManualResult{}, false, nil
+}
+
+// manualReplay answers with a stored manual answer, unbilled: a generation stores the wire's shape.
+type manualReplay struct{ out json.RawMessage }
+
+func (r manualReplay) Write(context.Context, claude.WriteRequest) (claude.WriteResult, claude.Usage, error) {
+	return claude.WriteResult{JSON: r.out}, claude.Usage{Model: claude.FakeModel}, nil
+}
+
+// manualDraftRows are a written manual text's rows: slots.writer for the lead's timeline, the part
+// and each paragraph's cites for the batch page, and the target URL as the recipient. The mailbox is
+// the caller's.
+func manualDraftRows(c leadstore.Candidate, in outreach.ManualInput, res outreach.ManualResult, genID int64, offset int) ([]leadstore.DraftRow, error) {
+	if res.Written == nil {
+		return nil, errors.New("no grounded draft")
+	}
+	var out []leadstore.DraftRow
+	for _, dr := range res.Drafts {
+		var paras []paragraphCites
+		for _, p := range dr.Paragraphs {
+			paras = append(paras, paragraphCites{Cites: slices.Clone(p.Cites), PainID: p.PainID})
+		}
+		slots, err := claudeSlotsFor(dr.Writer, dr.Part, genID, in.Sheet, paras)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, leadstore.DraftRow{LeadID: c.LeadID, Step: dr.Step + offset, Channel: in.Channel, To: c.Route,
+			Subject: dr.Draft.Subject, Body: dr.Draft.Body, Slots: slots})
+	}
+	return out, nil
+}
+
 // replayCaller answers every Write with a stored answer, unbilled: a reuse or a fake eval
 // runs the stored draft through the same check and rendering as a fresh one. A generation is
 // stored as a WrittenDraft, so it is answered back in the wire shape the model answers in; one
@@ -522,6 +902,7 @@ func (r replayCaller) Write(context.Context, claude.WriteRequest) (claude.WriteR
 // (talking points for a call row), so the batch page can show each claim with its source.
 type claudeSlots struct {
 	Writer       string               `json:"writer"`
+	Part         string               `json:"part,omitempty"` // a manual text's part (outreach.PartNote or PartMessage)
 	GenerationID int64                `json:"generation_id"`
 	Cites        map[string]citedFact `json:"cites"`
 	Paragraphs   []paragraphCites     `json:"paragraphs"`
@@ -540,11 +921,15 @@ type paragraphCites struct {
 }
 
 func claudeSlotsJSON(genID int64, sheet outreach.FactSheet, paras []paragraphCites) (json.RawMessage, error) {
+	return claudeSlotsFor(campaign.WriterClaude, "", genID, sheet, paras)
+}
+
+func claudeSlotsFor(writer, part string, genID int64, sheet outreach.FactSheet, paras []paragraphCites) (json.RawMessage, error) {
 	byID := map[string]outreach.Fact{}
 	for _, f := range sheet.Facts {
 		byID[f.ID] = f
 	}
-	s := claudeSlots{Writer: campaign.WriterClaude, GenerationID: genID, Cites: map[string]citedFact{}, Paragraphs: paras}
+	s := claudeSlots{Writer: writer, Part: part, GenerationID: genID, Cites: map[string]citedFact{}, Paragraphs: paras}
 	for _, p := range paras {
 		for _, id := range p.Cites {
 			if f, ok := byID[id]; ok {
@@ -671,7 +1056,15 @@ func (draftFake) Write(_ context.Context, r claude.WriteRequest) (claude.WriteRe
 	if err != nil {
 		return claude.WriteResult{}, claude.Usage{}, fmt.Errorf("claude fake: %w: %w", ai.ErrBadAnswer, err)
 	}
-	b, err := outreach.EncodeWireDraft(fakeDraft(sheet, pains, steps, call))
+	var b []byte
+	switch {
+	case strings.HasPrefix(r.Prompt, "Write the LinkedIn note"):
+		b, err = json.Marshal(fakeLinkedIn(sheet, pains))
+	case strings.HasPrefix(r.Prompt, "Write the contact-form message"):
+		b, err = json.Marshal(outreach.ManualWritten{Message: fakePart(sheet, pains)})
+	default:
+		b, err = outreach.EncodeWireDraft(fakeDraft(sheet, pains, steps, call))
+	}
 	if err != nil {
 		return claude.WriteResult{}, claude.Usage{}, err
 	}
@@ -808,22 +1201,40 @@ func fakeDraft(sheet outreach.FactSheet, pains []outreach.Pain, steps []int, cal
 	return d
 }
 
-// batchClaude is what `leads batch new` drafts campaign c with: nil for a template campaign;
-// for writer: claude the capped drafting caller, or, when live calls are off or the key or
-// caps cannot be read, no caller and the batch drafts from templates (a batch on templates
-// never needs the key), saying why once.
+// fakePart is one manual text from fakeDraft's first step: the opener, the pains given, the proof
+// line, the offer and the call to action, with no subject.
+func fakePart(sheet outreach.FactSheet, pains []outreach.Pain) *outreach.ManualPart {
+	return &outreach.ManualPart{Paragraphs: fakeDraft(sheet, pains, []int{0}, false).Steps[0].Paragraphs}
+}
+
+// fakeLinkedIn is the note, the opener alone, and the message after they accept, with one pain so
+// it stays in that message's word limit.
+func fakeLinkedIn(sheet outreach.FactSheet, pains []outreach.Pain) outreach.ManualWritten {
+	msg := fakePart(sheet, pains[:min(1, len(pains))])
+	return outreach.ManualWritten{Note: &outreach.ManualPart{Paragraphs: msg.Paragraphs[:1]}, Message: msg}
+}
+
+// batchClaude is what `leads batch new` drafts campaign c with. For writer: claude: the capped
+// drafting caller, or, when live calls are off or the key or caps cannot be read, no caller and the
+// batch drafts from templates, saying why once. For a template campaign the same caller, made only
+// when a form or LinkedIn lead asks for it (Decision 9): a batch of emails on templates never needs
+// the key.
 func batchClaude(c leadstore.Campaign, s *store.Store) *claudeDrafting {
+	rec := leadstore.NewQueries(s.Pool())
+	open := func() (outreach.Caller, string) {
+		caller, err := newDraftCaller("leads batch new", s.Q(), claude.PurposeDrafting)
+		if err != nil {
+			_, _ = fmt.Fprintf(stdout, "Claude drafting unavailable (%v): drafting from templates.\n", err)
+			return nil, fbUnavailable
+		}
+		return caller, ""
+	}
 	var spec campaign.Spec
 	if len(c.Spec) == 0 || json.Unmarshal(c.Spec, &spec) != nil || spec.Writer != campaign.WriterClaude {
-		return nil
+		return &claudeDrafting{rec: rec, open: open}
 	}
-	rec := leadstore.NewQueries(s.Pool())
-	caller, err := newDraftCaller("leads batch new", s.Q(), claude.PurposeDrafting)
-	if err != nil {
-		_, _ = fmt.Fprintf(stdout, "Claude drafting unavailable (%v): drafting from templates.\n", err)
-		return &claudeDrafting{off: fbUnavailable, rec: rec}
-	}
-	return &claudeDrafting{caller: caller, rec: rec}
+	caller, off := open()
+	return &claudeDrafting{caller: caller, off: off, rec: rec}
 }
 
 // campaignGates reads the draft gate for `campaigns check` and `register`, lazily: only a

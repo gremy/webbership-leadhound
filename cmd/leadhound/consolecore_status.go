@@ -56,8 +56,8 @@ func commandIs(command string) func(store.Run) bool {
 }
 
 // statusUnits are the units the Status page lists: every leadhound timer, the request-driven
-// units the console starts (Send now, the mailbox check, research, the Reoon balance) and the
-// email check, which runs inside the batch unit. TestStatusUnitsMatchDeploy holds it to
+// units the console starts (Send now, the mailbox check, research, Draft it, the Reoon balance)
+// and the email check, which runs inside the batch unit. TestStatusUnitsMatchDeploy holds it to
 // deploy/.
 var statusUnits = []statusUnit{
 	{name: "leads-send", unit: unitSend, runs: func(r store.Run) bool {
@@ -73,7 +73,8 @@ var statusUnits = []statusUnit{
 	{name: "leads-contacts", unit: unitContacts, runs: commandIs(commandLeadsContacts)},
 	{name: "leads-probe", unit: unitProbe, runs: commandIs(commandLeadsSitesProbe)},
 	{name: "leads-research", unit: unitResearch, runs: commandIs(commandLeadsResearch)},
-	{name: "mailbox-check", unit: "leadhound-mailbox-check.path"}, // its checks are its runs
+	{name: "leads-draft", unit: unitDraft, service: "leadhound-leads-draft.service"}, // a timeout or a failed start reaches no run row
+	{name: "mailbox-check", unit: "leadhound-mailbox-check.path"},                    // its checks are its runs
 	{name: "collect", unit: "leadhound-collect.timer", runs: isLinkedInCollect},
 	{name: "ats", unit: "leadhound-ats.timer", runs: isATSCollect},
 	{name: "prebrief", unit: "leadhound-prebrief.timer", runs: commandIs(linkedin.CommandCanary)},

@@ -37,7 +37,8 @@ const (
 	LabelSenderName   = "sender_name"
 	LabelSenderRole   = "sender_role"
 	LabelIdentityLine = "identity_line"
-	LabelProofLine    = "proof_line" // the one true proof line, verbatim
+	LabelProofLine    = "proof_line" // a true proof line, verbatim
+	LabelProofURL     = "proof_url"  // the public page of the proof line before it
 	LabelSenderSite   = "sender_site"
 	LabelReport       = "report"          // the free report's name
 	LabelReportPart   = "report_contains" // one thing the report holds
@@ -87,10 +88,21 @@ type FindingFacts struct {
 // SenderFacts are the campaign's sender facts, verbatim.
 type SenderFacts struct {
 	Name, Role, IdentityLine string
-	ProofLine                string // the one proof line, used verbatim or not at all
+	ProofLine                string // the campaign's proof line, verbatim or not at all; SheetInput.Proofs replace it
 	SiteURL                  string
 	Extra                    []TextFact
 	Source                   Provenance
+}
+
+// MaxProofFacts is how many proofs one fact sheet carries.
+const MaxProofFacts = 2
+
+// ProofFact is one proof from the operator's library that matches the lead's sector. URL
+// reaches the sheet only when Public is true: a private proof is a spoken line, no link.
+type ProofFact struct {
+	Line, URL string
+	Public    bool
+	Source    Provenance
 }
 
 // OfferFacts are what the campaign offers: the free report and what it holds.
@@ -117,12 +129,16 @@ type SheetInput struct {
 	LeadExtra []TextFact // further lead facts (another campaign's signals)
 	OrgTexts  []TextFact // descriptions and page texts of the org: echo_guard, never quotable
 	Sender    SenderFacts
-	Offer     OfferFacts
+	// Proofs are the lead's sector's proofs, newest first. Any usable one replaces
+	// Sender.ProofLine; only the first MaxProofFacts count.
+	Proofs []ProofFact
+	Offer  OfferFacts
 }
 
 // BuildFactSheet builds the sheet. Empty values are left out; the fixed facts keep a fixed
 // order and lists are sorted by label then value (duplicates dropped), so the same input in
-// any order gives the same sheet, the same IDs and the same hash.
+// any order gives the same sheet, the same IDs and the same hash. Proofs alone keep the
+// caller's order, because it decides which of them come through.
 func BuildFactSheet(in SheetInput) FactSheet {
 	var s FactSheet
 	add := func(g FactGroup, label, value string, src Provenance, echo bool) {
@@ -165,7 +181,16 @@ func BuildFactSheet(in SheetInput) FactSheet {
 	add(GroupSender, LabelSenderName, sd.Name, sd.Source, false)
 	add(GroupSender, LabelSenderRole, sd.Role, sd.Source, false)
 	add(GroupSender, LabelIdentityLine, sd.IdentityLine, sd.Source, false)
-	add(GroupSender, LabelProofLine, sd.ProofLine, sd.Source, false)
+	if proofs := usableProofs(in.Proofs); len(proofs) > 0 {
+		for _, p := range proofs {
+			add(GroupSender, LabelProofLine, p.Line, p.Source, false)
+			if p.Public {
+				add(GroupSender, LabelProofURL, p.URL, p.Source, false)
+			}
+		}
+	} else {
+		add(GroupSender, LabelProofLine, sd.ProofLine, sd.Source, false)
+	}
 	add(GroupSender, LabelSenderSite, sd.SiteURL, sd.Source, false)
 	addAll(GroupSender, sd.Extra, false)
 
@@ -186,6 +211,22 @@ func BuildFactSheet(in SheetInput) FactSheet {
 		s.Facts[i].ID = groupPrefix(g) + strconv.Itoa(n[g])
 	}
 	return s
+}
+
+// usableProofs is the first MaxProofFacts proofs with a line of their own. A proof whose line
+// is blank or repeats an earlier one takes no place.
+func usableProofs(list []ProofFact) []ProofFact {
+	var out []ProofFact
+	for _, p := range list {
+		p.Line = strings.TrimSpace(p.Line)
+		if p.Line == "" || slices.ContainsFunc(out, func(x ProofFact) bool { return x.Line == p.Line }) {
+			continue
+		}
+		if out = append(out, p); len(out) == MaxProofFacts {
+			break
+		}
+	}
+	return out
 }
 
 // SheetDate is t as a date fact states it in lang: FormatDate's words ("" reads as English),
@@ -258,6 +299,16 @@ func (s FactSheet) Canonical() []byte {
 func (s FactSheet) SHA256() string {
 	sum := sha256.Sum256(s.Canonical())
 	return hex.EncodeToString(sum[:])
+}
+
+// ProofLinks are the public proof URLs on this sheet: links allowed in this lead's draft only.
+// The caller adds them to a copy of the campaign's StepRules.Links for this lead's checks.
+func (s FactSheet) ProofLinks() []string {
+	var out []string
+	for _, f := range s.WithLabel(LabelProofURL) {
+		out = append(out, f.Value)
+	}
+	return out
 }
 
 // Fact returns the fact with that ID.

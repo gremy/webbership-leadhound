@@ -1037,10 +1037,16 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 	return out, runErr
 }
 
-// countDrafts counts first emails, contact-form texts and LinkedIn notes.
+// countDrafts counts first emails, contact-form texts and LinkedIn notes (a lead's first LinkedIn
+// row: the row after it is the message for after they accept).
 func countDrafts(drafts []leadstore.DraftRow) BatchCounts {
 	var c BatchCounts
+	seen := map[int64]bool{}
 	for _, d := range drafts {
+		if d.Channel == "linkedin" && seen[d.LeadID] {
+			continue
+		}
+		seen[d.LeadID] = seen[d.LeadID] || d.Channel == "linkedin"
 		switch {
 		case d.Channel == "email" && d.Step == 0:
 			c.Emails++

@@ -15,11 +15,15 @@ import (
 // unsupported Drupal 7 site) or "d10".
 func groundSheet(t *testing.T, lead string) FactSheet {
 	t.Helper()
+	return BuildFactSheet(groundInput(lead))
+}
+
+func groundInput(lead string) SheetInput {
 	major, exact, eol, kind := 7, "7.98", time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC), "unsupported"
 	if lead == "d10" {
 		major, exact, eol, kind = 10, "10.3.1", time.Date(2026, 12, 9, 0, 0, 0, 0, time.UTC), "d10"
 	}
-	return BuildFactSheet(SheetInput{
+	return SheetInput{
 		Org:  OrgFacts{Name: "Northfield Museum Trust", Country: "GB", Domain: "northfield-museum.example", Source: Provenance{Table: "org", ID: 7}},
 		Kind: kind,
 		Finding: &FindingFacts{
@@ -43,7 +47,7 @@ func groundSheet(t *testing.T, lead string) FactSheet {
 			CallToAction: "Worth 10 minutes to find out?",
 			Source:       Provenance{Table: "campaign", ID: 1},
 		},
-	})
+	}
 }
 
 func groundRules(lead string) GroundRules {
@@ -527,5 +531,124 @@ func TestGroundSpelledNumbers(t *testing.T) {
 		if !slices.Equal(got, c.uncovered) {
 			t.Errorf("%q against %q: uncovered %q, want %q", c.text, c.source, got, c.uncovered)
 		}
+	}
+}
+
+// proofSheet is the d7 sheet with two sector proofs: S4 line and S5 URL (public), S6 line and
+// no URL fact (private), so the sender's site is S7 and works_with S8.
+func proofSheet() FactSheet {
+	in := groundInput("d7")
+	in.Proofs = []ProofFact{
+		{Line: "I rebuilt the Harbour Lane Studio site on Drupal 10.", URL: "https://harbour-lane.example/work", Public: true},
+		{Line: "I kept the Harbour Lane Studio shop running through its upgrade.", URL: "https://private-work.example/case", Public: false},
+	}
+	return BuildFactSheet(in)
+}
+
+// proofDraft is clean_d7 written against proofSheet: the first proof in step 0, paragraph 4.
+func proofDraft(t *testing.T) WrittenDraft {
+	t.Helper()
+	i := slices.IndexFunc(groundFixtures(t), func(f groundFixture) bool { return f.name == "clean_d7" })
+	b, err := json.Marshal(groundFixtures(t)[i].Draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d WrittenDraft
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	d.Steps[0].Paragraphs[0].Cites = []string{"S1", "S2", "S8"}
+	d.Steps[0].Paragraphs[4] = Paragraph{Text: "I rebuilt the Harbour Lane Studio site on Drupal 10.", Cites: []string{"S4"}}
+	return d
+}
+
+// TestGroundProofLibrary: the sheet's proofs ground like the campaign's line, and a URL rests
+// on a cited public proof only.
+func TestGroundProofLibrary(t *testing.T) {
+	sheet, rules := proofSheet(), groundRules("d7")
+	if got := Ground(proofDraft(t), sheet, rules); len(got) > 0 {
+		t.Fatalf("clean draft with a proof refused: %v", got)
+	}
+	cases := []struct {
+		name, text string
+		cites      []string
+		want       []string
+	}{
+		{"a cited public URL", "The write-up is at https://harbour-lane.example/work.", []string{"S5"}, nil},
+		{"a public URL not cited", "The write-up is at https://harbour-lane.example/work.", []string{"S1"}, []string{CodeClaim}},
+		{"a private proof's URL", "I kept the Harbour Lane Studio shop running through its upgrade. See https://private-work.example/case.", []string{"S6"}, []string{CodeClaim}},
+		{"the second proof, verbatim", "I kept the Harbour Lane Studio shop running through its upgrade.", []string{"S6"}, nil},
+		{"the second proof, reworded", "I kept the Harbour Lane Studio shop running.", []string{"S6"}, []string{CodeProof}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := proofDraft(t)
+			d.Steps[1].Paragraphs = append(d.Steps[1].Paragraphs, Paragraph{Text: c.text, Cites: c.cites})
+			if got := failureCodes(Ground(d, sheet, rules)); !slices.Equal(got, c.want) {
+				t.Fatalf("codes %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestGroundProofNeverOpens: a proof in the first email's first paragraph fails G9, whichever
+// proof it is, cited or not; the same text later on passes.
+func TestGroundProofNeverOpens(t *testing.T) {
+	sheet, rules := proofSheet(), groundRules("d7")
+	const name = "I'm Sam Carter, a Drupal developer. "
+	cases := []struct {
+		name, text string
+		cites      []string
+		token      string
+	}{
+		{"the first proof", name + "I rebuilt the Harbour Lane Studio site on Drupal 10.", []string{"S1", "S2", "S4"}, "S4"},
+		{"the second proof", name + "I kept the Harbour Lane Studio shop running through its upgrade.", []string{"S1", "S2", "S6"}, "S6"},
+		{"cited, not in the text", name + "I work with older Drupal sites.", []string{"S1", "S2", "S4"}, "S4"},
+		{"the proof's page cited", name + "I work with older Drupal sites.", []string{"S1", "S2", "S5"}, "S5"},
+		{"in the text, not cited", name + "I kept the Harbour Lane Studio shop running through its upgrade.", []string{"S1", "S2"}, "S6"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := proofDraft(t)
+			d.Steps[0].Paragraphs[0] = Paragraph{Text: c.text, Cites: c.cites}
+			got := Ground(d, sheet, rules)
+			if !slices.ContainsFunc(got, func(f Failure) bool {
+				return f.Code == CodeProof && f.Step == 0 && f.Para == 0 && f.Token == c.token
+			}) {
+				t.Fatalf("no G9 at step 0 paragraph 0 on %s: %v", c.token, got)
+			}
+		})
+	}
+	// call_first: the first email is step 2, and its first paragraph is the opener.
+	d := proofDraft(t)
+	d.Steps = d.Steps[:1]
+	d.Steps[0].Step = 2
+	d.Steps[0].Paragraphs[0] = Paragraph{Text: name + "I rebuilt the Harbour Lane Studio site on Drupal 10.", Cites: []string{"S1", "S2", "S4"}}
+	if !slices.ContainsFunc(Ground(d, sheet, rules), func(f Failure) bool { return f.Code == CodeProof && f.Step == 2 && f.Para == 0 }) {
+		t.Fatal("a proof opening the first email of a call_first sequence passed")
+	}
+}
+
+// TestGroundProofLinkRendered: G10 allows a public proof's URL only once the caller adds
+// ProofLinks for that lead; a sheet without one adds nothing.
+func TestGroundProofLinkRendered(t *testing.T) {
+	d, cfg := checkDraft(t)
+	d = checkInsert(d, " Write-up: https://harbour-lane.example/work")
+	refused := func(d Draft, links []string) bool { // the word limits are not this test's
+		return slices.ContainsFunc(CheckRendered(d, 1, cfg, StepRules{Links: links}), func(f Failure) bool { return f.Token == RuleURL })
+	}
+	campaign := []string{"https://demo.example/"}
+	if !refused(d, campaign) {
+		t.Fatal("a proof link passed without the lead's proof")
+	}
+	links := slices.Concat(campaign, proofSheet().ProofLinks())
+	if refused(d, links) {
+		t.Fatal("a public proof's link refused")
+	}
+	if !refused(checkInsert(d, " https://private-work.example/case"), links) {
+		t.Fatal("a private proof's link passed")
+	}
+	if got := groundSheet(t, "d7").ProofLinks(); got != nil {
+		t.Fatalf("a sheet with no proofs allows %v", got)
 	}
 }

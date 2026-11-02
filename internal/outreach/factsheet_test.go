@@ -2,6 +2,7 @@ package outreach
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,5 +106,92 @@ func TestFactSheetDatesInTheLeadsLanguage(t *testing.T) {
 	}
 	if SheetDate(eol, LangRomanian) != "9 decembrie 2026" {
 		t.Fatal("SheetDate ro")
+	}
+}
+
+// TestFactSheetNoProofsKeepsTheHash pins the hash of a sheet without proofs to its value
+// before proofs existed: a stored generation stays reusable. Empty and blank proofs are none.
+func TestFactSheetNoProofsKeepsTheHash(t *testing.T) {
+	for lead, want := range map[string]string{
+		"d7":  "33f95902fc4275a9e307764d1f0116a06da14b634ae39124eb138d168c70ebe3",
+		"d10": "f0394ab94f52dcab9685cde7c5d3aa0d5bbb1449a273c548e24bd0aeaecebd99",
+	} {
+		in := groundInput(lead)
+		if got := BuildFactSheet(in).SHA256(); got != want {
+			t.Errorf("%s: hash %s, want %s", lead, got, want)
+		}
+		in.Proofs = []ProofFact{}
+		if got := BuildFactSheet(in).SHA256(); got != want {
+			t.Errorf("%s with empty proofs: hash %s", lead, got)
+		}
+		in.Proofs = []ProofFact{{Line: "  ", URL: "https://blank.example/", Public: true}}
+		s := BuildFactSheet(in)
+		if s.SHA256() != want || s.ProofLinks() != nil {
+			t.Errorf("%s with a blank proof: hash %s, links %v", lead, s.SHA256(), s.ProofLinks())
+		}
+		in.Proofs = []ProofFact{{Line: "A true line."}}
+		if BuildFactSheet(in).SHA256() == want {
+			t.Errorf("%s: a proof kept the hash", lead)
+		}
+	}
+}
+
+// TestFactSheetProofs: proofs replace the campaign's line, at most two come through in the
+// caller's order, and only a public proof's URL reaches the sheet.
+func TestFactSheetProofs(t *testing.T) {
+	const campaign = "The campaign's proof line."
+	sheet := func(proofs ...ProofFact) FactSheet {
+		return BuildFactSheet(SheetInput{Sender: SenderFacts{Name: "Sam", ProofLine: campaign, SiteURL: "https://sender.example/"}, Proofs: proofs})
+	}
+	list := func(s FactSheet) []string {
+		var out []string
+		for _, f := range s.Facts {
+			out = append(out, f.ID+" "+f.Label+" "+f.Value)
+		}
+		return out
+	}
+	const site = "https://sender.example/"
+	pub, priv := "https://pub.example/a", "https://priv.example/b"
+	for _, c := range []struct {
+		name   string
+		proofs []ProofFact
+		want   []string
+		links  []string
+	}{
+		{"none: the campaign's line", nil, []string{"S1 sender_name Sam", "S2 proof_line " + campaign, "S3 sender_site " + site}, nil},
+		{"public with a URL", []ProofFact{{Line: "One.", URL: pub, Public: true}},
+			[]string{"S1 sender_name Sam", "S2 proof_line One.", "S3 proof_url " + pub, "S4 sender_site " + site}, []string{pub}},
+		{"public without a URL", []ProofFact{{Line: "One.", Public: true}},
+			[]string{"S1 sender_name Sam", "S2 proof_line One.", "S3 sender_site " + site}, nil},
+		{"private with a URL", []ProofFact{{Line: "One.", URL: priv}},
+			[]string{"S1 sender_name Sam", "S2 proof_line One.", "S3 sender_site " + site}, nil},
+		{"two in the caller's order, each URL after its line",
+			[]ProofFact{{Line: "Zed.", URL: pub, Public: true}, {Line: "Abe.", URL: priv}},
+			[]string{"S1 sender_name Sam", "S2 proof_line Zed.", "S3 proof_url " + pub, "S4 proof_line Abe.", "S5 sender_site " + site}, []string{pub}},
+		{"a third never comes through",
+			[]ProofFact{{Line: "One."}, {Line: "Two."}, {Line: "Three.", URL: pub, Public: true}},
+			[]string{"S1 sender_name Sam", "S2 proof_line One.", "S3 proof_line Two.", "S4 sender_site " + site}, nil},
+		{"blank and repeated lines take no place",
+			[]ProofFact{{Line: " "}, {Line: "One."}, {Line: " One. ", URL: pub, Public: true}, {Line: "Two."}},
+			[]string{"S1 sender_name Sam", "S2 proof_line One.", "S3 proof_line Two.", "S4 sender_site " + site}, nil},
+		{"all blank: the campaign's line", []ProofFact{{Line: " ", URL: pub, Public: true}},
+			[]string{"S1 sender_name Sam", "S2 proof_line " + campaign, "S3 sender_site " + site}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := sheet(c.proofs...)
+			if got := list(s); !slices.Equal(got, c.want) {
+				t.Fatalf("facts:\n got %q\nwant %q", got, c.want)
+			}
+			if got := s.ProofLinks(); !slices.Equal(got, c.links) {
+				t.Fatalf("links %q, want %q", got, c.links)
+			}
+		})
+	}
+	if s := sheet(ProofFact{Line: "One.", URL: priv}); strings.Contains(string(s.Canonical()), priv) {
+		t.Fatalf("a private proof's URL is on the sheet: %s", s.Canonical())
+	}
+	src := Provenance{Table: "proof", ID: 9}
+	if f := sheet(ProofFact{Line: "One.", Source: src}).WithLabel(LabelProofLine); f[0].Source != src {
+		t.Fatalf("proof source = %+v", f[0].Source)
 	}
 }

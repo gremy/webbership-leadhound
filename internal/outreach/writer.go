@@ -29,6 +29,8 @@ const (
 	DefaultWriterMaxTokens = 3000
 	// MaxExamples is how many approved drafts the system prompt may carry.
 	MaxExamples = 2
+	// MaxOperatorVersions is how many of the operator's own texts the system prompt may carry.
+	MaxOperatorVersions = 2
 	// WriterAttempts is the first try plus the one retry.
 	WriterAttempts = 2
 )
@@ -97,7 +99,18 @@ type WriteInput struct {
 	// Examples are at most MaxExamples approved drafts (golden exemplars), in the order the
 	// caller picks; they sit in the system prompt.
 	Examples []WrittenDraft
-	Render   WriteRender
+	// OperatorVersions are at most MaxOperatorVersions texts the operator saved himself, scrubbed
+	// of their lead's names by the store. They are plain text with no cites, so they sit in their
+	// own block after Examples; the answer is held to the same checks with or without them.
+	OperatorVersions []OperatorVersion
+	Render           WriteRender
+}
+
+// OperatorVersion is one text the operator edited and saved: voice and length for the writer to
+// match, never a source of facts.
+type OperatorVersion struct {
+	Subject string // "" for a form or LinkedIn text
+	Body    string
 }
 
 // Attempt is one billed (or failed) generation, as a draft_generation row stores it.
@@ -154,19 +167,63 @@ func (w *Writer) WriteLead(ctx context.Context, in WriteInput) (WriteResult, err
 	if in.Render.Footer == nil {
 		return res, errors.New("outreach: writer: no footer template")
 	}
+	if len(in.OperatorVersions) > MaxOperatorVersions {
+		return res, fmt.Errorf("outreach: writer: %d operator versions, at most %d", len(in.OperatorVersions), MaxOperatorVersions)
+	}
 	res.System = SystemPrompt(in)
-	user := UserTurn(in)
+	attempts, err := w.generate(ctx, in.LeadID, res.System, UserTurn(in), WriterSchema(in.Rules), func(raw json.RawMessage, a *Attempt) error {
+		d, err := DecodeWireDraft(raw)
+		if err != nil {
+			a.Failures = []Failure{{Code: CodeSchema, Step: StepTalkingPoints, Para: ParaSubject, Msg: "the answer does not follow the schema"}}
+			return nil
+		}
+		if a.Output, err = json.Marshal(d); err != nil {
+			return err
+		}
+		a.Failures = Ground(d, in.Sheet, in.Rules)
+		if len(in.OperatorVersions) > 0 {
+			a.Failures = append(a.Failures, uncitedFailures(d)...)
+		}
+		if len(a.Failures) > 0 {
+			return nil
+		}
+		emails, card, fails, err := renderWritten(d, in)
+		if err != nil {
+			return err
+		}
+		if a.Failures = fails; len(fails) == 0 {
+			res.Written, res.Emails, res.CallCard = &d, emails, card
+		}
+		return nil
+	})
+	res.Attempts = attempts
+	if err != nil {
+		return res, err
+	}
+	if res.Written == nil {
+		res.Fallback = fallbackReason(attempts[len(attempts)-1])
+	}
+	return res, nil
+}
+
+// generate runs the attempts of one drafting job: the first try, then the one retry naming what
+// failed, until an attempt is OK. check reads an answer that arrived whole: it sets the attempt's
+// Output and Failures and keeps what the attempt produced; an error from it stops the job, as a
+// caller error does. It returns the attempts made so far.
+func (w *Writer) generate(ctx context.Context, leadID int64, system, user string, schema map[string]any,
+	check func(raw json.RawMessage, a *Attempt) error,
+) ([]Attempt, error) {
 	model := cmp.Or(w.Model, claude.ModelSonnet)
 	maxTokens := w.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = DefaultWriterMaxTokens
 	}
-
+	var attempts []Attempt
 	prompt := user
 	for n := 1; n <= WriterAttempts; n++ {
 		req := claude.WriteRequest{
-			LeadID: in.LeadID, Model: model, System: res.System, Prompt: prompt,
-			Schema: WriterSchema(in.Rules), MaxTokens: maxTokens, Effort: w.Effort,
+			LeadID: leadID, Model: model, System: system, Prompt: prompt,
+			Schema: schema, MaxTokens: maxTokens, Effort: w.Effort,
 		}
 		out, u, err := w.Caller.Write(ctx, req)
 		a := Attempt{Usage: u, Model: cmp.Or(u.Model, model), StopReason: StopEndTurn}
@@ -179,38 +236,46 @@ func (w *Writer) WriteLead(ctx context.Context, in WriteInput) (WriteResult, err
 		case errors.Is(err, ai.ErrBadAnswer):
 			a.Failures = []Failure{{Code: CodeSchema, Step: StepTalkingPoints, Para: ParaSubject, Msg: "the answer is not JSON"}}
 		default:
-			return res, fmt.Errorf("outreach: writer: lead %d attempt %d: %w", in.LeadID, n, err)
+			return attempts, fmt.Errorf("outreach: writer: lead %d attempt %d: %w", leadID, n, err)
 		}
 		if a.CostMicros, err = attemptCost(u); err != nil {
-			return res, fmt.Errorf("outreach: writer: lead %d attempt %d: %w", in.LeadID, n, err)
+			return attempts, fmt.Errorf("outreach: writer: lead %d attempt %d: %w", leadID, n, err)
 		}
-		var d WrittenDraft
 		if out.JSON != nil && a.StopReason == StopEndTurn && a.Failures == nil {
 			a.Raw, a.Output = slices.Clone(out.JSON), slices.Clone(out.JSON)
-			if d, err = DecodeWireDraft(out.JSON); err != nil {
-				a.Failures = []Failure{{Code: CodeSchema, Step: StepTalkingPoints, Para: ParaSubject, Msg: "the answer does not follow the schema"}}
-			} else if a.Output, err = json.Marshal(d); err != nil {
-				return res, fmt.Errorf("outreach: writer: lead %d: %w", in.LeadID, err)
-			} else if a.Failures = Ground(d, in.Sheet, in.Rules); len(a.Failures) == 0 {
-				emails, card, fails, err := renderWritten(d, in)
-				if err != nil {
-					res.Attempts = append(res.Attempts, a)
-					return res, fmt.Errorf("outreach: writer: lead %d: %w", in.LeadID, err)
-				}
-				if a.Failures = fails; len(fails) == 0 {
-					res.Written, res.Emails, res.CallCard = &d, emails, card
-				}
+			if err := check(out.JSON, &a); err != nil {
+				return append(attempts, a), fmt.Errorf("outreach: writer: lead %d: %w", leadID, err)
 			}
 		}
-		res.Attempts = append(res.Attempts, a)
-		w.logAttempt(in.LeadID, n, a)
+		attempts = append(attempts, a)
+		w.logAttempt(leadID, n, a)
 		if a.OK() {
-			return res, nil
+			break
 		}
 		prompt = user + "\n\n" + retryTurn(a)
 	}
-	res.Fallback = fallbackReason(res.Attempts[len(res.Attempts)-1])
-	return res, nil
+	return attempts, nil
+}
+
+// uncitedFailures is the half of G2 that Ground does not check: every paragraph rests on a fact it
+// cites or a pain it names, and every talking point on a fact, so copying the operator's plain text
+// cannot pass (an email with no versions in its prompt is not held to it). A paragraph naming a
+// pain may cite nothing: G3 and G4b hold it to the pain's text.
+func uncitedFailures(d WrittenDraft) []Failure {
+	var out []Failure
+	for _, st := range d.Steps {
+		for i, p := range st.Paragraphs {
+			if len(p.Cites) == 0 && p.PainID == "" {
+				out = append(out, Failure{Code: CodeCites, Step: st.Step, Para: i, Msg: "the paragraph cites no fact"})
+			}
+		}
+	}
+	for i, tp := range d.TalkingPoints {
+		if len(tp.Cites) == 0 {
+			out = append(out, Failure{Code: CodeCites, Step: StepTalkingPoints, Para: i, Msg: "the talking point cites no fact"})
+		}
+	}
+	return out
 }
 
 func attemptCost(u claude.Usage) (int64, error) {
@@ -417,38 +482,18 @@ func SystemPrompt(in WriteInput) string {
 		line("The campaign: %s.", in.Campaign)
 	}
 	line("")
-	line("# Facts and cites")
-	line("The user turn holds the fact sheet for one lead: lead facts (ids F1, F2 …), sender facts (S1 …) and offer facts (O1 …). Everything you claim rests on those facts and nothing else.")
-	line("- Every paragraph and talking point lists in \"cites\" the ids of the facts it rests on.")
-	line("- Write no number, year, date, version, URL, domain, email address, phone number, money amount or percentage unless it appears in the value of a fact that the same paragraph cites.")
-	line("- A sentence about yourself (I, me, my, we, our) that holds a number must sit in a paragraph that cites a sender fact.")
-	line("- Name no person, company, product, place or brand unless it appears in a fact the paragraph cites or in these allowed names: %s.", listOr(sortedClone(r.AllowedNames), "none"))
-	line("- If you use the organisation's name, write it exactly as its fact gives it, every time.")
-	line("- Facts marked context_only are the organisation's own words, for your understanding only: never cite them, never quote them, and never repeat %d or more of their words in a row.", echoN(r.EchoWords))
-	line("- A paragraph about the reader's situation names the pain it rewords in pain_id, and the pain must be one the user turn lists for this lead. Reword the pain; never add a claim to it, and never invent a pain. A paragraph that cites a lead fact other than the organisation's name, country or domain must name its pain. Every other paragraph has pain_id \"\".")
-	line("- The call to action is an offer fact: use it word for word and cite it.")
+	writeFactRules(line, r)
 	line("")
-	line("# Voice")
-	line("- Open the first email with who you are and why you write. Its first paragraph cites sender facts only and holds nothing about the organisation: not its name, domain, site, version or any other lead fact.")
-	line("- Never open with research or tell them what they already know about themselves: no \"I noticed\", \"I saw\", \"I came across\", \"I was looking at\", \"your site\" or \"your website\" in that first paragraph.")
-	line("- Never echo the organisation's own site or description back to them. Show you understand their situation in your own words.")
-	line("- One true proof line: if you use the proof line, use it once, word for word, in a paragraph that cites it. Never inflate it, never add another claim of experience, and never use boast words: %s.", listOr(r.InflationWords, strings.Join(DefaultInflationWords, ", ")))
-	line("- A move from Drupal 10 to Drupal 11 is an update, never a migration. The user turn lists any patterns this lead's kind forbids; never write text that matches them.")
-	line("- Short, plain sentences and plain words. No jargon, no hype, no flattery.")
-	if r.NoExclamation {
-		line("- No exclamation marks anywhere.")
-	}
+	linkRule := ""
 	if r.NoLinksInStep0 {
-		line("- No link and no web address in the first email.")
+		linkRule = "- No link and no web address in the first email."
 	}
-	if banned := sortedClone(append(slices.Clone(r.ConfigBanned), r.BannedWords...)); len(banned) > 0 {
-		line("- Never use these words: %s.", strings.Join(banned, ", "))
-	}
+	writeVoiceRules(line, r, "the first email", linkRule)
 	line("")
 	line("# Structure")
 	line("The user turn lists the steps to write for this lead, each with its role and word limit. The roles:")
-	line("- The first email: (1) who you are and who you work with, citing sender facts only; (2) three or four pains the reader sees, one paragraph each, each with its pain_id; (3) the proof line, if it fits, word for word; (4) the free report from the offer facts, which is theirs to keep; (5) the call to action, word for word.")
-	line("- The first email after a call: sent after a phone call where they agreed to get it: (1) thank them for the call, say who you are, citing sender facts only, and that as promised here are the details; (2) up to three pains the reader sees, one paragraph each, each with its pain_id; (3) the proof line, if it fits, word for word; (4) the free report from the offer facts, which is theirs to keep. When the first email is this one, no email says you tried to call.")
+	line("- The first email: (1) who you are and who you work with, citing sender facts only; (2) three or four pains the reader sees, one paragraph each, each with its pain_id; (3) one proof line, if it fits, verbatim; (4) the free report from the offer facts, which is theirs to keep; (5) the call to action, word for word.")
+	line("- The first email after a call: sent after a phone call where they agreed to get it: (1) thank them for the call, say who you are, citing sender facts only, and that as promised here are the details; (2) up to three pains the reader sees, one paragraph each, each with its pain_id; (3) one proof line, if it fits, verbatim; (4) the free report from the offer facts, which is theirs to keep. When the first email is this one, no email says you tried to call.")
 	line("- The follow-up after a call attempt: say you tried to call and did not get through, then a short reminder of the offer.")
 	line("- A follow-up: a short follow-up, shorter than the first email; one pain or the offer, not both at length.")
 	line("- The last email: close the loop politely and briefly, with no pressure; the offer stays open if they want it later.")
@@ -472,7 +517,69 @@ func SystemPrompt(in WriteInput) string {
 			writeExample(&b, ex)
 		}
 	}
+	writeOperatorVersions(&b, in.OperatorVersions)
 	return b.String()
+}
+
+// writeFactRules is the "# Facts and cites" section both system prompts share.
+func writeFactRules(line func(string, ...any), r GroundRules) {
+	line("# Facts and cites")
+	line("The user turn holds the fact sheet for one lead: lead facts (ids F1, F2 …), sender facts (S1 …) and offer facts (O1 …). Everything you claim rests on those facts and nothing else.")
+	line("- Every paragraph and talking point lists in \"cites\" the ids of the facts it rests on.")
+	line("- Write no number, year, date, version, URL, domain, email address, phone number, money amount or percentage unless it appears in the value of a fact that the same paragraph cites.")
+	line("- A sentence about yourself (I, me, my, we, our) that holds a number must sit in a paragraph that cites a sender fact.")
+	line("- Name no person, company, product, place or brand unless it appears in a fact the paragraph cites or in these allowed names: %s.", listOr(sortedClone(r.AllowedNames), "none"))
+	line("- If you use the organisation's name, write it exactly as its fact gives it, every time.")
+	line("- Facts marked context_only are the organisation's own words, for your understanding only: never cite them, never quote them, and never repeat %d or more of their words in a row.", echoN(r.EchoWords))
+	line("- A paragraph about the reader's situation names the pain it rewords in pain_id, and the pain must be one the user turn lists for this lead. Reword the pain; never add a claim to it, and never invent a pain. A paragraph that cites a lead fact other than the organisation's name, country or domain must name its pain. Every other paragraph has pain_id \"\".")
+	line("- The call to action is an offer fact: use it word for word and cite it.")
+}
+
+// writeVoiceRules is the "# Voice" section both system prompts share: first names the text that
+// opens the sequence, linkRule is the channel's rule on links ("" for none).
+func writeVoiceRules(line func(string, ...any), r GroundRules, first, linkRule string) {
+	line("# Voice")
+	line("- Open %s with who you are and why you write. Its first paragraph cites sender facts only and holds nothing about the organisation: not its name, domain, site, version or any other lead fact.", first)
+	line("- Never open with research or tell them what they already know about themselves: no \"I noticed\", \"I saw\", \"I came across\", \"I was looking at\", \"your site\" or \"your website\" in that first paragraph.")
+	line("- Never echo the organisation's own site or description back to them. Show you understand their situation in your own words.")
+	line("- Use at most one proof line, verbatim, never in the first paragraph, and cite it in the paragraph that holds it. Never inflate it, never add another claim of experience, and never use boast words: %s.", listOr(r.InflationWords, strings.Join(DefaultInflationWords, ", ")))
+	line("- A move from Drupal 10 to Drupal 11 is an update, never a migration. The user turn lists any patterns this lead's kind forbids; never write text that matches them.")
+	line("- Short, plain sentences and plain words. No jargon, no hype, no flattery.")
+	if r.NoExclamation {
+		line("- No exclamation marks anywhere.")
+	}
+	if linkRule != "" {
+		line("%s", linkRule)
+	}
+	if banned := sortedClone(append(slices.Clone(r.ConfigBanned), r.BannedWords...)); len(banned) > 0 {
+		line("- Never use these words: %s.", strings.Join(banned, ", "))
+	}
+}
+
+// writeOperatorVersions is the block of the operator's own texts, after the structured examples.
+// With no versions it writes nothing, so the prompt stays byte for byte what it was.
+func writeOperatorVersions(b *strings.Builder, versions []OperatorVersion) {
+	if len(versions) == 0 {
+		return
+	}
+	b.WriteString("\n# The operator's own versions (match this voice and length; your answer still cites facts in the schema)\n")
+	b.WriteString("Texts the operator rewrote for other leads. They hold no cites and are no source of facts: \"<org>\" and \"<name>\" stand for names you must not guess.\n")
+	for i, v := range versions {
+		fmt.Fprintf(b, "\n## Version %d\n", i+1)
+		if v.Subject != "" {
+			fmt.Fprintf(b, "Subject: %s\n", v.Subject)
+		}
+		b.WriteString(strings.TrimSpace(v.Body))
+		b.WriteString("\n")
+	}
+}
+
+func writeParagraph(b *strings.Builder, p Paragraph) {
+	fmt.Fprintf(b, "%s [cites %s", p.Text, strings.Join(p.Cites, ", "))
+	if p.PainID != "" {
+		fmt.Fprintf(b, "; pain %s", p.PainID)
+	}
+	b.WriteString("]\n")
 }
 
 func writeExample(b *strings.Builder, d WrittenDraft) {
@@ -481,11 +588,7 @@ func writeExample(b *strings.Builder, d WrittenDraft) {
 	for _, st := range steps {
 		fmt.Fprintf(b, "Step %d. Subject: %s\n", st.Step, st.Subject)
 		for _, p := range st.Paragraphs {
-			fmt.Fprintf(b, "%s [cites %s", p.Text, strings.Join(p.Cites, ", "))
-			if p.PainID != "" {
-				fmt.Fprintf(b, "; pain %s", p.PainID)
-			}
-			b.WriteString("]\n")
+			writeParagraph(b, p)
 		}
 	}
 	if len(d.TalkingPoints) > 0 {
@@ -557,6 +660,33 @@ func UserTurn(in WriteInput) string {
 		line("Talking points: none")
 	}
 	line("")
+	writeLeadContext(&b, in)
+	line("")
+	line("The steps, in order:")
+	for i, s := range steps {
+		words := ""
+		if most, ok := in.Rules.MaxWords[s]; ok {
+			words = fmt.Sprintf(", at most %d words", most)
+		}
+		line("- Step %d: %s%s.", s, stepRole(i, len(steps), s, in), words)
+	}
+	line("")
+	first := ""
+	if len(steps) > 0 {
+		first = fmt.Sprintf(" Step %d needs a subject; every other step's subject is \"\".", steps[0])
+	}
+	tps := "Write no talking points."
+	if in.Rules.CallStep {
+		tps = fmt.Sprintf("Write exactly %d talking points.", TalkingPoints)
+	}
+	line("Write all of these steps: %s.%s Every step needs at least one paragraph. %s", strings.Join(parts, ", "), first, tps)
+	return b.String()
+}
+
+// writeLeadContext is the part both user turns share: the pains and forbidden patterns this
+// lead's signals and kind give, and the fact sheet in sheet order.
+func writeLeadContext(b *strings.Builder, in WriteInput) {
+	line := func(format string, a ...any) { fmt.Fprintf(b, format+"\n", a...) }
 	line("Pains this lead's signals allow (pain_id: text):")
 	if len(in.Rules.Pains) == 0 {
 		line("none: write no paragraph about the reader's situation")
@@ -581,26 +711,6 @@ func UserTurn(in WriteInput) string {
 		b.Write(j)
 		b.WriteByte('\n')
 	}
-	line("")
-	line("The steps, in order:")
-	for i, s := range steps {
-		words := ""
-		if most, ok := in.Rules.MaxWords[s]; ok {
-			words = fmt.Sprintf(", at most %d words", most)
-		}
-		line("- Step %d: %s%s.", s, stepRole(i, len(steps), s, in), words)
-	}
-	line("")
-	first := ""
-	if len(steps) > 0 {
-		first = fmt.Sprintf(" Step %d needs a subject; every other step's subject is \"\".", steps[0])
-	}
-	tps := "Write no talking points."
-	if in.Rules.CallStep {
-		tps = fmt.Sprintf("Write exactly %d talking points.", TalkingPoints)
-	}
-	line("Write all of these steps: %s.%s Every step needs at least one paragraph. %s", strings.Join(parts, ", "), first, tps)
-	return b.String()
 }
 
 // stepRole names the role (as the system prompt describes it) of step s, the i-th of n steps

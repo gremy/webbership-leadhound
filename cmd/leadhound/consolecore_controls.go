@@ -48,6 +48,9 @@ const (
 	unitContacts = "leadhound-leads-contacts.timer"
 	unitSend     = "leadhound-leads-send.timer"
 	unitResearch = "leadhound-leads-research.path"
+	// unitDraft is Draft it's watcher, always enabled. It has a Status row and no Controls row:
+	// a row on Controls is a job's off switch, and Draft it has none.
+	unitDraft = "leadhound-leads-draft.path"
 )
 
 // The services the three Run now rows start, and the watchers that start them from a press

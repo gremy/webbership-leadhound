@@ -196,7 +196,7 @@ var (
 	leadsSendingPaths = []string{"leadhound-leads-batch.path", "leadhound-leads-send-now.path"}
 	// leadsTriggered are the leads services the console starts through a watcher, with no
 	// timer: install.sh arms their watchers on every deploy, whatever the env switches say.
-	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-send-now.service", "leadhound-leads-verify-now.service"}
+	leadsTriggered = []string{"leadhound-leads-research.service", "leadhound-leads-draft.service", "leadhound-leads-send-now.service", "leadhound-leads-verify-now.service"}
 	// leadsAlways are the leads services install.sh enables on every deploy, whatever the env
 	// switches say: the Reoon credits read for the Status page, which spends nothing.
 	leadsAlways = []string{"leadhound-leads-verify-balance.service"}
@@ -250,6 +250,12 @@ var triggered = map[string]struct {
 		exec:  "/usr/bin/timeout --kill-after=5m 45m /opt/leadhound/bin/leadhound leads research run --max 20",
 		after: []string{"network-online.target", "postgresql.service"},
 	},
+	// Draft it on a lead asks for its drafts here: the console never holds the Anthropic key, so
+	// the Claude call runs in this job, which gets it; the fixed command reads the queued requests.
+	"leadhound-leads-draft": {
+		exec:  "/usr/bin/timeout --kill-after=1m 15m /opt/leadhound/bin/leadhound leads drafts make --from-request",
+		after: []string{"network-online.target", "postgresql.service"},
+	},
 	// Send now: the console asks for one send that skips the sending window and nothing
 	// else, or a manual batch's send; the fixed command reads the request file
 	// (--from-request, which implies --now and --max 25), and takes the same send lock.
@@ -267,10 +273,10 @@ var triggered = map[string]struct {
 }
 
 // runActions are the console's requests (the Run now actions, the mailbox check, contact
-// research, Send now and the leads jobs' Run now on Controls): each has
+// research, Draft it, Send now and the leads jobs' Run now on Controls): each has
 // a request file /opt/leadhound/data/run/<action> and a watcher leadhound-<action>.path that
 // starts leadhound-<action>.service.
-var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-send-now", "leads-verify-balance", "leads-verify-now", "leads-contacts", "leads-probe", "leads-batch"}
+var runActions = []string{"preview", "fetch", "brief", "ats", "mailbox-check", "leads-research", "leads-draft", "leads-send-now", "leads-verify-balance", "leads-verify-now", "leads-contacts", "leads-probe", "leads-batch"}
 
 // runDir is where the console writes the Run now requests.
 const runDir = "/opt/leadhound/data/run"
@@ -1020,6 +1026,7 @@ var memory = map[string]struct{ max, goLimit string }{
 	"leadhound-leads-sync":           {"600M", "450MiB"},
 	"leadhound-mailbox-check":        {"600M", "450MiB"},
 	"leadhound-leads-research":       {"600M", "450MiB"},
+	"leadhound-leads-draft":          {"600M", "450MiB"},
 	"leadhound-leads-send-now":       {"600M", "450MiB"},
 	"leadhound-leads-verify-now":     {"600M", "450MiB"},
 	"leadhound-leads-verify-balance": {"600M", "450MiB"},
@@ -1709,8 +1716,8 @@ func TestInstallArmsEveryPath(t *testing.T) {
 var mailboxWorkers = []string{"leadhound-leads-send", "leadhound-leads-send-now", "leadhound-leads-sync", "leadhound-mailbox-check"}
 
 // claudeWorkers are the only services that call Claude, so the only ones handed the Anthropic
-// key, as a systemd credential. The drafts unit joins them when it is added.
-var claudeWorkers = []string{"leadhound-leads-batch", "leadhound-leads-research"}
+// key, as a systemd credential.
+var claudeWorkers = []string{"leadhound-leads-batch", "leadhound-leads-research", "leadhound-leads-draft"}
 
 // reoonWorkers are the only services that call Reoon (leads verify, and its balance read for
 // the Status page), so the only ones handed the Reoon key, with an empty default for a server
@@ -2270,7 +2277,7 @@ func installKeyFunc(t *testing.T, fnName, path, missing string) {
 }
 
 // TestResearchUnit: contact research runs only when the console asks (its watcher, never a
-// timer), holds the Anthropic key alone among the console-triggered units, and never the
+// timer), holds the Anthropic key and never the
 // mailbox key; the console, which writes the request, holds no key at all.
 func TestResearchUnit(t *testing.T) {
 	const name = "leadhound-leads-research"
@@ -2292,6 +2299,47 @@ func TestResearchUnit(t *testing.T) {
 		if got := readUnit(t, other+".service")["Service"]["LoadCredential"]; slices.Contains(got, anthropicCredential) {
 			t.Errorf("%s gets the Anthropic key", other)
 		}
+	}
+}
+
+// TestDraftItUnit: Draft it runs only when the console asks (its watcher, never a timer), with
+// research's limits and sandbox, armed on every deploy. Its service holds exactly the Anthropic
+// key; the console, which writes the request, still holds no key at all.
+func TestDraftItUnit(t *testing.T) {
+	const name = "leadhound-leads-draft"
+	u, research := readUnit(t, name+".service"), readUnit(t, "leadhound-leads-research.service")
+	if got := u["Service"]["LoadCredential"]; !slices.Equal(got, []string{anthropicCredential}) {
+		t.Errorf("%s: LoadCredential = %q, want only %s", name, got, anthropicCredential)
+	}
+	if got := readUnit(t, "leadhound-console.service")["Service"]["LoadCredential"]; len(got) != 0 {
+		t.Errorf("the console gets %q; it must hold no key", got)
+	}
+	if _, err := os.Stat(name + ".timer"); err == nil {
+		t.Errorf("%s has a timer; it runs only when the console asks", name)
+	}
+	if got := readUnit(t, name+".path").one(t, name+".path", "Path", "PathChanged"); got != runDir+"/leads-draft" {
+		t.Errorf("%s.path watches %s", name, got)
+	}
+	for key, want := range research["Service"] {
+		if key != "ExecStart" && key != "TimeoutStartSec" && !slices.Equal(u["Service"][key], want) {
+			t.Errorf("%s = %q, research has %q", key, u["Service"][key], want)
+		}
+	}
+	for key := range u["Service"] {
+		if _, ok := research["Service"][key]; !ok {
+			t.Errorf("%s sets %s, which research does not", name, key)
+		}
+	}
+	// 15 minutes and a one-minute kill grace; systemd must not stop the unit before they end.
+	if got := u.one(t, name, "Service", "TimeoutStartSec"); got != "20m" {
+		t.Errorf("%s: TimeoutStartSec = %s, want 20m, above timeout's 16 minutes", name, got)
+	}
+	install, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "leadhound-leads-research, " + name + ")"; !strings.Contains(string(install), want) {
+		t.Errorf("install.sh's missing-key message does not name %s", name)
 	}
 }
 

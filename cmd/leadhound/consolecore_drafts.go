@@ -175,12 +175,19 @@ func claudeWriting(ctx context.Context, q generationReader, slots json.RawMessag
 		case errors.Is(err, leadstore.ErrGenerationNotFound):
 		case err != nil:
 			return nil, err
+		case g.Output != nil && s.Part != "":
+			if m, err := outreach.DecodeManual(g.Output); err == nil {
+				d = manualAsWritten(m)
+			}
 		case g.Output != nil:
 			if wd, err := outreach.DecodeWrittenDraft(g.Output); err == nil {
 				d = &wd
 			}
 		}
 		gens[s.GenerationID] = d
+	}
+	if s.Part != "" {
+		step = manualPartStep(s.Part)
 	}
 	var texts []string
 	if d != nil {
@@ -211,4 +218,25 @@ func claudeWriting(ctx context.Context, q generationReader, slots json.RawMessag
 		w.Paragraphs = append(w.Paragraphs, cp)
 	}
 	return w, nil
+}
+
+// manualPartStep is where manualAsWritten keeps a manual text's part.
+func manualPartStep(part string) int {
+	if part == outreach.PartNote {
+		return 0
+	}
+	return 1
+}
+
+// manualAsWritten is a manual generation in the shape claudeWriting reads, each part at its
+// manualPartStep. Only claudeWriting sees it: a manual answer is never decoded as an email.
+func manualAsWritten(m outreach.ManualWritten) *outreach.WrittenDraft {
+	d := &outreach.WrittenDraft{}
+	if m.Note != nil {
+		d.Steps = append(d.Steps, outreach.WrittenStep{Step: manualPartStep(outreach.PartNote), Paragraphs: m.Note.Paragraphs})
+	}
+	if m.Message != nil {
+		d.Steps = append(d.Steps, outreach.WrittenStep{Step: manualPartStep(outreach.PartMessage), Paragraphs: m.Message.Paragraphs})
+	}
+	return d
 }

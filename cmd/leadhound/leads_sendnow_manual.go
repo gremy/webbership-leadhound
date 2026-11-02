@@ -482,6 +482,11 @@ func (b *backend) buildManual(ctx context.Context, setup leadsSetup, now time.Ti
 		if err != nil {
 			return err
 		}
+		// A lead with an open Draft it batch is sent from that batch's own page (Decision 8).
+		drafted, err := openDraftItBatches(ctx, tx, ids)
+		if err != nil {
+			return err
+		}
 		for id, leads := range open {
 			if len(leads) == len(ids) && !slices.ContainsFunc(ids, func(l int64) bool { return !slices.Contains(leads, l) }) {
 				reused = id
@@ -495,6 +500,9 @@ func (b *backend) buildManual(ctx context.Context, setup leadsSetup, now time.Ti
 		taken, err := firstEmailElsewhere(ctx, tx, 0, ids)
 		if err != nil {
 			return err
+		}
+		for id, batch := range drafted {
+			taken[id] = fmt.Sprintf("Send it from its draft: batch %d, /leads/batches/%d", batch, batch)
 		}
 		draft := slices.DeleteFunc(slices.Clone(ids), func(id int64) bool { return taken[id] != "" })
 		if len(draft) > 0 {
@@ -613,13 +621,38 @@ func manualTx(ctx context.Context, b *backend, fn func(pgx.Tx, leadstore.Queries
 	return nil
 }
 
+// openDraftItBatches is, per lead of leads, its open (unapproved, not discarded) Draft it batch.
+func openDraftItBatches(ctx context.Context, tx pgx.Tx, leads []int64) (map[int64]int64, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT DISTINCT m.lead_id, m.batch_id FROM outreach_message m
+		 JOIN outreach_batch b ON b.id = m.batch_id
+		 WHERE b.origin = 'draft_it' AND b.approved_at IS NULL AND b.discarded_at IS NULL
+		   AND m.lead_id = ANY($1::bigint[])`, leads)
+	if err != nil {
+		return nil, fmt.Errorf("manual send: open draft it batches: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var lead, batch int64
+		if err := rows.Scan(&lead, &batch); err != nil {
+			return nil, fmt.Errorf("manual send: open draft it batches: %w", err)
+		}
+		out[lead] = batch
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("manual send: open draft it batches: %w", err)
+	}
+	return out, nil
+}
+
 // openManualBatches are the unconfirmed manual batches holding any of leads, each with all
-// its leads.
+// its leads. A Draft it batch is not one of them: Send now never reuses or discards it.
 func openManualBatches(ctx context.Context, tx pgx.Tx, leads []int64) (map[int64][]int64, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT DISTINCT m.batch_id, m.lead_id FROM outreach_message m
 		 JOIN outreach_batch b ON b.id = m.batch_id
-		 WHERE b.manual AND b.approved_at IS NULL AND b.discarded_at IS NULL
+		 WHERE b.manual AND b.origin <> 'draft_it' AND b.approved_at IS NULL AND b.discarded_at IS NULL
 		   AND m.batch_id IN (SELECT x.batch_id FROM outreach_message x WHERE x.lead_id = ANY($1::bigint[]))
 		 ORDER BY 1, 2`, leads)
 	if err != nil {

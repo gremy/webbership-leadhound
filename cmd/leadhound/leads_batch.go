@@ -397,8 +397,11 @@ func cmpOr(a, b string) string {
 // call_not_connected, email_consent) get no row. An email_consent step's recipient is ""
 // (emailRecipient): the address given on the call. A lead with no route (channel none) is
 // drafted only on a call-first plan with phone, every one of its email steps email_consent. A form lead gets the contact-form text
-// (step 0) and the LinkedIn note (step 1) from the campaign folder's form.txt and linkedin.txt
-// when it holds them, else from leads.yaml's templates.
+// at step 0; a LinkedIn lead the note at step 0 (held to sender.linkedin_note_max) and the message
+// for after they accept at step 1, the kind's form text being the only longer text a template
+// set holds. Each comes from the campaign folder's form.txt and linkedin.txt when it holds them,
+// else from leads.yaml's templates, and each row's recipient is the target URL (the lead's route).
+// A form lead's LinkedIn steps are batchDrafter.manualRows's: only it reads the org's routes.
 // The footer is plan.footerFor's: the campaign country's own, else leads.yaml's. Any render or Check problem drops the lead.
 func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config,
 	phone *leadstore.Fact, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
@@ -412,6 +415,7 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		channel string
 		step    int
 		when    string
+		note    bool // a LinkedIn note, held to the note limit
 	}
 	var texts []text
 	switch c.Channel {
@@ -456,15 +460,15 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 					}
 					return nil, fmt.Errorf("no %s template for email step %d in language %q", c.Kind, st.Step, policy.Lang)
 				}
-				texts = append(texts, text{outreach.EmailTemplate(e, footer), "email", st.Step, when})
+				texts = append(texts, text{tmpl: outreach.EmailTemplate(e, footer), channel: "email", step: st.Step, when: when})
 			case campaign.StepCall:
 				if set.Call == nil {
 					return nil, fmt.Errorf("no %s call card in language %q", c.Kind, policy.Lang)
 				}
-				texts = append(texts, text{outreach.FormTemplate(set.Call), leadstore.ChannelPhone, st.Step, when})
+				texts = append(texts, text{tmpl: outreach.FormTemplate(set.Call), channel: leadstore.ChannelPhone, step: st.Step, when: when})
 			}
 		}
-	case leadconfig.ChannelForm:
+	case leadconfig.ChannelForm, leadconfig.ChannelLinkedIn:
 		// The campaign folder's own form.txt and linkedin.txt when it holds them (a café
 		// kind's must), else leads.yaml's.
 		set, ok := plan.templates.Set(c.Kind, policy.Lang)
@@ -477,11 +481,17 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		if set.Form == nil || set.LinkedIn == nil {
 			return nil, fmt.Errorf("no form or LinkedIn template in language %q", policy.Lang)
 		}
-		texts = append(texts, text{outreach.FormTemplate(set.Form), "form", 0, ""}, text{outreach.LinkedInTemplate(set.LinkedIn), "linkedin", 1, ""})
+		if c.Channel == leadconfig.ChannelForm {
+			texts = append(texts, text{tmpl: outreach.FormTemplate(set.Form), channel: "form"})
+		} else {
+			texts = append(texts, text{tmpl: outreach.LinkedInTemplate(set.LinkedIn), channel: "linkedin", note: true},
+				text{tmpl: outreach.LinkedInTemplate(set.Form), channel: "linkedin", step: 1})
+		}
 	default:
 		return nil, fmt.Errorf("channel %q has no drafts", c.Channel)
 	}
 	rules := plan.rulesFor(c.Kind)
+	rules.Links = slices.Concat(rules.Links, plan.proofLinks) // never onto the plan's shared slice
 	var out []leadstore.DraftRow
 	first := ""
 	for _, t := range texts {
@@ -503,6 +513,11 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 				msgs[i] = x.String()
 			}
 			return nil, fmt.Errorf("%s step %d: %s", label, t.step, strings.Join(msgs, "; "))
+		}
+		if t.note {
+			if f := outreach.CheckNote(d.Body, cfg.Sender.LinkedInNoteMax); len(f) > 0 {
+				return nil, fmt.Errorf("%s step %d: %s", label, t.step, f[0].Msg)
+			}
 		}
 		raw, err := slotsJSON(d.Slots)
 		if err != nil {
@@ -526,6 +541,8 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 			}
 			row.Subject = "Call " + cmpOr(slots.OrgName.Value, c.Domain)
 			row.PhoneFactID = phone.ID
+		default:
+			row.To = c.Route
 		}
 		out = append(out, row)
 	}
@@ -691,7 +708,11 @@ func printBatch(w io.Writer, v BatchView, only int) {
 		p("\n%d. %s · %s · %s\n", it.N, it.Org.Domain, it.Lead.Kind, it.Lead.Channel)
 		printEvidence(w, ev[it.Lead.ID])
 		for _, m := range it.Msgs {
-			p("\n   -- %s --\n", messageLabel(m, stepCount(b, it.Msgs)))
+			label := messageLabel(m, stepCount(b, it.Msgs))
+			if m.Channel == "linkedin" && !linkedInNote(m, it.Msgs) {
+				label = strings.Replace(label, "LinkedIn note", "LinkedIn message after they accept", 1)
+			}
+			p("\n   -- %s --\n", label)
 			if c, ok := v.CallsOff[it.Lead.ID]; ok && m.Channel == leadstore.ChannelPhone {
 				p("   %s\n", callsOffCard(c))
 			}
@@ -919,7 +940,10 @@ func runBatchDiscard(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runLeadsDone is `leads done K`: the operator used contact-form or LinkedIn message K.
+// runLeadsDone is `leads done K`: the operator used contact-form or LinkedIn message K. A Draft it
+// batch has no approve step, so this is his approval too (markManualSent); so is any approved live
+// batch's message, which also keeps the refusals of a lead that has answered. A shadow batch and an
+// unapproved batch of any other origin go the old way, which says what it says of them.
 func runLeadsDone(ctx context.Context, args []string) error {
 	const usage = "usage: leadhound leads done MESSAGE (the message number batch show prints)"
 	fs := flag.NewFlagSet("leads done", flag.ContinueOnError)
@@ -939,7 +963,19 @@ func runLeadsDone(ctx context.Context, args []string) error {
 		return err
 	}
 	defer s.Close()
-	d, err := markDone(ctx, s, id)
+	var d leadstore.Done
+	mb, found, err := messageBatch(ctx, s, id)
+	if err != nil {
+		return err
+	}
+	if found && mb.usesManualSent() {
+		d, err = markManualSent(ctx, s, id, mb.hashPrefix())
+		if words := manualSentWords(err); words != "" {
+			return usageError("message %d: %s", id, words)
+		}
+	} else {
+		d, err = markDone(ctx, s, id)
+	}
 	if r := asRefusal(err); r != nil {
 		switch r.Kind {
 		case RefuseMessageNotFound:

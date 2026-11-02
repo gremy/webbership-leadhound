@@ -79,7 +79,7 @@ func setVerify(t *testing.T, on bool) {
 }
 
 // draftedRoutes are batch id's leads as drafted: each lead's domain with its first message's
-// channel and recipient ("email info@x", "form").
+// channel and recipient ("email info@x", "form https://x/contact").
 func draftedRoutes(t *testing.T, id int64) map[string]string {
 	t.Helper()
 	rows, err := storetest.OwnerConn(t).Query(context.Background(),
@@ -165,7 +165,7 @@ func TestVerifyBatchGate(t *testing.T) {
 	}
 	baseline := draftedRoutes(t, 1)
 	want := map[string]string{"northwind.example": "email info@northwind.example", "tailspin.example": "email info@tailspin.example",
-		"litware.example": "email office@litware.example", "wingtip.example": "email hello@wingtip.example", "contoso.example": "form"}
+		"litware.example": "email office@litware.example", "wingtip.example": "email hello@wingtip.example", "contoso.example": "form https://contoso.example/contact"}
 	for d, r := range want {
 		if baseline[d] != r {
 			t.Fatalf("baseline %s = %q, want %q (all %v)", d, baseline[d], r, baseline)
@@ -177,7 +177,7 @@ func TestVerifyBatchGate(t *testing.T) {
 	setVerify(t, true)
 	out = mustRun(t, "leads", "batch", "new")
 	wantLines(t, "cold start", out, "4 leads wait for their email check.")
-	if got := draftedRoutes(t, 2); len(got) != 1 || got["contoso.example"] != "form" {
+	if got := draftedRoutes(t, 2); len(got) != 1 || got["contoso.example"] != "form https://contoso.example/contact" {
 		t.Errorf("cold start drafted %v, want the form lead only", got)
 	}
 	discardLatest(t)
@@ -222,7 +222,7 @@ func TestVerifyBatchGate(t *testing.T) {
 	}
 	got := draftedRoutes(t, 3)
 	wantGated := map[string]string{"northwind.example": "email info@northwind.example", "litware.example": "email office@litware.example",
-		"tailspin.example": "form", "contoso.example": "form"}
+		"tailspin.example": "form https://tailspin.example/contact", "contoso.example": "form https://contoso.example/contact"}
 	if len(got) != len(wantGated) {
 		t.Errorf("gated batch %v, want %v", got, wantGated)
 	}
@@ -261,7 +261,7 @@ func TestVerifyBatchGate(t *testing.T) {
 	wantLines(t, "blocked", out, "skipped tailspin.example (unsupported, email): email check: invalid",
 		"skipped litware.example (unsupported, email): email check: catch-all")
 	got = draftedRoutes(t, 4)
-	if len(got) != 2 || got["northwind.example"] != "email info@northwind.example" || got["contoso.example"] != "form" {
+	if len(got) != 2 || got["northwind.example"] != "email info@northwind.example" || got["contoso.example"] != "form https://contoso.example/contact" {
 		t.Errorf("blocked batch %v", got)
 	}
 	sweepSendable(t, 4, verify.CatchAllBlock)
@@ -502,7 +502,7 @@ func TestVerifyFallbackRoutes(t *testing.T) {
 		t.Errorf("nothing should wait:\n%s", out)
 	}
 	got := draftedRoutes(t, 1)
-	if len(got) != 2 || got["northwind.example"] != "email sales@northwind.example" || got["contoso.example"] != "form" {
+	if len(got) != 2 || got["northwind.example"] != "email sales@northwind.example" || got["contoso.example"] != "form https://contoso.example/contact" {
 		t.Errorf("drafted %v, want northwind on its second address and the form lead", got)
 	}
 	sweepSendable(t, 1, verify.CatchAllSend)

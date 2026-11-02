@@ -84,7 +84,7 @@ func TestDraftLeadFormAndAgency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ds) != 2 || ds[0].Channel != "form" || ds[1].Channel != "linkedin" || ds[1].Step != 1 || ds[0].To != "" || ds[0].MessageID != "" {
+	if len(ds) != 1 || ds[0].Channel != "form" || ds[0].To != form.Route || ds[0].MessageID != "" {
 		t.Fatalf("form drafts = %+v", ds)
 	}
 

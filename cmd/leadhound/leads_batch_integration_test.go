@@ -156,7 +156,7 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	// (no end-of-life fact), the suppressed one never appears.
 	out = mustRun(t, "leads", "batch", "new")
 	wantLines(t, "batch new", out,
-		"Batch 1 (shadow): 3 emails, 1 contact form, 1 LinkedIn note. Read: leadhound leads batch show 1")
+		"Batch 1 (shadow): 3 emails, 1 contact form, 0 LinkedIn notes. Read: leadhound leads batch show 1")
 	if strings.Contains(out, "dropped") {
 		t.Errorf("a lead was dropped:\n%s", out)
 	}
@@ -190,11 +190,11 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 		"2. tailspin.example · unsupported · email\n",
 		"Drupal 9 stopped getting security updates on 1 November 2023",
 		"3. contoso.example · d10 · form\n",
-		"Form page (the lead's current route): https://contoso.example/contact",
+		"To: https://contoso.example/contact",
 		"Evidence: x-generator = 10 · https://contoso.example/ · fetched",
 		"4. wingtip.example · agency_partner · email\n", "To: hello@wingtip.example",
 		`Finding: agency page https://www.wingtip.example/services/drupal-upgrades says "upgrades from Drupal 7 to Drupal 10"`,
-		"step 3 of 3 · email", "LinkedIn note · message",
+		"step 3 of 3 · email", "contact form text · message",
 		"Approve: leadhound leads batch approve 1 --hash "+hash)
 	if !strings.HasSuffix(out, "Approve: leadhound leads batch approve 1 --hash "+hash+"\n") {
 		t.Errorf("show does not end with the approve line")
@@ -217,7 +217,7 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	// Approve, leaving out item 4 (wingtip).
 	out = mustRun(t, "leads", "batch", "approve", "1", "--hash", hash, "--skip", "4")
 	wantLines(t, "approve", out,
-		"Batch 1 (shadow) approved: 8 messages approved, 3 messages skipped.",
+		"Batch 1 (shadow) approved: 7 messages approved, 3 messages skipped.",
 		"First emails are due from Tue 27 Oct 09:30 UTC",
 		"Contact forms and LinkedIn notes wait for you")
 	if n := batchCount(t, `SELECT count(*) FROM outreach_message m JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
@@ -321,7 +321,7 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	// Contacted by hand: never drafted again.
 	wantLines(t, "mark-contacted", mustRun(t, "leads", "mark-contacted", "northwind.example", "--note", "called them"), "is now contacted by hand")
 	out = mustRun(t, "leads", "batch", "new")
-	wantLines(t, "second shadow batch", out, "Batch 2 (shadow): 2 emails, 1 contact form, 1 LinkedIn note.")
+	wantLines(t, "second shadow batch", out, "Batch 2 (shadow): 2 emails, 1 contact form, 0 LinkedIn notes.")
 	if n := batchCount(t, `SELECT count(*) FROM outreach_message m JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 		WHERE m.batch_id = 2 AND o.domain = 'northwind.example'`); n != 0 {
 		t.Errorf("a hand-contacted lead was drafted again")

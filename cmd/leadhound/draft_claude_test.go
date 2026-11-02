@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +24,15 @@ type draftStore struct {
 	lead leadstore.Lead
 	org  leadstore.Org
 	ev   leadstore.Evidence
+	// The operator's sector for the org, the proofs ProofsFor answers with and what it was asked.
+	sector string
+	proofs []leadstore.Proof
+	asked  *proofAsk
+}
+
+type proofAsk struct {
+	limit  int
+	sector string
 }
 
 func (s draftStore) LeadByID(context.Context, int64) (leadstore.Lead, error) { return s.lead, nil }
@@ -31,6 +41,13 @@ func (s draftStore) LeadEvidence(context.Context, []int64) (map[int64]leadstore.
 	return map[int64]leadstore.Evidence{s.lead.ID: s.ev}, nil
 }
 func (s draftStore) Campaigns(context.Context, int64) ([]leadstore.Campaign, error) { return nil, nil }
+func (s draftStore) OperatorSector(context.Context, int64) (string, error)          { return s.sector, nil }
+func (s draftStore) ProofsFor(_ context.Context, _ int64, sector string, limit int) ([]leadstore.Proof, error) {
+	if s.asked != nil {
+		s.asked.limit, s.asked.sector = limit, sector
+	}
+	return s.proofs, nil
+}
 
 // draftWorld is the example campaign's plan and one d7 lead with its candidate and store.
 type draftWorld struct {
@@ -306,5 +323,192 @@ func TestDraftsReplayStoredGeneration(t *testing.T) {
 	bad, err := (&outreach.Writer{Caller: replayCaller{out: []byte(`{"steps":{}}`)}}).WriteLead(context.Background(), in)
 	if err != nil || bad.Written != nil || bad.Fallback == "" {
 		t.Fatalf("a stored answer that does not decode: %v %+v", err, bad)
+	}
+}
+
+// proofWorld is a lead whose operator sector has two proofs: a public one with a page and a private
+// one with a URL that must go nowhere.
+func proofWorld(t *testing.T) draftWorld {
+	t.Helper()
+	w := newDraftWorld(t, "unsupported", 7)
+	w.rs.sector, w.rs.asked = "education", &proofAsk{}
+	w.rs.proofs = []leadstore.Proof{
+		{ID: 2, Line: "I rebuilt a university site.", URL: "https://work.example/university", Public: true},
+		{ID: 1, Line: "I moved a college to a current version.", URL: "https://secret.example/college"},
+	}
+	return w
+}
+
+// TestDraftsProofsPerLead: the sheet carries both proofs of the operator's sector; the public page
+// is allowed for this lead alone, on a copy of the plan's links; the private URL goes nowhere; the
+// store is asked for the sector and outreach.MaxProofFacts.
+func TestDraftsProofsPerLead(t *testing.T) {
+	w := proofWorld(t)
+	shared := len(w.plan.rules.Links)
+	w.plan.rules.Links = append(make([]string, 0, shared+4), w.plan.rules.Links...)
+	in := w.input(t, false)
+	if len(in.Sheet.WithLabel(outreach.LabelProofLine)) != 2 {
+		t.Fatalf("sheet proofs %+v", in.Sheet.WithLabel(outreach.LabelProofLine))
+	}
+	if w.rs.asked.sector != "education" || w.rs.asked.limit != outreach.MaxProofFacts {
+		t.Fatalf("asked %+v", *w.rs.asked)
+	}
+	if !slices.Contains(in.Rules.Links, "https://work.example/university") || slices.Contains(in.Rules.Links, "https://secret.example/college") {
+		t.Fatalf("links %v", in.Rules.Links)
+	}
+	if got := w.plan.rules.Links[:cap(w.plan.rules.Links)]; slices.Contains(got, "https://work.example/university") {
+		t.Fatalf("the proof page landed on the plan's shared links: %v", got)
+	}
+	for _, f := range in.Sheet.Facts {
+		if strings.Contains(f.Value, "secret.example") {
+			t.Fatalf("the private URL is on the sheet: %+v", f)
+		}
+	}
+}
+
+// TestDraftsFakeWithTwoProofs: with two proof facts the fake still writes one, cited and verbatim,
+// and it passes every check on each road. The manual texts come back with Claude's writer word.
+func TestDraftsFakeWithTwoProofs(t *testing.T) {
+	w := proofWorld(t)
+	in := w.input(t, false)
+	res, err := (&outreach.Writer{Caller: draftFake{}}).WriteLead(context.Background(), in)
+	if err != nil || res.Written == nil {
+		t.Fatalf("email: %v %q %+v", err, res.Fallback, res.Attempts)
+	}
+	proofs := 0
+	for _, p := range res.Written.Steps[0].Paragraphs {
+		if strings.HasPrefix(p.Text, "I rebuilt") || strings.HasPrefix(p.Text, "I moved") {
+			proofs++
+		}
+	}
+	if proofs != 1 {
+		t.Fatalf("the first email holds %d proofs, want 1", proofs)
+	}
+	for _, channel := range []string{leadconfig.ChannelForm, leadconfig.ChannelLinkedIn} {
+		m := in
+		m.Examples = nil
+		res, err := (&outreach.Writer{Caller: draftFake{}}).WriteManual(context.Background(), outreach.ManualInput{WriteInput: m, Channel: channel, NoteMax: w.cfg.Sender.LinkedInNoteMax})
+		if err != nil || res.Written == nil {
+			t.Fatalf("%s: %v %q %+v", channel, err, res.Fallback, res.Attempts)
+		}
+		for _, d := range res.Drafts {
+			if d.Writer != outreach.ManualWriterClaude {
+				t.Fatalf("%s writer %q", channel, d.Writer)
+			}
+		}
+	}
+}
+
+// uncitedCaller answers with the fake's draft plus a follow-up paragraph that rests on nothing.
+type uncitedCaller struct{}
+
+func (uncitedCaller) Write(_ context.Context, r claude.WriteRequest) (claude.WriteResult, claude.Usage, error) {
+	sheet, pains, steps, call, err := parseUserTurn(r.Prompt)
+	if err != nil {
+		return claude.WriteResult{}, claude.Usage{}, err
+	}
+	d := fakeDraft(sheet, pains, steps, call)
+	last := &d.Steps[len(d.Steps)-1]
+	last.Paragraphs = append(last.Paragraphs, outreach.Paragraph{Text: "A short plain line.", Cites: []string{}})
+	b, err := outreach.EncodeWireDraft(d)
+	return claude.WriteResult{JSON: b}, claude.Usage{Model: claude.FakeModel}, err
+}
+
+// TestDraftsUncitedOnlyWithVersions: an email with no operator versions in its prompt keeps today's
+// behaviour, an uncited paragraph is not failed; with versions present the same answer fails, so
+// copying the operator's plain text cannot pass.
+func TestDraftsUncitedOnlyWithVersions(t *testing.T) {
+	in := newDraftWorld(t, "unsupported", 7).input(t, false)
+	res, err := (&outreach.Writer{Caller: uncitedCaller{}}).WriteLead(context.Background(), in)
+	if err != nil || res.Written == nil {
+		t.Fatalf("no versions: %v %q %+v", err, res.Fallback, res.Attempts)
+	}
+	in.OperatorVersions = []outreach.OperatorVersion{{Body: "My own words."}}
+	res, err = (&outreach.Writer{Caller: uncitedCaller{}}).WriteLead(context.Background(), in)
+	if err != nil || res.Written != nil || res.Fallback == "" {
+		t.Fatalf("with versions: %v %+v", err, res)
+	}
+	found := false
+	for _, f := range res.Attempts[0].Failures {
+		found = found || f.Code == outreach.CodeCites
+	}
+	if !found {
+		t.Fatalf("failures %+v, want the cites code", res.Attempts[0].Failures)
+	}
+}
+
+// TestDraftsLinkedInTemplateRows: a LinkedIn lead's template rows are the note at step 0 and the
+// message at step 1, each naming the target; a limit the note does not fit drops the lead.
+func TestDraftsLinkedInTemplateRows(t *testing.T) {
+	w := newDraftWorld(t, "unsupported", 7)
+	c := w.c
+	const target = "https://linkedin.com/company/northfield"
+	c.Channel, c.RouteKind, c.Route = leadconfig.ChannelLinkedIn, leadconfig.ChannelLinkedIn, target
+	rows, err := draftSequence(w.plan, c, w.rs.ev, w.cfg, nil, "", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Step != 0 || rows[1].Step != 1 || rows[0].To != target || rows[1].To != target || rows[0].Channel != "linkedin" {
+		t.Fatalf("rows %+v", rows)
+	}
+	w.cfg.Sender.LinkedInNoteMax = 10
+	if _, err := draftSequence(w.plan, c, w.rs.ev, w.cfg, nil, "", bytes.NewReader(nil)); err == nil || !strings.Contains(err.Error(), "at most 10") {
+		t.Fatalf("over the limit: %v", err)
+	}
+}
+
+// TestDraftsLinkedInNoteIsFirstRow: the note is the lead's first LinkedIn step wherever that falls.
+func TestDraftsLinkedInNoteIsFirstRow(t *testing.T) {
+	form := []leadstore.Message{{LeadID: 1, Step: 0, Channel: "form"}, {LeadID: 1, Step: 1, Channel: "linkedin"}, {LeadID: 1, Step: 2, Channel: "linkedin"}}
+	if linkedInNote(form[0], form) || !linkedInNote(form[1], form) || linkedInNote(form[2], form) {
+		t.Fatal("a form lead's LinkedIn steps")
+	}
+	li := []leadstore.Message{{LeadID: 2, Step: 0, Channel: "linkedin"}, {LeadID: 2, Step: 1, Channel: "linkedin"}}
+	if !linkedInNote(li[0], li) || linkedInNote(li[1], li) {
+		t.Fatal("a LinkedIn lead's steps")
+	}
+}
+
+// TestDraftOriginWords: the words the lead page reads: Claude's slots, a template's reason, and a
+// row from before this build, which says nothing and is the templates'.
+func TestDraftOriginWords(t *testing.T) {
+	raw, err := templateBecause(json.RawMessage(`{"Domain":{"value":"x.example","table":"org","id":1}}`), fbCap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, why := draftOrigin(raw); w != campaign.WriterTemplate || why != fbCap {
+		t.Fatalf("template %q %q", w, why)
+	}
+	if !strings.Contains(string(raw), `"Domain"`) {
+		t.Fatalf("the slots went: %s", raw)
+	}
+	if w, why := draftOrigin(json.RawMessage(`{"Domain":{"value":"x.example"}}`)); w != campaign.WriterTemplate || why != "" {
+		t.Fatalf("old row %q %q", w, why)
+	}
+	if w, why := draftOrigin(json.RawMessage(`{"writer":"claude","generation_id":3}`)); w != campaign.WriterClaude || why != "" {
+		t.Fatalf("claude %q %q", w, why)
+	}
+}
+
+type oneGeneration struct{ g leadstore.Generation }
+
+func (o oneGeneration) GenerationByID(context.Context, int64) (leadstore.Generation, error) {
+	return o.g, nil
+}
+
+// TestClaudeWritingManual: a manual row's claims read its own part of a manual generation, which is
+// never decoded as an email.
+func TestClaudeWritingManual(t *testing.T) {
+	out := json.RawMessage(`{"note":{"paragraphs":[{"text":"The note.","cites":["S1"]}]},"message":{"paragraphs":[{"text":"The message.","cites":["S1"]}]}}`)
+	q := oneGeneration{leadstore.Generation{ID: 7, Channel: leadconfig.ChannelLinkedIn, Output: out}}
+	for part, want := range map[string]string{outreach.PartNote: "The note.", outreach.PartMessage: "The message."} {
+		slots, err := claudeSlotsFor(outreach.ManualWriterClaude, part, 7, outreach.FactSheet{}, []paragraphCites{{Cites: []string{"S1"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := claudeWriting(context.Background(), q, slots, 2, false, map[int64]*outreach.WrittenDraft{})
+		if err != nil || w == nil || len(w.Paragraphs) != 1 || w.Paragraphs[0].Text != want {
+			t.Fatalf("%s: %+v %v", part, w, err)
+		}
 	}
 }

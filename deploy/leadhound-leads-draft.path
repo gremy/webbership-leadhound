@@ -1,0 +1,22 @@
+# Draft it: pressing Draft it on a lead makes the console queue a draft request in the database,
+# then write the request time to /opt/leadhound/data/run/leads-draft, and this watcher starts
+# leadhound-leads-draft.service, which claims the queued requests. The console itself never
+# holds the Anthropic key and never calls Claude.
+# It starts only that one fixed unit (no Unit=: it defaults to the same-named service), and the
+# console never gains a privilege to do it. A request while the service is already starting or
+# running is merged into that run by systemd; what that run leaves queued waits for the next
+# request.
+# PathChanged= fires when the file is closed after a write, not while it merely exists, so the
+# request file is never deleted, and an old one cannot fire when the watcher is armed.
+# If the service hits its start limit, systemd fails this watcher too and it stops watching
+# until it is reset:
+#   systemctl reset-failed leadhound-leads-draft.path leadhound-leads-draft.service
+#   systemctl start leadhound-leads-draft.path
+[Unit]
+Description=leadhound Draft it request
+
+[Path]
+PathChanged=/opt/leadhound/data/run/leads-draft
+
+[Install]
+WantedBy=paths.target

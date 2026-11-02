@@ -10,8 +10,9 @@ import (
 // contractBatchSHA is the content hash of the fixture batch below as the tree before
 // campaigns (CP1) drafted it: the same test run on that tree printed it. Campaigns change no
 // draft, so the hash must not move. If it does, a draft changed: find why before touching
-// this value.
-const contractBatchSHA = "e95d33f10646003169a7d30d971ddbbb0f19541c0c7db344aba67ff0ebbb72d3"
+// this value. Decision 10 moved it once: a form lead no longer gets the always-on LinkedIn row, and
+// its row names the form page.
+const contractBatchSHA = "dbf7023aa78492b1fd43ab27d33c5e8c51394d6381dfcd5f4c6b3bce6a46d986"
 
 // contractBatch drafts the fixture batch: a Drupal 7 email lead, a Drupal 10 contact-form
 // lead and an agency email lead, through draftLead with the examples config and Message-IDs
@@ -67,7 +68,7 @@ func TestBatchHashContract(t *testing.T) {
 	if got := hex.EncodeToString(sum); got != contractBatchSHA {
 		t.Errorf("fixture batch hash = %s, want %s (before campaigns): a draft changed", got, contractBatchSHA)
 	}
-	if len(drafts) != 3+2+3 {
-		t.Errorf("%d drafts, want 8", len(drafts))
+	if len(drafts) != 3+1+3 {
+		t.Errorf("%d drafts, want 7", len(drafts))
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
 
 // The answer's wire shape. The structured-output subset the API enforces has no maxItems and
@@ -185,4 +187,49 @@ func EncodeWireDraft(d WrittenDraft) ([]byte, error) {
 		return nil, fmt.Errorf("outreach: encode answer: %w", err)
 	}
 	return b, nil
+}
+
+// ManualSchema is the strict JSON schema of a manual answer for channel: a required note and
+// message on LinkedIn, a required message on a form. A part holds at least one paragraph of the
+// email schema's shape, and no subject.
+func ManualSchema(channel string) map[string]any {
+	str := map[string]any{"type": "string"}
+	obj := func(props map[string]any, required []string) map[string]any {
+		return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}
+	}
+	para := obj(map[string]any{"text": str, "cites": map[string]any{"type": "array", "items": str}, "pain_id": str}, []string{"text", "cites", "pain_id"})
+	part := obj(map[string]any{"paragraphs": map[string]any{"type": "array", "items": para, "minItems": 1}}, []string{"paragraphs"})
+	if channel == leadconfig.ChannelLinkedIn {
+		return obj(map[string]any{PartNote: part, PartMessage: part}, []string{PartNote, PartMessage})
+	}
+	return obj(map[string]any{PartMessage: part}, []string{PartMessage})
+}
+
+// DecodeManual reads a manual answer, or a stored manual generation, strictly (the two share one
+// shape): unknown fields, trailing data, a part with no paragraphs list or a paragraph with no
+// cites list are errors. Which parts the channel needs is G1's.
+func DecodeManual(b []byte) (ManualWritten, error) {
+	var m ManualWritten
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil {
+		return ManualWritten{}, fmt.Errorf("outreach: manual answer: %w", err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return ManualWritten{}, errors.New("outreach: manual answer: trailing data after the JSON object")
+	}
+	for name, part := range map[string]*ManualPart{PartNote: m.Note, PartMessage: m.Message} {
+		if part == nil {
+			continue
+		}
+		if part.Paragraphs == nil {
+			return ManualWritten{}, fmt.Errorf("outreach: manual answer: %s has no paragraphs list", name)
+		}
+		for _, p := range part.Paragraphs {
+			if p.Cites == nil {
+				return ManualWritten{}, fmt.Errorf("outreach: manual answer: a paragraph of %s has no cites list", name)
+			}
+		}
+	}
+	return m, nil
 }

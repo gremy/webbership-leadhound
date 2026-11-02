@@ -319,8 +319,8 @@ func TestCafeFormLead(t *testing.T) {
 	c, ev := cafeLead()
 	c.Channel, c.RouteKind, c.Route = leadconfig.ChannelForm, "", ""
 	rows := draftCafe(t, dir, spec, cfg, c, ev)
-	if len(rows) != 2 || rows[0].Channel != "form" || rows[1].Channel != "linkedin" {
-		t.Fatalf("form lead rows %+v, want a form text and a LinkedIn note", rows)
+	if len(rows) != 1 || rows[0].Channel != "form" {
+		t.Fatalf("form lead rows %+v, want a form text alone (Decision 10)", rows)
 	}
 	if !strings.Contains(rows[0].Body, "Cafeneaua Exemplu") || rows[0].Subject != "" {
 		t.Errorf("form text:\n%s", rows[0].Body)

@@ -743,6 +743,14 @@ func (g *grounder) proof(it groundItem) {
 	if it.subject {
 		return
 	}
+	if it.opener {
+		for _, f := range g.sheet.Facts {
+			cited := slices.Contains(it.cites, f.ID)
+			if f.Label == LabelProofURL && cited || f.Label == LabelProofLine && (cited || strings.Contains(it.text, f.Value)) {
+				g.fail(CodeProof, it.step, it.para, f.ID, "a proof never goes in the first paragraph; open with who you are and why you write")
+			}
+		}
+	}
 	cited := g.cited(it)
 	sender := false
 	for _, f := range cited {

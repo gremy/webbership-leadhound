@@ -56,6 +56,8 @@ type batchPlan struct {
 	// spec is the campaign the plan drafts for (campaign.Legacy for the legacy plan): its
 	// writer, offer and grounding rules, which a Claude draft reads.
 	spec campaign.Spec
+	// proofLinks are the public proof URLs one lead's own copy of the plan allows in its checks.
+	proofLinks []string
 }
 
 // forLead is the plan one lead drafts with: for a lead whose country's email needs consent

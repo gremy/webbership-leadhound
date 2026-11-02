@@ -301,6 +301,138 @@ func TestWriterSystemPromptStable(t *testing.T) {
 	if n := len(SystemPrompt(d7)); n < 4*700 {
 		t.Fatalf("system prompt only %d bytes", n)
 	}
+
+	// The operator's versions: a block of their own after the examples, the same bytes every
+	// time, and with none the prompt is unchanged.
+	versions := []OperatorVersion{{Subject: "About <org>", Body: "Short and plain, from me to <name>."}, {Body: "A second one."}}
+	withBoth := withEx
+	withBoth.OperatorVersions = versions
+	sys := SystemPrompt(withBoth)
+	if !strings.HasPrefix(sys, SystemPrompt(withEx)) || sys != SystemPrompt(withBoth) {
+		t.Fatal("the versions block does not follow the examples, or is not deterministic")
+	}
+	ex, ver := strings.Index(sys, "## Example 1"), strings.Index(sys, operatorVersionsHead)
+	if ex < 0 || ver < ex || !strings.Contains(sys[ver:], "## Version 2") || !strings.Contains(sys[ver:], "Subject: About <org>") {
+		t.Fatalf("versions block:\n%s", sys[max(ver, 0):])
+	}
+	if strings.Contains(SystemPrompt(withEx), operatorVersionsHead) || strings.Contains(SystemPrompt(d7), operatorVersionsHead) {
+		t.Fatal("a versions block with no versions")
+	}
+	if UserTurn(withBoth) != UserTurn(withEx) {
+		t.Fatal("versions leaked into the user turn")
+	}
+
+	// The manual prompt: the same bytes for two leads and for both channels, with the same two
+	// blocks, and its own from the email's.
+	// The d7 form text does not ground on the d10 lead, so that lead takes both its attempts.
+	s2 := &scripted{replies: []scriptReply{{json: manualAnswer(t, "m0_clean_linkedin")}, {json: manualAnswer(t, "m0_clean_form")}, {json: manualAnswer(t, "m0_clean_form")}}}
+	mw := &Writer{Caller: s2}
+	m7 := ManualInput{WriteInput: d7, Channel: leadconfig.ChannelLinkedIn}
+	mForm := ManualInput{WriteInput: d10, Channel: leadconfig.ChannelForm, NoteMax: 300}
+	for _, in := range []ManualInput{m7, mForm} {
+		if _, err := mw.WriteManual(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s2.reqs) < 2 || s2.reqs[0].System != s2.reqs[1].System {
+		t.Fatal("the manual system prompt differs between two leads or channels")
+	}
+	if s2.reqs[0].Prompt == s2.reqs[1].Prompt {
+		t.Fatal("two manual leads got the same user turn")
+	}
+	if m := s2.reqs[0].System; strings.Contains(m, "Northfield") || strings.Contains(m, "eol_no_security") || strings.Contains(m, "202") || m == SystemPrompt(d7) {
+		t.Fatal("the manual system prompt holds lead facts, pains or a date, or is the email's")
+	}
+	if n := len(ManualSystemPrompt(m7)); n < 4*700 {
+		t.Fatalf("manual system prompt only %d bytes", n)
+	}
+	manualEx := func() []ManualWritten {
+		return []ManualWritten{manualFixtures(t)["m0_clean_linkedin"].Draft}
+	}
+	mEx := m7
+	mEx.ManualExamples = manualEx()
+	mBoth := mEx
+	mBoth.OperatorVersions = versions
+	msys := ManualSystemPrompt(mBoth)
+	if ManualSystemPrompt(mEx) == ManualSystemPrompt(m7) || !strings.Contains(ManualSystemPrompt(mEx), "Note:\nI'm Sam Carter") {
+		t.Fatal("examples do not reach the manual prompt")
+	}
+	again2 := mBoth
+	again2.ManualExamples, again2.Channel = manualEx(), leadconfig.ChannelForm
+	if msys != ManualSystemPrompt(again2) || !strings.HasPrefix(msys, ManualSystemPrompt(mEx)) || !strings.Contains(msys, operatorVersionsHead) {
+		t.Fatal("the manual versions block is unstable or not after the examples")
+	}
+	if strings.Contains(ManualSystemPrompt(mEx), operatorVersionsHead) {
+		t.Fatal("a manual versions block with no versions")
+	}
+	if ManualUserTurn(mBoth) != ManualUserTurn(m7) {
+		t.Fatal("examples or versions leaked into the manual user turn")
+	}
+}
+
+const operatorVersionsHead = "# The operator's own versions (match this voice and length; your answer still cites facts in the schema)"
+
+// TestWriterProofWording: the prompt asks for at most one proof line, never in the first paragraph.
+func TestWriterProofWording(t *testing.T) {
+	sys := SystemPrompt(writerInput(t, "d7"))
+	if !strings.Contains(sys, "Use at most one proof line, verbatim, never in the first paragraph") {
+		t.Fatalf("system prompt:\n%s", sys)
+	}
+	if strings.Contains(sys, "the proof line") {
+		t.Fatal("the old singular wording is still there")
+	}
+}
+
+// TestWriterVersionsStillNeedCites: the operator's text has no cites, and an answer that copies
+// it that way is refused with G2 in both prompts: versions change the voice, never the checks.
+func TestWriterVersionsStillNeedCites(t *testing.T) {
+	const copied = "Thanks for reading."
+	versions := []OperatorVersion{{Body: copied}}
+
+	d, err := DecodeWireDraft(writerFixture(t, "clean_d7"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Steps[1].Paragraphs = append(d.Steps[1].Paragraphs, Paragraph{Text: copied, Cites: []string{}})
+	email, err := EncodeWireDraft(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := writerInput(t, "d7")
+	if fails := Ground(d, in.Sheet, in.Rules); len(fails) > 0 {
+		t.Fatalf("this test needs only the cites rule to refuse it: %v", fails)
+	}
+	in.OperatorVersions = versions
+	res, err := (&Writer{Caller: &claude.Fake{WriteAnswer: claude.WriteResult{JSON: email}}}).WriteLead(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != nil || !slices.Equal(failureCodes(res.Attempts[0].Failures), []string{CodeCites}) || !strings.HasPrefix(res.Fallback, "Draft refused: G2") {
+		t.Fatalf("email: fallback %q, failures %v", res.Fallback, res.Attempts[0].Failures)
+	}
+	if !strings.Contains(res.System, operatorVersionsHead) {
+		t.Fatal("the versions were not in the email prompt")
+	}
+
+	mi := ManualInput{WriteInput: in, Channel: leadconfig.ChannelLinkedIn}
+	mres, err := (&Writer{Caller: &claude.Fake{WriteAnswer: claude.WriteResult{JSON: manualAnswer(t, "m5_message_no_cites")}}}).WriteManual(context.Background(), mi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mres.Drafts != nil || !slices.Equal(failureCodes(mres.Attempts[0].Failures), []string{CodeCites}) || !strings.HasPrefix(mres.Fallback, "Draft refused: G2") {
+		t.Fatalf("manual: fallback %q, failures %v", mres.Fallback, mres.Attempts[0].Failures)
+	}
+	if !strings.Contains(mres.System, operatorVersionsHead) {
+		t.Fatal("the versions were not in the manual prompt")
+	}
+
+	// A paragraph resting on a pain it names, with no fact cited, stays what it has been.
+	pain := d
+	pain.Steps = slices.Clone(d.Steps)
+	pain.Steps[1].Paragraphs = []Paragraph{{Text: "Modules no longer get fixes.", Cites: []string{}, PainID: "modules_no_fixes"}}
+	if fails := uncitedFailures(pain); len(fails) > 0 {
+		t.Fatalf("a pain paragraph refused: %v", fails)
+	}
 }
 
 func TestWriterColdStartTwin(t *testing.T) {

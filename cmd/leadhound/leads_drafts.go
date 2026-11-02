@@ -29,7 +29,7 @@ import (
 func init() { leadsCommands["drafts"] = runLeadsDrafts }
 
 const (
-	leadsDraftsUsage  = "usage: leadhound leads drafts sample --campaign S --n N [--decider claude|fake] | eval [--campaign S] [--runs N] [--decider fake|claude] | golden-export --out FILE [--campaign S]"
+	leadsDraftsUsage  = "usage: leadhound leads drafts sample --campaign S --n N [--decider claude|fake] | eval [--campaign S] [--runs N] [--decider fake|claude] | golden-export --out FILE [--campaign S] | make LEAD [--channel C] [--decider claude|fake] | make --from-request [--decider claude|fake] | edit MESSAGE [--subject S] --body-file F"
 	draftsSampleUsage = "usage: leadhound leads drafts sample --campaign S --n N (at least 1) [--decider claude|fake]"
 	draftsEvalUsage   = "usage: leadhound leads drafts eval [--campaign S] [--runs N (at least 1)] [--decider fake|claude]"
 	draftsGoldenUsage = "usage: leadhound leads drafts golden-export --out FILE [--campaign S] (FILE outside the repository, never overwritten)"
@@ -56,6 +56,10 @@ func runLeadsDrafts(ctx context.Context, args []string) error {
 		return runDraftsEval(ctx, args[1:])
 	case "golden-export":
 		return runDraftsGolden(ctx, args[1:])
+	case "make":
+		return runDraftsMake(ctx, args[1:])
+	case "edit":
+		return runDraftsEdit(ctx, args[1:])
 	}
 	return usageError("unknown drafts subcommand %q; %s", args[0], leadsDraftsUsage)
 }

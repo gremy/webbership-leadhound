@@ -121,7 +121,7 @@ mailbox_key() {
 # the units that call Claude cannot start, and install says so without failing the deploy.
 anthropic_key() {
 	if [ ! -e "$1" ]; then
-		echo "install: no Anthropic key at $1: the units that call Claude (leadhound-leads-batch, leadhound-leads-research) cannot start until you place it (deploy/README.md, The Anthropic key)"
+		echo "install: no Anthropic key at $1: the units that call Claude (leadhound-leads-batch, leadhound-leads-research, leadhound-leads-draft) cannot start until you place it (deploy/README.md, The Anthropic key)"
 		return
 	fi
 	chown root:root "$1"
@@ -189,12 +189,12 @@ done
 systemctl daemon-reload
 systemctl enable --now leadhound-ats.timer leadhound-collect.timer leadhound-prebrief.timer \
 	leadhound-brief.timer leadhound-backup.timer leadhound-trim.timer leadhound-leads-verify-balance.timer
-# The Run now watchers, the mailbox check's, contact research's and the Status page's Reoon
-# refresh: the console asks through these, and each starts only its own unit. The leads jobs'
+# The Run now watchers, the mailbox check's, contact research's, Draft it's and the Status
+# page's Reoon refresh: the console asks through these, and each starts only its own unit. The leads jobs'
 # Run now watchers and Send now's are not here: each goes with its job's timer, in
 # leads_timers. Arming one never starts its service, and PathChanged= waits for a new write, so
 # a request file left from before cannot fire on a deploy.
-systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path leadhound-leads-verify-balance.path leadhound-leads-verify-now.path
+systemctl enable --now leadhound-preview.path leadhound-fetch.path leadhound-brief.path leadhound-ats.path leadhound-mailbox-check.path leadhound-leads-research.path leadhound-leads-draft.path leadhound-leads-verify-balance.path leadhound-leads-verify-now.path
 # Once, before any sending timer can be enabled: the old env switch becomes the console's.
 send_switch_convert /etc/leadhound/env /etc/leadhound/send-switch-converted
 leads_timers /etc/leadhound/env
