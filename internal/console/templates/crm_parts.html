@@ -99,7 +99,7 @@
     <ol class="timeline crm-timeline">
       {{range .}}<li class="{{timelineDot .Kind}}"><time datetime="{{.At.Format "2006-01-02T15:04:05Z07:00"}}">{{when .At}}</time>{{.Line}}{{with .CostMicros}} · {{usd .}}{{end}}{{with .Detail}}<span class="tl-detail">{{.}}</span>{{end}}</li>{{end}}
     </ol>
-    {{else}}<p class="muted">Nothing has happened to this lead yet. Emails, replies, calls and stage changes show here as they happen.</p>{{end}}
+    {{else}}<p class="muted">Nothing has happened to this lead yet. Drafts, emails, replies, calls, contacts, proposals and stage changes show here as they happen.</p>{{end}}
     </div>
   </section>
 {{end}}

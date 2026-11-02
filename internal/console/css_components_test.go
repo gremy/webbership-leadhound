@@ -81,3 +81,16 @@ func TestCSSLongTextBreaks(t *testing.T) {
 		t.Error("the meta lines, hints and page titles lost overflow-wrap: anywhere")
 	}
 }
+
+// TestCSSHasOutreachClasses: the outreach cards' classes, which the board does not carry, have a rule.
+func TestCSSHasOutreachClasses(t *testing.T) {
+	b, err := staticFS.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"draft-card", "reach-badge", "next-step", "contact-row", "proposal-row", "tabs-wrap"} {
+		if !regexp.MustCompile(`\.` + name + `\b`).Match(b) {
+			t.Errorf("console.css has no rule for .%s", name)
+		}
+	}
+}

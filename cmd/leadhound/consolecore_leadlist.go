@@ -177,7 +177,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
-	lc := leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, TrustedTypes: w.trusted}
+	lc := leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, TrustedTypes: w.trusted, CountryOff: w.countryOff}
 	rows, total, err := lq.LeadList(ctx, f, lc)
 	if err != nil {
 		return console.LeadListPage{}, err
@@ -195,6 +195,16 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		echo.Page = ""
 	}
 	p := console.LeadListPage{Total: total, Page: f.Page, PerPage: per, Filter: echo, Options: opts, Notes: notes, LabelGoal: labelGoal}
+	// The tabs link to a blank Status (leadListURL leaves open out), so they count what they link to.
+	counted := f
+	if counted.Status == leadstore.ListOpen {
+		counted.Status = ""
+	}
+	rc, err := lq.ReachCounts(ctx, counted)
+	if err != nil {
+		return console.LeadListPage{}, err
+	}
+	p.ReachCounts = console.ReachCounts{Email: rc.Email, Manual: rc.Manual, Dead: rc.Dead, Contacted: rc.Contacted, Other: rc.Other}
 	if p.TotalLeads, err = leadCount(ctx, b); err != nil {
 		return console.LeadListPage{}, err
 	}
@@ -214,8 +224,14 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		return console.LeadListPage{}, err
 	}
 	ids := make([]int64, 0, len(rows))
+	orgs := make([]int64, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, r.LeadID)
+		orgs = append(orgs, r.OrgID)
+	}
+	linkedIn, err := b.linkedInOrgs(ctx, orgs)
+	if err != nil {
+		return console.LeadListPage{}, err
 	}
 	calls, err := lq.LatestLabels(ctx, ids)
 	if err != nil {
@@ -227,6 +243,7 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	today := b.now().In(b.loc)
 	for _, r := range rows {
 		row := leadListRow(r, kinds, w, order, today)
+		row.HasLinkedIn = linkedIn[r.OrgID]
 		if l := calls[r.LeadID]; l.Band != nil {
 			row.Call = *l.Band
 		}
@@ -456,6 +473,13 @@ func leadListFilter(q console.LeadListQuery, o console.LeadFilterOptions) (f lea
 			echo.MinRelevance = strconv.Itoa(f.MinRelevance)
 		}
 	}
+	switch reach := strings.ToLower(q.Reach); reach {
+	case "":
+	case leadstore.ReachEmail, leadstore.ReachManual, leadstore.ReachDead, leadstore.ReachContacted, leadstore.ReachOther:
+		f.Reach, echo.Reach = reach, reach
+	default:
+		notes = append(notes, fmt.Sprintf("Ignored the next action %s: not one the list offers.", noteValue(q.Reach)))
+	}
 	statusDefault := leadstore.ListOpen
 	switch q.ToLabel {
 	case "":
@@ -465,7 +489,13 @@ func leadListFilter(q console.LeadListQuery, o console.LeadFilterOptions) (f lea
 	default:
 		notes = append(notes, fmt.Sprintf("Ignored to_label %s: it takes 1.", noteValue(q.ToLabel)))
 	}
+	if f.Reach != "" {
+		statusDefault = "" // a next action picks its own states, so open would empty Contacted
+	}
 	f.Status = choose("status", q.Status, statusDefault, o.Statuses, &notes)
+	if f.Reach != "" && f.Status == leadstore.ListOpen {
+		f.Status = ""
+	}
 	f.Sort = choose("sort", q.Sort, leadstore.SortRelevance, o.Sorts, &notes)
 	echo.Status, echo.Sort = f.Status, f.Sort
 	f.Page = 1
@@ -567,6 +597,10 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone,
 		Starred: r.Starred, SmallSite: r.SmallSite,
 		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
+		Reach:    r.Reach, ReachReason: r.ReachReason, Channel: r.Channel,
+	}
+	if strings.HasPrefix(row.Name, leadstore.PlaceOrgPrefix) {
+		row.Name = "Lead " + strconv.FormatInt(r.LeadID, 10) // a place's stand-in domain is no name
 	}
 	if r.Relevance != nil {
 		row.Relevance = leadview.RelevanceWords(r.Relevance, r.Band, slices.Contains(w.trusted, r.RType))
@@ -665,6 +699,7 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 			addrs = append(addrs, r.Value)
 			hasMX = hasMX || r.MXOK
 		}
+		p.HasLinkedIn = p.HasLinkedIn || r.Kind == leadstore.RouteLinkedIn
 	}
 	p.SendNowBlock = sendNowBlock(w.cfg, d.ListRow, len(addrs) > 0, hasMX)
 	checks, err := b.lq().EmailChecks(ctx, leadstore.DefaultAccountID, addrs, time.Time{})
@@ -717,6 +752,9 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 			words += " · " + r.Model
 		}
 		p.RelevanceHistory = append(p.RelevanceHistory, console.LeadRelevance{Words: words, At: r.CreatedAt})
+	}
+	if err := b.fillOutreach(ctx, w, d, &p); err != nil {
+		return console.LeadDetailPage{}, err
 	}
 	return p, nil
 }

@@ -37,13 +37,42 @@ type leadListView struct {
 	NoLeads    bool   // there are no leads at all
 	NoneMatch  bool   // there are leads, but none matches the filter
 	Back       string // this page, filter and page kept: where a row's action comes back to
-	Order      bool   // sorted by theTab   string // today | list | outreach | campaigns | settingsorder: rows carry Up, Down, Pin to top, Push back, Skip
+	Order      bool   // sorted by the outreach order: rows carry Up, Down, Pin to top, Push back, Skip
+	Tabs       []reachTab
 	// The table's optional columns: State only when the filter is not the default (open
 	// leads), Relevance and Order only when a row has one, Your call when a row has one or
 	// the list is the leads to label.
 	ShowState, ShowRelevance, ShowOrder, ShowCall bool
 	ToLabel                                       bool // the list is the leads to label
 	Filters                                       int  // how many filters are on, for the folded form's summary
+}
+
+// reachTab is one tab of the List: a next action with its number, or All (Counted false).
+type reachTab struct {
+	Label, URL       string
+	Count            int
+	Counted, Current bool
+}
+
+// CanLook reports whether a dead-end row offers Look for a contact: not while a search runs,
+// when one has already found a contact, or in a country that is off, which would only refuse.
+func (leadListView) CanLook(reason string) bool {
+	return reason != ReachLooking && reason != ReachFound && reason != ReachCountry
+}
+
+// reachTabs are the List's tabs under f, each keeping the rest of the filter and going back
+// to the first page; All is f with no next action, so it behaves as the plain list does.
+func reachTabs(f LeadListQuery, c ReachCounts) []reachTab {
+	tab := func(bucket string) string {
+		f := f
+		f.Reach = bucket
+		return leadListURL(f, 1)
+	}
+	var tabs []reachTab
+	for _, bucket := range ReachTabs {
+		tabs = append(tabs, reachTab{Label: ReachWords(bucket), URL: tab(bucket), Count: c.Of(bucket), Counted: true, Current: f.Reach == bucket})
+	}
+	return append(tabs, reachTab{Label: "All", URL: tab(""), Current: f.Reach == ""})
 }
 
 // leadDetailView is what a lead's page renders: the lead, its signals grouped by the fetch
@@ -330,6 +359,7 @@ func leadListQuery(v url.Values) LeadListQuery {
 		Page:         one("page"),
 		ToLabel:      one("to_label"),
 		Campaign:     one("campaign"),
+		Reach:        one("reach"),
 	}
 }
 
@@ -346,7 +376,9 @@ func filterValues(in []string) []string {
 // newLeadListView works out the pager, the empty states and the optional columns for p.
 func newLeadListView(p LeadListPage) leadListView {
 	v := leadListView{P: p, Back: leadListURL(p.Filter, p.Page), Order: p.Filter.Sort == "order", ToLabel: p.Filter.ToLabel == "1"}
-	v.ShowState = p.Filter.Status != "" && p.Filter.Status != "open"
+	statusOn := p.Filter.Status != "" && p.Filter.Status != "open"
+	v.ShowState = statusOn || p.Filter.Reach != "" // a next action spans states
+	v.Tabs = reachTabs(p.Filter, p.ReachCounts)
 	v.ShowCall = v.ToLabel
 	for _, row := range p.Rows {
 		v.ShowRelevance = v.ShowRelevance || row.Relevance != ""
@@ -354,7 +386,7 @@ func newLeadListView(p LeadListPage) leadListView {
 		v.ShowCall = v.ShowCall || row.Call != ""
 	}
 	for _, on := range []bool{len(p.Filter.Kinds) > 0, len(p.Filter.Countries) > 0, len(p.Filter.Channels) > 0,
-		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", v.ShowState, v.ToLabel,
+		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", statusOn, v.ToLabel,
 		p.Filter.Campaign != ""} {
 		if on {
 			v.Filters++
@@ -375,8 +407,12 @@ func newLeadListView(p LeadListPage) leadListView {
 }
 
 // leadListURL is the list under f at page n: the filter kept, the page set (left out for
-// the first).
+// the first). A next action picks its own states and a blank Status means every state, so the
+// default Status (open), which the backend echoes, is left out with one: it would hide leads.
 func leadListURL(f LeadListQuery, n int) string {
+	if f.Reach != "" && f.Status == "open" {
+		f.Status = ""
+	}
 	q := url.Values{}
 	for k, vs := range map[string][]string{"kind": f.Kinds, "country": f.Countries, "channel": f.Channels} {
 		for _, v := range vs {
@@ -384,7 +420,7 @@ func leadListURL(f LeadListQuery, n int) string {
 		}
 	}
 	for k, v := range map[string]string{"starred": f.Starred, "has_phone": f.HasPhone, "min_relevance": f.MinRelevance,
-		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel, "campaign": f.Campaign} {
+		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel, "campaign": f.Campaign, "reach": f.Reach} {
 		if v != "" {
 			q.Set(k, v)
 		}

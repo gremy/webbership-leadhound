@@ -1381,32 +1381,6 @@ details.inline summary {
   margin-top: 1rem;
   font-size: 0.95rem;
 }
-/* A lead's messages: one full-width row each, the label left and the state right. */
-.lead-message {
-  margin-top: 0.5rem;
-}
-.lead-message > summary {
-  display: flex;
-  width: 100%;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  max-width: 100%;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  text-align: left;
-}
-.lead-message-label {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.lead-message-state {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-.lead-message[open] > summary {
-  margin-bottom: 0.5rem;
-}
 .lead-record .description + .hint {
   margin: 0.35rem 0 0.75rem;
 }
@@ -4157,4 +4131,91 @@ a[aria-current="true"] .count {
     padding-right: var(--sp-3);
     mask-image: linear-gradient(to right, #000 calc(100% - var(--sp-3)), transparent);
   }
+}
+
+/* The lead page's outreach cards and the Leads list's tabs. Every row wraps at 390px: a long
+   address breaks anywhere rather than pushing the page sideways. */
+.next-step,
+.draft-card {
+  min-width: 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+  scroll-margin-top: 72px;
+}
+.next-step {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.draft-card {
+  background: var(--surface-2);
+}
+.next-step > * + *,
+.draft-card > * + * {
+  margin-top: var(--sp-1);
+}
+.next-step + .draft-card,
+.card + .draft-card,
+.draft-card + .draft-card,
+.next-step + .columns {
+  margin-top: var(--sp-2);
+}
+.draft-card textarea {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-height: 160px;
+  resize: vertical;
+}
+.draft-card textarea[readonly] {
+  background: var(--sunken);
+}
+/* A long lead-page badge wraps inside the card; the colour is the usual badge-good, -warn, -bad, -accent. */
+.reach-badge {
+  height: auto;
+  min-height: 22px;
+  max-width: 100%;
+  padding-block: 3px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.contact-row,
+.proposal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+  overflow-wrap: anywhere;
+  scroll-margin-top: 72px;
+}
+.contact-row:first-child,
+.proposal-row:first-child {
+  border-top: 0;
+}
+.contact-row > *,
+.proposal-row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.contact-row > :first-child,
+.proposal-row > :first-child {
+  flex: 1 1 240px;
+}
+/* An opened Edit takes the whole row, so its form has room. */
+.contact-row > details[open],
+.proposal-row > details[open] {
+  flex-basis: 100%;
+}
+/* .tabs scrolls sideways inside itself; this one wraps, for a short row with counts. */
+.tabs-wrap {
+  flex-wrap: wrap;
+  row-gap: 0;
+  overflow-x: visible;
 }

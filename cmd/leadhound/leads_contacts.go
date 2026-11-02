@@ -66,6 +66,11 @@ const leadsContactsUsage = "usage: leadhound leads contacts [--max N (at least 1
 // routes of the orgs that need them (only the named ones with --org), at most N of them.
 // A dry run reads fixtures and touches only orgs on reserved TLDs.
 func runLeadsContacts(ctx context.Context, args []string) error {
+	if len(args) > 0 {
+		if verb, ok := operatorContactVerbs[args[0]]; ok {
+			return verb(ctx, args[1:])
+		}
+	}
 	fs := flag.NewFlagSet("leads contacts", flag.ContinueOnError)
 	var ff fetchFlags
 	ff.register(fs)

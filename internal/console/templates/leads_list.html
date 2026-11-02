@@ -21,12 +21,22 @@
 </section>
 {{end}}
 
+{{if not $v.NoLeads}}
+<nav class="mt-2" aria-label="Next action">
+  <ul class="tabs tabs-wrap">
+    {{range $v.Tabs}}<li><a href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}{{if .Counted}} ({{thousands .Count}}){{end}}</a></li>{{end}}
+  </ul>
+</nav>
+{{end}}
+
 <section class="card mt-2">
   <h2 class="visually-hidden">Filter</h2>
   <div class="card-body">
   <details class="filter-fold">
   <summary>Filters{{with $v.Filters}} · {{.}} on{{end}}</summary>
   <form method="get" action="/leads" class="lead-filters">
+    {{/* A next action picks its own states, so on its tab the Status select, which has no blank choice, stays away: an explicit choice stays in the URL. */}}
+    {{with $f.Reach}}<input type="hidden" name="reach" value="{{.}}">{{if and $f.Status (ne $f.Status "open")}}<input type="hidden" name="status" value="{{$f.Status}}">{{end}}{{end}}
     {{with $o.Kinds}}
     <fieldset>
       <legend>Kind</legend>
@@ -74,12 +84,12 @@
         <label class="label" for="filter-relevance">Relevance at least</label>
         <input class="input" id="filter-relevance" name="min_relevance" type="number" min="0" max="100" step="1" inputmode="numeric" value="{{$f.MinRelevance}}">
       </div>
-      {{with $o.Statuses}}
+      {{if not $f.Reach}}{{with $o.Statuses}}
       <div class="field">
         <label class="label" for="filter-status">Status</label>
         <select class="select" id="filter-status" name="status">{{range .}}<option value="{{.Value}}"{{if eq .Value $f.Status}} selected{{end}}>{{.Label}}</option>{{end}}</select>
       </div>
-      {{end}}
+      {{end}}{{end}}
       {{with $o.Sorts}}
       <div class="field filter-sort">
         <label class="label" for="filter-sort">Sort by</label>
@@ -129,13 +139,14 @@
       <div class="lead-card-head">
         <input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick>
         {{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}
-        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}</span>
+        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{with .Reach}} <span class="{{reachBadge .}}">{{reachWords .}}</span>{{end}}</span>
       </div>
       <span class="item-meta">{{with siteDomain .Domain}}{{.}} · {{end}}{{with .Country}}{{.}} · {{end}}{{.Kind}}{{with .State}} · {{.}}{{end}}</span>
       {{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
       <span class="item-meta">{{template "lead_channels" .}}{{with .Relevance}} · {{.}}{{end}}{{with .Position}} · number {{.}} in the outreach order{{end}}</span>
       {{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}
+      {{if eq .Reach "dead"}}{{with reachReasonWords .ReachReason}}<span class="item-meta">{{.}}</span>{{end}}{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}{{end}}
       {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="badge badge-accent">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
       {{if and $v.Order .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}
       </div>
@@ -166,7 +177,7 @@
       <td>{{.Country}}</td>
       <td>{{.Kind}}{{with .Campaign}}<span class="cell-sub">{{.}}</span>{{end}}</td>
       <td>{{.Finding}}</td>
-      <td>{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}</td>
+      <td>{{with .Reach}}<span class="{{reachBadge .}}">{{reachWords .}}</span> {{end}}{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}{{if eq .Reach "dead"}}{{with reachReasonWords .ReachReason}}<span class="item-meta">{{.}}</span>{{end}}{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}{{end}}</td>
       {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}
       {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="badge badge-accent">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
       {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}

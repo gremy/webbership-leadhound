@@ -1,2 +1,282 @@
-{{/* The lead page's outreach cards. draft_status takes a draftStatusView. */}}
-{{define "draft_status"}}{{end}}
+{{/* The lead page's outreach cards. Each but draft_status takes the page's leadDetailView. draft_status takes a draftStatusView. */}}
+
+{{/* draft_status is the Draft it line: it polls while a request is open, and leaves the trigger out once it ended, which stops the polling. */}}
+{{define "draft_status"}}<div id="draft-status" role="status"{{with .Request}}{{if .Open}} hx-get="/leads/draft-status/{{$.LeadID}}" hx-trigger="every 5s" hx-target="this" hx-swap="outerHTML"{{end}}{{end}}>{{with .Request}}
+  {{if .Open}}<p class="hint">Drafting… asked at {{clock .RequestedAt}}.</p>
+  {{else if eq .Status "failed"}}<p class="notice notice-error">Draft it did not finish{{with .Reason}}: {{.}}{{else}}.{{end}}</p>
+  {{else if eq .Status "done"}}<p class="hint">Drafted{{with .FinishedAt}} at {{clock .}}{{end}}. <a href="/leads/{{$.LeadID}}#drafts">Show the draft</a></p>{{end}}
+{{end}}</div>{{end}}
+
+{{define "send_now_icon"}}<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>{{end}}
+
+{{define "outreach_refusal"}}<div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">{{.}}</p></div></div>{{end}}
+
+{{/* lead_next_step is the bucket in plain words, its reason, and the one primary action. A form or LinkedIn message that can be marked sent wins over everything else; the one due now first. */}}
+{{define "lead_next_step"}}{{$v := .}}{{$d := .Data}}{{$r := $d.Research}}
+{{$mark := 0}}{{range $d.Drafts}}{{if and .CanMarkSent .DueNow (not $mark)}}{{$mark = .MessageID}}{{end}}{{end}}{{range $d.Drafts}}{{if and .CanMarkSent (not $mark)}}{{$mark = .MessageID}}{{end}}{{end}}
+{{$look := and $r.CanAsk (not $r.Open) (not $r.NextAt)}}
+  <section class="card next-step" id="next-step" aria-labelledby="next-step-title">
+    <div class="card-head"><h2 id="next-step-title">Next step</h2><span class="{{reachBadge $d.Reach}}">{{reachWords $d.Reach}}</span></div>
+    <div class="card-body stack-sm">
+    {{if eq $d.Reach "email"}}
+      {{if $d.DiscardBatchID}}
+      <p>A draft is waiting for you: read it, then send it from its batch.</p>
+      <div class="btn-row"><a class="btn btn-primary" href="/leads/batches/{{$d.DiscardBatchID}}">Open the draft</a></div>
+      {{else}}
+      <p>They can be emailed.</p>
+      <form method="post" action="/leads/send-now/preview" class="send-now-lead">
+        <input type="hidden" name="lead" value="{{$d.LeadID}}">
+        <input type="hidden" name="back" value="{{$v.Back}}">
+        <button type="submit" class="btn btn-primary"{{with $d.SendNowBlock}} disabled aria-describedby="send-now-block"{{end}}>{{template "send_now_icon"}}Send now</button>
+      </form>
+      {{end}}
+    {{else if eq $d.Reach "manual"}}
+      {{if $mark}}
+      <p>Copy the text, send it by hand, then mark it sent.</p>
+      <div class="btn-row"><a class="btn btn-primary" href="#draft-{{$mark}}">Copy &amp; mark sent</a></div>
+      {{else if eq $d.Channel "none"}}
+      <p>They have a phone number and nowhere to write to.</p>
+      <div class="btn-row"><a class="btn btn-primary" href="#contact-add">Add a contact</a></div>
+      {{else if $d.DraftItBlock}}
+      <p>Nothing is ready to send. {{$d.DraftItBlock}}.</p>
+      <div class="btn-row"><a class="btn btn-secondary" href="#drafts">See the drafts</a></div>
+      {{else}}
+      <p>Nothing is drafted for {{channelWords $d.Channel}} yet.</p>
+      <form method="post" action="/leads/{{$d.LeadID}}/draft-it" class="next-step-form"><button type="submit" class="btn btn-primary">Draft it</button></form>
+      {{end}}
+    {{else if eq $d.Reach "dead"}}
+      <p>{{reachReasonWords $d.ReachReason}}</p>
+      {{if and $look (or (eq $d.ReachReason "not_searched") (eq $d.ReachReason "nothing"))}}
+      <form method="post" action="/leads/{{$d.LeadID}}/look-again" class="next-step-form">
+        <input type="hidden" name="back" value="{{$v.Back}}#contact-research">
+        <button type="submit" class="btn btn-primary">Look for a contact</button>
+      </form>
+      {{else}}
+      <div class="btn-row"><a class="btn btn-primary" href="#contact-add">Add a contact</a></div>
+      {{end}}
+    {{else if eq $d.Reach "contacted"}}
+      {{if $mark}}
+      <p>They have been contacted. The next message is yours to send.</p>
+      <div class="btn-row"><a class="btn btn-primary" href="#draft-{{$mark}}">Copy &amp; mark sent</a></div>
+      {{else}}<p>They have been contacted. Nothing is due from here.</p>{{end}}
+    {{else}}
+      <p>It is skipped, suppressed or closed, so nothing is due.</p>
+    {{end}}
+    </div>
+  </section>
+{{end}}
+
+{{/* lead_drafts is the Draft it controls, then one card per message of the lead. */}}
+{{define "lead_drafts"}}{{$v := .}}{{$d := .Data}}{{$p := $d.Posted}}
+  <section class="card" id="drafts" aria-labelledby="drafts-title">
+    <div class="card-head"><h2 id="drafts-title">Drafts</h2></div>
+    <div class="card-body stack-sm">
+      {{if $p.On "draft-it" ""}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+      {{template "draft_status" (draftStatusIn $d.LeadID $d.DraftRequest)}}
+      {{if not $d.Drafts}}<p class="muted">Nothing drafted for this lead yet.</p>{{end}}
+      {{with $d.DraftItBlock}}<p class="hint">{{.}}.</p>{{end}}
+      {{if or (not $d.DraftItBlock) $d.DiscardBatchID}}<div class="btn-row">
+        {{if not $d.DraftItBlock}}<form method="post" action="/leads/{{$d.LeadID}}/draft-it"><button type="submit" class="btn btn-secondary">Draft it</button></form>{{end}}
+        {{with $d.DiscardBatchID}}<form method="post" action="/leads/{{$d.LeadID}}/draft-discard">
+          <input type="hidden" name="batch_id" value="{{.}}">
+          <button type="submit" class="btn btn-ghost">Discard</button>
+        </form>{{end}}
+      </div>{{end}}
+    </div>
+  </section>
+  {{range $d.Drafts}}{{$on := $p.On "draft" .MessageID}}
+  <section class="card draft-card" id="draft-{{.MessageID}}" aria-labelledby="draft-title-{{.MessageID}}">
+    <div class="card-head"><h2 id="draft-title-{{.MessageID}}">{{channelWords .Channel}}: {{.Label}}</h2>{{with .State}}<span class="badge">{{.}}</span>{{end}}</div>
+    <div class="card-body stack-sm">
+      {{if $on}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+      {{with .TargetURL}}<p class="small">Send it on {{template "lead_link" .}}</p>{{end}}
+      {{with .To}}<p class="small">To {{.}}</p>{{end}}
+      <p class="message-head">In <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Due}} · due {{when .}}{{end}}{{with .Sent}} · sent {{when .}}{{end}}{{if eq .Origin "draft_it"}} · from Draft it{{end}}</p>
+      <p class="hint">{{if .Fallback}}Written from the template, because {{.Fallback}}.{{else if eq .Writer "claude"}}Written by Claude.{{else}}Written from the template.{{end}}{{if .Shadow}} A shadow batch: nothing is really sent or marked sent.{{end}}</p>
+      {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
+      <label class="visually-hidden" for="draft-text-{{.MessageID}}">The text of {{.Label}}</label>
+      <textarea class="input textarea" id="draft-text-{{.MessageID}}" rows="8" readonly>{{.Body}}</textarea>
+      {{if .Note}}<p class="hint">{{.NoteLength}} of {{$d.NoteMax}} characters</p>{{end}}
+      <div class="btn-row">
+        <button type="button" class="btn btn-secondary" data-copy="draft-text-{{.MessageID}}">Copy</button>
+        {{if .CanMarkSent}}<form method="post" action="/leads/{{$d.LeadID}}/drafts/{{.MessageID}}/sent">
+          <input type="hidden" name="hash" value="{{.BatchHash}}">
+          <button type="submit" class="btn btn-primary">Mark sent</button>
+        </form>{{end}}
+      </div>
+      {{if .Editable}}<details class="fact-more"{{if $on}} open{{end}}>
+        <summary>Edit</summary>
+        <form method="post" action="/leads/{{$d.LeadID}}/drafts/{{.MessageID}}/save" class="stack-sm">
+          {{if eq .Channel "email"}}<div class="field"><label class="label" for="draft-subject-{{.MessageID}}">Subject</label>
+            <input class="input" id="draft-subject-{{.MessageID}}" name="subject" maxlength="{{maxDraftSubject}}" autocomplete="off" value="{{if $on}}{{$p.Field "subject" .Subject}}{{else}}{{.Subject}}{{end}}"></div>{{end}}
+          <div class="field"><label class="label" for="draft-body-{{.MessageID}}">Text</label>
+            <textarea class="input textarea" id="draft-body-{{.MessageID}}" name="body" rows="8" maxlength="{{maxDraftBody}}">{{if $on}}{{$p.Field "body" .Body}}{{else}}{{.Body}}{{end}}</textarea></div>
+          <div class="btn-row"><button type="submit" class="btn btn-secondary">Save the text</button></div>
+        </form>
+      </details>{{end}}
+      {{if .Edited}}<details class="fact-more">
+        <summary>Show the original</summary>
+        {{with .OriginalSubject}}<p class="message-head">Subject: {{.}}</p>{{end}}
+        <div class="message-body">{{.OriginalBody}}</div>
+      </details>{{end}}
+    </div>
+  </section>
+  {{end}}
+{{end}}
+
+{{/* lead_contacts is every contact of the lead's org, the Add form, and the contact research line. */}}
+{{define "lead_contacts"}}{{$v := .}}{{$d := .Data}}{{$p := $d.Posted}}{{$r := $d.Research}}{{$add := $p.On "contact-add" ""}}
+  <section class="card" id="contacts" aria-labelledby="contacts-title">
+    <div class="card-head"><h2 id="contacts-title">Contacts</h2></div>
+    <div class="card-body">
+    {{if $d.Contacts}}
+    <ul class="item-list">
+      {{range $d.Contacts}}{{$on := $p.On "contact" .CID}}{{$off := $p.On "contact-retire" .CID}}
+      <li class="contact-row{{if .Retired}} is-retired{{end}}" id="contact-{{.CID}}">
+        <span class="item-head">{{contactKindWords .Kind}}: {{if eq .Kind "person"}}{{.Name}}{{with .Role}}, {{.}}{{end}}{{else}}{{template "lead_link" .Value}}{{with .Name}} ({{.}}){{end}}{{end}}</span>
+        <span class="cluster">{{with provenanceWords .Provenance}}<span class="badge">{{.}}</span>{{end}}{{if .Chosen}}<span class="badge badge-accent">used for this lead</span>{{end}}{{if .Retired}}<span class="badge">retired</span>{{end}}{{with when .FoundAt}}<span class="item-meta">{{.}}</span>{{end}}</span>
+        {{with .Note}}<span class="item-meta">{{.}}</span>{{end}}
+        {{with .ReplacedBy}}<span class="item-meta">Replaced by {{template "lead_link" .}}</span>{{end}}
+        {{with .PageURL}}<span class="item-meta">Found on {{template "lead_link" .}}</span>{{end}}
+        {{with .MailServer}}<span class="item-meta">{{.}}</span>{{end}}
+        {{if .Check}}<span class="item-meta">{{.Check}}{{with .CheckedAt}} · {{when .}}{{end}}</span>{{end}}
+        {{with .Warning}}<p class="notice notice-warn">{{.}}</p>{{end}}
+        {{if $on}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+        {{if $off}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+        <details class="fact-more"{{if $on}} open{{end}}>
+          <summary>{{if .Retired}}Edit or use it again{{else}}Edit{{end}}</summary>
+          <form method="post" action="/leads/{{$d.LeadID}}/contacts/{{.CID}}/edit" class="stack-sm">
+            {{if eq .Kind "person"}}
+            <div class="field"><label class="label" for="contact-name-{{.CID}}">Name</label>
+              <input class="input" id="contact-name-{{.CID}}" name="name" maxlength="{{maxPersonName}}" autocomplete="off" value="{{if $on}}{{$p.Field "name" .Name}}{{else}}{{.Name}}{{end}}"></div>
+            <div class="field"><label class="label" for="contact-role-{{.CID}}">Role</label>
+              <input class="input" id="contact-role-{{.CID}}" name="role" maxlength="{{maxPersonRole}}" autocomplete="off" value="{{if $on}}{{$p.Field "role" .Role}}{{else}}{{.Role}}{{end}}"></div>
+            {{else}}
+            <div class="field"><label class="label" for="contact-value-{{.CID}}">Address, number or link</label>
+              <input class="input" id="contact-value-{{.CID}}" name="value" maxlength="{{maxContactValue}}" autocomplete="off" value="{{if $on}}{{$p.Field "value" .Value}}{{else}}{{.Value}}{{end}}"></div>
+            {{end}}
+            <div class="field"><label class="label" for="contact-note-{{.CID}}">Note (up to {{maxContactNote}} characters)</label>
+              <input class="input" id="contact-note-{{.CID}}" name="note" maxlength="{{maxContactNote}}" autocomplete="off" value="{{if $on}}{{$p.Field "note" .Note}}{{else}}{{.Note}}{{end}}"></div>
+            <div class="btn-row"><button type="submit" class="btn btn-secondary">Save the contact</button></div>
+          </form>
+        </details>
+        {{if not .Retired}}<details class="fact-more"{{if $off}} open{{end}}>
+          <summary>Retire</summary>
+          <form method="post" action="/leads/{{$d.LeadID}}/contacts/{{.CID}}/retire" class="stack-sm">
+            <div class="field"><label class="label" for="contact-retire-{{.CID}}">Why (optional)</label>
+              <input class="input" id="contact-retire-{{.CID}}" name="note" maxlength="{{maxContactNote}}" autocomplete="off" value="{{if $off}}{{$p.Field "note" ""}}{{end}}"></div>
+            <div class="btn-row"><button type="submit" class="btn btn-ghost">Retire it</button></div>
+          </form>
+        </details>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="muted">No contacts yet.</p>{{end}}
+    <form method="post" action="/leads/{{$d.LeadID}}/contacts" class="stack-sm" id="contact-add">
+      <h3>Add a contact</h3>
+      {{if $add}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+      {{$kind := ""}}{{if $add}}{{$kind = $p.Field "kind" ""}}{{end}}
+      <div class="field"><label class="label" for="contact-add-kind">Kind</label>
+        <select class="select" id="contact-add-kind" name="kind">
+          {{range contactKinds}}<option value="{{.}}"{{if eq . $kind}} selected{{end}}>{{contactKindWords .}}</option>{{end}}
+        </select></div>
+      <div class="field"><label class="label" for="contact-add-value">Address, number or link</label>
+        <input class="input" id="contact-add-value" name="value" maxlength="{{maxContactValue}}" autocomplete="off" value="{{if $add}}{{$p.Field "value" ""}}{{end}}"></div>
+      <div class="field"><label class="label" for="contact-add-name">Name (a person only)</label>
+        <input class="input" id="contact-add-name" name="name" maxlength="{{maxPersonName}}" autocomplete="off" value="{{if $add}}{{$p.Field "name" ""}}{{end}}"></div>
+      <div class="field"><label class="label" for="contact-add-role">Role (a person only)</label>
+        <input class="input" id="contact-add-role" name="role" maxlength="{{maxPersonRole}}" autocomplete="off" value="{{if $add}}{{$p.Field "role" ""}}{{end}}"></div>
+      {{$people := false}}{{range $d.Contacts}}{{if and (eq .Kind "person") (not .Retired)}}{{$people = true}}{{end}}{{end}}
+      {{if $people}}{{$who := ""}}{{if $add}}{{$who = $p.Field "person_id" ""}}{{end}}
+      <div class="field"><label class="label" for="contact-add-person">Whose it is (optional)</label>
+        <select class="select" id="contact-add-person" name="person_id">
+          <option value="">No one</option>
+          {{range $d.Contacts}}{{if and (eq .Kind "person") (not .Retired)}}<option value="{{.PersonID}}"{{if eq (printf "%d" .PersonID) $who}} selected{{end}}>{{.Name}}{{with .Role}}, {{.}}{{end}}</option>{{end}}{{end}}
+        </select></div>
+      {{end}}
+      <div class="field"><label class="label" for="contact-add-note">Note (up to {{maxContactNote}} characters)</label>
+        <input class="input" id="contact-add-note" name="note" maxlength="{{maxContactNote}}" autocomplete="off" value="{{if $add}}{{$p.Field "note" ""}}{{end}}"></div>
+      <div class="btn-row"><button type="submit" class="btn btn-secondary">Add the contact</button></div>
+    </form>
+    {{if or $r.Status $r.CanAsk}}
+    <div class="research" id="contact-research">
+      <h3>Contact research</h3>
+      <p class="research-line">{{with researchLine $r}}{{.}}{{else}}Not looked for yet.{{end}}</p>
+      {{if and $r.CanAsk (not $r.Open)}}
+      {{if $r.NextAt}}<p class="hint">It can look again from {{researchNext $r.NextAt}}: one search per organisation every 90 days.</p>
+      {{else}}<form method="post" action="/leads/{{$d.LeadID}}/look-again" class="research-form">
+        <input type="hidden" name="back" value="{{$v.Back}}#contact-research">
+        <button type="submit" class="btn btn-secondary">Look again</button>
+      </form>
+      <p class="hint mt-1">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else if eq $w "linkedin"}}a LinkedIn page{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
+      {{end}}
+      {{end}}
+    </div>
+    {{end}}
+    </div>
+  </section>
+{{end}}
+
+{{/* lead_proposals lists the lead's proposals, each with its status buttons, and the add form. The currencies come from the CRM panel, which the real backend always has. */}}
+{{define "lead_proposals"}}{{$d := .Data}}{{$p := $d.Posted}}{{$add := $p.On "proposal-add" ""}}{{$c := .CRM}}
+  <section class="card" id="proposals" aria-labelledby="proposals-title">
+    <div class="card-head"><h2 id="proposals-title">Proposals</h2></div>
+    <div class="card-body">
+    {{if $d.Proposals}}
+    <ul class="item-list">
+      {{range $d.Proposals}}{{$on := $p.On "proposal" .ID}}{{$cur := .Status}}
+      <li class="proposal-row" id="proposal-{{.ID}}">
+        <span class="item-head">{{if webURL .URL}}<a href="{{.URL}}" rel="noopener noreferrer nofollow">{{.Title}}</a>{{else}}{{.Title}}{{end}}{{with money .ValueCents .Currency}} · {{.}}{{end}}</span>
+        <span class="cluster"><span class="badge">{{proposalStatusWords .Status}}</span><span class="item-meta">{{when .StatusAt}}</span></span>
+        {{with .StatusNote}}<span class="item-meta">{{.}}</span>{{end}}
+        {{if eq .Status "accepted"}}<span class="item-meta">If the deal is won, <a href="#crm-stage">set the stage to Won</a>.</span>{{end}}
+        {{if $on}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+        <form method="post" action="/leads/{{$d.LeadID}}/proposals/{{.ID}}/status" class="stack-sm">
+          <div class="field"><label class="label" for="proposal-note-{{.ID}}">Note (optional)</label>
+            <input class="input" id="proposal-note-{{.ID}}" name="note" maxlength="{{maxProposalNote}}" autocomplete="off" value="{{if $on}}{{$p.Field "note" ""}}{{end}}"></div>
+          <div class="btn-row" role="group" aria-label="Status of {{.Title}}">
+            {{range proposalStatuses}}{{if ne . $cur}}<button type="submit" name="status" value="{{.}}" class="btn btn-ghost btn-sm">{{proposalStatusWords .}}</button>{{end}}{{end}}
+          </div>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="muted">No proposals yet.</p>{{end}}
+    <form method="post" action="/leads/{{$d.LeadID}}/proposals" class="stack-sm" id="proposal-add">
+      <h3>Add a proposal</h3>
+      {{if $add}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+      <div class="field"><label class="label" for="proposal-title">Title (up to {{maxProposalTitle}} characters)</label>
+        <input class="input" id="proposal-title" name="title" maxlength="{{maxProposalTitle}}" autocomplete="off" value="{{if $add}}{{$p.Field "title" ""}}{{end}}"></div>
+      <div class="field"><label class="label" for="proposal-url">Link (optional, https://)</label>
+        <input class="input" id="proposal-url" name="url" type="url" maxlength="{{maxOutreachURL}}" autocomplete="off" value="{{if $add}}{{$p.Field "url" ""}}{{end}}"></div>
+      <div class="deal-fields">
+        <div class="field field-grow"><label class="label" for="proposal-value">Value (empty for none)</label>
+          <input class="input" id="proposal-value" name="value" inputmode="decimal" autocomplete="off" value="{{if $add}}{{$p.Field "value" ""}}{{end}}"></div>
+        <div class="field"><label class="label" for="proposal-currency">Currency</label>
+          {{$pick := $c.F.Currency}}{{if $add}}{{$pick = $p.Field "currency" $c.F.Currency}}{{end}}
+          <select class="select input-narrow" id="proposal-currency" name="currency">
+            {{range $c.Currencies}}<option value="{{.}}"{{if eq . $pick}} selected{{end}}>{{.}}</option>{{end}}
+          </select></div>
+      </div>
+      <div class="btn-row"><button type="submit" class="btn btn-secondary">Add the proposal</button></div>
+    </form>
+    </div>
+  </section>
+{{end}}
+
+{{/* lead_sector is the org's sector, the closed list as a select. */}}
+{{define "lead_sector"}}{{$d := .Data}}{{$p := $d.Posted}}{{$on := $p.On "sector" ""}}{{$pick := $d.Sector}}{{if $on}}{{$pick = $p.Field "sector" $d.Sector}}{{end}}
+  <section class="card" id="sector" aria-labelledby="sector-title">
+    <div class="card-head"><h2 id="sector-title">Sector</h2>{{with $d.SectorWords}}<span class="small muted">{{.}}</span>{{end}}</div>
+    <form class="card-body stack-sm" method="post" action="/leads/{{$d.LeadID}}/sector">
+      {{if $on}}{{template "outreach_refusal" $p.Refusal}}{{end}}
+      {{if $d.SectorByRule}}<p class="hint">Guessed from the domain.</p>{{end}}
+      <div class="field"><label class="label" for="sector-select">Sector</label>
+        <select class="select" id="sector-select" name="sector">
+          {{if not $pick}}<option value="" selected>Not set</option>{{end}}
+          {{range $d.SectorOptions}}<option value="{{.Value}}"{{if eq .Value $pick}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select></div>
+      <div class="btn-row"><button type="submit" class="btn btn-secondary">Save the sector</button></div>
+    </form>
+  </section>
+{{end}}

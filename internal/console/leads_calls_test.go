@@ -380,7 +380,7 @@ func TestCallOutcomeCrossOrigin(t *testing.T) {
 	}
 }
 
-// TestLeadSequenceSection: the lead page words each step's state, after Messages, and links
+// TestLeadSequenceSection: the lead page words each step's state and links
 // a call step to its card; a lead with no steps says when they start.
 func TestLeadSequenceSection(t *testing.T) {
 	h := newHarness(t, richBackend("Northwind Trading"), false)

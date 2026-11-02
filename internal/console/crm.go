@@ -706,7 +706,8 @@ func (s *server) callBackDay(v, outcome string) (*time.Time, string) {
 	return d, ""
 }
 
-// timelineDot is a timeline item's dot class, by its kind.
+// timelineDot is a timeline item's dot class, by its kind: something sent, a move in the deal, the
+// work on a draft, and everything else (contacts and the sector among them) in the plain dot.
 func timelineDot(kind string) string {
 	switch kind {
 	case TimelineReply:
@@ -717,8 +718,12 @@ func timelineDot(kind string) string {
 		return "tl-stage"
 	case TimelineCheck:
 		return "tl-check"
-	case TimelineEmail:
+	case TimelineEmail, TimelineDone:
 		return "tl-email"
+	case TimelineProposal:
+		return "tl-stage"
+	case TimelineDraft, TimelineEdit, TimelineResearch:
+		return "tl-check"
 	}
 	return "tl-event"
 }

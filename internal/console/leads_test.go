@@ -832,15 +832,14 @@ func TestLeadListFiltersEchoed(t *testing.T) {
 }
 
 // TestLeadDetailPage: a lead's page shows every section in the Detail order; a fetched URL
-// is a link that sends no referrer and is not followed, and a message's body sits inside
-// its own details.
+// is a link that sends no referrer and is not followed.
 func TestLeadDetailPage(t *testing.T) {
 	h := newHarness(t, richBackend("Northwind Trading"), false)
 	body := h.do(get("/leads/5", h.session(t))).Body.String()
 	last := -1
-	for _, section := range []string{"<h2>Finding</h2>", "<h2>Ways to reach them</h2>", "<h2>From their site</h2>",
+	for _, section := range []string{"<h2>Finding</h2>", "<h2>From their site</h2>",
 		`<h2 id="call-title">Your call</h2>`, "<h2>Agency page</h2>", "<h2>The site</h2>", "<h2>History</h2>",
-		"<h2>Place in the queue</h2>", "<h2>Messages</h2>", "<h2>Sequence</h2>", "<h2>Why it ranks here</h2>"} {
+		"<h2>Place in the queue</h2>", "<h2>Sequence</h2>", "<h2>Why it ranks here</h2>"} {
 		i := strings.Index(body, section)
 		if i < 0 || i < last {
 			t.Errorf("%s missing or out of order", section)
@@ -857,14 +856,12 @@ func TestLeadDetailPage(t *testing.T) {
 		"generator: Northwind Trading",
 		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow">https://northwind.example/</a>`,
 		`ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
-		"email: info@northwind.example", "mail server found",
-		"&#43;44 20 7946 0000", `<div class="description">Northwind Trading</div>`,
+		`<div class="description">Northwind Trading</div>`,
 		`LinkedIn: <a href="https://social.example/northwind" rel="noopener noreferrer nofollow">https://social.example/northwind</a>`,
 		"LeadHound never opens them.",
 		`<a href="https://agency.example/drupal" rel="noopener noreferrer nofollow">`, "“Northwind Trading”",
 		"<dt>List rank</dt><dd>12,345</dd>", "<dt>Found through</dt><dd>Northwind Trading</dd>",
-		"finder · Northwind Trading", `In <a href="/leads/batches/3">batch 3</a> · due Sat 24 Oct 04:50`,
-		"Subject: Northwind Trading", "Runs Drupal 10: &#43;30",
+		"finder · Northwind Trading", "Runs Drupal 10: &#43;30",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the lead page lacks %q", want)
@@ -875,18 +872,13 @@ func TestLeadDetailPage(t *testing.T) {
 	if strings.Contains(body, "<h2>Relevance</h2>") || strings.Contains(body, "Not rated yet.") {
 		t.Error("the lead page still has a Relevance section")
 	}
-	open := strings.Index(body, `<details class="lead-message">`)
-	msg := strings.Index(body, "<div class=\"message-body\">Northwind Trading\n\nBest</div>")
-	shut := strings.Index(body[max(open, 0):], "</details>") + max(open, 0)
-	if open < 0 || msg < open || msg > shut {
-		t.Error("the message body is not inside its details")
-	}
 }
 
 // TestLeadDetailSendNowBlock: a lead Send now cannot send shows the button off, tied to the
 // reason beside it; a sendable lead shows it on with no reason.
 func TestLeadDetailSendNowBlock(t *testing.T) {
 	b := richBackend("Northwind Trading")
+	b.detail.Reach, b.detail.DiscardBatchID = ReachEmail, 0
 	h := newHarness(t, b, false)
 	c := h.session(t)
 	body := h.do(get("/leads/5", c)).Body.String()
@@ -1328,16 +1320,9 @@ func TestLeadDetailSignalsByFetch(t *testing.T) {
 	}
 }
 
-// TestLeadMessagesRows: the lead page lists its messages as one full-width row each, the
-// label on the left and the state on the right, the channel said once (in the label); and a
-// Today section's number badge sits on its heading's first line, however it wraps.
-func TestLeadMessagesRows(t *testing.T) {
-	h := newHarness(t, richBackend("Northwind Trading"), false)
-	body := h.do(get("/leads/5", h.session(t))).Body.String()
-	want := `<summary><span class="lead-message-label">email 1 of 3</span><span class="lead-message-state">draft</span></summary>`
-	if !strings.Contains(body, want) {
-		t.Errorf("the lead page lacks %q", want)
-	}
+// TestTodaySectionRules: a Today section's number badge sits on its heading's first line, however
+// it wraps, and a disabled outcome button looks it.
+func TestTodaySectionRules(t *testing.T) {
 	css, err := staticFS.ReadFile("static/console.css")
 	if err != nil {
 		t.Fatal(err)
@@ -1351,7 +1336,6 @@ func TestLeadMessagesRows(t *testing.T) {
 		return r[:strings.Index(r, "}")]
 	}
 	for sel, decls := range map[string][]string{
-		".lead-message > summary":          {"display: flex;", "width: 100%;"},
 		".today-section h2":                {"align-items: flex-start;"},
 		".today-step":                      {"margin-top: calc((1lh - 1.6rem) / 2);"},
 		".outcome-buttons button:disabled": {"cursor: not-allowed;", "border-style: dashed;"},

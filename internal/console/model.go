@@ -1759,19 +1759,35 @@ func ReachWords(bucket string) string {
 	return "Other"
 }
 
-// ReachReasonWords is why a lead is a dead end, as one plain sentence; "" for no reason.
+// ReachBadge is a next action's badge classes: its colour by bucket, none for Other.
+func ReachBadge(bucket string) string {
+	switch bucket {
+	case ReachEmail:
+		return "badge reach-badge badge-good"
+	case ReachManual:
+		return "badge reach-badge badge-warn"
+	case ReachDead:
+		return "badge reach-badge badge-bad"
+	case ReachContacted:
+		return "badge reach-badge badge-accent"
+	}
+	return "badge reach-badge"
+}
+
+// ReachReasonWords is why a lead is a dead end in plain words, the one wording the list and the
+// lead's page share; "" for no reason.
 func ReachReasonWords(reason string) string {
 	switch reason {
 	case ReachLooking:
-		return "Looking for a contact now."
+		return "Looking for a contact"
 	case ReachNothing:
-		return "Searched; nothing found."
+		return "Nothing found"
 	case ReachFound:
-		return "A contact was found. The next lead build puts it to use."
+		return "A contact was found; the next build picks it up"
 	case ReachNotSearched:
-		return "Star it or press Look for a contact."
+		return "Not searched yet"
 	case ReachCountry:
-		return "Its country is off in your settings."
+		return "This country is off in your settings"
 	}
 	return ""
 }

@@ -1,10 +1,77 @@
 {{define "content"}}
+{{$v := .Data}}{{$f := $v.Form}}
 <div class="page">
 <div class="page-head">
   <div>
     <span class="eyebrow"><a href="/leads/home">Leads</a> / Proof</span>
     <h1>Proof</h1>
+    <p class="page-sub">One true line per piece of work. A line without a public page is used without a link.</p>
   </div>
+</div>
+<div class="stack">
+<section class="card" aria-labelledby="proof-list-title">
+  <div class="card-head"><h2 id="proof-list-title">In use</h2></div>
+  <div class="card-body">
+  {{if $v.Proofs}}
+  <ul class="item-list">
+    {{range $v.Proofs}}
+    <li>
+      <span class="item-head">{{.Title}}</span>
+      <p>{{.Line}}</p>
+      <p class="item-meta">{{range .Sectors}}<span class="tag">{{.Label}}</span> {{end}}· {{if and .Public .URL}}<a href="{{.URL}}" rel="noopener noreferrer nofollow">{{.URL}}</a>{{else}}spoken line only{{end}} · added {{when .At}}</p>
+      <details class="mt-1"{{if eq $v.RetireID .ID}} open{{end}}>
+        <summary>Retire…</summary>
+        <form method="post" action="/leads/proof/{{.ID}}/retire" class="stack mt-1">
+          <div class="field">
+            <label class="label" for="proof-reason-{{.ID}}">Reason (optional, up to 200 characters)</label>
+            <input class="input" id="proof-reason-{{.ID}}" name="reason" maxlength="200" autocomplete="off"{{if eq $v.RetireID .ID}} value="{{$v.RetireReason}}" aria-invalid="true"{{end}}>
+          </div>
+          <div class="form-actions"><button type="submit" class="btn btn-secondary btn-sm">Retire<span class="visually-hidden"> {{.Title}}</span></button></div>
+        </form>
+      </details>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <div class="empty empty-compact">
+    <p class="empty-title">No proof yet.</p>
+    <p class="empty-text">Until you add one, drafts use the proof line in the campaign's file.</p>
+  </div>
+  {{end}}
+  </div>
+</section>
+<section class="card" id="proof-add" aria-labelledby="proof-add-title">
+  <div class="card-head"><h2 id="proof-add-title">Add a proof</h2></div>
+  <div class="card-body">
+  <form method="post" action="/leads/proof" class="settings-form">
+    <div class="field">
+      <label class="label" for="proof-title">Title (up to 80 characters)</label>
+      <input class="input" id="proof-title" name="title" maxlength="80" value="{{$f.Title}}" autocomplete="off" required{{if eq $f.Field "title"}} aria-invalid="true"{{end}}>
+      <p class="hint">Only you see this.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="proof-line">Line (up to 240 characters)</label>
+      <textarea class="input textarea" id="proof-line" name="line" maxlength="240" rows="3" required{{if eq $f.Field "line"}} aria-invalid="true"{{end}}>{{$f.Line}}</textarea>
+      <p class="hint">A draft may use this sentence word for word.</p>
+    </div>
+    <div class="field">
+      <label class="label" for="proof-url">Link (optional, https://)</label>
+      <input class="input" id="proof-url" name="url" type="url" maxlength="500" value="{{$f.URL}}" placeholder="https://harbourlane.example/work" autocomplete="off"{{if eq $f.Field "url"}} aria-invalid="true"{{end}}>
+    </div>
+    <fieldset{{if eq $f.Field "sectors"}} aria-invalid="true"{{end}}>
+      <legend class="label">Sectors it serves</legend>
+      <div class="checks">
+        {{range $v.Sectors}}<label><input type="checkbox" name="sectors" value="{{.Value}}"{{if $f.Ticked .Value}} checked{{end}}> {{.Label}}</label>{{end}}
+      </div>
+    </fieldset>
+    <div class="checks">
+      <label><input type="checkbox" name="public" value="1" aria-describedby="proof-public-hint"{{if $f.Public}} checked{{end}}> It has a public page</label>
+    </div>
+    <p id="proof-public-hint" class="hint">With this off it is a spoken line only: a link typed above is kept but never goes in a draft.</p>
+    <div class="form-actions"><button type="submit" class="btn btn-primary">Add proof</button></div>
+  </form>
+  </div>
+</section>
 </div>
 </div>
 {{end}}

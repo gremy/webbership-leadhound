@@ -97,3 +97,47 @@
   var left = cur.getBoundingClientRect().left - ul.getBoundingClientRect().left + ul.scrollLeft;
   ul.scrollLeft = Math.max(0, left - (ul.clientWidth - cur.offsetWidth) / 2);
 })();
+
+// A Copy button: <button type="button" data-copy="<id of a textarea>">. One listener on the
+// document, so a button in a re-rendered fragment works too. The button says "Copied" only when
+// the clipboard took the text; when it cannot, the text is selected for copying by hand.
+(function () {
+  "use strict";
+  var COPIED_MS = 2000;
+  var flashing = new WeakMap();
+  function flash(btn) {
+    var f = flashing.get(btn);
+    if (f) {
+      clearTimeout(f.timer);
+    } else {
+      f = { label: btn.textContent };
+      flashing.set(btn, f);
+    }
+    btn.textContent = "Copied";
+    f.timer = setTimeout(function () {
+      btn.textContent = f.label;
+      flashing.delete(btn);
+    }, COPIED_MS);
+  }
+  function select(box) {
+    box.focus();
+    box.select();
+    box.setSelectionRange(0, box.value.length);
+  }
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-copy]");
+    var box = btn && document.getElementById(btn.getAttribute("data-copy"));
+    if (!box) {
+      return;
+    }
+    if (!navigator.clipboard) {
+      select(box);
+      return;
+    }
+    navigator.clipboard.writeText(box.value).then(function () {
+      flash(btn);
+    }, function () {
+      select(box);
+    });
+  });
+})();

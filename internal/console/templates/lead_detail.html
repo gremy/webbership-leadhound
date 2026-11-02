@@ -9,11 +9,11 @@
   </div>
   <div class="btn-row">
     <div class="lead-star">{{template "lead_star" (leadAct $d.LeadID (or (and $d.Starred "unstar") "star") (or (and $d.Starred "Unstar") "Star") $v.Back "")}}</div>
-    <form method="post" action="/leads/send-now/preview" class="send-now-lead">
+    {{if ne $d.Reach "email"}}<form method="post" action="/leads/send-now/preview" class="send-now-lead">
       <input type="hidden" name="lead" value="{{$d.LeadID}}">
       <input type="hidden" name="back" value="{{$v.Back}}">
-      <button type="submit" class="btn btn-primary"{{with $d.SendNowBlock}} disabled aria-describedby="send-now-block"{{end}}><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Send now</button>
-    </form>
+      <button type="submit" class="btn btn-secondary"{{with $d.SendNowBlock}} disabled aria-describedby="send-now-block"{{end}}>{{template "send_now_icon"}}Send now</button>
+    </form>{{end}}
   </div>
 </div>
 {{with $d.SendNowBlock}}<p class="hint send-now-block" id="send-now-block">Send now is off for this lead. {{.}}</p>{{end}}
@@ -21,8 +21,13 @@
 {{if and $v.Message (not $v.AtCall)}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 
 <article class="record lead-record" id="lead-{{$d.LeadID}}">
+{{template "lead_next_step" $v}}
 <div class="columns">
 <div class="stack">
+
+  {{template "lead_drafts" $v}}
+
+  {{template "lead_contacts" $v}}
 
   <section class="card">
     <div class="card-head"><h2>Finding</h2></div>
@@ -60,44 +65,8 @@
   {{end}}{{end}}{{end}}
 
   <section class="card">
-    <div class="card-head"><h2>Ways to reach them</h2></div>
-    <div class="card-body">
-    {{if $d.Routes}}
-    <ul class="item-list">
-      {{range $d.Routes}}
-      <li>
-        <span class="item-head">{{.Kind}}: {{template "lead_link" .Value}}</span>
-        {{with .Note}}<span class="item-meta">{{.}}</span>{{end}}
-        {{if .Check}}<span class="item-meta">{{.Check}}{{with .CheckedAt}} · {{when .}}{{end}}</span>{{end}}
-        {{if or .PageURL .FoundAt}}<span class="item-meta">{{with .PageURL}}Found on {{template "lead_link" .}}{{end}}{{if and .PageURL .FoundAt}} · {{end}}{{with .FoundAt}}{{when .}}{{end}}</span>{{end}}
-      </li>
-      {{end}}
-    </ul>
-    {{else}}<p class="muted">No email address or contact form found yet.</p>{{end}}
-    {{$r := $d.Research}}
-    {{if or $r.Status $r.CanAsk}}
-    <div class="research" id="contact-research">
-      <h3>Contact research</h3>
-      <p class="research-line">{{with researchLine $r}}{{.}}{{else}}Not looked for yet.{{end}}</p>
-      {{if and $r.CanAsk (not $r.Open)}}
-      {{if $r.NextAt}}<p class="hint">It can look again from {{researchNext $r.NextAt}}: one search per organisation every 90 days.</p>
-      {{else}}<form method="post" action="/leads/{{$d.LeadID}}/look-again" class="research-form">
-        <input type="hidden" name="back" value="{{$v.Back}}#contact-research">
-        <button type="submit" class="btn btn-secondary">Look again</button>
-      </form>
-      <p class="hint mt-1">The research job searches their published pages for {{if eq (len $r.Want) 0}}a contact{{else}}{{range $i, $w := $r.Want}}{{if $i}} or {{end}}{{if eq $w "phone"}}a business phone{{else if eq $w "linkedin"}}a LinkedIn page{{else}}an impersonal role email{{end}}{{end}}{{end}} and keeps only what it can check on the page.</p>
-      {{end}}
-      {{end}}
-    </div>
-    {{end}}
-    </div>
-  </section>
-
-  <section class="card">
     <div class="card-head"><h2>{{or $d.ReachTitle "From their site"}}</h2></div>
     <div class="card-body">
-    <h3>Phone numbers</h3>
-    {{if $d.Phones}}<ul class="item-list">{{range $d.Phones}}{{template "lead_fact" .}}{{end}}</ul>{{else}}<p class="muted">None found.</p>{{end}}
     <h3>Description</h3>
     {{if $d.Descriptions}}
     {{range $d.Descriptions}}
@@ -135,12 +104,14 @@
     </div>
   </section>
 
-  {{with $v.CRM}}{{template "crm_timeline" .Timeline}}{{end}}
+  {{if $v.CRM}}{{template "lead_proposals" $v}}{{end}}
+
+  {{template "lead_sector" $v}}
 
 </div>
 <div class="stack">
 
-  {{with $v.CRM}}{{template "crm_panels" .}}{{end}}
+  {{with $v.CRM}}{{template "crm_panels" .}}{{template "crm_timeline" .Timeline}}{{end}}
 
   <section class="card">
     <div class="card-head"><h2>Details</h2></div>
@@ -221,22 +192,6 @@
     <div class="card-head"><h2>Place in the queue</h2></div>
     <div class="card-body">
     {{with $d.Priority}}<p>{{.Words}}</p><p class="hint">{{when .At}}{{with .Actor}} · {{.}}{{end}}</p>{{else}}<p class="muted">Not steered: it takes its place by score.</p>{{end}}
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="card-head"><h2>Messages</h2></div>
-    <div class="card-body">
-    {{if $d.Messages}}
-    {{range $d.Messages}}
-    <details class="lead-message">
-      <summary><span class="lead-message-label">{{.Label}}</span>{{with .State}}<span class="lead-message-state">{{.}}</span>{{end}}</summary>
-      <p class="message-head">In <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Due}} · due {{when .}}{{end}}{{with .Sent}} · sent {{when .}}{{end}}</p>
-      {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
-      <div class="message-body">{{.Body}}</div>
-    </details>
-    {{end}}
-    {{else}}<p class="muted">Nothing drafted for this lead yet.</p>{{end}}
     </div>
   </section>
 

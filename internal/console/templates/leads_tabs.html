@@ -1,5 +1,5 @@
 {{/* lead_channels is how a lead of the list or the lead page can be reached, in words. */}}
-{{define "lead_channels"}}{{if or .HasEmail .HasForm .HasPhone}}{{if .HasEmail}}email{{end}}{{if and .HasEmail (or .HasForm .HasPhone)}} · {{end}}{{if .HasForm}}form{{end}}{{if and .HasForm .HasPhone}} · {{end}}{{if .HasPhone}}phone{{end}}{{else}}no way to reach yet{{end}}{{end}}
+{{define "lead_channels"}}{{if or .HasEmail .HasForm .HasLinkedIn .HasPhone}}{{$s := ""}}{{if .HasEmail}}email{{$s = " · "}}{{end}}{{if .HasForm}}{{$s}}form{{$s = " · "}}{{end}}{{if .HasLinkedIn}}{{$s}}LinkedIn{{$s = " · "}}{{end}}{{if .HasPhone}}{{$s}}phone{{end}}{{else}}no way to reach yet{{end}}{{end}}
 
 {{/* lead_star is a lead's star toggle: the star alone with the lead's name for a screen reader, or the star and Label in words. */}}
 {{define "lead_star"}}{{$on := eq .Do "unstar"}}<form method="post" action="/leads/{{.ID}}/{{.Do}}" class="star-form"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="star-toggle{{if $on}} is-starred{{end}}"{{if not .Label}} title="{{if $on}}Unstar{{else}}Star{{end}}"{{end}}><span aria-hidden="true">{{if $on}}★{{else}}☆{{end}}</span>{{if .Label}} {{.Label}}{{else}}<span class="visually-hidden">{{if $on}}Unstar{{else}}Star{{end}} {{.SR}}</span>{{end}}</button></form>{{end}}

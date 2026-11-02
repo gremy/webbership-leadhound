@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/campaign"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/dial"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/leadview"
 )
 
 // The console's CRMBackend: a lead's stage, note, deal and snooze, its timeline, the replies
@@ -135,6 +138,7 @@ func (b *backend) LeadTimeline(ctx context.Context, leadID int64) ([]console.Tim
 		}
 		return []console.TimelineItem{}, nil
 	}
+	items = foldFirstMarks(items)
 	out := make([]console.TimelineItem, 0, len(items))
 	costAt := -1
 	for _, it := range items {
@@ -184,10 +188,110 @@ func timelineItem(it leadstore.TimelineItem) console.TimelineItem {
 		out.Kind, out.Line = console.TimelineCheck, "Email checked · "+emailCheckWords(it.State)
 	case leadstore.TimelineStage:
 		out.Kind, out.Line = console.TimelineStage, "Stage → "+console.StageWords(it.State)
+	case leadstore.TimelineDraft:
+		out.Kind, out.Line = console.TimelineDraft, shadow(fmt.Sprintf("Drafted · %s, step %d", console.ChannelWords(it.Channel), it.Step+1))
+		out.Detail = "From the template"
+		if it.Detail == campaign.WriterClaude {
+			out.Detail = "By Claude"
+		}
+		if it.State == leadstore.BatchOriginDraftIt {
+			out.Detail += ", with Draft it"
+		}
+	case leadstore.TimelineEdit:
+		out.Kind, out.Line = console.TimelineEdit, shadow(fmt.Sprintf("You edited %s, step %d", console.ChannelWords(it.Channel), it.Step+1))
+	case leadstore.TimelineDone:
+		out.Kind, out.Line = console.TimelineDone, fmt.Sprintf("Marked sent · %s, step %d", console.ChannelWords(it.Channel), it.Step+1)
+	case leadstore.TimelineContact:
+		what := "Contact " + map[string]string{leadstore.TimelineAdded: "added", leadstore.MarkClaim: "marked as yours", leadstore.MarkRetire: "retired"}[it.State]
+		out.Kind, out.Line = console.TimelineContact, what+" · "+console.ContactKindWords(it.Channel)
+		out.Detail = joinWords(it.Detail, it.Note)
+	case leadstore.TimelineResearch:
+		out.Kind, out.Line = console.TimelineResearch, researchTimelineWords(it.State)
+		out.Detail = ""
+		if it.Detail != "" {
+			out.Detail = "Looked for " + strings.ReplaceAll(it.Detail, "linkedin", "LinkedIn")
+		}
+	case leadstore.TimelineProposal:
+		out.Kind, out.Line = console.TimelineProposal, "Proposal · "+console.ProposalStatusWords(it.State)
+		if it.State == leadstore.TimelineAdded {
+			out.Line = "Proposal added"
+			if it.Channel != "" {
+				out.Line += " · " + console.ProposalStatusWords(it.Channel)
+			}
+		}
+		out.Detail = joinWords(it.Detail, it.Note)
+	case leadstore.TimelineSector:
+		out.Kind, out.Line = console.TimelineSector, "Sector set · "+cmp.Or(leadview.SectorWords(it.State), it.State)
 	default:
 		out.Kind, out.Line = console.TimelineEvent, strings.ReplaceAll(it.Kind, "_", " ")
 	}
 	return out
+}
+
+// foldFirstMarks folds the rows one act writes together into one item: an operator's new contact
+// and the claim beside it, a proposal and its first status. The added row keeps the other's note,
+// and a proposal's its status, in Channel, which a proposal does not otherwise use.
+func foldFirstMarks(items []leadstore.TimelineItem) []leadstore.TimelineItem {
+	type act struct {
+		kind, channel, detail string
+		at                    time.Time
+	}
+	key := func(it leadstore.TimelineItem) act {
+		return act{it.Kind, it.Channel, it.Detail, it.At.Truncate(time.Microsecond)}
+	}
+	first := map[act]int{}
+	for i, it := range items {
+		if it.State == leadstore.TimelineAdded {
+			first[key(it)] = i
+		}
+	}
+	out := slices.Clone(items)
+	drop := map[int]bool{}
+	for j, it := range items {
+		if it.State == leadstore.TimelineAdded || (it.Kind != leadstore.TimelineContact && it.Kind != leadstore.TimelineProposal) {
+			continue
+		}
+		if it.Kind == leadstore.TimelineContact && it.State != leadstore.MarkClaim {
+			continue
+		}
+		i, ok := first[key(it)]
+		if !ok {
+			continue
+		}
+		out[i].Note = it.Note
+		if it.Kind == leadstore.TimelineProposal {
+			out[i].Channel = it.State
+		}
+		drop[j] = true
+	}
+	kept := out[:0]
+	for j, it := range out {
+		if !drop[j] {
+			kept = append(kept, it)
+		}
+	}
+	return kept
+}
+
+// joinWords is the non-empty ones of a and b, with a dot between.
+func joinWords(a, b string) string {
+	if a == "" || b == "" {
+		return a + b
+	}
+	return a + " · " + b
+}
+
+// researchTimelineWords is how a contact search ended, as a timeline line.
+func researchTimelineWords(status string) string {
+	switch status {
+	case leadstore.ResearchFound:
+		return "Contact search found something"
+	case leadstore.ResearchNothing:
+		return "Contact search found nothing"
+	case leadstore.ResearchCapped:
+		return "Contact search stopped at its spending limit"
+	}
+	return "Contact search failed"
 }
 
 // leadEventWords is the state a lead entered, as a timeline line.

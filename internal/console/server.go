@@ -502,6 +502,7 @@ func (s *server) funcs() template.FuncMap {
 		"stageWords":          StageWords,
 		"reachTabs":           func() []string { return ReachTabs },
 		"reachWords":          ReachWords,
+		"reachBadge":          ReachBadge,
 		"reachReasonWords":    ReachReasonWords,
 		"channelWords":        ChannelWords,
 		"contactKinds":        func() []string { return ContactKinds },
