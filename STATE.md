@@ -1,18 +1,19 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
-Lead outreach for every channel (2026-11-02, plan `leadhound-lead-outreach-manual-channels`, built and reviewed):
+Lead outreach for every channel (2026-11-02, plan `leadhound-lead-outreach-manual-channels`, pushed and deployed):
 - What exists: LinkedIn as a channel and a route (found only as a link on the organisation's own pages; the leads fetch clients refuse linkedin.com, the job-search side is unchanged); the List's tabs by next action (Email-ready, Manual, Dead end, Contacted) and the Next step card, one SQL definition; Claude LinkedIn notes and messages and form messages, with Copy and Mark sent; editing any draft (`leads drafts edit`), keeping the original; Draft it (`leads drafts make`, `leadhound-leads-draft.path`, a Status row and no Controls row); your own contacts (`leads contacts add|edit|retire|list`), claimed and retired by marks; the proof library and sectors (`leads proof add|list|retire`, `leads sector set`); proposals (`leads proposals add|status|list`); the wider timeline; learning from your saved versions; Look again with LinkedIn (`leads research request --linkedin`); the note limit (`sender.linkedin_note_max`); erasure of all of it.
-- Migrations: leads up to 00029, not applied in production.
+- Migrations: leads up to 00029, applied in production.
 - Decided in the build, each with its why in the plan's Progress: the send readers skip a retired address; a retire cancels everything unsent aimed at that value and a claim does not revive it; an unapproved manual batch holding an email refuses Mark sent; `leads transfer` skips retired routes and takes a lead on a route with no page across with no route.
 - Docs: README "Campaigns and leads"; `deploy/README.md` "Draft it", "Leads migration 00029" (the app role can now re-hash an unapproved batch), "LinkedIn and your own contacts", "Erasure".
 - Verified: the walk on dev (the List's tabs add up to every lead; Draft it, Copy, edit, a refused note, Mark sent and the follow-up, a contact added and retired, a proposal, erasure twice, 1280 and 390 px in light and dark); one live Claude LinkedIn draft and one form draft (the note in limit, the proof not the opener); live research on three dead ends (one email found, one nothing, one unusable answer; no LinkedIn page in so small a sample); `make gate`, `make test-scale` on a fresh seed, `make prepush`, all integration tests; an independent review of the whole change.
-- Not verified: the watcher and the Status row on real systemd until the deploy; a live LinkedIn page found by research.
+- Verified live: the watcher waits on the server and its service ran with an empty queue (`no request is queued`); the console answers.
+- Not verified: a Draft it press in production (it waits for the operator's sign-in); a live LinkedIn page found by research.
 - Worth watching: manual drafts often pass on the second attempt (a product name in no cited fact, a line speaking about the reader), so a draft costs about two attempts; they stay flat until the real campaign copy and proof are in.
 - Known limit: a person's name typed into a saved edit, with no person row, is not scrubbed from the writer's examples; the proper-noun check (G4b) still refuses it in any draft.
 - Known limit: Controls' "next email" line counts a message held on your own address's email check, so it can name a send that the run will hold; the run's own output and note say why.
 - Follow-ups: `ForgetOrg` leaves email message bodies and route values; marks do not cross `leads transfer`, so a claimed route crosses unclaimed; an edited person's routes keep the old `person_id`.
-- Next: check live after the deploy: `systemctl list-units 'leadhound-*.path'` shows the watcher waiting, one Draft it press and the Manual tab's count. Then add your real proof on the Proof page.
+- Next: sign in, read the Manual tab's count, add your real proof on the Proof page, and press Draft it on one lead.
 
 Run now for every scheduled job, on a rolling schedule (2026-11-01, pushed and deployed; plan `leadhound-run-now-and-adaptive-timers`, done):
 - Committed: CP1 the due-check `timer-guard` (`c9120bb`), CP2 the units: 15-minute ticks, `ExecCondition=`/`ExecStopPost=`, three Run now watchers (`618e5f8`), CP3 the console: Run now on Contacts, Site probe and Morning batch, planned and overdue lines on Controls, Jobs home and Status (`a9d9c43`), review fixes (`14dd738`).
