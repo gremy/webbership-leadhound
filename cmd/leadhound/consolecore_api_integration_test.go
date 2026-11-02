@@ -418,9 +418,12 @@ func observeText(t *testing.T, b *backend, id int64, name, description string, c
 	if err := rec.Record(ctx, fetch.Record{Kind: fetch.KindDetail, URL: "https://jobs.example/" + name, Status: 200, Body: []byte("x")}); err != nil {
 		t.Fatal(err)
 	}
-	obsID, err := q.InsertObservation(ctx, store.ObservationInsert{JobID: id, FetchID: rec.LastID(), DerivedBy: "test@1",
-		Title: name, DescriptionClean: description, ApplyType: "offsite", Closed: closed})
-	if err != nil {
+	// Written by the owner, not through pipeline.Observe: the fixture sets its own verdicts.
+	var obsID int64
+	if err := storetest.OwnerConn(t).QueryRow(ctx,
+		`INSERT INTO job_observation (job_id, fetch_id, derived_by, title, description_clean, apply_type, closed)
+		 VALUES ($1, $2, 'test@1', $3, $4, 'offsite', $5) RETURNING id`,
+		id, rec.LastID(), name, description, closed).Scan(&obsID); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i+3 < len(gate); i += 4 {
