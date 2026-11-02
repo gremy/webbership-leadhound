@@ -1,6 +1,11 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+The console API and its local tool (2026-11-02, plan `leadhound-apply-api-and-skill`, Checkpoint 1; built locally, not deployed):
+- What exists: bearer-token `/api/` routes on the console (next jobs, one job, tracked, mark), off until `LEADHOUND_API_TOKEN_SHA256` is set; the `leadhound api` commands; `make api-token`. Docs: `deploy/README.md` "The console API".
+- Not verified: anything on the server; whether its Caddyfile leaves `Authorization` redacted in access logs (Caddy's default; the Caddyfile is not in this repo).
+- Next: the review of Checkpoint 1, then the fake application form (fixture) and the skill, both outside this repo; production only after those, on the operator's word.
+
 An unsure email check no longer holds a send (2026-11-02, committed; deploy waits on the operator's yes):
 - What exists: Reoon's `unknown` sends on every road (morning batch, hourly, `--now`, Send now, your own addresses), whatever `verify.catch_all` says, and is not asked again until the 90-day answer expires. Invalid, disabled, throwaway, full and trap addresses stay refused. Send now on chosen leads: an unchecked lead no longer takes the button from the others and goes back to new, where the check reaches it. Approve and send now keeps the button held on an unchecked address (no skip list, and an approved address goes unchecked on the hourly send). Send now again goes and says the hourly send takes it with no check.
 - Open: with Reoon down or out of credits an address stays unchecked and waits; a lone unchecked lead still needs Check email now. A hand-added address with the Email check off still stops.

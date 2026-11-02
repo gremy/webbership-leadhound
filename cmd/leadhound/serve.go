@@ -70,7 +70,8 @@ const maxTrackReason = 500
 // hold it. The same holds for the Anthropic key: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or
 // LEADHOUND_ANTHROPIC_KEY_FILE set, or an anthropic-key systemd credential present, and it
 // refuses to start (exit 2). Without a usable LEADHOUND_MAILBOX_PUBLIC_KEY it starts, says so
-// in its log, and refuses only a new mailbox password.
+// in its log, and refuses only a new mailbox password. LEADHOUND_API_TOKEN_SHA256 turns the
+// /api/ routes on; set to anything but 64 hex characters, it refuses to start (exit 2).
 func runServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	dev := fs.Bool("dev", false, "plain-http cookies for local use; refused unless LEADHOUND_LIVE is off")
@@ -98,6 +99,10 @@ func runServe(ctx context.Context, args []string) error {
 		if err := config.ValidConsoleURL(cfg.ConsoleURL); err != nil {
 			return usageError("%v", err)
 		}
+	}
+	apiToken, err := consoleAPITokenHash(cfg.ConsoleAPITokenSHA256)
+	if err != nil {
+		return err
 	}
 	if *dev && cfg.Live != config.LiveOff {
 		return usageError("--dev runs only with live fetching off (LEADHOUND_LIVE unset), not %s", cfg.Live)
@@ -131,7 +136,7 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	srv := &http.Server{
 		Addr:              cfg.ConsoleAddr,
-		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger, Operator: cfg.ConsoleEmail.Reveal(), Now: b.now}),
+		Handler:           console.New(b, auth, console.Options{Dev: *dev, Location: loc, Logger: logger, Operator: cfg.ConsoleEmail.Reveal(), Now: b.now, APITokenSHA256: apiToken}),
 		ReadHeaderTimeout: serveReadHeaderTimeout,
 		ReadTimeout:       serveReadTimeout,
 		WriteTimeout:      serveWriteTimeout,

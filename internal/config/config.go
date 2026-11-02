@@ -137,30 +137,31 @@ func ParseLive(v string) (Live, error) {
 // plain settings (a directory path, a model name, a time zone, limits and budgets) that carry
 // no credential or personal data, so a whole Config is safe to log.
 type Config struct {
-	DatabaseURL          Secret        // LEADHOUND_DATABASE_URL: the app role
-	MigrateDatabaseURL   Secret        // LEADHOUND_MIGRATE_DATABASE_URL: the owner role
-	DataDir              string        // LEADHOUND_DATA_DIR: the private data directory
-	TypesafeAPIKey       Secret        // TYPESAFE_API_KEY
-	JevModel             string        // LEADHOUND_JEV_MODEL
-	JevDailyCallCap      int           // LEADHOUND_JEV_DAILY_CALL_CAP
-	JevLeadsDailyCallCap int           // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the runaway guard for lead relevance rating
-	ResendAPIKey         Secret        // RESEND_API_KEY
-	MailFrom             Secret        // LEADHOUND_MAIL_FROM: an address on a private sending domain
-	MailTo               Secret        // LEADHOUND_MAIL_TO: a personal address
-	TZ                   string        // LEADHOUND_TZ, an IANA zone name
-	LinkedInInterval     time.Duration // LEADHOUND_LINKEDIN_INTERVAL: the pause between requests
-	LinkedInSearchBudget int           // LEADHOUND_LINKEDIN_SEARCH_BUDGET: search requests per run
-	LinkedInDetailBudget int           // LEADHOUND_LINKEDIN_DETAIL_BUDGET: detail requests per run, recheck included
-	ATSInterval          time.Duration // LEADHOUND_ATS_INTERVAL: the pause between two requests to one ATS's API
-	ATSDetailBudget      int           // LEADHOUND_ATS_DETAIL_BUDGET: posting-detail requests per ATS run (SmartRecruiters)
-	Live                 Live          // LEADHOUND_LIVE
-	ConsoleAddr          string        // LEADHOUND_CONSOLE_ADDR: host:port the console listens on (loopback only)
-	ConsoleEmail         Secret        // LEADHOUND_CONSOLE_EMAIL: the operator's sign-in address
-	ConsolePasswordHash  Secret        // LEADHOUND_CONSOLE_PASSWORD_HASH: bcrypt hash of the operator's password
-	ConsoleURL           string        // LEADHOUND_CONSOLE_URL: the console's public https URL, for the brief's footer
-	DBMaxBytes           int64         // LEADHOUND_DB_MAX_BYTES: the database size at which collectors stop storing
-	DiskMinFreePct       int           // LEADHOUND_DISK_MIN_FREE_PCT: the free-disk floor, in percent, under which they stop
-	ClaudeDailyCapMicros int64         // LEADHOUND_CLAUDE_DAILY_USD_CAP in micro-dollars: the ceiling across every Claude purpose per day
+	DatabaseURL           Secret        // LEADHOUND_DATABASE_URL: the app role
+	MigrateDatabaseURL    Secret        // LEADHOUND_MIGRATE_DATABASE_URL: the owner role
+	DataDir               string        // LEADHOUND_DATA_DIR: the private data directory
+	TypesafeAPIKey        Secret        // TYPESAFE_API_KEY
+	JevModel              string        // LEADHOUND_JEV_MODEL
+	JevDailyCallCap       int           // LEADHOUND_JEV_DAILY_CALL_CAP
+	JevLeadsDailyCallCap  int           // LEADHOUND_JEV_LEADS_DAILY_CALL_CAP: the runaway guard for lead relevance rating
+	ResendAPIKey          Secret        // RESEND_API_KEY
+	MailFrom              Secret        // LEADHOUND_MAIL_FROM: an address on a private sending domain
+	MailTo                Secret        // LEADHOUND_MAIL_TO: a personal address
+	TZ                    string        // LEADHOUND_TZ, an IANA zone name
+	LinkedInInterval      time.Duration // LEADHOUND_LINKEDIN_INTERVAL: the pause between requests
+	LinkedInSearchBudget  int           // LEADHOUND_LINKEDIN_SEARCH_BUDGET: search requests per run
+	LinkedInDetailBudget  int           // LEADHOUND_LINKEDIN_DETAIL_BUDGET: detail requests per run, recheck included
+	ATSInterval           time.Duration // LEADHOUND_ATS_INTERVAL: the pause between two requests to one ATS's API
+	ATSDetailBudget       int           // LEADHOUND_ATS_DETAIL_BUDGET: posting-detail requests per ATS run (SmartRecruiters)
+	Live                  Live          // LEADHOUND_LIVE
+	ConsoleAddr           string        // LEADHOUND_CONSOLE_ADDR: host:port the console listens on (loopback only)
+	ConsoleEmail          Secret        // LEADHOUND_CONSOLE_EMAIL: the operator's sign-in address
+	ConsolePasswordHash   Secret        // LEADHOUND_CONSOLE_PASSWORD_HASH: bcrypt hash of the operator's password
+	ConsoleURL            string        // LEADHOUND_CONSOLE_URL: the console's public https URL, for the brief's footer
+	ConsoleAPITokenSHA256 Secret        // LEADHOUND_API_TOKEN_SHA256: hex SHA-256 of the console API's bearer token; unset leaves the API off
+	DBMaxBytes            int64         // LEADHOUND_DB_MAX_BYTES: the database size at which collectors stop storing
+	DiskMinFreePct        int           // LEADHOUND_DISK_MIN_FREE_PCT: the free-disk floor, in percent, under which they stop
+	ClaudeDailyCapMicros  int64         // LEADHOUND_CLAUDE_DAILY_USD_CAP in micro-dollars: the ceiling across every Claude purpose per day
 }
 
 // Defaults for the variables that have one.
@@ -188,9 +189,10 @@ const (
 // the config with defaults filled in and one problem per variable whose value cannot be used;
 // a bad value keeps its default. Problems never repeat a value that may be secret.
 //
-// The four console variables are read as given and never reported here, so a console
-// setting cannot stop a timer command: serve checks them with ValidConsoleAddr and
-// Require, and brief uses the URL only when ValidConsoleURL accepts it.
+// The five console variables are read as given and never reported here, so a console
+// setting cannot stop a timer command: serve checks them with ValidConsoleAddr, Require and
+// its own check of the API token's hash, and brief uses the URL only when ValidConsoleURL
+// accepts it.
 func Load(getenv func(string) string) (Config, []string) {
 	c := Config{
 		DatabaseURL:        Secret(getenv("LEADHOUND_DATABASE_URL")),
@@ -203,10 +205,11 @@ func Load(getenv func(string) string) (Config, []string) {
 		MailTo:             Secret(getenv("LEADHOUND_MAIL_TO")),
 		TZ:                 or(getenv("LEADHOUND_TZ"), DefaultTZ),
 
-		ConsoleAddr:         or(getenv("LEADHOUND_CONSOLE_ADDR"), DefaultConsoleAddr),
-		ConsoleEmail:        Secret(getenv("LEADHOUND_CONSOLE_EMAIL")),
-		ConsolePasswordHash: Secret(getenv("LEADHOUND_CONSOLE_PASSWORD_HASH")),
-		ConsoleURL:          getenv("LEADHOUND_CONSOLE_URL"),
+		ConsoleAddr:           or(getenv("LEADHOUND_CONSOLE_ADDR"), DefaultConsoleAddr),
+		ConsoleEmail:          Secret(getenv("LEADHOUND_CONSOLE_EMAIL")),
+		ConsolePasswordHash:   Secret(getenv("LEADHOUND_CONSOLE_PASSWORD_HASH")),
+		ConsoleURL:            getenv("LEADHOUND_CONSOLE_URL"),
+		ConsoleAPITokenSHA256: Secret(getenv("LEADHOUND_API_TOKEN_SHA256")),
 	}
 	var problems []string
 	report := func(p string) { problems = append(problems, p) }

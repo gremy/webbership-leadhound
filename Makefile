@@ -9,7 +9,16 @@ TEST_MIGRATE_DSN               ?= postgres://leadhound_owner@localhost/leadhound
 TEST_SCALE_DSN                 ?= postgres://leadhound_app@localhost/leadhound_scale?sslmode=disable
 TEST_SCALE_MIGRATE_DSN         ?= postgres://leadhound_owner@localhost/leadhound_scale?sslmode=disable
 
-.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-full gate-stamp gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote forget console-password console-local mailbox-key mailbox-check-local
+.PHONY: fmt fmt-check vet lint-if-present test test-integration test-scale check gate gate-full gate-stamp gate-skip db-local migrate hooks privacy-tree prepush build-linux deploy deploy-data remote forget console-password console-local api-token mailbox-key mailbox-check-local
+
+# make api-token's console URL and its overwrite switch; empty URL is refused before anything runs.
+URL   ?=
+FORCE ?=
+ifneq ($(filter api-token,$(MAKECMDGOALS)),)
+ifeq ($(strip $(URL)),)
+$(error URL is required: make api-token URL=<console url> [FORCE=1])
+endif
+endif
 
 # Server deploy (deploy/README.md). HOST is an ssh destination from your own ssh config; it
 # never goes in this repository. ARCH is the server's CPU. LEADHOUND_PRIVATE_DIR holds your
@@ -232,6 +241,13 @@ console-password:
 console-local:
 	@test -f data/console-password.hash || { echo "console-local: run make console-password first"; exit 1; }
 	@set -a; . ./.env; set +a; LEADHOUND_CONSOLE_PASSWORD_HASH=$$(cat data/console-password.hash) env -u LEADHOUND_MAILBOX_KEY_FILE -u LEADHOUND_ANTHROPIC_KEY_FILE go run $(CMD) serve --dev
+
+## api-token: make api-token URL=<console url> [FORCE=1]: write a new API token and the URL to data/api.env, mode 0600
+## (never overwritten without FORCE=1), and print only its hash, the line for the server's env file
+api-token:
+	@mkdir -p data && out=$$(go run $(CMD) api new-token --url '$(URL)' --out data/api.env $(if $(filter 1,$(FORCE)),--force)) && \
+	echo "api-token: wrote data/api.env. Add this line to /etc/leadhound/env, then deploy or restart the console:" && \
+	printf '%s\n' "$$out"
 
 ## mailbox-key: write a local mailbox key pair to data/mailbox.key (mode 0600; never overwritten) and print the two .env lines to add by hand
 mailbox-key:

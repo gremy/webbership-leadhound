@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/gremy/webbership-leadhound/internal/console"
+	"github.com/gremy/webbership-leadhound/internal/gates"
 	"github.com/gremy/webbership-leadhound/internal/leadbrief"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
@@ -51,7 +52,8 @@ func refused(format string, a ...any) error {
 // Job is one job's whole record: its facts and current observation, each criterion's
 // verdict with the keywords it matched and the lines that back it, what is unclear (flagged
 // gates with their snippets unless they look like a contact, as the brief shows them), and
-// its status history.
+// its status history. Closed and the failed gates come from the latest observation; a failed
+// gate's words pass the same contact care.
 func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 	q := b.s.Q()
 	sum, err := q.JobSummaryByID(ctx, id)
@@ -72,7 +74,7 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 	if err != nil {
 		return console.JobPage{}, err
 	}
-	gates, err := q.LatestGateResults(ctx, id)
+	gateRows, err := q.LatestGateResults(ctx, id)
 	if err != nil {
 		return console.JobPage{}, err
 	}
@@ -83,9 +85,13 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 	c := scoring.Candidate{JobID: id, Title: obs.Title, Company: sum.Company, Location: obs.LocationText, Description: obs.DescriptionClean,
 		ListingStatus: sum.ListingStatus, Status: sum.Status, Closed: obs.Closed, PostedAtEst: obs.PostedAtEst,
 		ApplicantCount: obs.ApplicantCount, ApplyType: obs.ApplyType}
-	for _, g := range gates {
+	for _, g := range gateRows {
 		c.Gates = append(c.Gates, scoring.GateVerdict{Gate: g.Gate, Verdict: g.Verdict, Reason: g.Reason, Snippet: g.Snippet})
+		if g.Verdict == gates.Fail {
+			p.FailedGates = append(p.FailedGates, console.JobPoint{Name: g.Gate, Snippet: failedGateWords(g)})
+		}
 	}
+	p.Closed = obs.Closed
 	for _, d := range decisions {
 		c.Criteria = append(c.Criteria, scoring.CriterionVerdict{Criterion: d.Criterion, Verdict: d.Verdict, Reason: d.Reason})
 	}
@@ -93,7 +99,7 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 	j := briefJob(c, sum.URL, kws)
 	p.Title, p.Location, p.ApplyURL = cmpOr(obs.Title, sum.Title), obs.LocationText, obs.ApplyURL
 	p.ApplicantCount, p.PostedAt, p.ApplyType, p.Description = obs.ApplicantCount, obs.PostedAtEst, obs.ApplyType, obs.DescriptionClean
-	ev := scoring.Evidence{Title: c.Title, Description: c.Description, Gates: gates, Keywords: kws}
+	ev := scoring.Evidence{Title: c.Title, Description: c.Description, Gates: gateRows, Keywords: kws}
 	for _, cr := range j.Criteria {
 		jc := console.JobCriterion{Name: cr.Name, Verdict: cr.Verdict, Keywords: cr.Note}
 		for _, l := range scoring.EvidenceLines(cr.Name, ev) {
@@ -110,6 +116,17 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 		p.Unclear = append(p.Unclear, console.JobPoint{Name: u.Name, Snippet: u.Snippet})
 	}
 	return p, nil
+}
+
+// failedGateWords is what a failed gate quotes: its snippet, or its reason when the snippet is empty
+// or looks like a contact, or nothing when neither can be quoted.
+func failedGateWords(g store.GateResult) string {
+	for _, s := range []string{g.Snippet, g.Reason} {
+		if s != "" && !contactLike.MatchString(s) {
+			return s
+		}
+	}
+	return ""
 }
 
 // statusHistory is the job's latest consoleHistoryCap status changes, newest first.

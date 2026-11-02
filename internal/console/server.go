@@ -274,6 +274,7 @@ type loginView struct{ Next string }
 // every route but the sign-in page, the theme switch, static files, robots.txt, the favicon and
 // /healthz needs
 // a session.
+// Every path under /api/ goes to the API instead, which never looks at a session: see api.go.
 func New(b Backend, a *Auth, opt Options) http.Handler {
 	if opt.Location == nil {
 		opt.Location = time.UTC
@@ -321,7 +322,15 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 		mux.HandleFunc("GET /board/", board)
 	}
 	cop := http.NewCrossOriginProtection()
-	return s.headers(cop.Handler(capBody(mux)))
+	web := cop.Handler(capBody(mux))
+	api := capBody(s.api(cop))
+	return s.headers(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) {
+			api.ServeHTTP(w, r)
+			return
+		}
+		web.ServeHTTP(w, r)
+	}))
 }
 
 // parseTemplates parses the layout, the job row, the Run now card, the mailbox check card,

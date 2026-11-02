@@ -40,6 +40,15 @@ func usageError(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(format, a...))
 }
 
+// exitError is a command's own exit code and its own plain line, printed as it is, for a
+// command whose caller reads the code (`leadhound api`). An empty line prints nothing.
+type exitError struct {
+	code int
+	line string
+}
+
+func (e exitError) Error() string { return e.line }
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -50,7 +59,7 @@ func main() {
 
 // run dispatches args to a command and turns its result into an exit code: 0 ok, 1 failure,
 // 2 usage, 3 the due-check's not now (errNotNow, timerguard.go), which logs nothing here: a
-// guarded unit's check passes over 96 ticks a day.
+// guarded unit's check passes over 96 ticks a day. An exitError carries its own code and line.
 func run(ctx context.Context, args []string, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
@@ -64,9 +73,15 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	commandName = args[0]
 	err := cmd(ctx, args[1:])
+	var exit exitError
 	switch {
 	case err == nil:
 		return 0
+	case errors.As(err, &exit):
+		if exit.line != "" {
+			_, _ = fmt.Fprintln(stderr, exit.line)
+		}
+		return exit.code
 	case errors.Is(err, errUsage):
 		_, _ = fmt.Fprintf(stderr, "leadhound %s: %v\n", args[0], err)
 		return 2

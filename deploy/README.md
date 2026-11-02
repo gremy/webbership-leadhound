@@ -1266,6 +1266,48 @@ To reset the password, run `make console-password` again, replace the `LEADHOUND
 A new password forgets every device that signed in with the old one.
 Its log is `journalctl -u leadhound-console.service`.
 
+### The console API
+
+The console can also answer a small JSON API, for a local tool that works through the jobs from your own machine.
+It is off until `/etc/leadhound/env` holds a `LEADHOUND_API_TOKEN_SHA256` value; while it is off, every `/api/` path answers 404.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/jobs/next?limit=N&days=D` | Open jobs from recent briefs still at `new` or `shortlisted`, with earlier jobs at the same company (`limit` defaults to 20, at most 50; `days` defaults to 14, at most 60). |
+| `GET /api/jobs/{id}` | One job's page: description, criteria, unclear points and history. |
+| `GET /api/tracked?status=S` | The tracked jobs at one status (default `applied`). |
+| `POST /api/jobs/{id}/track` | Marks a job, with the body `{"action":"applied\|skip\|maybe","reason":"..."}`. |
+
+Every route needs `Authorization: Bearer <token>` and answers JSON, errors included.
+A wrong or missing token answers 401, never a redirect to the sign-in page.
+
+**To turn it on**, do this before you deploy, so the deploy's own console restart picks up the hash and you are not signed out a second time:
+
+1. On your machine, run `make api-token URL=https://console.example`, with the console's public URL.
+   It writes the URL and a new token, mode 0600, to `data/api.env` in the repository's ignored `data` directory, and prints only the token's hash, so the token itself never appears in your terminal.
+2. Add the printed `LEADHOUND_API_TOKEN_SHA256=<hex>` line to `/etc/leadhound/env`.
+3. Deploy (`make deploy … CONFIRM=1`), or, with no deploy due, restart the console: `sudo systemctl restart leadhound-console.service`.
+
+A value that is not 64 hex characters stops the console at start with a line naming the variable, so the deploy's wait for the console fails and shows its log.
+
+**To rotate the token**, run `make api-token URL=https://console.example FORCE=1`, replace the hash line on the server, and restart the console.
+Without `FORCE=1` the existing `data/api.env` is never overwritten.
+The local tool answers 401 from the moment the file changes until the console restarts, and the old token stops working at that restart.
+The restart signs you out of the console, as every restart does.
+
+**To turn it off**, remove the hash line from `/etc/leadhound/env` (an empty value does the same) and restart the console.
+
+**What the token opens.**
+It opens the `/api/` routes above and nothing else: not the console's pages, and not its other actions, so adding a skip rule stays a signed-in action.
+A signed-in session does not open `/api/`, so the password and the token stay separate.
+A token in a query string is never accepted, so nothing needs to put it in a URL, where a log or a browser history would keep it.
+`POST /api/jobs/{id}/track` writes, with the same effect as marking the job in the console, so keep `data/api.env` as you would a password.
+
+**Access logs.**
+This repository holds no Caddyfile, and the server's `log` settings are not in it.
+Caddy's documentation says `Authorization` is logged as `REDACTED` in access logs by default, unless the `log_credentials` global server option is on.
+So check the server's Caddyfile for `log_credentials` and for a `log` block that logs that header differently, before you rely on this.
+
 ## Backups and the storage budget
 
 The nightly dump keeps the newest `LEADHOUND_BACKUP_KEEP` dumps (14) whose sizes together stay within `LEADHOUND_BACKUP_MAX_BYTES` (4 GiB); both are set in `leadhound-backup.service`.

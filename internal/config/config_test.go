@@ -75,6 +75,7 @@ func TestLoadValues(t *testing.T) {
 		"LEADHOUND_CONSOLE_EMAIL":            "me@mail.example",
 		"LEADHOUND_CONSOLE_PASSWORD_HASH":    "hash-test",
 		"LEADHOUND_CONSOLE_URL":              "https://console.example",
+		"LEADHOUND_API_TOKEN_SHA256":         "hash-api-test",
 		"LEADHOUND_DB_MAX_BYTES":             "1073741824",
 		"LEADHOUND_DISK_MIN_FREE_PCT":        "20",
 	}))
@@ -105,6 +106,7 @@ func TestLoadValues(t *testing.T) {
 		{"ConsoleEmail", cfg.ConsoleEmail.Reveal(), "me@mail.example"},
 		{"ConsolePasswordHash", cfg.ConsolePasswordHash.Reveal(), "hash-test"},
 		{"ConsoleURL", cfg.ConsoleURL, "https://console.example"},
+		{"ConsoleAPITokenSHA256", cfg.ConsoleAPITokenSHA256.Reveal(), "hash-api-test"},
 		{"DBMaxBytes", cfg.DBMaxBytes, int64(1 << 30)},
 		{"DiskMinFreePct", cfg.DiskMinFreePct, 20},
 	}
@@ -217,6 +219,7 @@ func TestLoadConsoleNeverReports(t *testing.T) {
 		"LEADHOUND_CONSOLE_EMAIL":         "not an address",
 		"LEADHOUND_CONSOLE_PASSWORD_HASH": "not a hash",
 		"LEADHOUND_CONSOLE_URL":           "http://console.example/path?q=1",
+		"LEADHOUND_API_TOKEN_SHA256":      "not a hash",
 	}))
 	if len(problems) != 0 {
 		t.Fatalf("problems = %q, want none", problems)
@@ -429,6 +432,7 @@ func TestSecretRedaction(t *testing.T) {
 		"LEADHOUND_MAIL_TO":               canary + "@inbox.example",
 		"LEADHOUND_CONSOLE_EMAIL":         canary + "@console.example",
 		"LEADHOUND_CONSOLE_PASSWORD_HASH": "$2a$12$" + canary,
+		"LEADHOUND_API_TOKEN_SHA256":      canary,
 	}))
 	s := Secret(canary)
 
@@ -464,7 +468,8 @@ func TestSecretRedaction(t *testing.T) {
 	}
 	if !strings.Contains(outputs["%v secret"], "[redacted]") || !strings.Contains(outputs["slog"], "[redacted]") ||
 		!strings.Contains(outputs["json config"], `"ConsoleEmail":"[redacted]"`) ||
-		!strings.Contains(outputs["json config"], `"ConsolePasswordHash":"[redacted]"`) {
+		!strings.Contains(outputs["json config"], `"ConsolePasswordHash":"[redacted]"`) ||
+		!strings.Contains(outputs["json config"], `"ConsoleAPITokenSHA256":"[redacted]"`) {
 		t.Errorf("redacted marker missing: %q / %q", outputs["%v secret"], outputs["slog"])
 	}
 	// The value stays reachable for the code that needs it.

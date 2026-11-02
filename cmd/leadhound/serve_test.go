@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/gremy/webbership-leadhound/internal/brief"
+	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/secretbox"
@@ -107,6 +108,67 @@ func TestServeStartsPastRefusals(t *testing.T) {
 	var stderr bytes.Buffer
 	if code := run(context.Background(), []string{"serve"}, &stderr); code != 1 {
 		t.Errorf("exit %d, want 1; stderr %q", code, stderr.String())
+	}
+}
+
+// TestConsoleAPITokenHash: exactly 64 hex characters in either case, lowercased; unset is off; a
+// refusal never repeats the value.
+func TestConsoleAPITokenHash(t *testing.T) {
+	lower := strings.Repeat("ab", 32)
+	for _, c := range []struct {
+		name, in, want string
+		bad            bool
+	}{
+		{"unset", "", "", false},
+		{"lowercase", lower, lower, false},
+		{"uppercase", strings.ToUpper(lower), lower, false},
+		{"mixed", strings.Repeat("aB", 32), lower, false},
+		{"short", lower[:62], "", true},
+		{"long", lower + "ab", "", true},
+		{"odd", lower[:63], "", true},
+		{"not hex", strings.Repeat("zz", 32), "", true},
+		{"space", " " + lower[:63], "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := consoleAPITokenHash(config.Secret(c.in))
+			if got != c.want || (err != nil) != c.bad {
+				t.Fatalf("= %q, %v", got, err)
+			}
+			if c.bad && (!errors.Is(err, errUsage) || strings.Contains(err.Error(), c.in)) {
+				t.Errorf("refusal %q: want a usage error without the value", err)
+			}
+		})
+	}
+}
+
+// TestServeAPITokenRefusals: a bad LEADHOUND_API_TOKEN_SHA256 stops serve with exit 2 before the
+// database, never repeating the value; a good one in either case gets past the checks to the
+// database, whose failure here is exit 1.
+func TestServeAPITokenRefusals(t *testing.T) {
+	good := strings.Repeat("ab", 32)
+	for _, c := range []struct {
+		name, value string
+		code        int
+	}{
+		{"short", good[:62], 2},
+		{"long", good + "ab", 2},
+		{"not hex", strings.Repeat("zz", 32), 2},
+		{"lowercase", good, 1},
+		{"uppercase", strings.ToUpper(good), 1},
+		{"unset", "", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			serveEnv(t)
+			t.Setenv("LEADHOUND_API_TOKEN_SHA256", c.value)
+			var stderr bytes.Buffer
+			code := run(context.Background(), []string{"serve"}, &stderr)
+			if code != c.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr.String(), c.code)
+			}
+			if c.code == 2 && (!strings.Contains(stderr.String(), "LEADHOUND_API_TOKEN_SHA256") || strings.Contains(stderr.String(), c.value)) {
+				t.Errorf("stderr %q: want the variable named and the value left out", stderr.String())
+			}
+		})
 	}
 }
 

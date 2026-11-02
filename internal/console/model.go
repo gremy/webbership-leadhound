@@ -23,7 +23,8 @@ type Backend interface {
 	Runs(ctx context.Context, limit int) ([]RunRow, error)
 	Rules(ctx context.Context) ([]RuleRow, error) // every rule, disabled included
 	Track(ctx context.Context, req TrackRequest) (TrackOutcome, error)
-	Job(ctx context.Context, id int64) (JobPage, error) // ErrNotFound for no such job
+	Job(ctx context.Context, id int64) (JobPage, error)               // ErrNotFound for no such job
+	NextJobs(ctx context.Context, days, limit int) ([]NextJob, error) // what the local client applies to next, newest brief first
 	AddRule(ctx context.Context, req RuleRequest) (string, error)
 	DisableRule(ctx context.Context, id int64, reason string) (string, error)
 	RunNow(ctx context.Context, req RunRequest) (RunOutcome, error) // ErrUserFixable for a refusal
@@ -122,6 +123,9 @@ type Options struct {
 	// Now is the clock the Status page and the dashboard's status card judge ages by; nil
 	// is time.Now.
 	Now func() time.Time
+	// APITokenSHA256 is the lowercase hex SHA-256 of the /api/ bearer token. "" turns the API
+	// off: every /api/ path answers 404.
+	APITokenSHA256 string
 }
 
 // Dashboard is the state the dashboard page shows. The health lines, the tiers
@@ -277,7 +281,8 @@ type RuleRequest struct {
 
 // JobPage is one job's whole record, for reading before applying: its facts, the full
 // current description, each criterion's verdict with the keywords it matched and the
-// lines that back it, what is unclear, and its status history, newest first.
+// lines that back it, what is unclear, and its status history, newest first. Closed and
+// FailedGates are for the API's automatic check; the HTML page does not show them.
 type JobPage struct {
 	JobID                            int64
 	Title, Company, Location         string
@@ -289,6 +294,8 @@ type JobPage struct {
 	Criteria                         []JobCriterion
 	Unclear                          []JobPoint
 	History                          []StatusLine
+	Closed                           bool       // the latest observation says the listing is closed
+	FailedGates                      []JobPoint // the gates the latest observation failed
 }
 
 // JobCriterion is one criterion's verdict, the keywords it matched and the lines that
@@ -298,13 +305,31 @@ type JobCriterion struct {
 	Evidence                []string
 }
 
-// JobPoint is one flagged gate or unclear criterion, with its snippet when it has one.
+// JobPoint is one flagged or failed gate or unclear criterion, with its snippet when it has one.
 type JobPoint struct{ Name, Snippet string }
 
 // StatusLine is one entry of a job's status history.
 type StatusLine struct {
 	Status, Reason, Actor string
 	At                    time.Time
+}
+
+// NextJob is one job the local client may apply to: from a sent brief, still new or
+// shortlisted, its listing open. BriefDay and BriefN are the newest brief that holds it. Prior
+// is every other job of the same company whose status is past new.
+type NextJob struct {
+	JobID                                                                     int64
+	Title, Company, Location, Status, ListingStatus, URL, ApplyURL, ApplyType string
+	BriefDay                                                                  time.Time
+	BriefN                                                                    int
+	Prior                                                                     []PriorJob
+}
+
+// PriorJob is another job at a NextJob's company, already acted on.
+type PriorJob struct {
+	JobID         int64
+	Title, Status string
+	Since         time.Time
 }
 
 // LeadListQuery is the Leads list's filter as the request gave it: raw values, trimmed and

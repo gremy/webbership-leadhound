@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+func (f *fakeBackend) NextJobs(context.Context, int, int) ([]NextJob, error) {
+	f.count("NextJobs")
+	return nil, f.readErr
+}
+
 func (f *fakeBackend) Job(_ context.Context, id int64) (JobPage, error) {
 	f.count("Job")
 	if f.readErr != nil {

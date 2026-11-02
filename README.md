@@ -20,8 +20,9 @@
   - `make prepush`: the full gate before a push.
   - `make build-linux`: static Linux binary (`ARCH=arm64`, the default, or `amd64`).
   - `make deploy`, `make deploy-data`, `make remote`: run it on a server under systemd timers; see `deploy/README.md`.
+  - `make api-token URL=<console url>`: a new token for the console API in the ignored `data/api.env` (`FORCE=1` replaces one), printing only its hash for the server's env file.
 
-  Subcommands: `collect`, `score`, `brief`, `track`, `rules`, `canary`, `recheck`, `eval`, `boards` (`import`, `list`, `check`, `harvest`), `probe company`, `trim`, `leads`, `serve`, `console hash-password` and `migrate`, run as `go run ./cmd/leadhound <subcommand>`.
+  Subcommands: `collect`, `score`, `brief`, `track`, `rules`, `canary`, `recheck`, `eval`, `boards` (`import`, `list`, `check`, `harvest`), `probe company`, `trim`, `leads`, `serve`, `console hash-password`, `api` (`next`, `job`, `tracked`, `mark`, `new-token`) and `migrate`, run as `go run ./cmd/leadhound <subcommand>`.
   Without `LEADHOUND_LIVE`, no command fetches from a job source.
 - **Scoring**: `score --max-duration D` stops cleanly before the next job once `D` has passed, with the stop reason `budget`, which the brief words as a paused day; the next run carries on with the backlog.
   One scorer runs at a time across processes, through a database lock: a second run says so and records nothing.
@@ -49,6 +50,7 @@
     The console never approves a batch on its own and never drafts a shadow batch.
   It signs in with an email and a bcrypt hash from the environment: `make console-password` writes the hash, and `make console-local` serves it locally in dev mode.
   A device that signed in before can still sign in during a flood of failed attempts, and a new password forgets every device.
+  A small JSON API under `/api/`, off until `LEADHOUND_API_TOKEN_SHA256` is set, lets the `leadhound api` commands list, read and mark jobs from your own machine with a bearer token; see "The console API" in `deploy/README.md`.
   On a server it runs as `leadhound-console.service`; see the Console section of `deploy/README.md`.
 - **Contributing**: see `CONTRIBUTING.md`; ported work is credited in `NOTICE`.
 - **State**: see `STATE.md` (the head-pointer for where this left off).
