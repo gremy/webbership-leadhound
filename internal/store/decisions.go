@@ -91,6 +91,26 @@ func (q Queries) LatestDecisions(ctx context.Context, jobID int64) ([]Decision, 
 	return out, nil
 }
 
+// ObservationTexts returns, by id, what the scorer reads of each observation in ids. The rows it
+// misses are absent.
+func (q Queries) ObservationTexts(ctx context.Context, ids []int64) (map[int64]Observation, error) {
+	rows, err := q.db.Query(ctx,
+		`SELECT id, title, location_text, seniority, employment_type, description_clean
+		 FROM job_observation WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: observation texts: %w", err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[Observation])
+	if err != nil {
+		return nil, fmt.Errorf("store: observation texts: %w", err)
+	}
+	out := make(map[int64]Observation, len(got))
+	for _, o := range got {
+		out[o.ID] = o
+	}
+	return out, nil
+}
+
 // latestDecisions is the latest decision per (job, criterion) for every job in jobIDs,
 // ordered by job then criterion. Unless allowFake, the fake decider's decisions are left
 // out, so the latest real one (or none) is what is returned.

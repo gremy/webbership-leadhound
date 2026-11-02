@@ -53,7 +53,8 @@ func refused(format string, a ...any) error {
 // verdict with the keywords it matched and the lines that back it, what is unclear (flagged
 // gates with their snippets unless they look like a contact, as the brief shows them), and
 // its status history. Closed and the failed gates come from the latest observation; a failed
-// gate's words pass the same contact care.
+// gate's words pass the same contact care. Decisions are read whoever made them, as this page
+// always has, so each criterion names its decider and the API's automatic check refuses a fake.
 func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 	q := b.s.Q()
 	sum, err := q.JobSummaryByID(ctx, id)
@@ -92,8 +93,13 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 		}
 	}
 	p.Closed = obs.Closed
+	deciders := make(map[string]string, len(decisions))
 	for _, d := range decisions {
 		c.Criteria = append(c.Criteria, scoring.CriterionVerdict{Criterion: d.Criterion, Verdict: d.Verdict, Reason: d.Reason})
+		deciders[d.Criterion] = d.Decider
+	}
+	if p.VerdictsCurrent, err = verdictsCurrent(ctx, q, obs, decisions); err != nil {
+		return console.JobPage{}, err
 	}
 	kws := b.prof.Candidate.EvidenceKeywords
 	j := briefJob(c, sum.URL, kws)
@@ -101,7 +107,7 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 	p.ApplicantCount, p.PostedAt, p.ApplyType, p.Description = obs.ApplicantCount, obs.PostedAtEst, obs.ApplyType, obs.DescriptionClean
 	ev := scoring.Evidence{Title: c.Title, Description: c.Description, Gates: gateRows, Keywords: kws}
 	for _, cr := range j.Criteria {
-		jc := console.JobCriterion{Name: cr.Name, Verdict: cr.Verdict, Keywords: cr.Note}
+		jc := console.JobCriterion{Name: cr.Name, Verdict: cr.Verdict, Decider: deciders[cr.Name], Keywords: cr.Note}
 		for _, l := range scoring.EvidenceLines(cr.Name, ev) {
 			if len(jc.Evidence) == consoleEvidence {
 				break
@@ -116,6 +122,42 @@ func (b *backend) Job(ctx context.Context, id int64) (console.JobPage, error) {
 		p.Unclear = append(p.Unclear, console.JobPoint{Name: u.Name, Snippet: u.Snippet})
 	}
 	return p, nil
+}
+
+// verdictsCurrent is whether there are decisions and every one was made on the text the latest
+// observation holds. It compares the text and not the observation's id: a recheck writes a new
+// observation every time and the scorer writes no decision when the text is unchanged, so a
+// decision on an older observation is usually still current. The text is what the scorer's own
+// hash reads (the company is the job's and cannot differ), so this says "changed" exactly where
+// the scorer would ask again. An older observation's trimmed or missing text counts as changed.
+func verdictsCurrent(ctx context.Context, q store.Queries, latest store.Observation, decisions []store.Decision) (bool, error) {
+	var older []int64
+	for _, d := range decisions {
+		if d.ObservationID != latest.ID && !slices.Contains(older, d.ObservationID) {
+			older = append(older, d.ObservationID)
+		}
+	}
+	if len(decisions) == 0 || len(older) == 0 {
+		return len(decisions) > 0, nil
+	}
+	texts, err := q.ObservationTexts(ctx, older)
+	if err != nil {
+		return false, err
+	}
+	want := scoredText(latest)
+	for _, id := range older {
+		o, ok := texts[id]
+		if !ok || scoredText(o) != want {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// scoredText is an observation's text as the scorer reads it.
+func scoredText(o store.Observation) string {
+	return scoring.State(scoring.Posting{Title: o.Title, Location: o.LocationText, Seniority: o.Seniority,
+		EmploymentType: o.EmploymentType, Description: o.DescriptionClean}, scoring.MaxDescription)
 }
 
 // failedGateWords is what a failed gate quotes: its snippet, or its reason when the snippet is empty

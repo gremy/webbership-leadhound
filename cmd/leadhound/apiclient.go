@@ -24,6 +24,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/candidate"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/scoring"
@@ -491,8 +492,9 @@ func runAPIJob(ctx context.Context, args []string) error {
 // latest observation is not closed and failed no gate, and the record shows every criterion of the
 // scorer passing, nothing unclear, a status still to act on and an open listing; else the first
 // reason not. Only the known passing verdict passes, so an unknown one never reads as auto-ok, and
-// a criterion with no verdict has not been shown to pass. A record with no observation has no
-// criteria, so it stops there.
+// a criterion with no verdict has not been shown to pass. A verdict from the fake decider, or from
+// no named decider, is not a score, and one on text that has since changed no longer speaks for
+// the posting. A record with no observation has no criteria, so it stops there.
 func apiClientAutoCheck(j console.APIJob) string {
 	if j.Closed {
 		return "listing: closed"
@@ -503,9 +505,15 @@ func apiClientAutoCheck(j console.APIJob) string {
 	if len(j.Criteria) == 0 {
 		return "no criteria on record"
 	}
+	if !j.VerdictsCurrent {
+		return "verdicts: the text changed and has not been rescored"
+	}
 	for _, c := range j.Criteria {
 		if c.Verdict != scoring.Pass {
 			return apiClientLine("criterion " + c.Name + ": " + cmpOr(c.Verdict, "no verdict"))
+		}
+		if c.Decider == "" || c.Decider == ai.FakeName {
+			return apiClientLine("criterion " + c.Name + ": not a real score (decider " + cmpOr(c.Decider, "unknown") + ")")
 		}
 	}
 	for _, name := range candidate.CriterionNames {
@@ -540,6 +548,9 @@ func apiClientPrintJob(j console.APIJob, description bool) {
 	if j.Closed {
 		head = append(head, "closed:true")
 	}
+	if len(j.Criteria) > 0 && !j.VerdictsCurrent {
+		head = append(head, "verdicts_current:false")
+	}
 	_, _ = fmt.Fprintln(stdout, strings.Join(head, "\t"))
 	for _, l := range [][2]string{{"location", j.Location}, {"url", j.URL}, {"apply", j.ApplyURL}} {
 		if v := apiClientLine(l[1]); v != "" {
@@ -550,7 +561,7 @@ func apiClientPrintJob(j console.APIJob, description bool) {
 		_, _ = fmt.Fprintf(stdout, "failed_gate:%s\t%s\n", apiClientLine(g.Name), apiClientLine(g.Snippet))
 	}
 	for _, c := range j.Criteria {
-		_, _ = fmt.Fprintf(stdout, "criterion:%s\t%s\t%s\n", apiClientLine(c.Name), apiClientLine(c.Verdict), apiClientLine(c.Keywords))
+		_, _ = fmt.Fprintf(stdout, "criterion:%s\t%s\t%s\t%s\n", apiClientLine(c.Name), apiClientLine(c.Verdict), apiClientLine(c.Keywords), apiClientLine(c.Decider))
 	}
 	for _, u := range j.Unclear {
 		_, _ = fmt.Fprintf(stdout, "unclear:%s\t%s\n", apiClientLine(u.Name), apiClientLine(u.Snippet))

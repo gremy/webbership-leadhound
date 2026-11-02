@@ -17,9 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/candidate"
 	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/fetch"
+	"github.com/gremy/webbership-leadhound/internal/scoring"
 	"github.com/gremy/webbership-leadhound/internal/store"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
@@ -223,10 +225,11 @@ func TestAPINextAgreesWithTracked(t *testing.T) {
 }
 
 // TestAPIStatusGrid: every status against every mark the API makes, through the real backend and
-// handler. What a mark does is Track's decision; these rows pin it, and that next lists only new
-// and shortlisted. A no-op and a refusal write nothing.
+// handler. What a mark may do is the API's limit on Track's decision: applied and skip only from
+// new and shortlisted, or as the no-op from where they already stand. These rows pin it, and that
+// next lists only new and shortlisted. A no-op and a refusal write nothing, and maybe only notes.
 func TestAPIStatusGrid(t *testing.T) {
-	const moves, noop, refused = "moves", "no-op", "refused"
+	const moves, noop, refused, pastApplying = "moves", "no-op", "refused", "past applying"
 	ids := sentBrief(t)
 	b := testBackend(t)
 	h, _ := apiHandler(t, b)
@@ -239,12 +242,12 @@ func TestAPIStatusGrid(t *testing.T) {
 	}{
 		{"new", true, moves, moves},
 		{"shortlisted", true, moves, moves},
-		{"applied", false, noop, refused},
-		{"interviewing", false, moves, refused},
-		{"offer", false, moves, refused},
-		{"rejected", false, moves, moves},
-		{"skipped", false, moves, noop},
-		{"withdrawn", false, moves, moves},
+		{"applied", false, noop, pastApplying},
+		{"interviewing", false, refused, pastApplying},
+		{"offer", false, refused, pastApplying},
+		{"rejected", false, refused, refused},
+		{"skipped", false, refused, noop},
+		{"withdrawn", false, refused, refused},
 	} {
 		t.Run(c.status, func(t *testing.T) {
 			setStatus(t, b, id, c.status)
@@ -258,8 +261,11 @@ func TestAPIStatusGrid(t *testing.T) {
 				code, raw := apiMark(t, h, id, action, "grid")
 				written := events(t) - before
 				switch outcome {
-				case refused:
-					want := "already " + c.status + "; use withdrawn"
+				case refused, pastApplying:
+					want := "already " + c.status + "; change it in the console"
+					if outcome == pastApplying {
+						want = "already " + c.status + "; use withdrawn"
+					}
 					if code != http.StatusUnprocessableEntity || apiDecoded[console.APIError](t, raw).Error != want || written != 0 {
 						t.Errorf("%s: %d %s, %d written; want 422 %q and nothing written", action, code, raw, written, want)
 					}
@@ -395,14 +401,15 @@ func TestNextJobsBackendClock(t *testing.T) {
 	}
 }
 
-// observedJob is a job with a latest observation and every criterion passing, so what its gates and
-// closed flag say is all that can keep it from auto-ok. gate holds gate, verdict, snippet, reason
-// fours, written on the latest observation.
-func observedJob(t *testing.T, b *backend, name string, closed bool, gate ...string) int64 {
+// apiRealDecider is a decider's name as a real scoring run writes it.
+const apiRealDecider = "jev-test"
+
+// observeText writes an observation of the job with this description and closed flag, and returns
+// its id. The gate fours are gate, verdict, snippet, reason.
+func observeText(t *testing.T, b *backend, id int64, name, description string, closed bool, gate ...string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	q := b.s.Q()
-	id := bareJob(t, b, name)
 	runID, err := q.StartRun(ctx, "collect", "linkedin")
 	if err != nil {
 		t.Fatal(err)
@@ -411,20 +418,10 @@ func observedJob(t *testing.T, b *backend, name string, closed bool, gate ...str
 	if err := rec.Record(ctx, fetch.Record{Kind: fetch.KindDetail, URL: "https://jobs.example/" + name, Status: 200, Body: []byte("x")}); err != nil {
 		t.Fatal(err)
 	}
-	// An earlier observation that says the opposite: only the latest one counts.
-	var obsID int64
-	for _, c := range []bool{!closed, closed} {
-		if obsID, err = q.InsertObservation(ctx, store.ObservationInsert{JobID: id, FetchID: rec.LastID(), DerivedBy: "test@1",
-			Title: name, DescriptionClean: "We write Go.", ApplyType: "offsite", Closed: c}); err != nil {
-			t.Fatal(err)
-		}
-		if c == closed {
-			break
-		}
-		if _, err := q.InsertGateResult(ctx, store.GateResultInsert{JobID: id, ObservationID: obsID, Gate: "rule", Verdict: "fail",
-			Reason: "an older observation", DerivedBy: "gates@1"}); err != nil {
-			t.Fatal(err)
-		}
+	obsID, err := q.InsertObservation(ctx, store.ObservationInsert{JobID: id, FetchID: rec.LastID(), DerivedBy: "test@1",
+		Title: name, DescriptionClean: description, ApplyType: "offsite", Closed: closed})
+	if err != nil {
+		t.Fatal(err)
 	}
 	for i := 0; i+3 < len(gate); i += 4 {
 		if _, err := q.InsertGateResult(ctx, store.GateResultInsert{JobID: id, ObservationID: obsID, Gate: gate[i], Verdict: gate[i+1],
@@ -432,13 +429,225 @@ func observedJob(t *testing.T, b *backend, name string, closed bool, gate ...str
 			t.Fatal(err)
 		}
 	}
-	for _, c := range candidate.CriterionNames {
-		if _, err := q.InsertDecision(ctx, store.DecisionInsert{JobID: id, ObservationID: obsID, Decider: "fake", Criterion: c, Verdict: "pass",
-			Confidence: 0.9, Probabilities: map[string]float64{"pass": 0.9}, Reason: c, InputSHA256: []byte(name)}); err != nil {
+	return obsID
+}
+
+// decideAll writes a passing decision by decider on the observation for each criterion named.
+func decideAll(t *testing.T, b *backend, id, obsID int64, decider string, criteria ...string) {
+	t.Helper()
+	for _, c := range criteria {
+		if _, err := b.s.Q().InsertDecision(context.Background(), store.DecisionInsert{JobID: id, ObservationID: obsID, Decider: decider, Criterion: c, Verdict: "pass",
+			Confidence: 0.9, Probabilities: map[string]float64{"pass": 0.9}, Reason: c, InputSHA256: []byte(c)}); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// observedJob is a job with a latest observation and every criterion passing from a real decider,
+// so what its gates and closed flag say is all that can keep it from auto-ok. An earlier observation
+// says the opposite, because only the latest one counts.
+func observedJob(t *testing.T, b *backend, name string, closed bool, gate ...string) int64 {
+	t.Helper()
+	id := bareJob(t, b, name)
+	observeText(t, b, id, name, "We write Go.", !closed, "rule", "fail", "", "an older observation")
+	decideAll(t, b, id, observeText(t, b, id, name, "We write Go.", closed, gate...), apiRealDecider, candidate.CriterionNames...)
 	return id
+}
+
+// autoCheck is --auto-check's line for the job through the client and the real handler.
+func autoCheck(t *testing.T, env string, id int64) string {
+	t.Helper()
+	exit, out, stderr := apiClientRun(t, "job", strconv.FormatInt(id, 10), "--auto-check", "--env", env)
+	if exit != 0 {
+		t.Fatalf("--auto-check: exit %d, stderr %q", exit, stderr)
+	}
+	return strings.TrimSuffix(out, "\n")
+}
+
+// TestAPIAutoCheckRefusesFake: a fake scoring run's pass rows are not a score, alone or over real
+// ones, while the job's record still shows them with their decider.
+func TestAPIAutoCheckRefusesFake(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	env, _ := apiClientServe(t, b, nil)
+
+	fake := bareJob(t, b, "fake")
+	decideAll(t, b, fake, observeText(t, b, fake, "fake", "We write Go.", false), ai.FakeName, candidate.CriterionNames...)
+	if got, want := autoCheck(t, env, fake), "criterion title: not a real score (decider fake)"; got != want {
+		t.Errorf("fake only: %q, want %q", got, want)
+	}
+	code, raw := apiCall(t, h, http.MethodGet, fmt.Sprintf("/api/jobs/%d", fake), "")
+	if code != http.StatusOK {
+		t.Fatalf("job: %d %s", code, raw)
+	}
+	job := apiDecoded[console.APIJob](t, raw)
+	if len(job.Criteria) != len(candidate.CriterionNames) || job.Criteria[0].Decider != ai.FakeName || job.Criteria[0].Verdict != "pass" {
+		t.Errorf("criteria = %+v", job.Criteria)
+	}
+
+	over := observedJob(t, b, "over", false)
+	if got := autoCheck(t, env, over); got != "auto-ok" {
+		t.Fatalf("real: %q", got)
+	}
+	latest, err := b.s.Q().LatestObservation(context.Background(), over)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decideAll(t, b, over, latest.ID, ai.FakeName, "location")
+	if got, want := autoCheck(t, env, over), "criterion location: not a real score (decider fake)"; got != want {
+		t.Errorf("a fake over real ones: %q, want %q", got, want)
+	}
+}
+
+// TestAPIVerdictsCurrent: a recheck writes a new observation every time and the scorer writes no
+// decision on unchanged text, so old decisions on the same text are current and stay auto-ok, the
+// road a real job takes; on changed text they are not current until scored again.
+func TestAPIVerdictsCurrent(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	env, _ := apiClientServe(t, b, nil)
+	const stale = "verdicts: the text changed and has not been rescored"
+	current := func(id int64) bool {
+		t.Helper()
+		code, raw := apiCall(t, h, http.MethodGet, fmt.Sprintf("/api/jobs/%d", id), "")
+		if code != http.StatusOK {
+			t.Fatalf("job: %d %s", code, raw)
+		}
+		return apiDecoded[console.APIJob](t, raw).VerdictsCurrent
+	}
+
+	id := bareJob(t, b, "scored")
+	first := observeText(t, b, id, "scored", "We write Go.", false)
+	decideAll(t, b, id, first, apiRealDecider, candidate.CriterionNames...)
+	if got := autoCheck(t, env, id); got != "auto-ok" || !current(id) {
+		t.Errorf("on the latest observation: %q, current %v", got, current(id))
+	}
+	observeText(t, b, id, "scored", "We write Go.", false)
+	observeText(t, b, id, "scored", "We write Go.", false)
+	if got := autoCheck(t, env, id); got != "auto-ok" || !current(id) {
+		t.Errorf("rechecked, the same text: %q, current %v", got, current(id))
+	}
+	second := observeText(t, b, id, "scored", "We write Rust now.", false)
+	if got := autoCheck(t, env, id); got != stale || current(id) {
+		t.Errorf("changed text: %q, current %v", got, current(id))
+	}
+	decideAll(t, b, id, second, apiRealDecider, "title", "stack")
+	if got := autoCheck(t, env, id); got != stale || current(id) {
+		t.Errorf("rescored in part: %q, current %v", got, current(id))
+	}
+	decideAll(t, b, id, second, apiRealDecider, candidate.CriterionNames...)
+	if got := autoCheck(t, env, id); got != "auto-ok" || !current(id) {
+		t.Errorf("rescored: %q, current %v", got, current(id))
+	}
+
+	// An observation nothing has decided on has no verdicts to be current.
+	unscored := bareJob(t, b, "unscored")
+	observeText(t, b, unscored, "unscored", "We write Go.", false)
+	if current(unscored) {
+		t.Error("no decisions read as current")
+	}
+
+	// Past the length the scorer reads, a change is no change: it would not ask again.
+	long := bareJob(t, b, "long")
+	text := strings.Repeat("x", scoring.MaxDescription)
+	decideAll(t, b, long, observeText(t, b, long, "long", text+" one", false), apiRealDecider, candidate.CriterionNames...)
+	observeText(t, b, long, "long", text+" two", false)
+	if got := autoCheck(t, env, long); got != "auto-ok" {
+		t.Errorf("a change past the cut: %q", got)
+	}
+
+	// Blanked text on the observation decided on cannot be shown to match, so it does not.
+	trimmed := bareJob(t, b, "trimmed")
+	old := observeText(t, b, trimmed, "trimmed", "We write Go.", false)
+	decideAll(t, b, trimmed, old, apiRealDecider, candidate.CriterionNames...)
+	observeText(t, b, trimmed, "trimmed", "We write Go.", false)
+	if _, err := storetest.OwnerConn(t).Exec(context.Background(),
+		`UPDATE job_observation SET description_clean = '', description_trimmed_at = now() WHERE id = $1`, old); err != nil {
+		t.Fatal(err)
+	}
+	if got := autoCheck(t, env, trimmed); got != stale {
+		t.Errorf("trimmed: %q", got)
+	}
+}
+
+// TestConsoleTrackHasNoAPILimit: the console's own form still moves a job from where the API is
+// refused, and the API's refusal names the status, through the client too, writing nothing.
+func TestConsoleTrackHasNoAPILimit(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, cookie := apiHandler(t, b)
+	env, _ := apiClientServe(t, b, nil)
+	for _, c := range []struct{ from, action, to string }{
+		{"interviewing", "applied", "applied"},
+		{"offer", "applied", "applied"},
+		{"rejected", "applied", "applied"},
+		{"skipped", "applied", "applied"},
+		{"withdrawn", "applied", "applied"},
+		{"rejected", "skip", "skipped"},
+		{"withdrawn", "skip", "skipped"},
+	} {
+		t.Run(c.from+" "+c.action, func(t *testing.T) {
+			id := bareJob(t, b, c.from+"-"+c.action)
+			setStatus(t, b, id, c.from)
+			before := events(t)
+			want := "already " + c.from + "; change it in the console"
+			code, raw := apiMark(t, h, id, c.action, "no")
+			if code != http.StatusUnprocessableEntity || apiDecoded[console.APIError](t, raw).Error != want {
+				t.Errorf("api: %d %s; want 422 %q", code, raw, want)
+			}
+			exit, _, stderr := apiClientRun(t, "mark", strconv.FormatInt(id, 10), c.action, "--env", env)
+			if exit != 1 || stderr != "leadhound api: "+want+"\n" {
+				t.Errorf("client: exit %d, stderr %q", exit, stderr)
+			}
+			if st, _, _ := currentStatus(t, id); st != c.from || events(t) != before {
+				t.Errorf("after the refusals: status %s, %d written", st, events(t)-before)
+			}
+			if code, body := sessionMark(t, h, cookie, id, c.action, "by hand"); code != http.StatusOK {
+				t.Fatalf("console: %d %s", code, body)
+			}
+			if st, reason, actor := currentStatus(t, id); st != c.to || reason != "by hand" || actor != "gremy" {
+				t.Errorf("console: status %s (%q by %s), want %s", st, reason, actor, c.to)
+			}
+		})
+	}
+}
+
+// TestAPITrackLimitInsideTheLock: a mark waiting on the job's lock is judged on the status the lock's
+// holder wrote, not the one it could have read first.
+func TestAPITrackLimitInsideTheLock(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	id := bareJob(t, b, "locked")
+	type answer struct {
+		code int
+		raw  string
+	}
+	done := make(chan answer, 1)
+	err := b.s.InTx(context.Background(), func(tq store.Queries) error {
+		if err := tq.LockJob(context.Background(), id); err != nil {
+			return err
+		}
+		go func() {
+			code, raw := apiMark(t, h, id, "applied", "racing")
+			done <- answer{code, raw}
+		}()
+		time.Sleep(300 * time.Millisecond) // long enough for the mark to reach the lock
+		_, err := tq.InsertStatusEvent(context.Background(), id, "interviewing", "", "gremy", nil)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.code != http.StatusUnprocessableEntity || !strings.Contains(got.raw, "already interviewing") {
+		t.Errorf("%d %s; want 422 naming interviewing", got.code, got.raw)
+	}
+	if st, _, _ := currentStatus(t, id); st != "interviewing" {
+		t.Errorf("status %s, want interviewing", st)
+	}
 }
 
 // TestAPIJobClosedAndFailedGates: through the real backend, what the latest observation says reads

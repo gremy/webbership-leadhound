@@ -32,6 +32,14 @@ const (
 // apiActions are the marks the API makes: the only three the /apply skill uses.
 var apiActions = []string{"applied", "skip", "maybe"}
 
+// apiAllowedFrom is where each mark may start from, so a mark through the API can never move a
+// job back: applied and skip also from where they already stand, which is the server's no-op.
+// maybe is absent because it only notes: it writes the reason and the status stays.
+var apiAllowedFrom = map[string]string{
+	"applied": "new shortlisted applied",
+	"skip":    "new shortlisted skipped",
+}
+
 // apiRoute is one entry of the API's routing table. The tests sweep it.
 type apiRoute struct {
 	pattern string // ServeMux pattern
@@ -84,7 +92,8 @@ type APIPriorJob struct {
 
 // APIJob answers GET /api/jobs/{id}: one job's whole record. ApplicantCount and PostedAt are
 // null when unknown. Closed and FailedGates are what the latest observation says, which
-// ListingStatus and Unclear do not show.
+// ListingStatus and Unclear do not show. VerdictsCurrent is false when there are no verdicts, or
+// any was made on text other than the latest observation's and has not been made again.
 type APIJob struct {
 	JobID          int64           `json:"job_id"`
 	Title          string          `json:"title"`
@@ -103,12 +112,15 @@ type APIJob struct {
 	History        []APIStatusLine `json:"history"`
 	Closed         bool            `json:"closed"`
 	FailedGates    []APIPoint      `json:"failed_gates"`
+
+	VerdictsCurrent bool `json:"verdicts_current"`
 }
 
 // APICriterion is one criterion's verdict, the keywords it matched and the lines that back it.
 type APICriterion struct {
 	Name     string   `json:"name"`
 	Verdict  string   `json:"verdict"`
+	Decider  string   `json:"decider"`
 	Keywords string   `json:"keywords"`
 	Evidence []string `json:"evidence"`
 }
@@ -331,9 +343,9 @@ func (s *server) apiJob(w http.ResponseWriter, r *http.Request) {
 func apiJobOf(j JobPage) APIJob {
 	return APIJob{JobID: j.JobID, Title: j.Title, Company: j.Company, Location: j.Location, URL: j.URL, ApplyURL: j.ApplyURL,
 		ApplicantCount: j.ApplicantCount, PostedAt: j.PostedAt, ApplyType: j.ApplyType, ListingStatus: j.ListingStatus,
-		Status: j.Status, Description: j.Description, Closed: j.Closed,
+		Status: j.Status, Description: j.Description, Closed: j.Closed, VerdictsCurrent: j.VerdictsCurrent,
 		Criteria: apiList(j.Criteria, func(c JobCriterion) APICriterion {
-			return APICriterion{Name: c.Name, Verdict: c.Verdict, Keywords: c.Keywords, Evidence: apiList(c.Evidence, func(e string) string { return e })}
+			return APICriterion{Name: c.Name, Verdict: c.Verdict, Decider: c.Decider, Keywords: c.Keywords, Evidence: apiList(c.Evidence, func(e string) string { return e })}
 		}),
 		Unclear:     apiList(j.Unclear, apiPointOf),
 		FailedGates: apiList(j.FailedGates, apiPointOf),
@@ -372,7 +384,8 @@ func (s *server) apiTracked(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiTrack is POST /api/jobs/{id}/track: the same mark as trackJob, through the same Track, so it
-// inherits every refusal and the no-op. The reason is never logged.
+// inherits every refusal and the no-op, limited further by apiAllowedFrom. The reason is never
+// logged.
 func (s *server) apiTrack(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -394,7 +407,7 @@ func (s *server) apiTrack(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "action must be one of "+strings.Join(apiActions, ", ")+".")
 		return
 	}
-	out, err := s.b.Track(r.Context(), TrackRequest{Ref: "job:" + strconv.FormatInt(id, 10), Action: req.Action, Reason: req.Reason})
+	out, err := s.b.Track(r.Context(), TrackRequest{Ref: "job:" + strconv.FormatInt(id, 10), Action: req.Action, Reason: req.Reason, AllowedFrom: apiAllowedFrom[req.Action]})
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeAPIError(w, http.StatusNotFound, "There is no job "+strconv.FormatInt(id, 10)+".")

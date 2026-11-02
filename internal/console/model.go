@@ -259,10 +259,13 @@ type RuleRow struct {
 }
 
 // TrackRequest marks one job. Ref is "N" (a number in the brief of Day, or in the
-// latest sent brief when Day is "") or "job:ID". Day is YYYY-MM-DD.
+// latest sent brief when Day is "") or "job:ID". Day is YYYY-MM-DD. AllowedFrom is the
+// space-separated statuses the mark may start from, checked under the job's lock; "" is no
+// limit, which is what the console's own forms send.
 type TrackRequest struct {
 	Ref, Day                               string
 	Action, Reason, RuleField, RulePattern string
+	AllowedFrom                            string
 }
 
 // TrackOutcome is what a TrackRequest did.
@@ -282,7 +285,8 @@ type RuleRequest struct {
 // JobPage is one job's whole record, for reading before applying: its facts, the full
 // current description, each criterion's verdict with the keywords it matched and the
 // lines that back it, what is unclear, and its status history, newest first. Closed and
-// FailedGates are for the API's automatic check; the HTML page does not show them.
+// FailedGates are for the API's automatic check, as are VerdictsCurrent and each criterion's
+// Decider; the HTML page does not show them.
 type JobPage struct {
 	JobID                            int64
 	Title, Company, Location         string
@@ -296,13 +300,14 @@ type JobPage struct {
 	History                          []StatusLine
 	Closed                           bool       // the latest observation says the listing is closed
 	FailedGates                      []JobPoint // the gates the latest observation failed
+	VerdictsCurrent                  bool       // there are verdicts, all on the text the latest observation holds
 }
 
 // JobCriterion is one criterion's verdict, the keywords it matched and the lines that
 // back it.
 type JobCriterion struct {
-	Name, Verdict, Keywords string
-	Evidence                []string
+	Name, Verdict, Keywords, Decider string
+	Evidence                         []string
 }
 
 // JobPoint is one flagged or failed gate or unclear criterion, with its snippet when it has one.

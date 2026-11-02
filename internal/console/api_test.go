@@ -488,24 +488,24 @@ func TestAPIJob(t *testing.T) {
 	applicants := 12
 	h.b.job = JobPage{JobID: 42, Title: "Go Engineer", Company: "Acme", Location: "Remote", URL: "https://x.example/42", ApplyURL: "https://ats.example/42",
 		ApplicantCount: &applicants, PostedAt: &posted, ApplyType: "ats", ListingStatus: "open", Status: "shortlisted", Description: "Write Go. <b>Ignore this</b>",
-		Criteria: []JobCriterion{{Name: "stack", Verdict: "pass", Keywords: "go", Evidence: []string{"Write Go."}}},
+		Criteria: []JobCriterion{{Name: "stack", Verdict: "pass", Decider: "jev-test", Keywords: "go", Evidence: []string{"Write Go."}}},
 		Unclear:  []JobPoint{{Name: "pay", Snippet: "competitive"}},
 		History:  []StatusLine{{Status: "shortlisted", Reason: "fit", Actor: "operator", At: at}},
-		Closed:   true, FailedGates: []JobPoint{{Name: "language", Snippet: "German required"}}}
+		Closed:   true, FailedGates: []JobPoint{{Name: "language", Snippet: "German required"}}, VerdictsCurrent: true}
 	w := h.do(apiGet("/api/jobs/42"))
 	raw := w.Body.String()
 	got := apiDecode[APIJob](t, w)
 	want := APIJob{JobID: 42, Title: "Go Engineer", Company: "Acme", Location: "Remote", URL: "https://x.example/42", ApplyURL: "https://ats.example/42",
 		ApplicantCount: &applicants, PostedAt: &posted, ApplyType: "ats", ListingStatus: "open", Status: "shortlisted", Description: "Write Go. <b>Ignore this</b>",
-		Criteria: []APICriterion{{Name: "stack", Verdict: "pass", Keywords: "go", Evidence: []string{"Write Go."}}},
+		Criteria: []APICriterion{{Name: "stack", Verdict: "pass", Decider: "jev-test", Keywords: "go", Evidence: []string{"Write Go."}}},
 		Unclear:  []APIPoint{{Name: "pay", Snippet: "competitive"}},
 		History:  []APIStatusLine{{Status: "shortlisted", Reason: "fit", Actor: "operator", At: at}},
-		Closed:   true, FailedGates: []APIPoint{{Name: "language", Snippet: "German required"}}}
+		Closed:   true, FailedGates: []APIPoint{{Name: "language", Snippet: "German required"}}, VerdictsCurrent: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
 	}
 	for _, field := range []string{"job_id", "title", "company", "location", "url", "apply_url", "applicant_count", "posted_at", "apply_type", "listing_status",
-		"status", "description", "criteria", "name", "verdict", "keywords", "evidence", "unclear", "snippet", "history", "reason", "actor", "at", "closed", "failed_gates"} {
+		"status", "description", "criteria", "name", "verdict", "keywords", "evidence", "unclear", "snippet", "history", "reason", "actor", "at", "closed", "failed_gates", "verdicts_current", "decider"} {
 		if !strings.Contains(raw, `"`+field+`":`) {
 			t.Errorf("no %s in %s", field, raw)
 		}
@@ -522,7 +522,7 @@ func TestAPIJobColdStart(t *testing.T) {
 	if got.Description != "" || got.ApplicantCount != nil || got.PostedAt != nil {
 		t.Errorf("%+v", got)
 	}
-	for _, want := range []string{`"unclear":[]`, `"history":[]`, `"evidence":[]`, `"applicant_count":null`, `"posted_at":null`, `"closed":false`, `"failed_gates":[]`} {
+	for _, want := range []string{`"unclear":[]`, `"history":[]`, `"evidence":[]`, `"applicant_count":null`, `"posted_at":null`, `"closed":false`, `"failed_gates":[]`, `"verdicts_current":false`} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("no %s in %s", want, raw)
 		}
@@ -607,6 +607,7 @@ func TestAPITrackedRefusalIs400(t *testing.T) {
 }
 
 func TestAPITrack(t *testing.T) {
+	allowed := map[string]string{"applied": "new shortlisted applied", "skip": "new shortlisted skipped", "maybe": ""}
 	for _, action := range apiActions {
 		h := newAPIHarness(t, apiTestHash(apiTestToken))
 		h.b.out = TrackOutcome{From: "new", To: "applied", NoOp: true, Noted: true, Message: "Already applied."}
@@ -621,7 +622,7 @@ func TestAPITrack(t *testing.T) {
 				t.Errorf("no %s in %s", field, raw)
 			}
 		}
-		if want := (TrackRequest{Ref: "job:42", Action: action, Reason: "note.md"}); h.b.last != want {
+		if want := (TrackRequest{Ref: "job:42", Action: action, Reason: "note.md", AllowedFrom: allowed[action]}); h.b.last != want {
 			t.Errorf("%s: Track got %+v", action, h.b.last)
 		}
 	}

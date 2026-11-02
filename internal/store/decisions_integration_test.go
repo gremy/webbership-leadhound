@@ -43,6 +43,23 @@ func decisions(jobID, obsID int64, verdict string, hash string) []store.Decision
 	return out
 }
 
+// TestObservationTexts: the rows named, by id, with what the scorer reads; one that does not exist
+// is absent.
+func TestObservationTexts(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	jobID, fetchID := seedJob(t, q, "1000000099")
+	one := observeFor(t, q, jobID, fetchID, "Go Engineer", false)
+	two := observeFor(t, q, jobID, fetchID, "Rust Engineer", false)
+	got, err := q.ObservationTexts(ctx, []int64{one, two, two + 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[one].Title != "Go Engineer" || got[two].Title != "Rust Engineer" || got[one].DescriptionClean != "We write Go." {
+		t.Errorf("got %+v", got)
+	}
+}
+
 func TestDecisionsLatestPerCriterion(t *testing.T) {
 	ctx := context.Background()
 	s := appStore(t)

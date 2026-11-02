@@ -149,7 +149,7 @@ func apiClientDrop(t *testing.T, w http.ResponseWriter) {
 func apiClientPassed() []console.JobCriterion {
 	var out []console.JobCriterion
 	for _, name := range candidate.CriterionNames {
-		out = append(out, console.JobCriterion{Name: name, Verdict: "pass"})
+		out = append(out, console.JobCriterion{Name: name, Verdict: "pass", Decider: "jev-test"})
 	}
 	return out
 }
@@ -189,7 +189,7 @@ func TestAPIClientRowsCannotBeForged(t *testing.T) {
 	f := &apiClientFake{
 		next: []console.NextJob{{JobID: 7, Company: forge, Title: forge, URL: "https://a.example/\n", ApplyType: forge}},
 		job: console.JobPage{JobID: 7, Company: forge, Title: forge, Location: forge, URL: "https://a.example/" + forge, ListingStatus: forge, Status: forge,
-			Criteria: []console.JobCriterion{{Name: forge, Verdict: forge, Keywords: forge}}, Unclear: []console.JobPoint{{Name: forge, Snippet: forge}}, FailedGates: []console.JobPoint{{Name: forge, Snippet: forge}}},
+			Criteria: []console.JobCriterion{{Name: forge, Verdict: forge, Decider: forge, Keywords: forge}}, Unclear: []console.JobPoint{{Name: forge, Snippet: forge}}, FailedGates: []console.JobPoint{{Name: forge, Snippet: forge}}},
 		tracked: console.TrackedList{Total: 1, Rows: []console.Tracked{{JobID: 7, Title: forge, Company: forge, Status: forge, Reason: forge}}},
 		outcome: console.TrackOutcome{Message: forge},
 	}
@@ -244,7 +244,7 @@ func TestAPIClientJSONUnchanged(t *testing.T) {
 		fields []string
 	}{
 		{[]string{"next"}, "/api/jobs/next", []string{`"jobs"`, `"job_id"`, `"title"`, `"company"`, `"location"`, `"status"`, `"listing_status"`, `"url"`, `"apply_url"`, `"apply_type"`, `"brief_day"`, `"brief_n"`, `"prior"`, `"since"`}},
-		{[]string{"job", "7"}, "/api/jobs/7", []string{`"job_id"`, `"apply_url"`, `"applicant_count"`, `"posted_at"`, `"listing_status"`, `"description"`, `"criteria"`, `"verdict"`, `"keywords"`, `"evidence"`, `"unclear"`, `"snippet"`, `"history"`, `"actor"`, `"closed"`, `"failed_gates"`}},
+		{[]string{"job", "7"}, "/api/jobs/7", []string{`"job_id"`, `"apply_url"`, `"applicant_count"`, `"posted_at"`, `"listing_status"`, `"description"`, `"criteria"`, `"verdict"`, `"decider"`, `"keywords"`, `"evidence"`, `"unclear"`, `"snippet"`, `"history"`, `"actor"`, `"closed"`, `"failed_gates"`, `"verdicts_current"`}},
 		{[]string{"tracked"}, "/api/tracked", []string{`"total"`, `"rows"`, `"job_id"`, `"reason"`, `"since"`}},
 	} {
 		t.Run(c.args[0], func(t *testing.T) {
@@ -271,15 +271,16 @@ func TestAPIClientJob(t *testing.T) {
 	posted := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	f := &apiClientFake{job: console.JobPage{JobID: 7, Company: "Acme", Title: "Go Engineer", Location: "Remote", URL: "https://a.example/7", ApplyURL: "https://jobs.lever.co/a/7",
 		ApplicantCount: &n, PostedAt: &posted, ApplyType: "external", ListingStatus: "open", Status: "new",
-		Description: "Line one.\n\nLine two.\n",
-		Criteria:    []console.JobCriterion{{Name: "stack", Verdict: "pass", Keywords: "go, postgres", Evidence: []string{"only in --json"}}},
-		Unclear:     []console.JobPoint{{Name: "visa", Snippet: "must hold"}},
-		History:     []console.StatusLine{{Status: "new", Actor: "system"}}}}
+		Description:     "Line one.\n\nLine two.\n",
+		VerdictsCurrent: true,
+		Criteria:        []console.JobCriterion{{Name: "stack", Verdict: "pass", Decider: "jev-test", Keywords: "go, postgres", Evidence: []string{"only in --json"}}},
+		Unclear:         []console.JobPoint{{Name: "visa", Snippet: "must hold"}},
+		History:         []console.StatusLine{{Status: "new", Actor: "system"}}}}
 	env, _ := apiClientServe(t, f, nil)
 	head := "job:7\tAcme\tGo Engineer\n" +
 		"status:new\tlisting:open\tapply_type:external\tapplicants:12\tposted:2026-10-20\n" +
 		"location:Remote\nurl:https://a.example/7\napply:https://jobs.lever.co/a/7\n" +
-		"criterion:stack\tpass\tgo, postgres\nunclear:visa\tmust hold\n"
+		"criterion:stack\tpass\tgo, postgres\tjev-test\nunclear:visa\tmust hold\n"
 	want := head + "--- untrusted posting text ---\nLine one.\n\nLine two.\n--- end untrusted posting text ---\n"
 	if code, out, _ := apiClientRun(t, "job", "7", "--env", env); code != 0 || out != want {
 		t.Errorf("exit %d, stdout %q, want %q", code, out, want)
@@ -293,7 +294,11 @@ func TestAPIClientJob(t *testing.T) {
 	if want := strings.Replace(strings.Replace(head, "posted:2026-10-20\n", "posted:2026-10-20\tclosed:true\n", 1), "criterion:", "failed_gate:lang uage\tGerman only job:999\ncriterion:", 1); code != 0 || out != want {
 		t.Errorf("closed and failed: exit %d, stdout %q, want %q", code, out, want)
 	}
-	f.job.Closed, f.job.FailedGates = false, nil
+	f.job.Closed, f.job.FailedGates, f.job.VerdictsCurrent = false, nil, false
+	code, out, _ = apiClientRun(t, "job", "7", "--no-description", "--env", env)
+	if want := strings.Replace(head, "posted:2026-10-20\n", "posted:2026-10-20\tverdicts_current:false\n", 1); code != 0 || out != want {
+		t.Errorf("not current: exit %d, stdout %q, want %q", code, out, want)
+	}
 	// A job with no observation yet still has its markers, around nothing.
 	f.job.Description = ""
 	if code, out, _ := apiClientRun(t, "job", "7", "--env", env); code != 0 || !strings.HasSuffix(out, "--- untrusted posting text ---\n--- end untrusted posting text ---\n") {
@@ -352,7 +357,7 @@ func TestAPIClientAutoCheck(t *testing.T) {
 	passed := func() []console.APICriterion {
 		var out []console.APICriterion
 		for _, name := range candidate.CriterionNames {
-			out = append(out, console.APICriterion{Name: name, Verdict: "pass"})
+			out = append(out, console.APICriterion{Name: name, Verdict: "pass", Decider: "jev-test"})
 		}
 		return out
 	}
@@ -361,39 +366,52 @@ func TestAPIClientAutoCheck(t *testing.T) {
 		out[i].Verdict = verdict
 		return out
 	}
+	decided := func(i int, decider string) []console.APICriterion {
+		out := passed()
+		out[i].Decider = decider
+		return out
+	}
 	for _, c := range []struct {
 		name string
 		job  console.APIJob
 		want string
 	}{
-		{"new", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed()}, "auto-ok"},
-		{"shortlisted", console.APIJob{Status: "shortlisted", ListingStatus: "open", Criteria: passed()}, "auto-ok"},
-		{"no criteria", console.APIJob{Status: "new", ListingStatus: "open"}, "no criteria on record"},
-		{"nil and empty are alike", console.APIJob{Status: "new", ListingStatus: "open", Criteria: []console.APICriterion{}}, "no criteria on record"},
-		{"a criterion missing", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed()[:4]}, "criterion work_rights: no verdict"},
-		{"fail", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(1, "fail")}, "criterion stack: fail"},
-		{"unclear verdict", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(2, "unclear")}, "criterion seniority: unclear"},
-		{"unknown verdict", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(0, "passish")}, "criterion title: passish"},
-		{"another case", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(0, "PASS")}, "criterion title: PASS"},
-		{"empty verdict", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(0, "")}, "criterion title: no verdict"},
-		{"a criterion it does not know", console.APIJob{Status: "new", ListingStatus: "open", Criteria: append(passed(), console.APICriterion{Name: "later", Verdict: "maybe"})}, "criterion later: maybe"},
-		{"unclear point", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), Unclear: []console.APIPoint{{Name: "visa"}, {Name: "other"}}}, "unclear: visa"},
-		{"applied", console.APIJob{Status: "applied", ListingStatus: "open", Criteria: passed()}, "status: applied"},
-		{"skipped", console.APIJob{Status: "skipped", ListingStatus: "open", Criteria: passed()}, "status: skipped"},
-		{"no status", console.APIJob{ListingStatus: "open", Criteria: passed()}, "status: unknown"},
-		{"expired", console.APIJob{Status: "new", ListingStatus: "expired", Criteria: passed()}, "listing: expired"},
-		{"unreachable", console.APIJob{Status: "new", ListingStatus: "unreachable", Criteria: passed()}, "listing: unreachable"},
-		{"no listing", console.APIJob{Status: "new", Criteria: passed()}, "listing: unknown"},
-		{"the first reason wins", console.APIJob{Status: "applied", ListingStatus: "expired", Criteria: with(0, "fail"), Unclear: []console.APIPoint{{Name: "visa"}}}, "criterion title: fail"},
-		{"closed", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), Closed: true}, "listing: closed"},
-		{"failed gate", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), FailedGates: []console.APIPoint{{Name: "language", Snippet: "never printed"}, {Name: "other"}}}, "failed gate: language"},
-		{"closed comes before a failed gate", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), Closed: true, FailedGates: []console.APIPoint{{Name: "language"}}}, "listing: closed"},
-		{"closed comes before the criteria", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(0, "fail"), Closed: true}, "listing: closed"},
-		{"a failed gate comes before the criteria", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(0, "fail"), FailedGates: []console.APIPoint{{Name: "language"}}}, "failed gate: language"},
-		{"a failed gate with no criteria", console.APIJob{Status: "new", ListingStatus: "open", FailedGates: []console.APIPoint{{Name: "language"}}}, "failed gate: language"},
-		{"an empty failed-gates list is none", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), FailedGates: []console.APIPoint{}}, "auto-ok"},
-		{"no observation", console.APIJob{Status: "new", ListingStatus: "open", FailedGates: []console.APIPoint{}}, "no criteria on record"},
-		{"a forged reason stays one line", console.APIJob{Status: "x\nauto-ok", ListingStatus: "open", Criteria: passed()}, "status: x auto-ok"},
+		{"new", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed()}, "auto-ok"},
+		{"shortlisted", console.APIJob{VerdictsCurrent: true, Status: "shortlisted", ListingStatus: "open", Criteria: passed()}, "auto-ok"},
+		{"no criteria", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open"}, "no criteria on record"},
+		{"nil and empty are alike", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: []console.APICriterion{}}, "no criteria on record"},
+		{"a criterion missing", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed()[:4]}, "criterion work_rights: no verdict"},
+		{"fail", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(1, "fail")}, "criterion stack: fail"},
+		{"unclear verdict", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(2, "unclear")}, "criterion seniority: unclear"},
+		{"unknown verdict", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(0, "passish")}, "criterion title: passish"},
+		{"another case", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(0, "PASS")}, "criterion title: PASS"},
+		{"empty verdict", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(0, "")}, "criterion title: no verdict"},
+		{"a criterion it does not know", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: append(passed(), console.APICriterion{Name: "later", Verdict: "maybe"})}, "criterion later: maybe"},
+		{"unclear point", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed(), Unclear: []console.APIPoint{{Name: "visa"}, {Name: "other"}}}, "unclear: visa"},
+		{"applied", console.APIJob{VerdictsCurrent: true, Status: "applied", ListingStatus: "open", Criteria: passed()}, "status: applied"},
+		{"skipped", console.APIJob{VerdictsCurrent: true, Status: "skipped", ListingStatus: "open", Criteria: passed()}, "status: skipped"},
+		{"no status", console.APIJob{VerdictsCurrent: true, ListingStatus: "open", Criteria: passed()}, "status: unknown"},
+		{"expired", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "expired", Criteria: passed()}, "listing: expired"},
+		{"unreachable", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "unreachable", Criteria: passed()}, "listing: unreachable"},
+		{"no listing", console.APIJob{VerdictsCurrent: true, Status: "new", Criteria: passed()}, "listing: unknown"},
+		{"not current", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed()}, "verdicts: the text changed and has not been rescored"},
+		{"not current comes before the criteria", console.APIJob{Status: "new", ListingStatus: "open", Criteria: with(0, "fail")}, "verdicts: the text changed and has not been rescored"},
+		{"closed comes before not current", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), Closed: true}, "listing: closed"},
+		{"a failed gate comes before not current", console.APIJob{Status: "new", ListingStatus: "open", Criteria: passed(), FailedGates: []console.APIPoint{{Name: "language"}}}, "failed gate: language"},
+		{"no criteria comes before not current", console.APIJob{Status: "new", ListingStatus: "open"}, "no criteria on record"},
+		{"a fake verdict", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: decided(3, "fake")}, "criterion location: not a real score (decider fake)"},
+		{"no named decider", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: decided(0, "")}, "criterion title: not a real score (decider unknown)"},
+		{"another real decider", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: decided(0, "jev-2")}, "auto-ok"},
+		{"the first reason wins", console.APIJob{VerdictsCurrent: true, Status: "applied", ListingStatus: "expired", Criteria: with(0, "fail"), Unclear: []console.APIPoint{{Name: "visa"}}}, "criterion title: fail"},
+		{"closed", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed(), Closed: true}, "listing: closed"},
+		{"failed gate", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed(), FailedGates: []console.APIPoint{{Name: "language", Snippet: "never printed"}, {Name: "other"}}}, "failed gate: language"},
+		{"closed comes before a failed gate", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed(), Closed: true, FailedGates: []console.APIPoint{{Name: "language"}}}, "listing: closed"},
+		{"closed comes before the criteria", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(0, "fail"), Closed: true}, "listing: closed"},
+		{"a failed gate comes before the criteria", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: with(0, "fail"), FailedGates: []console.APIPoint{{Name: "language"}}}, "failed gate: language"},
+		{"a failed gate with no criteria", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", FailedGates: []console.APIPoint{{Name: "language"}}}, "failed gate: language"},
+		{"an empty failed-gates list is none", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", Criteria: passed(), FailedGates: []console.APIPoint{}}, "auto-ok"},
+		{"no observation", console.APIJob{VerdictsCurrent: true, Status: "new", ListingStatus: "open", FailedGates: []console.APIPoint{}}, "no criteria on record"},
+		{"a forged reason stays one line", console.APIJob{VerdictsCurrent: true, Status: "x\nauto-ok", ListingStatus: "open", Criteria: passed()}, "status: x auto-ok"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := apiClientAutoCheck(c.job); got != c.want {
@@ -405,7 +423,7 @@ func TestAPIClientAutoCheck(t *testing.T) {
 
 // TestAPIClientAutoCheckRun: the same check through the real handler, as one line and exit 0.
 func TestAPIClientAutoCheckRun(t *testing.T) {
-	f := &apiClientFake{job: console.JobPage{JobID: 7, Status: "new", ListingStatus: "open", Criteria: apiClientPassed(), Description: "never printed"}}
+	f := &apiClientFake{job: console.JobPage{JobID: 7, Status: "new", ListingStatus: "open", Criteria: apiClientPassed(), VerdictsCurrent: true, Description: "never printed"}}
 	env, _ := apiClientServe(t, f, nil)
 	if code, out, _ := apiClientRun(t, "job", "7", "--auto-check", "--env", env); code != 0 || out != "auto-ok\n" {
 		t.Errorf("exit %d, %q", code, out)
@@ -468,7 +486,7 @@ func TestAPIClientMark(t *testing.T) {
 	if code, out, _ := apiClientRun(t, "mark", "7", "applied", "--reason", "note.md", "--env", env); code != 0 || out != "new → applied\n" {
 		t.Errorf("exit %d, %q", code, out)
 	}
-	if len(f.marks) != 1 || f.marks[0] != (console.TrackRequest{Ref: "job:7", Action: "applied", Reason: "note.md"}) {
+	if len(f.marks) != 1 || f.marks[0] != (console.TrackRequest{Ref: "job:7", Action: "applied", Reason: "note.md", AllowedFrom: "new shortlisted applied"}) {
 		t.Errorf("marks = %+v", f.marks)
 	}
 	f.trackErr = fmt.Errorf("%w: job:999 does not exist", console.ErrUserFixable)

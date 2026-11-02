@@ -610,7 +610,8 @@ func (b *backend) Track(ctx context.Context, req console.TrackRequest) (console.
 	if err != nil {
 		return console.TrackOutcome{}, userFixable(err)
 	}
-	res, err := trackJob(ctx, b.s, trackRequest{JobID: jobID, Action: req.Action, Reason: req.Reason, RuleField: field, RulePattern: pattern})
+	res, err := trackJob(ctx, b.s, trackRequest{JobID: jobID, Action: req.Action, Reason: req.Reason, RuleField: field, RulePattern: pattern,
+		AllowedFrom: strings.Fields(req.AllowedFrom)})
 	if err != nil {
 		return console.TrackOutcome{}, userFixable(trackRefusal(err, jobID, res))
 	}

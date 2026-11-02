@@ -18,6 +18,7 @@ type trackRequest struct {
 	Reason      string
 	RuleField   string // with skip only; "" for none
 	RulePattern string
+	AllowedFrom []string // the statuses this change may start from; empty is no limit
 }
 
 // trackResult is what a status change did. Job is set whenever the job exists, refusals
@@ -32,6 +33,9 @@ type trackResult struct {
 
 // errPastApplying refuses a skip of a job already applied to, interviewing or offered.
 var errPastApplying = errors.New("track: already past applying")
+
+// errNotAllowedFrom refuses a change from a status outside the request's AllowedFrom.
+var errNotAllowedFrom = errors.New("track: not allowed from this status")
 
 // ruleGoesWithSkip refuses a rule given with any action but skip.
 func ruleGoesWithSkip(action, rule string) error {
@@ -61,8 +65,10 @@ func parseTrackRule(flag string) (field, pattern string, err error) {
 
 // trackJob writes req's status change in one transaction that first locks the job, so two
 // changes of the same job at once run one after the other and the second sees the first.
-// A skip past applying is errPastApplying and an unknown job store.ErrNotFound; neither
-// writes anything, and neither does a change to the status the job already has (NoOp).
+// A skip past applying is errPastApplying, a change from a status outside req.AllowedFrom
+// errNotAllowedFrom and an unknown job store.ErrNotFound; none of them writes anything, and
+// neither does a change to the status the job already has (NoOp). AllowedFrom is read under
+// the lock, so a status another change has just written counts.
 func trackJob(ctx context.Context, s *store.Store, req trackRequest) (trackResult, error) {
 	var res trackResult
 	if err := ruleGoesWithSkip(req.Action, req.RuleField); err != nil {
@@ -88,6 +94,9 @@ func trackJob(ctx context.Context, s *store.Store, req trackRequest) (trackResul
 			if slices.Contains(pastApplying, sum.Status) {
 				return fmt.Errorf("%w: already %s; use withdrawn", errPastApplying, sum.Status)
 			}
+		}
+		if len(req.AllowedFrom) > 0 && !slices.Contains(req.AllowedFrom, sum.Status) {
+			return fmt.Errorf("%w: %s", errNotAllowedFrom, sum.Status)
 		}
 		res.To = status
 		if req.Action != "maybe" && status == sum.Status {
@@ -132,6 +141,8 @@ func trackRefusal(err error, jobID int64, res trackResult) error {
 		return usageError("job:%d does not exist", jobID)
 	case errors.Is(err, errPastApplying):
 		return usageError("already %s; use withdrawn", res.From)
+	case errors.Is(err, errNotAllowedFrom):
+		return usageError("already %s; change it in the console", res.From)
 	case errors.Is(err, store.ErrInvalidRule):
 		return usageError("%v", err)
 	}
