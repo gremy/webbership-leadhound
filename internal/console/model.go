@@ -23,8 +23,8 @@ type Backend interface {
 	Runs(ctx context.Context, limit int) ([]RunRow, error)
 	Rules(ctx context.Context) ([]RuleRow, error) // every rule, disabled included
 	Track(ctx context.Context, req TrackRequest) (TrackOutcome, error)
-	Job(ctx context.Context, id int64) (JobPage, error)               // ErrNotFound for no such job
-	NextJobs(ctx context.Context, days, limit int) ([]NextJob, error) // what the local client applies to next, newest brief first
+	Job(ctx context.Context, id int64) (JobPage, error)                 // ErrNotFound for no such job
+	NextJobs(ctx context.Context, days, limit int) (NextJobList, error) // what the local client applies to next, newest brief first
 	AddRule(ctx context.Context, req RuleRequest) (string, error)
 	DisableRule(ctx context.Context, id int64, reason string) (string, error)
 	RunNow(ctx context.Context, req RunRequest) (RunOutcome, error) // ErrUserFixable for a refusal
@@ -319,9 +319,26 @@ type StatusLine struct {
 	At                    time.Time
 }
 
+// NextJobList is the queue: the jobs to apply to, at most the limit; what the skip rules hid from
+// it, never cut by the limit; and how many visible jobs lay past the limit.
+type NextJobList struct {
+	Jobs        []NextJob
+	Hidden      []HiddenJob
+	MoreVisible int
+}
+
+// HiddenJob is a job a skip rule hid from the queue. Briefed is false for a job that reached no
+// brief of the queue's days.
+type HiddenJob struct {
+	JobID                  int64
+	Company, Title, Reason string
+	Briefed                bool
+}
+
 // NextJob is one job the local client may apply to: from a sent brief, still new or
-// shortlisted, its listing open. BriefDay and BriefN are the newest brief that holds it. Prior
-// is every other job of the same company whose status is past new.
+// shortlisted, its listing open. BriefDay and BriefN are the newest brief that holds it; a job a
+// skip rule kept from every brief, brought back by a mark, has neither. Prior is every other job
+// of the same company whose status is past new.
 type NextJob struct {
 	JobID                                                                     int64
 	Title, Company, Location, Status, ListingStatus, URL, ApplyURL, ApplyType string

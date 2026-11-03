@@ -4,10 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gremy/webbership-leadhound/internal/console"
 	"github.com/gremy/webbership-leadhound/internal/store"
 )
 
@@ -15,10 +18,11 @@ func init() { commands["rules"] = runRules }
 
 const rulesUsage = "usage: leadhound rules list [--all]\n" +
 	"       leadhound rules add --kind skip|flag --field company|title|description|location --pattern RE --reason TEXT [--from-job ID]\n" +
-	"       leadhound rules disable ID --reason TEXT"
+	"       leadhound rules disable ID --reason TEXT\n" +
+	"       leadhound rules test --field company|title|description|location --pattern RE [--days N]"
 
-// runRules is `leadhound rules list|add|disable`. A rule is never deleted: disable sets
-// disabled_at, and adding it again undoes that.
+// runRules is `leadhound rules list|add|disable|test`. A rule is never deleted: disable sets
+// disabled_at, and adding it again undoes that. test writes nothing.
 func runRules(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usageError("%s", rulesUsage)
@@ -29,6 +33,7 @@ func runRules(ctx context.Context, args []string) error {
 		all                          bool
 		kind, field, pattern, reason string
 		fromJob                      int64
+		days                         int
 	)
 	switch sub {
 	case "list":
@@ -41,6 +46,10 @@ func runRules(ctx context.Context, args []string) error {
 		fs.Int64Var(&fromJob, "from-job", 0, "the job the rule was made from")
 	case "disable":
 		fs.StringVar(&reason, "reason", "", "why the rule is disabled")
+	case "test":
+		fs.StringVar(&field, "field", "", "company, title, description or location")
+		fs.StringVar(&pattern, "pattern", "", "RE2 pattern, matched case-insensitively")
+		fs.IntVar(&days, "days", queueNeverBriefedDays, "how many days back to look for jobs that reached no brief")
 	default:
 		return usageError("%s", rulesUsage)
 	}
@@ -64,6 +73,13 @@ func runRules(ctx context.Context, args []string) error {
 		}
 		if id, err = strconv.ParseInt(pos[0], 10, 64); err != nil || id <= 0 {
 			return usageError("rules disable: %q is not a rule ID", pos[0])
+		}
+	case "test":
+		if len(pos) != 0 {
+			return usageError("%s", rulesUsage)
+		}
+		if err := rulesTestArgs(field, pattern, days); err != nil {
+			return err
 		}
 	}
 
@@ -107,6 +123,8 @@ func runRules(ctx context.Context, args []string) error {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "rule %d disabled\n", id)
+	case "test":
+		return runRulesTest(ctx, s, loc, field, pattern, days)
 	default:
 		rules, err := s.Q().ListRules(ctx, all)
 		if err != nil {
@@ -118,6 +136,54 @@ func runRules(ctx context.Context, args []string) error {
 		}
 		for _, r := range rules {
 			_, _ = fmt.Fprintln(stdout, ruleLine(r, loc))
+		}
+	}
+	return nil
+}
+
+// rulesTestArgs refuses what `rules add` would refuse of a field and a pattern, and a day count
+// that is not positive.
+func rulesTestArgs(field, pattern string, days int) error {
+	if !slices.Contains(store.RuleFields, field) {
+		return usageError("rules test: --field must be one of %s", strings.Join(store.RuleFields, ", "))
+	}
+	if strings.TrimSpace(pattern) == "" {
+		return usageError("rules test needs --pattern")
+	}
+	if _, err := regexp.Compile("(?i)" + pattern); err != nil {
+		return usageError("rules test: the pattern does not compile: %v", err)
+	}
+	if days <= 0 {
+		return usageError("rules test: --days must be a positive whole number")
+	}
+	return nil
+}
+
+// runRulesTest prints what this one pattern would hide, as if it were the only active skip rule,
+// through the queue's own read, so a rescued job is never listed. It writes nothing.
+func runRulesTest(ctx context.Context, s *store.Store, loc *time.Location, field, pattern string, days int) error {
+	now := time.Now().In(loc)
+	rule := store.Rule{Kind: "skip", Field: field, Pattern: pattern}
+	_, hidden, err := readQueue(ctx, s.Q(), now.AddDate(0, 0, -console.APIDaysDefault), now.AddDate(0, 0, -days), []store.Rule{rule})
+	if err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		briefed bool
+		label   string
+	}{
+		{true, fmt.Sprintf("would hide from the queue (briefs of the last %d days)", console.APIDaysDefault)},
+		{false, fmt.Sprintf("never reached a brief (first seen in the last %d days)", days)},
+	} {
+		var lines []string
+		for _, h := range hidden {
+			if h.Briefed == c.briefed {
+				lines = append(lines, fmt.Sprintf("job:%d\t%s\t%s", h.JobID, apiClientLine(h.Company), apiClientLine(h.Title)))
+			}
+		}
+		_, _ = fmt.Fprintf(stdout, "%s: %d\n", c.label, len(lines))
+		for _, l := range lines {
+			_, _ = fmt.Fprintln(stdout, l)
 		}
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,8 @@ type apiClientFake struct {
 	console.Backend
 	mu          sync.Mutex
 	next        []console.NextJob
+	hidden      []console.HiddenJob
+	more        int
 	job         console.JobPage
 	tracked     console.TrackedList
 	trackErr    error
@@ -43,11 +46,11 @@ type apiClientFake struct {
 	marks       []console.TrackRequest
 }
 
-func (f *apiClientFake) NextJobs(_ context.Context, days, limit int) ([]console.NextJob, error) {
+func (f *apiClientFake) NextJobs(_ context.Context, days, limit int) (console.NextJobList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.days, f.limit = days, limit
-	return f.next, nil
+	return console.NextJobList{Jobs: f.next, Hidden: f.hidden, MoreVisible: f.more}, nil
 }
 
 func (f *apiClientFake) Job(_ context.Context, id int64) (console.JobPage, error) {
@@ -182,6 +185,79 @@ func TestAPIClientNextRows(t *testing.T) {
 	}
 }
 
+// TestAPIClientNextHiddenLine: anything hidden makes one stderr line beside byte-identical rows,
+// reasons with the highest count first and then alphabetical; never under --json.
+func TestAPIClientNextHiddenLine(t *testing.T) {
+	day := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+	f := &apiClientFake{next: []console.NextJob{{JobID: 7, Company: "Acme", Title: "Go Engineer", URL: "https://a.example/7", ApplyType: "external", BriefDay: day}}, more: 3}
+	env, _ := apiClientServe(t, f, nil)
+	row := "job:7\tAcme\tGo Engineer\ta.example\texternal\t2026-10-30\n"
+	if code, out, stderr := apiClientRun(t, "next", "--env", env); code != 0 || out != row || stderr != "" {
+		t.Errorf("past the limit, nothing hidden: exit %d, %q, stderr %q; want silence", code, out, stderr)
+	}
+	f.hidden = []console.HiddenJob{{JobID: 1, Reason: "zeta"}, {JobID: 2, Reason: "beta"}, {JobID: 3, Reason: "alpha"}, {JobID: 4, Reason: "beta"}, {JobID: 5, Reason: "zeta\n"}, {JobID: 6, Reason: "zeta"}}
+	wantLine := "hidden: 6 (zeta 3, beta 2, alpha 1); more: 3; see: leadhound api next --hidden\n"
+	if code, out, stderr := apiClientRun(t, "next", "--env", env); code != 0 || out != row || stderr != wantLine {
+		t.Errorf("exit %d, stdout %q, stderr %q; want %q", code, out, stderr, wantLine)
+	}
+	f.more = 0
+	wantLine = "hidden: 6 (zeta 3, beta 2, alpha 1); more: 0; see: leadhound api next --hidden\n"
+	if _, _, stderr := apiClientRun(t, "next", "--env", env); stderr != wantLine {
+		t.Errorf("no more: stderr %q, want %q", stderr, wantLine)
+	}
+	if code, _, stderr := apiClientRun(t, "next", "--json", "--env", env); code != 0 || stderr != "" {
+		t.Errorf("--json: exit %d, stderr %q", code, stderr)
+	}
+	f.next = nil
+	if code, out, stderr := apiClientRun(t, "next", "--env", env); code != 0 || out != "no jobs\n" || stderr != wantLine {
+		t.Errorf("empty queue: exit %d, %q, stderr %q", code, out, stderr)
+	}
+}
+
+// TestAPIClientNextHidden: --hidden lists what was hidden through the safe line, ignores --limit
+// and names the rescue; with nothing hidden it says so; with --json it prints the server's answer.
+func TestAPIClientNextHidden(t *testing.T) {
+	const forge = "Real\njob:999\tEvil\u2028\x1b[31m"
+	f := &apiClientFake{next: []console.NextJob{{JobID: 7}}}
+	env, _ := apiClientServe(t, f, nil)
+	if code, out, stderr := apiClientRun(t, "next", "--hidden", "--env", env); code != 0 || out != "nothing hidden\n" || stderr != "" {
+		t.Errorf("nothing hidden: exit %d, %q, stderr %q", code, out, stderr)
+	}
+	f.hidden = []console.HiddenJob{{JobID: 1, Company: "Acme", Title: "Lamp Trimmer", Reason: "another trade", Briefed: true}, {JobID: 2, Company: forge, Title: forge, Reason: forge}}
+	code, out, stderr := apiClientRun(t, "next", "--hidden", "--limit", "0", "--days", "9", "--env", env)
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 3 || lines[0] != "job:1\tAcme\tLamp Trimmer\tanother trade" || !strings.HasPrefix(lines[1], "job:2\t") ||
+		len(strings.Split(lines[1], "\t")) != 4 || !strings.Contains(lines[2], "api mark ID maybe") {
+		t.Errorf("out = %q", out)
+	}
+	if f.limit != 20 || f.days != 9 {
+		t.Errorf("limit %d, days %d; want the server's default limit and the days given", f.limit, f.days)
+	}
+	if code, out, stderr := apiClientRun(t, "next", "--hidden", "--json", "--env", env); code != 0 || !strings.Contains(out, `"hidden":[{"job_id":1,`) || stderr != "" {
+		t.Errorf("--json: exit %d, %q, stderr %q", code, out, stderr)
+	}
+}
+
+// TestAPIClientOldClientDecodes: a client built before the hidden list reads the new answer, whose
+// jobs are where they were.
+func TestAPIClientOldClientDecodes(t *testing.T) {
+	f := &apiClientFake{next: []console.NextJob{{JobID: 7, Title: "Go Engineer"}}, hidden: []console.HiddenJob{{JobID: 1}}, more: 2}
+	env, _ := apiClientServe(t, f, nil)
+	_, out, _ := apiClientRun(t, "next", "--json", "--env", env)
+	var old struct {
+		Jobs []struct {
+			JobID int64  `json:"job_id"`
+			Title string `json:"title"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal([]byte(out), &old); err != nil || len(old.Jobs) != 1 || old.Jobs[0].JobID != 7 || old.Jobs[0].Title != "Go Engineer" {
+		t.Errorf("old client read %+v, %v from %s", old, err, out)
+	}
+}
+
 // TestAPIClientRowsCannotBeForged: a newline, tab or other separator in posting text never makes a
 // second row or a field, in any line the client prints.
 func TestAPIClientRowsCannotBeForged(t *testing.T) {
@@ -234,6 +310,7 @@ func TestAPIClientRowsCannotBeForged(t *testing.T) {
 func TestAPIClientJSONUnchanged(t *testing.T) {
 	f := &apiClientFake{
 		next:    []console.NextJob{{JobID: 7, Title: "<Go> & co", Prior: []console.PriorJob{{JobID: 1, Status: "applied"}}}},
+		hidden:  []console.HiddenJob{{JobID: 8, Reason: "a reason"}},
 		job:     console.JobPage{JobID: 7, Description: "body", Criteria: []console.JobCriterion{{Name: "title", Verdict: "pass"}}, Unclear: []console.JobPoint{{Name: "x"}}, History: []console.StatusLine{{Status: "new"}}},
 		tracked: console.TrackedList{Total: 1, Rows: []console.Tracked{{JobID: 7}}},
 	}
@@ -243,7 +320,7 @@ func TestAPIClientJSONUnchanged(t *testing.T) {
 		path   string
 		fields []string
 	}{
-		{[]string{"next"}, "/api/jobs/next", []string{`"jobs"`, `"job_id"`, `"title"`, `"company"`, `"location"`, `"status"`, `"listing_status"`, `"url"`, `"apply_url"`, `"apply_type"`, `"brief_day"`, `"brief_n"`, `"prior"`, `"since"`}},
+		{[]string{"next"}, "/api/jobs/next", []string{`"jobs"`, `"job_id"`, `"title"`, `"company"`, `"location"`, `"status"`, `"listing_status"`, `"url"`, `"apply_url"`, `"apply_type"`, `"brief_day"`, `"brief_n"`, `"prior"`, `"since"`, `"hidden"`, `"reason"`, `"briefed"`, `"more_visible"`}},
 		{[]string{"job", "7"}, "/api/jobs/7", []string{`"job_id"`, `"apply_url"`, `"applicant_count"`, `"posted_at"`, `"listing_status"`, `"description"`, `"criteria"`, `"verdict"`, `"decider"`, `"keywords"`, `"evidence"`, `"unclear"`, `"snippet"`, `"history"`, `"actor"`, `"closed"`, `"failed_gates"`, `"verdicts_current"`}},
 		{[]string{"tracked"}, "/api/tracked", []string{`"total"`, `"rows"`, `"job_id"`, `"reason"`, `"since"`}},
 	} {
@@ -762,9 +839,9 @@ func TestAPIClientRepeatAfterLostAnswer(t *testing.T) {
 // not trusted are all exit 3, in one plain line.
 func TestAPIClientUnreachable(t *testing.T) {
 	apiClientQuick(t)
-	savedTimeout := apiClientTimeout
-	apiClientTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { apiClientTimeout = savedTimeout })
+	savedTimeout, savedNext := apiClientTimeout, apiClientNextTimeout
+	apiClientTimeout, apiClientNextTimeout = 100*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { apiClientTimeout, apiClientNextTimeout = savedTimeout, savedNext })
 
 	closed := httptest.NewServer(http.NotFoundHandler())
 	closedURL := closed.URL

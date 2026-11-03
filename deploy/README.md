@@ -275,8 +275,9 @@ Run these on the server as root, in order.
   It copies nothing else: the title screen is part of `leadhound.yaml`, and the eval golden set, the privacy denylist and the board seed lists are never needed on the server.
   After copying `campaigns/` it prints the `leads campaigns register` line to run next, as [Campaigns on the server](#campaigns-on-the-server) says; it does not register for you.
 - `make remote HOST=… ARGS='track list'` runs one command on the server as the `leadhound` user with the units' environment.
-  `track list`, `rules list`, `boards list`, `leads suppress list|check`, `leads batch show` and `leads mailboxes list` run freely; every other command writes or reaches the network (`collect`, `canary`, `brief`, `score`, `migrate`, `recheck`, `probe`, `track <n> …`, `rules add`, `boards import` …) and needs `CONFIRM=1`.
+  `track list`, `rules list`, `rules test`, `boards list`, `leads suppress list|check`, `leads batch show` and `leads mailboxes list` run freely; every other command writes or reaches the network (`collect`, `canary`, `brief`, `score`, `migrate`, `recheck`, `probe`, `track <n> …`, `rules add`, `boards import` …) and needs `CONFIRM=1`.
   `ARGS` is split into words by your own shell, as on a command line, and each word reaches `leadhound` whole: the server's shell never reinterprets it.
+  So a pattern with spaces or backslashes goes in single quotes inside the double-quoted `ARGS`: `make remote HOST=… ARGS="rules test --field title --pattern 'plain words\b'"`.
 - `remote` runs without the units' hardening, memory ceiling and timeouts.
   It does take the units' locks, without waiting: `collect linkedin`, `canary`, `brief` and `preview` take the LinkedIn lock and `score` the score lock, and when a timer's run holds one, `remote` exits 75 and runs nothing; try again when it has finished (`systemctl list-units 'leadhound-*'`).
   Even so, prefer to run collects and briefs by hand only while no timer is due.
@@ -1273,13 +1274,30 @@ It is off until `/etc/leadhound/env` holds a `LEADHOUND_API_TOKEN_SHA256` value;
 
 | Route | What it does |
 | --- | --- |
-| `GET /api/jobs/next?limit=N&days=D` | Open jobs from recent briefs still at `new` or `shortlisted`, with earlier jobs at the same company (`limit` defaults to 20, at most 50; `days` defaults to 14, at most 60). |
+| `GET /api/jobs/next?limit=N&days=D` | Open jobs from recent briefs still at `new` or `shortlisted`, with earlier jobs at the same company, under the active skip rules (`limit` defaults to 20, at most 50, and counts visible jobs only; `days` defaults to 14, at most 60). The answer also holds `hidden`, what the rules left out, and `more_visible`, the visible jobs past the limit. |
 | `GET /api/jobs/{id}` | One job's page: description, criteria, unclear points and history. |
 | `GET /api/tracked?status=S` | The tracked jobs at one status (default `applied`). |
 | `POST /api/jobs/{id}/track` | Marks a job, with the body `{"action":"applied\|skip\|maybe","reason":"..."}`. |
 
 Every route needs `Authorization: Bearer <token>` and answers JSON, errors included.
 A wrong or missing token answers 401, never a redirect to the sign-in page.
+
+**What the queue hides.**
+The next route applies the same skip rules as the ranker, before the limit, so a full page of real jobs still comes back; a flag rule, a disabled rule and a stored pattern that does not compile hide nothing.
+`hidden` holds every job a rule left out, with the rule's reason, and `briefed` says which of the two kinds it is.
+With `briefed` true it came from a brief of those days; with `briefed` false it was first seen in the last 30 days and is in no brief of those days.
+A job another gate fails is not in that second kind: that gate keeps it from every brief whatever the rules say.
+On the local tool, `leadhound api next` adds one stderr line when anything was hidden, and `leadhound api next --hidden` lists it all.
+A rule on `description` is what makes this read slow, because the server reads the text of every job in that second kind, so `api next` waits up to 25 seconds where the other commands wait 10.
+
+**To bring a hidden job back**, run `leadhound api mark ID maybe`: a job whose latest status event is yours is never hidden.
+One that reached no brief then lists after the briefed jobs, with an empty brief day.
+
+**To add a rule**, try it first, which writes nothing: `leadhound rules test --field title --pattern 'plain words' [--days 30]` prints what it would hide from the queue and what never reached a brief.
+Then `leadhound rules add --kind skip --field title --pattern 'plain words' --reason 'why'`.
+Skip rules shrink the morning brief as well.
+`rules disable` does not fully undo a rule: its failure is stored on each new observation and the ranker keeps skipping until a newer observation replaces it, an ATS posting that fails is never asked for its detail, and a disabled rule leaves the queue showing a job the brief still skips.
+So start narrow, and prefer `--kind flag` when unsure.
 
 **To turn it on**, do this before you deploy, so the deploy's own console restart picks up the hash and you are not signed out a second time:
 

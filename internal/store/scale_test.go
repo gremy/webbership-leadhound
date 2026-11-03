@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
@@ -77,6 +78,56 @@ func TestScaleScoreQueue(t *testing.T) {
 	}
 	if got := len(q.Entries) + q.GateFailed + q.AwaitingDetail; got != want || len(q.Entries) == 0 {
 		t.Errorf("queue %d entries + %d gate failed + %d awaiting detail = %d; want %d", len(q.Entries), q.GateFailed, q.AwaitingDetail, got, want)
+	}
+}
+
+// TestScaleNextJobs: the queue's read of the briefs, at the API's widest window, with no limit and
+// with the description a description rule needs.
+func TestScaleNextJobs(t *testing.T) {
+	s, info := scaleStore(t)
+	ctx := context.Background()
+	since := time.Now().AddDate(0, 0, -60)
+	var jobs []store.NextJob
+	within(t, "NextJobs(days=60)", 500*time.Millisecond, func() error {
+		var err error
+		jobs, err = s.Q().NextJobs(ctx, since, true)
+		return err
+	})
+	if len(jobs) == 0 {
+		t.Errorf("no jobs from the seeded brief of %s", info.WideDay.Format(time.DateOnly))
+	}
+}
+
+// TestScaleNeverBriefedJobs: the queue's second read over a wide-net night's jobs, with rules that
+// match in Go as the backend's do. Every row is read on every `api next` once a skip rule exists.
+// Descriptions are the cost: about 84 MB through two regular expressions, slower with a cold
+// TOAST table, which is why `api next` has its own client timeout. These budgets have to stay
+// well inside that on the slower server.
+func TestScaleNeverBriefedJobs(t *testing.T) {
+	s, _ := scaleStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	title := regexp.MustCompile(`(?i)\b(sales|lighthouse)\s+manager\b`)
+	descA := regexp.MustCompile(`(?i)(needs?|wants?|asks? for)[^.]{0,40}passport stamp`)
+	descB := regexp.MustCompile(`(?i)must be a licensed? (lamp|lens) trimmer`)
+	for _, c := range []struct {
+		name   string
+		needs  bool
+		budget time.Duration
+		keep   func(store.NextJob) bool
+	}{
+		{"title rule", false, 3 * time.Second, func(j store.NextJob) bool { return title.MatchString(j.Title) }},
+		{"two description rules", true, 15 * time.Second, func(j store.NextJob) bool {
+			return descA.MatchString(j.Description) || descB.MatchString(j.Description)
+		}},
+	} {
+		var n int
+		within(t, "NeverBriefedJobs "+c.name, c.budget, func() error {
+			jobs, err := s.Q().NeverBriefedJobs(ctx, now.AddDate(0, 0, -14), now.AddDate(0, 0, -30), c.needs, c.keep)
+			n = len(jobs)
+			return err
+		})
+		t.Logf("%s: kept %d", c.name, n)
 	}
 }
 

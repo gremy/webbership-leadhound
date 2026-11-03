@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -315,15 +316,15 @@ func TestAPIColdStart(t *testing.T) {
 	commandDB(t)
 	b := testBackend(t)
 	h, _ := apiHandler(t, b)
-	if code, raw := apiCall(t, h, http.MethodGet, "/api/jobs/next", ""); code != http.StatusOK || raw != `{"jobs":[]}`+"\n" {
+	if code, raw := apiCall(t, h, http.MethodGet, "/api/jobs/next", ""); code != http.StatusOK || raw != `{"jobs":[],"hidden":[],"more_visible":0}`+"\n" {
 		t.Errorf("next: %d %q", code, raw)
 	}
 	if code, raw := apiCall(t, h, http.MethodGet, "/api/tracked", ""); code != http.StatusOK || raw != `{"total":0,"rows":[]}`+"\n" {
 		t.Errorf("tracked: %d %q", code, raw)
 	}
-	jobs, err := b.NextJobs(context.Background(), 14, 20)
-	if err != nil || jobs == nil || len(jobs) != 0 {
-		t.Errorf("NextJobs = %#v, %v; want empty and not nil", jobs, err)
+	next, err := b.NextJobs(context.Background(), 14, 20)
+	if err != nil || next.Jobs == nil || len(next.Jobs) != 0 || next.Hidden == nil || len(next.Hidden) != 0 || next.MoreVisible != 0 {
+		t.Errorf("NextJobs = %#v, %v; want empty and not nil", next, err)
 	}
 }
 
@@ -384,16 +385,16 @@ func TestNextJobsBackendClock(t *testing.T) {
 	b.now = func() time.Time { return time.Date(2026, 3, 24, 22, 30, 0, 0, time.UTC) }
 	ctx := context.Background()
 
-	jobs, err := b.NextJobs(ctx, 14, 20)
-	if err != nil || len(jobs) != 0 {
-		t.Errorf("14 days: %+v, %v; want the brief just out of range", jobs, err)
+	next, err := b.NextJobs(ctx, 14, 20)
+	if err != nil || len(next.Jobs) != 0 {
+		t.Errorf("14 days: %+v, %v; want the brief just out of range", next, err)
 	}
-	jobs, err = b.NextJobs(ctx, 15, 20)
-	if err != nil || len(jobs) != 1 {
-		t.Fatalf("15 days: %+v, %v; want the brief", jobs, err)
+	next, err = b.NextJobs(ctx, 15, 20)
+	if err != nil || len(next.Jobs) != 1 {
+		t.Fatalf("15 days: %+v, %v; want the brief", next, err)
 	}
-	if want := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC); !jobs[0].BriefDay.Equal(want) || jobs[0].Prior == nil {
-		t.Errorf("job = %+v, want BriefDay %v and Prior not nil", jobs[0], want)
+	if want := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC); !next.Jobs[0].BriefDay.Equal(want) || next.Jobs[0].Prior == nil {
+		t.Errorf("job = %+v, want BriefDay %v and Prior not nil", next.Jobs[0], want)
 	}
 	h, _ := apiHandler(t, b)
 	if got := apiNext(t, h, "?days=15"); len(got) != 1 || got[0].BriefDay != "2026-03-10" {
@@ -758,5 +759,355 @@ func TestServeAPITokenUppercase(t *testing.T) {
 	}
 	if code, err := get("not-the-token"); err != nil || code != http.StatusUnauthorized {
 		t.Errorf("a wrong token: %d, %v", code, err)
+	}
+}
+
+// queueRule adds an active rule and returns its id.
+func queueRule(t *testing.T, b *backend, kind, field, pattern, reason string) int64 {
+	t.Helper()
+	id, err := b.s.Q().AddRule(context.Background(), kind, field, pattern, reason, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// queueNext is the backend's answer, failing the test on an error.
+func queueNext(t *testing.T, b *backend, limit int) console.NextJobList {
+	t.Helper()
+	next, err := b.NextJobs(context.Background(), 14, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+func queueIDs(next console.NextJobList) (jobs, hidden []int64) {
+	for _, j := range next.Jobs {
+		jobs = append(jobs, j.JobID)
+	}
+	for _, h := range next.Hidden {
+		hidden = append(hidden, h.JobID)
+	}
+	return jobs, hidden
+}
+
+// queueJobs makes n jobs named prefix-i, as a card first makes them.
+func queueJobs(t *testing.T, b *backend, prefix string, n int) []int64 {
+	t.Helper()
+	ids := make([]int64, n)
+	for i := range ids {
+		ids[i] = bareJob(t, b, fmt.Sprintf("%s-%d", prefix, i))
+	}
+	return ids
+}
+
+// TestQueueColdStart: with no skip rule the jobs are what they were, every one of them past any
+// flag or disabled rule, with an empty hidden list and an empty stderr, and a job no brief holds
+// stays out of both lists.
+func TestQueueColdStart(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	ctx := context.Background()
+	a, c := bareJob(t, b, "a"), bareJob(t, b, "c")
+	bareJob(t, b, "never")
+	sendBriefOn(t, today(), a, c)
+
+	h, _ := apiHandler(t, b)
+	_, raw := apiCall(t, h, http.MethodGet, "/api/jobs/next", "")
+	if !strings.HasSuffix(raw, `,"hidden":[],"more_visible":0}`+"\n") {
+		t.Errorf("answer = %s", raw)
+	}
+	env, _ := apiClientServe(t, b, nil)
+	_, before, stderr := apiClientRun(t, "next", "--env", env)
+	if stderr != "" {
+		t.Errorf("stderr = %q", stderr)
+	}
+	if lines := strings.Count(before, "\n"); lines != 2 {
+		t.Errorf("rows = %q", before)
+	}
+	// Rules that can hide nothing leave the same bytes.
+	queueRule(t, b, "flag", "title", "card", "a flag")
+	disabled := queueRule(t, b, "skip", "title", "card", "off")
+	if err := b.s.Q().DisableRule(ctx, disabled, "off"); err != nil {
+		t.Fatal(err)
+	}
+	if _, after, stderr := apiClientRun(t, "next", "--env", env); after != before || stderr != "" {
+		t.Errorf("after rules that hide nothing: %q, stderr %q; want %q", after, stderr, before)
+	}
+}
+
+// TestQueueStatusGrid: each status and whose event it is, against a matching rule.
+func TestQueueStatusGrid(t *testing.T) {
+	ids := sentBrief(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	id := ids[0]
+	var title string
+	if err := storetest.OwnerConn(t).QueryRow(context.Background(),
+		`SELECT coalesce((SELECT title FROM job_observation WHERE job_id = $1 ORDER BY observed_at DESC, id DESC LIMIT 1), '')`, id).Scan(&title); err != nil || title == "" {
+		t.Fatalf("title %q, %v", title, err)
+	}
+
+	in := func() (jobs, hidden bool) {
+		t.Helper()
+		j, hid := queueIDs(queueNext(t, b, 50))
+		return slices.Contains(j, id), slices.Contains(hid, id)
+	}
+	for _, c := range []struct {
+		name         string
+		set          func()
+		rule         bool
+		jobs, hidden bool
+	}{
+		{"new, no rule", func() { setStatus(t, b, id, "new") }, false, true, false},
+		{"shortlisted, no rule", func() { setStatus(t, b, id, "shortlisted") }, false, true, false},
+		{"new", func() { setStatus(t, b, id, "new") }, true, false, true},
+		{"system shortlisted", func() { setStatus(t, b, id, "shortlisted") }, true, false, true},
+		{"new, rescued", func() {
+			setStatus(t, b, id, "new")
+			if code, raw := apiMark(t, h, id, "maybe", "worth a look"); code != http.StatusOK {
+				t.Fatalf("mark: %d %s", code, raw)
+			}
+		}, true, true, false},
+		{"shortlisted, rescued", func() {
+			setStatus(t, b, id, "shortlisted")
+			if code, raw := apiMark(t, h, id, "maybe", "worth a look"); code != http.StatusOK {
+				t.Fatalf("mark: %d %s", code, raw)
+			}
+		}, true, true, false},
+		{"applied", func() { setStatus(t, b, id, "applied") }, true, false, false},
+		{"skipped", func() { setStatus(t, b, id, "skipped") }, true, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := storetest.OwnerConn(t).Exec(context.Background(), `DELETE FROM rule`); err != nil {
+				t.Fatal(err)
+			}
+			if c.rule {
+				queueRule(t, b, "skip", "title", regexp.QuoteMeta(title), "a reason")
+			}
+			c.set()
+			if jobs, hidden := in(); jobs != c.jobs || hidden != c.hidden {
+				t.Errorf("in jobs %v, in hidden %v; want %v, %v", jobs, hidden, c.jobs, c.hidden)
+			}
+		})
+	}
+}
+
+// TestQueuePriorNeverHides: another job at the company, at any status, leaves a job listed and in
+// no hidden list, with that status in its Prior.
+func TestQueuePriorNeverHides(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	queueRule(t, b, "skip", "title", "nothing matches this", "a reason")
+	ctx := context.Background()
+	q := b.s.Q()
+	company, err := q.UpsertCompany(ctx, "Northwind", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := func(name string) int64 {
+		t.Helper()
+		id, err := q.UpsertJob(ctx, store.JobUpsert{Source: "linkedin", SourceJobID: name, CompanyID: company, Title: "Go Engineer", URL: "https://jobs.example/" + name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	id := job("listed")
+	sendBriefOn(t, today(), id)
+	for _, status := range store.JobStatuses {
+		t.Run(status, func(t *testing.T) {
+			prior := job("prior-" + status)
+			setStatus(t, b, prior, status)
+			next := queueNext(t, b, 50)
+			jobs, hidden := queueIDs(next)
+			if !slices.Contains(jobs, id) || slices.Contains(hidden, id) {
+				t.Errorf("jobs %v, hidden %v", jobs, hidden)
+			}
+			if status != "new" && !slices.ContainsFunc(next.Jobs[slices.Index(jobs, id)].Prior, func(p console.PriorJob) bool { return p.JobID == prior && p.Status == status }) {
+				t.Errorf("no prior %d at %s: %+v", prior, status, next.Jobs)
+			}
+		})
+	}
+}
+
+// TestQueueLimit: the limit counts visible jobs after the filter, and every job ends in exactly
+// one of Jobs, Hidden or past the limit.
+func TestQueueLimit(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	ids := queueJobs(t, b, "x", 10)
+	sendBriefOn(t, today(), ids...)
+
+	next := queueNext(t, b, 5)
+	if jobs, _ := queueIDs(next); !slices.Equal(jobs, ids[:5]) || next.MoreVisible != 5 || len(next.Hidden) != 0 {
+		t.Errorf("10 visible, limit 5: %+v", next)
+	}
+	// Eight of the ten match by title, two do not.
+	for _, id := range ids[:8] {
+		if _, err := storetest.OwnerConn(t).Exec(context.Background(), `UPDATE job SET title = 'Noise role' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queueRule(t, b, "skip", "title", "noise", "noise")
+	next = queueNext(t, b, 5)
+	jobs, hidden := queueIDs(next)
+	if !slices.Equal(jobs, ids[8:]) || !slices.Equal(hidden, ids[:8]) || next.MoreVisible != 0 {
+		t.Errorf("8 hidden, limit 5: jobs %v, hidden %v, more %d", jobs, hidden, next.MoreVisible)
+	}
+	// Hidden is never cut by the limit, and the three lists add up to every candidate.
+	next = queueNext(t, b, 1)
+	jobs, hidden = queueIDs(next)
+	if len(jobs) != 1 || len(hidden) != 8 || next.MoreVisible != 1 || len(jobs)+len(hidden)+next.MoreVisible != len(ids) {
+		t.Errorf("limit 1: jobs %v, hidden %v, more %d", jobs, hidden, next.MoreVisible)
+	}
+}
+
+// TestQueueFutureMatches: a rule-matched job in no brief lists as hidden and never briefed, through
+// --hidden too; one no rule matches, or that another gate fails, or first seen too long ago, is in
+// neither list.
+func TestQueueFutureMatches(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	queueRule(t, b, "skip", "title", "noise", "not for you")
+	ctx := context.Background()
+	future := bareJob(t, b, "noise-future")
+	bareJob(t, b, "plain")
+	failing := bareJob(t, b, "noise-failing")
+	observeText(t, b, failing, "noise-failing", "text", false, "location", "fail", "", "outside the area")
+	ruleFailed := bareJob(t, b, "noise-gated")
+	observeText(t, b, ruleFailed, "noise-gated", "text", false, "rule", "fail", "", "matched")
+	old := bareJob(t, b, "noise-old")
+	if _, err := storetest.OwnerConn(t).Exec(ctx, `UPDATE job SET first_seen_at = now() - interval '31 days' WHERE id = $1`, old); err != nil {
+		t.Fatal(err)
+	}
+
+	next := queueNext(t, b, 20)
+	if len(next.Jobs) != 0 {
+		t.Errorf("jobs = %+v", next.Jobs)
+	}
+	want := []console.HiddenJob{
+		{JobID: future, Company: "noise-future Co", Title: "noise-future card title", Reason: "not for you"},
+		{JobID: ruleFailed, Company: "noise-gated Co", Title: "noise-gated", Reason: "not for you"},
+	}
+	if !slices.Equal(next.Hidden, want) {
+		t.Errorf("hidden = %+v, want %+v", next.Hidden, want)
+	}
+	env, _ := apiClientServe(t, b, nil)
+	code, out, stderr := apiClientRun(t, "next", "--env", env)
+	if wantLine := "hidden: 2 (not for you 2); more: 0; see: leadhound api next --hidden\n"; code != 0 || out != "no jobs\n" || stderr != wantLine {
+		t.Errorf("next: exit %d, %q, stderr %q", code, out, stderr)
+	}
+	_, out, _ = apiClientRun(t, "next", "--hidden", "--limit", "1", "--env", env)
+	if !strings.Contains(out, fmt.Sprintf("job:%d\tnoise-future Co\tnoise-future card title\tnot for you\n", future)) {
+		t.Errorf("--hidden = %q", out)
+	}
+}
+
+// TestQueueRescueNeverBriefed: a mark brings a rule-matched job with no brief into Jobs, after the
+// briefed ones, with an empty brief day, the row's usual six columns and its company's Prior; the
+// mark takes it out of Hidden.
+func TestQueueRescueNeverBriefed(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	queueRule(t, b, "skip", "title", "noise", "not for you")
+	briefed := bareJob(t, b, "briefed")
+	sendBriefOn(t, today(), briefed)
+	id := bareJob(t, b, "noise")
+	if _, hidden := queueIDs(queueNext(t, b, 20)); !slices.Equal(hidden, []int64{id}) {
+		t.Fatalf("before the mark: hidden %v", hidden)
+	}
+	ctx := context.Background()
+	var company int64
+	if err := storetest.OwnerConn(t).QueryRow(ctx, `SELECT company_id FROM job WHERE id = $1`, id).Scan(&company); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := b.s.Q().UpsertJob(ctx, store.JobUpsert{Source: "linkedin", SourceJobID: "prior", CompanyID: company, Title: "Older role", URL: "https://jobs.example/prior"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(t, b, prior, "applied")
+
+	if code, raw := apiMark(t, h, id, "maybe", "worth a look"); code != http.StatusOK {
+		t.Fatalf("mark: %d %s", code, raw)
+	}
+	next := queueNext(t, b, 20)
+	jobs, hidden := queueIDs(next)
+	if !slices.Equal(jobs, []int64{briefed, id}) || len(hidden) != 0 {
+		t.Fatalf("jobs %v, hidden %v", jobs, hidden)
+	}
+	if j := next.Jobs[1]; !j.BriefDay.IsZero() || j.BriefN != 0 || len(j.Prior) != 1 || j.Prior[0].JobID != prior {
+		t.Errorf("rescued job = %+v", j)
+	}
+	if got := apiNext(t, h, ""); got[1].BriefDay != "" || got[1].BriefN != 0 {
+		t.Errorf("answer = %+v", got[1])
+	}
+	env, _ := apiClientServe(t, b, nil)
+	code, out, stderr := apiClientRun(t, "next", "--env", env)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if code != 0 || stderr != "" || len(lines) != 2 {
+		t.Fatalf("exit %d, %q, stderr %q", code, out, stderr)
+	}
+	want := fmt.Sprintf("job:%d\tnoise Co\tnoise card title\tjobs.example\t\t\tprior:applied", id)
+	if lines[1] != want {
+		t.Errorf("row = %q, want %q", lines[1], want)
+	}
+}
+
+// TestQueueRuleEdges: a disabled rule and a flag rule hide nothing, two matching rules list a job
+// once under the first, a broken stored pattern is dropped and the job stays visible, and every
+// field a rule can read hides.
+func TestQueueRuleEdges(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	ctx := context.Background()
+	id := bareJob(t, b, "edge")
+	sendBriefOn(t, today(), id)
+	visible := func() {
+		t.Helper()
+		if jobs, hidden := queueIDs(queueNext(t, b, 20)); !slices.Equal(jobs, []int64{id}) || len(hidden) != 0 {
+			t.Errorf("jobs %v, hidden %v; want the job visible", jobs, hidden)
+		}
+	}
+	off := queueRule(t, b, "skip", "title", "edge", "off")
+	if err := b.s.Q().DisableRule(ctx, off, "changed my mind"); err != nil {
+		t.Fatal(err)
+	}
+	visible()
+	queueRule(t, b, "flag", "title", "edge", "only a flag")
+	visible()
+	if _, err := storetest.OwnerConn(t).Exec(ctx, `INSERT INTO rule (kind, field, pattern, reason) VALUES ('skip', 'title', 'edge(', 'broken')`); err != nil {
+		t.Fatal(err)
+	}
+	visible()
+
+	queueRule(t, b, "skip", "title", "edge", "first")
+	queueRule(t, b, "skip", "company", "edge", "second")
+	next := queueNext(t, b, 20)
+	if want := []console.HiddenJob{{JobID: id, Company: "edge Co", Title: "edge card title", Reason: "first", Briefed: true}}; !slices.Equal(next.Hidden, want) {
+		t.Errorf("hidden = %+v, want %+v", next.Hidden, want)
+	}
+
+	if _, err := storetest.OwnerConn(t).Exec(ctx, `DELETE FROM rule`); err != nil {
+		t.Fatal(err)
+	}
+	withText := bareJob(t, b, "texted")
+	observeText(t, b, withText, "texted", "Needs a Passport Stamp.", false)
+	if _, err := storetest.OwnerConn(t).Exec(ctx, `UPDATE job_observation SET location_text = 'Atlantis' WHERE job_id = $1`, withText); err != nil {
+		t.Fatal(err)
+	}
+	sendBriefOn(t, "2026-01-01", withText) // out of the window: a future match
+	for _, c := range []struct{ field, pattern string }{{"company", "TEXTED co"}, {"title", "^texted$"}, {"description", "passport stamp"}, {"location", "atlantis"}} {
+		t.Run(c.field, func(t *testing.T) {
+			if _, err := storetest.OwnerConn(t).Exec(ctx, `DELETE FROM rule`); err != nil {
+				t.Fatal(err)
+			}
+			queueRule(t, b, "skip", c.field, c.pattern, c.field)
+			if next := queueNext(t, b, 20); !slices.Equal(next.Hidden, []console.HiddenJob{{JobID: withText, Company: "texted Co", Title: "texted", Reason: c.field}}) {
+				t.Errorf("hidden = %+v", next.Hidden)
+			}
+		})
 	}
 }

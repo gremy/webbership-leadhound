@@ -52,6 +52,9 @@ func CompileRules(rules []store.Rule) CompiledRules {
 // NeedsDescription reports whether an active skip rule reads the description.
 func (r CompiledRules) NeedsDescription() bool { return r.needDesc }
 
+// Empty reports whether no skip rule is active, so nothing can match.
+func (r CompiledRules) Empty() bool { return len(r.rules) == 0 }
+
 // Match returns the id of the first skip rule matching c's text, or nil.
 func (r CompiledRules) Match(c Candidate) *int64 {
 	for _, cr := range r.rules {

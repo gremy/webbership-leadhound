@@ -31,8 +31,8 @@ func nextJobCard(t *testing.T, q store.Queries, company, source, sourceJobID str
 	return id
 }
 
-// nextJobObserve appends o as jobID's newest observation.
-func nextJobObserve(t *testing.T, q store.Queries, jobID int64, o store.ObservationInsert) {
+// nextJobObserve appends o as jobID's newest observation and returns its id.
+func nextJobObserve(t *testing.T, q store.Queries, jobID int64, o store.ObservationInsert) int64 {
 	t.Helper()
 	ctx := context.Background()
 	runID, err := q.StartRun(ctx, "collect", "linkedin")
@@ -44,9 +44,11 @@ func nextJobObserve(t *testing.T, q store.Queries, jobID int64, o store.Observat
 		t.Fatal(err)
 	}
 	o.JobID, o.FetchID, o.DerivedBy = jobID, fid, "test"
-	if _, err := q.InsertObservation(ctx, o); err != nil {
+	id, err := q.InsertObservation(ctx, o)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return id
 }
 
 func nextJobStatus(t *testing.T, q store.Queries, jobID int64, status string) {
@@ -76,9 +78,9 @@ func nextJobIDs(jobs []store.NextJob) []int64 {
 	return ids
 }
 
-func nextJobs(t *testing.T, q store.Queries, since time.Time, limit int) []store.NextJob {
+func nextJobs(t *testing.T, q store.Queries, since time.Time) []store.NextJob {
 	t.Helper()
-	jobs, err := q.NextJobs(context.Background(), since, limit)
+	jobs, err := q.NextJobs(context.Background(), since, false)
 	if err != nil {
 		t.Fatalf("NextJobs: %v", err)
 	}
@@ -89,14 +91,14 @@ func nextJobs(t *testing.T, q store.Queries, since time.Time, limit int) []store
 func TestNextJobsColdStart(t *testing.T) {
 	ctx := context.Background()
 	q := appStore(t).Q()
-	if jobs := nextJobs(t, q, nextJobsSince, 20); jobs == nil || len(jobs) != 0 {
+	if jobs := nextJobs(t, q, nextJobsSince); jobs == nil || len(jobs) != 0 {
 		t.Fatalf("no brief = %#v, want empty and not nil", jobs)
 	}
 	id := nextJobCard(t, q, "Northwind", "linkedin", "1")
 	if _, err := q.UpsertBrief(ctx, "2026-10-20", store.BriefDraft{Subject: "s", JobIDs: []int64{id}}); err != nil {
 		t.Fatal(err)
 	}
-	if jobs := nextJobs(t, q, nextJobsSince, 20); len(jobs) != 0 {
+	if jobs := nextJobs(t, q, nextJobsSince); len(jobs) != 0 {
 		t.Fatalf("an unsent brief lists: %+v", jobs)
 	}
 }
@@ -112,7 +114,7 @@ func TestNextJobFields(t *testing.T) {
 	nextJobStatus(t, q, seen, "shortlisted")
 	nextJobBrief(t, q, "2026-10-20", bare, seen)
 
-	jobs := nextJobs(t, q, nextJobsSince, 20)
+	jobs := nextJobs(t, q, nextJobsSince)
 	if !slices.Equal(nextJobIDs(jobs), []int64{bare, seen}) {
 		t.Fatalf("jobs = %v, want [%d %d]", nextJobIDs(jobs), bare, seen)
 	}
@@ -145,7 +147,7 @@ func TestNextJobsOneRowNewestBrief(t *testing.T) {
 	nextJobBrief(t, q, "2026-10-20", both, other)
 	nextJobBrief(t, q, "2026-10-21", twice, both, twice)
 
-	jobs := nextJobs(t, q, nextJobsSince, 20)
+	jobs := nextJobs(t, q, nextJobsSince)
 	if !slices.Equal(nextJobIDs(jobs), []int64{twice, both, other}) {
 		t.Fatalf("jobs = %v, want [%d %d %d]", nextJobIDs(jobs), twice, both, other)
 	}
@@ -178,7 +180,7 @@ func TestNextJobsListingLeftOut(t *testing.T) {
 	nextJobObserve(t, q, reopened, store.ObservationInsert{Title: "open now"})
 	nextJobBrief(t, q, "2026-10-20", expired, unreachable, closed, reopened)
 
-	jobs := nextJobs(t, q, nextJobsSince, 20)
+	jobs := nextJobs(t, q, nextJobsSince)
 	if !slices.Equal(nextJobIDs(jobs), []int64{reopened}) {
 		t.Fatalf("jobs = %v, want [%d]", nextJobIDs(jobs), reopened)
 	}
@@ -211,7 +213,7 @@ func TestNextJobsStatusGrid(t *testing.T) {
 	nextJobStatus(t, q, gone, "applied")
 	nextJobBrief(t, q, "2026-10-20", append(ids, back, gone)...)
 
-	if got := nextJobIDs(nextJobs(t, q, nextJobsSince, 50)); !slices.Equal(got, append(want, back)) {
+	if got := nextJobIDs(nextJobs(t, q, nextJobsSince)); !slices.Equal(got, append(want, back)) {
 		t.Fatalf("jobs = %v, want %v", got, append(want, back))
 	}
 }
@@ -227,19 +229,20 @@ func TestNextJobsSince(t *testing.T) {
 	nextJobBrief(t, q, "2026-10-20", onDay, both)
 
 	since := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
-	jobs := nextJobs(t, q, since, 20)
+	jobs := nextJobs(t, q, since)
 	if !slices.Equal(nextJobIDs(jobs), []int64{onDay, both}) {
 		t.Fatalf("jobs = %v, want [%d %d]", nextJobIDs(jobs), onDay, both)
 	}
 	// since's own zone names the date: this instant is already the 21st in Bucharest.
 	east := time.FixedZone("east", 2*60*60)
-	if jobs := nextJobs(t, q, since.In(east), 20); len(jobs) != 0 {
+	if jobs := nextJobs(t, q, since.In(east)); len(jobs) != 0 {
 		t.Fatalf("since on the 21st = %v, want none", nextJobIDs(jobs))
 	}
 }
 
-// TestNextJobsLimitAndOrder: newest brief first, then brief order, and limit keeps the head.
-func TestNextJobsLimitAndOrder(t *testing.T) {
+// TestNextJobsOrderAndNoLimit: newest brief first, then brief order, and every job comes back:
+// the limit is the caller's, after the skip rules.
+func TestNextJobsOrderAndNoLimit(t *testing.T) {
 	q := appStore(t).Q()
 	a := nextJobCard(t, q, "A", "linkedin", "1")
 	b := nextJobCard(t, q, "B", "linkedin", "2")
@@ -248,11 +251,166 @@ func TestNextJobsLimitAndOrder(t *testing.T) {
 	nextJobBrief(t, q, "2026-10-21", d, a)
 	nextJobBrief(t, q, "2026-10-20", c, b)
 
-	if got := nextJobIDs(nextJobs(t, q, nextJobsSince, 20)); !slices.Equal(got, []int64{d, a, c, b}) {
+	if got := nextJobIDs(nextJobs(t, q, nextJobsSince)); !slices.Equal(got, []int64{d, a, c, b}) {
 		t.Fatalf("order = %v, want [%d %d %d %d]", got, d, a, c, b)
 	}
-	if got := nextJobIDs(nextJobs(t, q, nextJobsSince, 3)); !slices.Equal(got, []int64{d, a, c}) {
-		t.Fatalf("limit 3 = %v, want [%d %d %d]", got, d, a, c)
+}
+
+// TestNextJobsDescriptionAndActor: the description comes only when asked for, and the latest
+// status event names the actor, which reads as system when a job has none.
+func TestNextJobsDescriptionAndActor(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	bare := nextJobCard(t, q, "A", "linkedin", "1")
+	seen := nextJobCard(t, q, "B", "linkedin", "2")
+	nextJobObserve(t, q, seen, store.ObservationInsert{Title: "Go Engineer", DescriptionClean: "We write Go."})
+	if _, err := q.InsertStatusEvent(ctx, seen, "new", "", "system", nil); err != nil {
+		t.Fatal(err)
+	}
+	marked := nextJobCard(t, q, "C", "linkedin", "3")
+	if _, err := q.InsertStatusEvent(ctx, marked, "shortlisted", "", "system", nil); err != nil {
+		t.Fatal(err)
+	}
+	nextJobStatus(t, q, marked, "shortlisted") // the same status, as `api mark ID maybe` writes it
+	nextJobBrief(t, q, "2026-10-20", bare, seen, marked)
+
+	jobs := nextJobs(t, q, nextJobsSince)
+	if jobs[0].LatestActor != "system" || jobs[1].LatestActor != "system" || jobs[2].LatestActor != "gremy" {
+		t.Errorf("actors = %q, %q, %q", jobs[0].LatestActor, jobs[1].LatestActor, jobs[2].LatestActor)
+	}
+	if jobs[1].Description != "" {
+		t.Errorf("description read unasked: %q", jobs[1].Description)
+	}
+	asked, err := q.NextJobs(ctx, nextJobsSince, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked[0].Description != "" || asked[1].Description != "We write Go." {
+		t.Errorf("descriptions = %q, %q", asked[0].Description, asked[1].Description)
+	}
+}
+
+// TestNeverBriefedJobs: who is in the read and who is not, each kept out for its own reason.
+func TestNeverBriefedJobs(t *testing.T) {
+	ctx := context.Background()
+	s := appStore(t)
+	q := s.Q()
+	now := time.Now()
+	since, firstSeen := now.AddDate(0, 0, -14), now.AddDate(0, 0, -30)
+	gate := func(job, obs int64, name, verdict string) {
+		t.Helper()
+		if _, err := q.InsertGateResult(ctx, store.GateResultInsert{JobID: job, ObservationID: obs, Gate: name, Verdict: verdict, DerivedBy: "gates@1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk := func(name string) int64 {
+		t.Helper()
+		return nextJobCard(t, q, "Co "+name, "linkedin", name)
+	}
+
+	var want []int64
+	in := func(id int64) int64 { want = append(want, id); return id }
+
+	in(mk("card")) // no observation and no status event
+	ruleFailed := in(mk("rule-failed"))
+	gate(ruleFailed, nextJobObserve(t, q, ruleFailed, store.ObservationInsert{Title: "a"}), "rule", "fail")
+	flagged := in(mk("flagged"))
+	gate(flagged, nextJobObserve(t, q, flagged, store.ObservationInsert{Title: "a"}), "location", "flag")
+	shortlisted := in(mk("shortlisted"))
+	nextJobStatus(t, q, shortlisted, "shortlisted")
+	oldBrief := in(mk("old-brief"))
+	unsent := in(mk("unsent"))
+
+	outOfWindow := mk("first-seen-long-ago")
+	ownerExec(t, "UPDATE job SET first_seen_at = $2 WHERE id = $1", outOfWindow, now.AddDate(0, 0, -31))
+	otherGate := mk("other-gate")
+	gate(otherGate, nextJobObserve(t, q, otherGate, store.ObservationInsert{Title: "a"}), "location", "fail")
+	// A failure on an older observation decides nothing: it is back in through the newest.
+	refit := in(mk("refit"))
+	gate(refit, nextJobObserve(t, q, refit, store.ObservationInsert{Title: "a"}), "location", "fail")
+	nextJobObserve(t, q, refit, store.ObservationInsert{Title: "b"})
+	briefed := mk("briefed")
+	applied := mk("applied")
+	nextJobStatus(t, q, applied, "applied")
+	closed := mk("closed")
+	nextJobObserve(t, q, closed, store.ObservationInsert{Title: "a", Closed: true})
+	expired := mk("expired")
+	if err := q.SetListingStatus(ctx, expired, store.ListingExpired); err != nil {
+		t.Fatal(err)
+	}
+
+	recent := now.AddDate(0, 0, -1).Format(time.DateOnly)
+	nextJobBrief(t, q, recent, briefed)
+	nextJobBrief(t, q, now.AddDate(0, 0, -20).Format(time.DateOnly), oldBrief)
+	if _, err := q.UpsertBrief(ctx, now.AddDate(0, 0, -2).Format(time.DateOnly), store.BriefDraft{Subject: "s", JobIDs: []int64{unsent}}); err != nil {
+		t.Fatal(err)
+	}
+
+	all := func(store.NextJob) bool { return true }
+	jobs, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(want)
+	if !slices.Equal(nextJobIDs(jobs), want) {
+		t.Fatalf("jobs = %v, want %v", nextJobIDs(jobs), want)
+	}
+	for _, j := range jobs {
+		if !j.BriefDay.IsZero() || j.BriefN != 0 || j.Prior == nil {
+			t.Errorf("job %d: day %v, n %d, prior %#v", j.JobID, j.BriefDay, j.BriefN, j.Prior)
+		}
+	}
+	jobs, err = q.NeverBriefedJobs(ctx, since, firstSeen, false, func(j store.NextJob) bool { return j.JobID == flagged })
+	if err != nil || !slices.Equal(nextJobIDs(jobs), []int64{flagged}) {
+		t.Errorf("keep one: %v, %v", nextJobIDs(jobs), err)
+	}
+	empty, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, func(store.NextJob) bool { return false })
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Errorf("keep none = %#v, %v; want empty and not nil", empty, err)
+	}
+}
+
+// TestNeverBriefedJobsPriorAndDescription: Prior is read for the company of a job whose latest
+// actor is not system and no other, and the description comes only when asked for.
+func TestNeverBriefedJobsPriorAndDescription(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	now := time.Now()
+	rescued := nextJobCard(t, q, "Northwind", "linkedin", "1")
+	nextJobObserve(t, q, rescued, store.ObservationInsert{Title: "Go Engineer", DescriptionClean: "We write Go."})
+	nextJobStatus(t, q, rescued, "new")
+	system := nextJobCard(t, q, "Elsewhere", "linkedin", "2")
+	if _, err := q.InsertStatusEvent(ctx, system, "new", "", "system", nil); err != nil {
+		t.Fatal(err)
+	}
+	applied := nextJobCard(t, q, "Northwind", "linkedin", "3")
+	nextJobStatus(t, q, applied, "applied")
+	elsewhere := nextJobCard(t, q, "Elsewhere", "linkedin", "4")
+	nextJobStatus(t, q, elsewhere, "applied")
+
+	read := func(desc bool) []store.NextJob {
+		t.Helper()
+		jobs, err := q.NeverBriefedJobs(ctx, now, now.AddDate(0, 0, -30), desc, func(store.NextJob) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(nextJobIDs(jobs), []int64{rescued, system}) {
+			t.Fatalf("jobs = %v", nextJobIDs(jobs))
+		}
+		return jobs
+	}
+	jobs := read(false)
+	if len(jobs[0].Prior) != 1 || jobs[0].Prior[0].JobID != applied || jobs[0].LatestActor != "gremy" {
+		t.Errorf("rescued job = %+v", jobs[0])
+	}
+	if len(jobs[1].Prior) != 0 || jobs[1].LatestActor != "system" {
+		t.Errorf("system job = %+v", jobs[1])
+	}
+	if jobs[0].Description != "" {
+		t.Errorf("description read unasked: %q", jobs[0].Description)
+	}
+	if jobs := read(true); jobs[0].Description != "We write Go." {
+		t.Errorf("description = %q", jobs[0].Description)
 	}
 }
 
@@ -289,7 +447,7 @@ func TestNextJobsPrior(t *testing.T) {
 	ownerExec(t, "UPDATE status_event SET at = $2 WHERE job_id = $1 AND status = 'applied'", applied, t2)
 	nextJobBrief(t, q, "2026-10-20", job, listed)
 
-	jobs := nextJobs(t, q, nextJobsSince, 20)
+	jobs := nextJobs(t, q, nextJobsSince)
 	if !slices.Equal(nextJobIDs(jobs), []int64{job, listed}) {
 		t.Fatalf("jobs = %v, want [%d %d]", nextJobIDs(jobs), job, listed)
 	}

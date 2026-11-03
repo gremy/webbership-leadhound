@@ -20,7 +20,7 @@ const (
 	// The next route's numbers: over the maximum is clamped, anything not a positive whole
 	// number is refused.
 	apiLimitDefault, apiLimitMax = 20, 50
-	apiDaysDefault, apiDaysMax   = 14, 60
+	APIDaysDefault, apiDaysMax   = 14, 60
 
 	// apiTrackedDefault is the status the tracked route lists when it is given none.
 	apiTrackedDefault = "applied"
@@ -61,12 +61,26 @@ type APIError struct {
 	Error string `json:"error"`
 }
 
-// APINextJobs answers GET /api/jobs/next.
+// APINextJobs answers GET /api/jobs/next. Hidden is what the skip rules hid, never cut by the
+// limit and never null; MoreVisible counts the visible jobs past the limit.
 type APINextJobs struct {
-	Jobs []APINextJob `json:"jobs"`
+	Jobs        []APINextJob   `json:"jobs"`
+	Hidden      []APIHiddenJob `json:"hidden"`
+	MoreVisible int            `json:"more_visible"`
 }
 
-// APINextJob is one job of APINextJobs. BriefDay is YYYY-MM-DD.
+// APIHiddenJob is one job of APINextJobs.Hidden. Briefed is false for a job that reached no brief
+// of the queue's days.
+type APIHiddenJob struct {
+	JobID   int64  `json:"job_id"`
+	Company string `json:"company"`
+	Title   string `json:"title"`
+	Reason  string `json:"reason"`
+	Briefed bool   `json:"briefed"`
+}
+
+// APINextJob is one job of APINextJobs. BriefDay is YYYY-MM-DD, or empty for a job a skip rule
+// kept from every brief and a mark brought back.
 type APINextJob struct {
 	JobID         int64         `json:"job_id"`
 	Title         string        `json:"title"`
@@ -296,17 +310,18 @@ func (s *server) apiNextJobs(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "limit must be a positive whole number.")
 		return
 	}
-	days, ok := apiNumber(r, "days", apiDaysDefault, apiDaysMax)
+	days, ok := apiNumber(r, "days", APIDaysDefault, apiDaysMax)
 	if !ok {
 		writeAPIError(w, http.StatusBadRequest, "days must be a positive whole number.")
 		return
 	}
-	jobs, err := s.b.NextJobs(r.Context(), days, limit)
+	next, err := s.b.NextJobs(r.Context(), days, limit)
 	if err != nil {
 		s.apiFail(w, r, err)
 		return
 	}
-	writeAPIJSON(w, http.StatusOK, APINextJobs{Jobs: apiList(jobs, apiNextJobOf)})
+	writeAPIJSON(w, http.StatusOK, APINextJobs{Jobs: apiList(next.Jobs, apiNextJobOf),
+		Hidden: apiList(next.Hidden, func(h HiddenJob) APIHiddenJob { return APIHiddenJob(h) }), MoreVisible: next.MoreVisible})
 }
 
 func apiNextJobOf(j NextJob) APINextJob {

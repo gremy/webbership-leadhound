@@ -35,15 +35,17 @@ func apiTestHash() string {
 type apiFake struct {
 	*fakeBackend
 	next                []NextJob
+	hidden              []HiddenJob
+	moreVisible         int
 	nextErr, trackedErr error
 	days, limit         int
 	status              string
 }
 
-func (f *apiFake) NextJobs(_ context.Context, days, limit int) ([]NextJob, error) {
+func (f *apiFake) NextJobs(_ context.Context, days, limit int) (NextJobList, error) {
 	f.count("NextJobs")
 	f.days, f.limit = days, limit
-	return f.next, f.nextErr
+	return NextJobList{Jobs: f.next, Hidden: f.hidden, MoreVisible: f.moreVisible}, f.nextErr
 }
 
 func (f *apiFake) Tracked(ctx context.Context, status string) (TrackedList, error) {
@@ -417,7 +419,7 @@ func TestAPINextJobs(t *testing.T) {
 			ApplyURL: "https://ats.example/1", ApplyType: "ats", BriefDay: "2026-11-02", BriefN: 4,
 			Prior: []APIPriorJob{{JobID: 9, Title: "Go Dev", Status: "applied", Since: since}}},
 		{JobID: 2, Prior: []APIPriorJob{}},
-	}}
+	}, Hidden: []APIHiddenJob{}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
 	}
@@ -429,7 +431,7 @@ func TestAPINextJobs(t *testing.T) {
 			t.Errorf("no %s in %s", field, raw)
 		}
 	}
-	if h.b.days != apiDaysDefault || h.b.limit != apiLimitDefault {
+	if h.b.days != APIDaysDefault || h.b.limit != apiLimitDefault {
 		t.Errorf("days %d limit %d", h.b.days, h.b.limit)
 	}
 }
@@ -439,8 +441,32 @@ func TestAPINextJobsEmpty(t *testing.T) {
 	h := newAPIHarness(t, apiTestHash())
 	h.b.next = nil
 	w := h.do(apiGet("/api/jobs/next"))
-	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"jobs":[]}` {
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"jobs":[],"hidden":[],"more_visible":0}` {
 		t.Errorf("%d %s", w.Code, w.Body)
+	}
+}
+
+// What the skip rules hid reaches the answer whole, under the contract's names, and a job with no
+// brief carries an empty day.
+func TestAPINextJobsHidden(t *testing.T) {
+	h := newAPIHarness(t, apiTestHash())
+	h.b.next = []NextJob{{JobID: 3}}
+	h.b.hidden = []HiddenJob{{JobID: 1, Company: "Acme", Title: "Go Engineer", Reason: "a reason", Briefed: true}, {JobID: 2}}
+	h.b.moreVisible = 4
+	w := h.do(apiGet("/api/jobs/next"))
+	raw := w.Body.String()
+	got := apiDecode[APINextJobs](t, w)
+	want := []APIHiddenJob{{JobID: 1, Company: "Acme", Title: "Go Engineer", Reason: "a reason", Briefed: true}, {JobID: 2}}
+	if !reflect.DeepEqual(got.Hidden, want) || got.MoreVisible != 4 {
+		t.Errorf("got %+v", got)
+	}
+	if got.Jobs[0].BriefDay != "" || !strings.Contains(raw, `"brief_day":""`) || !strings.Contains(raw, `"more_visible":4`) {
+		t.Errorf("raw answer: %s", raw)
+	}
+	for _, field := range []string{"hidden", "job_id", "company", "title", "reason", "briefed", "more_visible"} {
+		if !strings.Contains(raw, `"`+field+`":`) {
+			t.Errorf("no %s in %s", field, raw)
+		}
 	}
 }
 

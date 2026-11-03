@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,7 +34,7 @@ import (
 
 func init() { commands["api"] = runAPI }
 
-const apiClientUsage = "usage: leadhound api next [--limit N] [--days D] [--json] [--env FILE]\n" +
+const apiClientUsage = "usage: leadhound api next [--limit N] [--days D] [--hidden] [--json] [--env FILE]\n" +
 	"       leadhound api job ID [--auto-check] [--no-description] [--json] [--env FILE]\n" +
 	"       leadhound api tracked [--status S] [--json] [--env FILE]\n" +
 	"       leadhound api mark ID applied|skip|maybe [--reason TEXT] [--env FILE]\n" +
@@ -52,9 +53,13 @@ const (
 
 // The clock and the executable, which the tests replace.
 var (
-	apiClientTimeout    = 10 * time.Second
-	apiClientRetryDelay = 500 * time.Millisecond
-	apiClientExecutable = os.Executable
+	apiClientTimeout = 10 * time.Second
+	// apiClientNextTimeout is `api next`'s own: under skip rules that read descriptions the
+	// server reads every never-briefed job's text, in seconds, so 10 would call a slow answer
+	// production being unreachable. It stays under the server's 30-second write timeout.
+	apiClientNextTimeout = 25 * time.Second
+	apiClientRetryDelay  = 500 * time.Millisecond
+	apiClientExecutable  = os.Executable
 )
 
 // apiClientMarker matches what could pass for a posting marker, in any case or spacing, once
@@ -378,6 +383,7 @@ func runAPINext(ctx context.Context, args []string) error {
 	fs, env := apiClientFlags("api next")
 	limit := fs.Int("limit", 0, "at most this many jobs (the server's default and maximum apply)")
 	days := fs.Int("days", 0, "from the briefs of this many days (the server's default and maximum apply)")
+	hidden := fs.Bool("hidden", false, "list what the skip rules hid, with each reason, instead of the jobs; --limit is ignored")
 	asJSON := fs.Bool("json", false, "print the server's JSON answer unchanged")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
@@ -388,7 +394,7 @@ func runAPINext(ctx context.Context, args []string) error {
 	}
 	q := url.Values{}
 	for name, v := range map[string]int{"limit": *limit, "days": *days} {
-		if !apiClientFlagGiven(fs, name) {
+		if !apiClientFlagGiven(fs, name) || (*hidden && name == "limit") {
 			continue
 		}
 		if v <= 0 {
@@ -404,6 +410,7 @@ func runAPINext(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	c.http.Timeout = apiClientNextTimeout
 	raw, err := c.call(ctx, http.MethodGet, path, nil, apiClientRetryRead)
 	if err != nil {
 		return err
@@ -416,14 +423,50 @@ func runAPINext(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *hidden {
+		apiClientPrintHidden(next.Hidden)
+		return nil
+	}
 	if len(next.Jobs) == 0 {
 		_, _ = fmt.Fprintln(stdout, "no jobs")
-		return nil
 	}
 	for _, j := range next.Jobs {
 		_, _ = fmt.Fprintln(stdout, apiClientNextRow(j))
 	}
+	if len(next.Hidden) > 0 {
+		return exitError{code: 0, line: apiClientHiddenLine(next.Hidden, next.MoreVisible)} // run prints it on stderr
+	}
 	return nil
+}
+
+// apiClientPrintHidden is `api next --hidden`: one tab-separated line per hidden job, then the
+// rescue.
+func apiClientPrintHidden(hidden []console.APIHiddenJob) {
+	if len(hidden) == 0 {
+		_, _ = fmt.Fprintln(stdout, "nothing hidden")
+		return
+	}
+	for _, h := range hidden {
+		_, _ = fmt.Fprintf(stdout, "job:%d\t%s\t%s\t%s\n", h.JobID, apiClientLine(h.Company), apiClientLine(h.Title), apiClientLine(h.Reason))
+	}
+	_, _ = fmt.Fprintln(stdout, "to bring one back: leadhound api mark ID maybe")
+}
+
+// apiClientHiddenLine is the one line beside `api next`'s rows when anything was hidden: the
+// count, each reason with its own count, highest first and then alphabetical, the visible jobs
+// past the limit, and where to see what was hidden.
+func apiClientHiddenLine(hidden []console.APIHiddenJob, more int) string {
+	counts := map[string]int{}
+	for _, h := range hidden {
+		counts[apiClientLine(h.Reason)]++
+	}
+	reasons := slices.Sorted(maps.Keys(counts))
+	slices.SortStableFunc(reasons, func(a, b string) int { return counts[b] - counts[a] })
+	parts := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		parts = append(parts, fmt.Sprintf("%s %d", r, counts[r]))
+	}
+	return fmt.Sprintf("hidden: %d (%s); more: %d; see: leadhound api next --hidden", len(hidden), strings.Join(parts, ", "), more)
 }
 
 // apiClientNextRow is one job of `api next`. The link is the apply link, or the posting when the
