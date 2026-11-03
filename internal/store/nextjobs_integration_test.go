@@ -325,6 +325,14 @@ func TestNeverBriefedJobs(t *testing.T) {
 	ownerExec(t, "UPDATE job SET first_seen_at = $2 WHERE id = $1", outOfWindow, now.AddDate(0, 0, -31))
 	otherGate := mk("other-gate")
 	gate(otherGate, nextJobObserve(t, q, otherGate, store.ObservationInsert{Title: "a"}), "location", "fail")
+	bothGates := in(mk("both-gates")) // the rule gate's fail is what the queue must not lose
+	bothObs := nextJobObserve(t, q, bothGates, store.ObservationInsert{Title: "a"})
+	gate(bothGates, bothObs, "location", "fail")
+	gate(bothGates, bothObs, "rule", "fail")
+	// A rescued job is read however old it is.
+	agedRescue := in(mk("aged-rescue"))
+	nextJobStatus(t, q, agedRescue, "new")
+	ownerExec(t, "UPDATE job SET first_seen_at = $2 WHERE id = $1", agedRescue, now.AddDate(0, 0, -90))
 	// A failure on an older observation decides nothing: it is back in through the newest.
 	refit := in(mk("refit"))
 	gate(refit, nextJobObserve(t, q, refit, store.ObservationInsert{Title: "a"}), "location", "fail")
@@ -347,7 +355,7 @@ func TestNeverBriefedJobs(t *testing.T) {
 	}
 
 	all := func(store.NextJob) bool { return true }
-	jobs, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, all)
+	jobs, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, true, all)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,13 +368,68 @@ func TestNeverBriefedJobs(t *testing.T) {
 			t.Errorf("job %d: day %v, n %d, prior %#v", j.JobID, j.BriefDay, j.BriefN, j.Prior)
 		}
 	}
-	jobs, err = q.NeverBriefedJobs(ctx, since, firstSeen, false, func(j store.NextJob) bool { return j.JobID == flagged })
+	jobs, err = q.NeverBriefedJobs(ctx, since, firstSeen, false, true, func(j store.NextJob) bool { return j.JobID == flagged })
 	if err != nil || !slices.Equal(nextJobIDs(jobs), []int64{flagged}) {
 		t.Errorf("keep one: %v, %v", nextJobIDs(jobs), err)
 	}
-	empty, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, func(store.NextJob) bool { return false })
+	empty, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, true, func(store.NextJob) bool { return false })
 	if err != nil || empty == nil || len(empty) != 0 {
 		t.Errorf("keep none = %#v, %v; want empty and not nil", empty, err)
+	}
+	// With no live rule only a job with a rule-gate fail is read, and only that fail's observation
+	// fills the reason. refit's older fail is another gate's, so it is not one of them.
+	stored, err := q.NeverBriefedJobs(ctx, since, firstSeen, false, false, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{ruleFailed, bothGates}; !slices.Equal(nextJobIDs(stored), want) {
+		t.Errorf("no live rule: %v, want %v", nextJobIDs(stored), want)
+	}
+	for _, j := range stored {
+		if j.StoredRuleReason == "" {
+			t.Errorf("job %d has no stored reason", j.JobID)
+		}
+	}
+}
+
+// TestNeverBriefedJobsStoredReason: the rule's reason first, then the gate's; only the current
+// observation counts, and a flag is not a fail.
+func TestNeverBriefedJobsStoredReason(t *testing.T) {
+	ctx := context.Background()
+	q := appStore(t).Q()
+	now := time.Now()
+	rule, err := q.AddRule(ctx, "skip", "title", "noise", "the rule's reason", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := func(job, obs int64, verdict, reason string, ruleID *int64) {
+		t.Helper()
+		if _, err := q.InsertGateResult(ctx, store.GateResultInsert{JobID: job, ObservationID: obs, Gate: "rule", Verdict: verdict, Reason: reason, RuleID: ruleID, DerivedBy: "gates@1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	byRule := nextJobCard(t, q, "A", "linkedin", "1")
+	gate(byRule, nextJobObserve(t, q, byRule, store.ObservationInsert{Title: "a"}), "fail", "the gate's words", &rule)
+	noRule := nextJobCard(t, q, "B", "linkedin", "2")
+	gate(noRule, nextJobObserve(t, q, noRule, store.ObservationInsert{Title: "a"}), "fail", "the gate's words", nil)
+	replaced := nextJobCard(t, q, "C", "linkedin", "3")
+	gate(replaced, nextJobObserve(t, q, replaced, store.ObservationInsert{Title: "a"}), "fail", "old", &rule)
+	nextJobObserve(t, q, replaced, store.ObservationInsert{Title: "b"})
+	flagged := nextJobCard(t, q, "D", "linkedin", "4")
+	gate(flagged, nextJobObserve(t, q, flagged, store.ObservationInsert{Title: "a"}), "flag", "only a flag", &rule)
+
+	jobs, err := q.NeverBriefedJobs(ctx, now, now.AddDate(0, 0, -30), false, true, func(store.NextJob) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{byRule: "the rule's reason", noRule: "the gate's words", replaced: "", flagged: ""}
+	if len(jobs) != len(want) {
+		t.Fatalf("jobs = %v", nextJobIDs(jobs))
+	}
+	for _, j := range jobs {
+		if j.StoredRuleReason != want[j.JobID] {
+			t.Errorf("job %d: reason %q, want %q", j.JobID, j.StoredRuleReason, want[j.JobID])
+		}
 	}
 }
 
@@ -390,7 +453,7 @@ func TestNeverBriefedJobsPriorAndDescription(t *testing.T) {
 
 	read := func(desc bool) []store.NextJob {
 		t.Helper()
-		jobs, err := q.NeverBriefedJobs(ctx, now, now.AddDate(0, 0, -30), desc, func(store.NextJob) bool { return true })
+		jobs, err := q.NeverBriefedJobs(ctx, now, now.AddDate(0, 0, -30), desc, true, func(store.NextJob) bool { return true })
 		if err != nil {
 			t.Fatal(err)
 		}

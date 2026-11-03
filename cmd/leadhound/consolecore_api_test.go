@@ -135,3 +135,31 @@ func TestSplitQueueInvariant(t *testing.T) {
 		}
 	}
 }
+
+// TestSplitQueueStoredFail: a never-briefed job with no live match counts on its stored fail, a
+// live match's reason wins over the stored one, and a briefed job never reads the stored fail.
+func TestSplitQueueStoredFail(t *testing.T) {
+	rules := newQueueRules([]store.Rule{{ID: 1, Kind: "skip", Field: "title", Pattern: "keeper", Reason: "live"}})
+	row := func(id int64, title, stored, actor string) store.NextJob {
+		j := queueRow(id, "Northwind", title, "", "")
+		j.StoredRuleReason, j.LatestActor = stored, actor
+		return j
+	}
+	visible, hidden := splitQueue([]store.NextJob{row(1, "Go Developer", "stored", "system")}, []store.NextJob{
+		row(2, "Go Developer", "stored", "system"),
+		row(3, "Keeper", "stored", "system"),
+		row(4, "Go Developer", "stored", "gremy"),
+		row(5, "Go Developer", "", "gremy"),
+		row(6, "Go Developer", "", "system"),
+	}, rules)
+	var ids []int64
+	for _, j := range visible {
+		ids = append(ids, j.JobID)
+	}
+	if !slices.Equal(ids, []int64{1, 4}) {
+		t.Errorf("visible = %v", ids)
+	}
+	if len(hidden) != 2 || hidden[0].JobID != 2 || hidden[0].Reason != "stored" || hidden[1].JobID != 3 || hidden[1].Reason != "live" {
+		t.Errorf("hidden = %+v", hidden)
+	}
+}

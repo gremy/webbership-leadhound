@@ -160,11 +160,12 @@ func rulesTestArgs(field, pattern string, days int) error {
 }
 
 // runRulesTest prints what this one pattern would hide, as if it were the only active skip rule,
-// through the queue's own read, so a rescued job is never listed. It writes nothing.
+// through the queue's own read, so a rescued job is never listed and another rule's stored fail
+// is not counted. It writes nothing.
 func runRulesTest(ctx context.Context, s *store.Store, loc *time.Location, field, pattern string, days int) error {
 	now := time.Now().In(loc)
 	rule := store.Rule{Kind: "skip", Field: field, Pattern: pattern}
-	_, hidden, err := readQueue(ctx, s.Q(), now.AddDate(0, 0, -console.APIDaysDefault), now.AddDate(0, 0, -days), []store.Rule{rule})
+	_, hidden, err := readQueue(ctx, s.Q(), now.AddDate(0, 0, -console.APIDaysDefault), now.AddDate(0, 0, -days), []store.Rule{rule}, false)
 	if err != nil {
 		return err
 	}
@@ -173,7 +174,7 @@ func runRulesTest(ctx context.Context, s *store.Store, loc *time.Location, field
 		label   string
 	}{
 		{true, fmt.Sprintf("would hide from the queue (briefs of the last %d days)", console.APIDaysDefault)},
-		{false, fmt.Sprintf("never reached a brief (first seen in the last %d days)", days)},
+		{false, fmt.Sprintf("reached no brief of the last %d days, first seen in the last %d days", console.APIDaysDefault, days)},
 	} {
 		var lines []string
 		for _, h := range hidden {

@@ -1111,3 +1111,178 @@ func TestQueueRuleEdges(t *testing.T) {
 		})
 	}
 }
+
+// queueStoredFail writes a rule-gate fail by ruleID on the observation, as the gates would.
+func queueStoredFail(t *testing.T, b *backend, id, obsID, ruleID int64) {
+	t.Helper()
+	if _, err := b.s.Q().InsertGateResult(context.Background(), store.GateResultInsert{JobID: id, ObservationID: obsID, Gate: "rule", Verdict: "fail",
+		Reason: "the gate's own words", RuleID: &ruleID, DerivedBy: "gates@1"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// queueTrim runs the nightly trim as it would run eight days from now.
+func queueTrim(t *testing.T, b *backend) {
+	t.Helper()
+	if _, err := b.s.Q().TrimDescriptions(context.Background(), store.TrimOptions{RejectedAfter: 168 * time.Hour, ExpiredAfter: 720 * time.Hour, Batch: 100,
+		Now: time.Now().Add(8 * 24 * time.Hour)}, func() {}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestQueueTrimmedDescription: the trim blanks the text a description rule matched, so the live
+// match stops while the ranker still skips on the stored fail. The job stays hidden, under the
+// rule's reason.
+func TestQueueTrimmedDescription(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	rule := queueRule(t, b, "skip", "description", "passport stamp", "needs a stamp")
+	id := bareJob(t, b, "desc")
+	queueStoredFail(t, b, id, observeText(t, b, id, "desc", "Needs a passport stamp.", false), rule)
+	want := []console.HiddenJob{{JobID: id, Company: "desc Co", Title: "desc", Reason: "needs a stamp"}}
+	if next := queueNext(t, b, 20); !slices.Equal(next.Hidden, want) {
+		t.Fatalf("before the trim: %+v", next)
+	}
+	queueTrim(t, b)
+	var trimmed string
+	if err := storetest.OwnerConn(t).QueryRow(context.Background(), `SELECT description_clean FROM job_observation WHERE job_id = $1`, id).Scan(&trimmed); err != nil || trimmed != "" {
+		t.Fatalf("the trim left %q, %v", trimmed, err)
+	}
+	if next := queueNext(t, b, 20); !slices.Equal(next.Hidden, want) || len(next.Jobs) != 0 {
+		t.Errorf("after the trim: %+v, want hidden %+v", next, want)
+	}
+}
+
+// TestQueueDisabledRule: a disabled rule's stored fail still keeps the job from the brief, so with
+// no rule active it stays hidden until a newer observation replaces that fail, and then the
+// ranker has it again, so the queue says nothing.
+func TestQueueDisabledRule(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	rule := queueRule(t, b, "skip", "title", "noise", "not for you")
+	id := bareJob(t, b, "noise")
+	queueStoredFail(t, b, id, observeText(t, b, id, "noise", "We write Go.", false), rule)
+	if err := b.s.Q().DisableRule(context.Background(), rule, "changed my mind"); err != nil {
+		t.Fatal(err)
+	}
+	want := []console.HiddenJob{{JobID: id, Company: "noise Co", Title: "noise", Reason: "not for you"}}
+	if next := queueNext(t, b, 20); !slices.Equal(next.Hidden, want) || len(next.Jobs) != 0 {
+		t.Errorf("disabled: %+v, want hidden %+v", next, want)
+	}
+	observeText(t, b, id, "noise", "We write Go.", false)
+	if jobs, hidden := queueIDs(queueNext(t, b, 20)); len(jobs) != 0 || len(hidden) != 0 {
+		t.Errorf("a newer observation: jobs %v, hidden %v; want neither", jobs, hidden)
+	}
+}
+
+// TestQueueStoredReasonFallsBack: a stored fail with no rule behind it lists under the gate's own
+// words, and one with no words at all still lists.
+func TestQueueStoredReasonFallsBack(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	worded := bareJob(t, b, "worded")
+	observeText(t, b, worded, "worded", "text", false, "rule", "fail", "", "the gate's words")
+	blank := bareJob(t, b, "blank")
+	observeText(t, b, blank, "blank", "text", false, "rule", "fail", "", "")
+	next := queueNext(t, b, 20)
+	if len(next.Hidden) != 2 || next.Hidden[0].Reason != "the gate's words" || next.Hidden[1].JobID != blank || next.Hidden[1].Reason == "" {
+		t.Errorf("hidden = %+v", next.Hidden)
+	}
+}
+
+// TestQueueRescueThenDisable: a rescued job whose rule is then disabled stays in Jobs, because the
+// stored fail still keeps it from every brief.
+func TestQueueRescueThenDisable(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	rule := queueRule(t, b, "skip", "title", "noise", "not for you")
+	id := bareJob(t, b, "noise")
+	queueStoredFail(t, b, id, observeText(t, b, id, "noise", "We write Go.", false), rule)
+	if code, raw := apiMark(t, h, id, "maybe", "keep"); code != http.StatusOK {
+		t.Fatalf("mark: %d %s", code, raw)
+	}
+	if err := b.s.Q().DisableRule(context.Background(), rule, "changed my mind"); err != nil {
+		t.Fatal(err)
+	}
+	if jobs, hidden := queueIDs(queueNext(t, b, 20)); !slices.Equal(jobs, []int64{id}) || len(hidden) != 0 {
+		t.Errorf("jobs %v, hidden %v; want the job listed", jobs, hidden)
+	}
+}
+
+// TestQueueRescueAges: a rescued job is never lost to the 30-day window, and one with neither a
+// live match nor a stored fail stays out, as the ranker briefs it normally.
+func TestQueueRescueAges(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	queueRule(t, b, "skip", "title", "noise", "not for you")
+	id := bareJob(t, b, "noise")
+	plain := bareJob(t, b, "plain")
+	for _, j := range []int64{id, plain} {
+		if code, raw := apiMark(t, h, j, "maybe", "keep"); code != http.StatusOK {
+			t.Fatalf("mark: %d %s", code, raw)
+		}
+		if _, err := storetest.OwnerConn(t).Exec(context.Background(), `UPDATE job SET first_seen_at = now() - interval '31 days' WHERE id = $1`, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if jobs, hidden := queueIDs(queueNext(t, b, 20)); !slices.Equal(jobs, []int64{id}) || len(hidden) != 0 {
+		t.Errorf("jobs %v, hidden %v; want only the matched job", jobs, hidden)
+	}
+}
+
+// TestQueueStoredFailInvariant: a never-briefed job with a rule-gate fail on its current
+// observation is in exactly one of Jobs or Hidden, through every rule add, trim, disable and
+// mark, whether or not another gate fails it too.
+func TestQueueStoredFailInvariant(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	h, _ := apiHandler(t, b)
+	ctx := context.Background()
+	first := queueRule(t, b, "skip", "description", "passport stamp", "first")
+
+	alone := bareJob(t, b, "alone")
+	queueStoredFail(t, b, alone, observeText(t, b, alone, "alone", "Needs a passport stamp.", false), first)
+	twice := bareJob(t, b, "twice")
+	queueStoredFail(t, b, twice, observeText(t, b, twice, "twice", "Needs a passport stamp.", false, "location", "fail", "", "outside the area"), first)
+	rescued := bareJob(t, b, "rescued")
+	queueStoredFail(t, b, rescued, observeText(t, b, rescued, "rescued", "Needs a passport stamp.", false), first)
+	if code, raw := apiMark(t, h, rescued, "maybe", "keep"); code != http.StatusOK {
+		t.Fatalf("mark: %d %s", code, raw)
+	}
+
+	check := func(step string) {
+		t.Helper()
+		jobs, hidden := queueIDs(queueNext(t, b, 50))
+		for _, id := range []int64{alone, twice, rescued} {
+			inJobs, inHidden := slices.Contains(jobs, id), slices.Contains(hidden, id)
+			if inJobs == inHidden {
+				t.Errorf("%s: job %d: in jobs %v, in hidden %v", step, id, inJobs, inHidden)
+			}
+		}
+		if !slices.Contains(jobs, rescued) || slices.Contains(hidden, rescued) {
+			t.Errorf("%s: the rescued job: jobs %v, hidden %v", step, jobs, hidden)
+		}
+	}
+	check("start")
+	second := queueRule(t, b, "skip", "company", "nothing matches this", "second")
+	check("rule add")
+	queueTrim(t, b)
+	check("trim")
+	if err := b.s.Q().DisableRule(ctx, first, "x"); err != nil {
+		t.Fatal(err)
+	}
+	check("first disabled")
+	if err := b.s.Q().DisableRule(ctx, second, "x"); err != nil {
+		t.Fatal(err)
+	}
+	check("no rule active")
+	if code, raw := apiMark(t, h, alone, "maybe", "keep"); code != http.StatusOK {
+		t.Fatalf("mark: %d %s", code, raw)
+	}
+	check("marked")
+	if jobs, _ := queueIDs(queueNext(t, b, 50)); !slices.Contains(jobs, alone) {
+		t.Errorf("marked job not in jobs: %v", jobs)
+	}
+}

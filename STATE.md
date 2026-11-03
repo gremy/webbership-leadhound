@@ -3,7 +3,7 @@
 ## Where we left off
 The job queue honours the skip rules (2026-11-03, plan `leadhound-queue-filter`, Checkpoint 1; committed on local main, not pushed or deployed):
 - What exists: `api next` hides what a skip rule matches, before the limit, and its rows are unchanged; one `hidden:` line on stderr; `api next --hidden`; the rescue, `api mark ID maybe`; `rules test`, a dry run, free on `make remote`. Docs: `deploy/README.md` "The console API".
-- Decided in the build: the never-briefed read leaves out a job another gate fails, because that gate keeps it from every brief anyway and those jobs are nine in ten after a wide-net night. A rejected prior stays listed; the operator decides at the Checkpoint 2 stop.
+- Decided in the build: the never-briefed read leaves out a job only other gates fail, because those gates keep it from every brief anyway and such jobs are nine in ten after a wide-net night. It keeps a job with a stored rule-gate failure on its current observation, even with no live match or no active rule, because the ranker goes on skipping that job after a trim or a disable; it stays hidden under the stored reason, or listed when rescued. A rescued job is never lost to the 30-day window. `api next` has a 25-second client timeout, because description rules make the read slow. A rejected prior stays listed; the operator decides at the Checkpoint 2 stop.
 - Not verified: anything on production, including the real rules, the read's time on the server and the size of the hidden list; no real rule has been added.
 - Next: Checkpoint 2, on the operator's word: push, deploy, rebuild `bin/leadhound`, dry-run each pattern, then his table and answers.
 

@@ -106,17 +106,17 @@ func TestRulesTestCommand(t *testing.T) {
 	code, out, stderr := runCmdCode(t, "rules", "test", "--field", "title", "--pattern", "NOISE")
 	want := "would hide from the queue (briefs of the last 14 days): 1\n" +
 		fmt.Sprintf("job:%d\tnoise-briefed Co\tnoise-briefed card title\n", briefed) +
-		"never reached a brief (first seen in the last 30 days): 2\n" +
+		"reached no brief of the last 14 days, first seen in the last 30 days: 2\n" +
 		fmt.Sprintf("job:%d\tnoise-future Co\tnoise-future card title\n", future) +
 		fmt.Sprintf("job:%d\tnoise-older Co\tnoise-older card title\n", older)
 	if code != 0 || out != want {
 		t.Errorf("exit %d, %q, stderr %q; want %q", code, out, stderr, want)
 	}
 	_, out, _ = runCmdCode(t, "rules", "test", "--field", "title", "--pattern", "noise", "--days", "10")
-	if !strings.Contains(out, "first seen in the last 10 days): 1\n") || strings.Contains(out, "noise-older") {
+	if !strings.Contains(out, "first seen in the last 10 days: 1\n") || strings.Contains(out, "noise-older") {
 		t.Errorf("--days 10 = %q", out)
 	}
-	if _, out, _ := runCmdCode(t, "rules", "test", "--field", "company", "--pattern", "no match here"); !strings.Contains(out, "days): 0\n") {
+	if _, out, _ := runCmdCode(t, "rules", "test", "--field", "company", "--pattern", "no match here"); !strings.Contains(out, "days: 0\n") {
 		t.Errorf("no match = %q", out)
 	}
 	if got := writes(); got != before {
@@ -133,5 +133,25 @@ func TestRulesTestCommand(t *testing.T) {
 		if code, _, stderr := runCmdCode(t, args...); code != 2 {
 			t.Errorf("%v: exit %d (%s), want 2", args, code, stderr)
 		}
+	}
+}
+
+// TestRulesTestIgnoresStoredFails: the dry run asks what this one pattern would hide, so a job
+// another rule's stored fail keeps from the brief is not listed, and one it also matches is.
+func TestRulesTestIgnoresStoredFails(t *testing.T) {
+	commandDB(t)
+	b := testBackend(t)
+	other := queueRule(t, b, "skip", "company", "elsewhere", "another rule")
+	stored := bareJob(t, b, "stored")
+	queueStoredFail(t, b, stored, observeText(t, b, stored, "stored", "text", false), other)
+	both := bareJob(t, b, "noise")
+	queueStoredFail(t, b, both, observeText(t, b, both, "noise", "text", false), other)
+
+	code, out, stderr := runCmdCode(t, "rules", "test", "--field", "title", "--pattern", "noise")
+	want := "would hide from the queue (briefs of the last 14 days): 0\n" +
+		"reached no brief of the last 14 days, first seen in the last 30 days: 1\n" +
+		fmt.Sprintf("job:%d\tnoise Co\tnoise\n", both)
+	if code != 0 || out != want {
+		t.Errorf("exit %d, %q, stderr %q; want %q", code, out, stderr, want)
 	}
 }

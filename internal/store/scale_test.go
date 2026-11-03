@@ -113,17 +113,19 @@ func TestScaleNeverBriefedJobs(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		needs  bool
+		live   bool
 		budget time.Duration
 		keep   func(store.NextJob) bool
 	}{
-		{"title rule", false, 3 * time.Second, func(j store.NextJob) bool { return title.MatchString(j.Title) }},
-		{"two description rules", true, 15 * time.Second, func(j store.NextJob) bool {
+		{"no live rule", false, false, 1 * time.Second, func(j store.NextJob) bool { return j.StoredRuleReason != "" }},
+		{"title rule", false, true, 3 * time.Second, func(j store.NextJob) bool { return title.MatchString(j.Title) }},
+		{"two description rules", true, true, 15 * time.Second, func(j store.NextJob) bool {
 			return descA.MatchString(j.Description) || descB.MatchString(j.Description)
 		}},
 	} {
 		var n int
 		within(t, "NeverBriefedJobs "+c.name, c.budget, func() error {
-			jobs, err := s.Q().NeverBriefedJobs(ctx, now.AddDate(0, 0, -14), now.AddDate(0, 0, -30), c.needs, c.keep)
+			jobs, err := s.Q().NeverBriefedJobs(ctx, now.AddDate(0, 0, -14), now.AddDate(0, 0, -30), c.needs, c.live, c.keep)
 			n = len(jobs)
 			return err
 		})

@@ -19,6 +19,7 @@ type NextJob struct {
 	Prior                                                                     []PriorJob
 	Description                                                               string // the latest observation's text, only when the read asked for it
 	LatestActor                                                               string // who wrote the latest status event; system when there is none
+	StoredRuleReason                                                          string // from NeverBriefedJobs: why the current observation failed the rule gate; empty when it did not
 }
 
 // PriorJob is another job of the same company whose status is past new. One posting can be
@@ -62,7 +63,7 @@ func nextJobRows(priorFrom string) string {
 		   WHERE j.company_id IN (` + priorFrom + `)
 		 )
 		 SELECT p.id, p.title, p.company, p.location, p.status, p.listing_status, p.url, p.apply_url,
-		        p.apply_type, p.day, p.n, p.description, p.actor, h.ids, h.titles, h.statuses, h.ats
+		        p.apply_type, p.day, p.n, p.description, p.actor, p.stored_rule_reason, h.ids, h.titles, h.statuses, h.ats
 		 FROM picked p
 		 LEFT JOIN LATERAL (SELECT array_agg(id ORDER BY at DESC, id) AS ids,
 		                           array_agg(title ORDER BY at DESC, id) AS titles,
@@ -81,7 +82,7 @@ func scanNextJob(r pgx.CollectableRow) (NextJob, error) {
 		ats            []time.Time
 	)
 	err := r.Scan(&n.JobID, &n.Title, &n.Company, &n.Location, &n.Status, &n.ListingStatus, &n.URL, &n.ApplyURL,
-		&n.ApplyType, &day, &n.BriefN, &n.Description, &n.LatestActor, &ids, &titles, &states, &ats)
+		&n.ApplyType, &day, &n.BriefN, &n.Description, &n.LatestActor, &n.StoredRuleReason, &ids, &titles, &states, &ats)
 	if err != nil {
 		return NextJob{}, err
 	}
@@ -113,7 +114,7 @@ func (q Queries) NextJobs(ctx context.Context, since time.Time, needDescription 
 		   WHERE b.sent_at IS NOT NULL AND b.day >= $1::date
 		   ORDER BY u.job_id, b.day DESC, u.n
 		 ), picked AS (
-		   SELECT `+nextJobPickedColumns+`, b.day, b.n
+		   SELECT `+nextJobPickedColumns+`, b.day, b.n, '' AS stored_rule_reason
 		   FROM briefed b
 		   JOIN job j ON j.id = b.job_id
 		   `+nextJobPickedJoins+`
@@ -130,29 +131,42 @@ func (q Queries) NextJobs(ctx context.Context, since time.Time, needDescription 
 }
 
 // NeverBriefedJobs streams the jobs a skip rule may be keeping from a brief and returns those
-// keep says yes to, in id order: first seen at or after firstSeen, in no brief sent on or after
-// briefedSince's calendar date, under NextJobs's status and listing limits, with BriefDay zero
-// and BriefN 0. A job whose latest observation fails a gate other than the rule gate is left
-// out: that gate keeps it from every brief whatever the rules say, and after a wide-net night
-// those jobs are nine in ten of the table. Prior is read only for the companies of jobs whose
-// latest actor is not system, the only kind a caller lists as a job. keep is called once per
-// row, so memory follows what it keeps.
-func (q Queries) NeverBriefedJobs(ctx context.Context, briefedSince, firstSeen time.Time, needDescription bool, keep func(NextJob) bool) ([]NextJob, error) {
+// keep says yes to, in id order: in no brief sent on or after briefedSince's calendar date, under
+// NextJobs's status and listing limits, first seen at or after firstSeen unless their latest
+// actor is not system, with BriefDay zero and BriefN 0.
+//
+// StoredRuleReason is why the current observation failed the rule gate, which the ranker goes on
+// skipping after the live match has stopped: when the trim blanks the description a rule read,
+// or the rule is disabled. It is the rule's reason, else the gate's, else a plain word, so it is
+// empty only when there is no such fail. With liveRules false only jobs with a rule-gate fail on
+// some observation are read, because nothing else can list.
+//
+// A job whose latest observation fails only other gates is left out: those gates keep it from
+// every brief whatever the rules say, and after a wide-net night such jobs are nine in ten of the
+// table. Prior is read only for the companies of jobs whose latest actor is not system, the only
+// kind a caller lists as a job. keep is called once per row, so memory follows what it keeps.
+func (q Queries) NeverBriefedJobs(ctx context.Context, briefedSince, firstSeen time.Time, needDescription, liveRules bool, keep func(NextJob) bool) ([]NextJob, error) {
 	rows, err := q.db.Query(ctx,
 		`WITH briefed AS (
 		   SELECT DISTINCT u.job_id
 		   FROM brief_log b, unnest(b.job_ids) AS u(job_id)
 		   WHERE b.sent_at IS NOT NULL AND b.day >= $1::date
 		 ), picked AS (
-		   SELECT `+nextJobPickedColumns+`, NULL::date AS day, 0::bigint AS n
+		   SELECT `+nextJobPickedColumns+`, NULL::date AS day, 0::bigint AS n,
+		          coalesce((SELECT coalesce(nullif(r.reason, ''), nullif(g.reason, ''), 'a stored skip rule')
+		                    FROM gate_result g LEFT JOIN rule r ON r.id = g.rule_id
+		                    WHERE g.observation_id = o.id AND g.gate = 'rule' AND g.verdict = 'fail'
+		                    ORDER BY g.id LIMIT 1), '') AS stored_rule_reason
 		   FROM job j
 		   `+nextJobPickedJoins+`
-		     AND j.first_seen_at >= $3
+		     AND ($4::boolean OR j.id IN (SELECT job_id FROM gate_result WHERE gate = 'rule' AND verdict = 'fail'))
+		     AND (j.first_seen_at >= $3 OR coalesce(s.actor, 'system') <> 'system')
 		     AND NOT EXISTS (SELECT 1 FROM briefed b WHERE b.job_id = j.id)
-		     AND NOT EXISTS (SELECT 1 FROM gate_result g
-		                     WHERE g.observation_id = o.id AND g.verdict = 'fail' AND g.gate <> 'rule')
+		     AND (NOT EXISTS (SELECT 1 FROM gate_result g WHERE g.observation_id = o.id AND g.verdict = 'fail')
+		          OR EXISTS (SELECT 1 FROM gate_result g
+		                     WHERE g.observation_id = o.id AND g.verdict = 'fail' AND g.gate = 'rule'))
 		 )`+nextJobRows(`SELECT company_id FROM picked WHERE actor <> 'system'`),
-		briefedSince.Format(time.DateOnly), needDescription, firstSeen)
+		briefedSince.Format(time.DateOnly), needDescription, firstSeen, liveRules)
 	if err != nil {
 		return nil, fmt.Errorf("store: never briefed jobs: %w", err)
 	}

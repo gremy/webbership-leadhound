@@ -1286,17 +1286,22 @@ A wrong or missing token answers 401, never a redirect to the sign-in page.
 The next route applies the same skip rules as the ranker, before the limit, so a full page of real jobs still comes back; a flag rule, a disabled rule and a stored pattern that does not compile hide nothing.
 `hidden` holds every job a rule left out, with the rule's reason, and `briefed` says which of the two kinds it is.
 With `briefed` true it came from a brief of those days; with `briefed` false it was first seen in the last 30 days and is in no brief of those days.
-A job another gate fails is not in that second kind: that gate keeps it from every brief whatever the rules say.
+A job only other gates fail is not in that second kind: those gates keep it from every brief whatever the rules say.
+That second kind also lists a job whose current observation has a stored rule-gate failure, under that rule's reason, because the ranker goes on skipping it: after the nightly trim blanks the description a rule read, and after a rule is disabled, until a newer observation replaces the stored failure.
+A job from a brief is read by the live rules alone, so disabling a rule puts it straight back in the queue.
 On the local tool, `leadhound api next` adds one stderr line when anything was hidden, and `leadhound api next --hidden` lists it all.
 A rule on `description` is what makes this read slow, because the server reads the text of every job in that second kind, so `api next` waits up to 25 seconds where the other commands wait 10.
 
 **To bring a hidden job back**, run `leadhound api mark ID maybe`: a job whose latest status event is yours is never hidden.
-One that reached no brief then lists after the briefed jobs, with an empty brief day.
+One that reached no brief then lists after the briefed jobs, with an empty brief day, however old it gets.
 
-**To add a rule**, try it first, which writes nothing: `leadhound rules test --field title --pattern 'plain words' [--days 30]` prints what it would hide from the queue and what never reached a brief.
+**To add a rule**, try it first, which writes nothing: `leadhound rules test --field title --pattern 'plain words' [--days 30]` prints what it would hide from the queue and what reached no brief of the last 14 days.
+It can undercount: it cannot see a description the trim has already blanked, and it leaves out a job another gate fails.
+It counts this pattern alone, so another rule's stored failure is not in its lists.
 Then `leadhound rules add --kind skip --field title --pattern 'plain words' --reason 'why'`.
 Skip rules shrink the morning brief as well.
-`rules disable` does not fully undo a rule: its failure is stored on each new observation and the ranker keeps skipping until a newer observation replaces it, an ATS posting that fails is never asked for its detail, and a disabled rule leaves the queue showing a job the brief still skips.
+`rules disable` does not fully undo a rule: its failure is stored on each new observation and the ranker keeps skipping until a newer observation replaces it, and an ATS posting that fails is never asked for its detail.
+Until then a job that reached no brief stays in `hidden`, and a job from a brief shows in the queue while the brief still skips it.
 So start narrow, and prefer `--kind flag` when unsure.
 
 **To turn it on**, do this before you deploy, so the deploy's own console restart picks up the hash and you are not signed out a second time:

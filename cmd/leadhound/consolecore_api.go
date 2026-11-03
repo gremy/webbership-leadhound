@@ -66,9 +66,11 @@ type queueHidden struct {
 func queueRescued(j store.NextJob) bool { return j.LatestActor != "system" }
 
 // splitQueue divides the two reads by the rules. A briefed job is visible unless a rule matches
-// it and it is not rescued. A never-briefed job no rule matches is ignored, because the ranker
-// will brief it normally; a matched one is hidden, or listed after the briefed jobs when rescued,
-// since otherwise a rescue would make it vanish from both lists.
+// it and it is not rescued; a disabled rule's stored fail is not read here, the drift the plan
+// accepts. A never-briefed job counts as matched on a live match, or else on its stored rule-gate
+// fail, which the ranker goes on skipping after a trim or a disable has stopped the live match. A
+// matched one is hidden, or listed after the briefed jobs when rescued, since otherwise it would
+// vanish from both lists. One with neither is ignored, because the ranker can brief it normally.
 func splitQueue(briefed, neverBriefed []store.NextJob, rules queueRules) (visible []store.NextJob, hidden []queueHidden) {
 	visible = make([]store.NextJob, 0, len(briefed))
 	for _, j := range briefed {
@@ -80,6 +82,9 @@ func splitQueue(briefed, neverBriefed []store.NextJob, rules queueRules) (visibl
 	}
 	for _, j := range neverBriefed {
 		reason, ok := rules.match(j)
+		if !ok && j.StoredRuleReason != "" {
+			reason, ok = j.StoredRuleReason, true
+		}
 		switch {
 		case !ok:
 		case queueRescued(j):
@@ -92,24 +97,28 @@ func splitQueue(briefed, neverBriefed []store.NextJob, rules queueRules) (visibl
 }
 
 // readQueue reads the queue under rules: the jobs of the briefs since since, and those first seen
-// since firstSeen that reached none of them. With no skip rule it reads neither the second list
-// nor any description, so the answer is what it would be with no filter at all.
-func readQueue(ctx context.Context, q store.Queries, since, firstSeen time.Time, rules []store.Rule) ([]store.NextJob, []queueHidden, error) {
+// since firstSeen that reached none of them. With no skip rule it reads no description, and of the
+// second list only jobs with a stored rule-gate fail, so with none of those either the answer is
+// what it would be with no filter at all. stored false leaves stored fails out, for a caller
+// asking what these rules alone would hide.
+func readQueue(ctx context.Context, q store.Queries, since, firstSeen time.Time, rules []store.Rule, stored bool) ([]store.NextJob, []queueHidden, error) {
 	r := newQueueRules(rules)
 	needDesc := r.compiled.NeedsDescription()
 	briefed, err := q.NextJobs(ctx, since, needDesc)
 	if err != nil {
 		return nil, nil, err
 	}
-	if r.compiled.Empty() {
-		return briefed, nil, nil
-	}
-	never, err := q.NeverBriefedJobs(ctx, since, firstSeen, needDesc, func(j store.NextJob) bool {
+	never, err := q.NeverBriefedJobs(ctx, since, firstSeen, needDesc, !r.compiled.Empty(), func(j store.NextJob) bool {
 		_, ok := r.match(j)
-		return ok
+		return ok || (stored && j.StoredRuleReason != "")
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+	if !stored {
+		for i := range never {
+			never[i].StoredRuleReason = ""
+		}
 	}
 	visible, hidden := splitQueue(briefed, never, r)
 	return visible, hidden, nil
@@ -126,7 +135,7 @@ func (b *backend) NextJobs(ctx context.Context, days, limit int) (console.NextJo
 		return console.NextJobList{}, err
 	}
 	now := b.now().In(b.loc)
-	visible, hidden, err := readQueue(ctx, q, now.AddDate(0, 0, -days), now.AddDate(0, 0, -queueNeverBriefedDays), rules)
+	visible, hidden, err := readQueue(ctx, q, now.AddDate(0, 0, -days), now.AddDate(0, 0, -queueNeverBriefedDays), rules, true)
 	if err != nil {
 		return console.NextJobList{}, err
 	}
