@@ -1,11 +1,14 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
-The job queue honours the skip rules (2026-11-03, plan `leadhound-queue-filter`, Checkpoint 1; committed on local main, not pushed or deployed):
+The job queue honours the skip rules (2026-11-04, plan `leadhound-queue-filter`, finished; pushed at `b27b947`, deployed, six rules live):
 - What exists: `api next` hides what a skip rule matches, before the limit, and its rows are unchanged; one `hidden:` line on stderr; `api next --hidden`; the rescue, `api mark ID maybe`; `rules test`, a dry run, free on `make remote`. Docs: `deploy/README.md` "The console API".
 - Decided in the build: the never-briefed read leaves out a job only other gates fail, because those gates keep it from every brief anyway and such jobs are nine in ten after a wide-net night. It keeps a job with a stored rule-gate failure on its current observation, even with no live match or no active rule, because the ranker goes on skipping that job after a trim or a disable; it stays hidden under the stored reason, or listed when rescued. A rescued job is never lost to the 30-day window. `api next` has a 25-second client timeout, because description rules make the read slow. A rejected prior stays listed; the operator decides at the Checkpoint 2 stop.
-- Not verified: anything on production, including the real rules, the read's time on the server and the size of the hidden list; no real rule has been added.
-- Next: Checkpoint 2, on the operator's word: push, deploy, rebuild `bin/leadhound`, dry-run each pattern, then his table and answers.
+- Verified live: the queue went from 24 jobs to the 13 the dry run predicted, every job hidden from it is listed by `api next --hidden`, and a job the operator marked stays listed although a rule matches it. Real rules live only in the database.
+- Live numbers: 3,787 jobs hidden, nearly all never briefed.
+- Not verified: `/apply` run against the new queue; its row format is held by tests only. No single `make test-scale` run was fully green: a different timing test missed its budget in each of two runs (`TestScaleScoreQueue` 20.33s of 20s, `TestScaleConsolePages` `/leads` 597ms of 500ms) with load average 28-37 from macOS background jobs. Each passed in the other run, neither path is in this change, and no budget was changed; `TestScaleScoreQueue` also missed once alone under the same load (26.3s).
+- Decided: a rejected prior stays listed, because the only one in the queue is a different role and `/apply` already sends `prior` rows to review. Description rules were left out: they caught 3 jobs in 30 days.
+- Next: run `/apply` on the shorter queue; watch whether the morning brief shrinks as expected.
 
 The console API and its local tool (2026-11-02, plan `leadhound-apply-api-and-skill`, Checkpoint 1; built locally, not deployed):
 - What exists: bearer-token `/api/` routes on the console (next jobs, one job, tracked, mark), off until `LEADHOUND_API_TOKEN_SHA256` is set; the `leadhound api` commands; `make api-token`. Docs: `deploy/README.md` "The console API".
