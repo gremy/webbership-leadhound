@@ -1,0 +1,18 @@
+{{/* lead_instagram_card is what a café lead's matched Instagram profile shows, under The place; it renders nothing at all for a lead with no Instagram match, so that page is byte for byte as before. It informs only: the correction stays the operator's. */}}
+{{define "lead_instagram_card"}}{{with .Data.Instagram}}
+  <section class="card" id="instagram" aria-labelledby="instagram-title">
+    <div class="card-head"><h2 id="instagram-title">Instagram</h2>{{with .Matched}}<span class="muted small">matched by {{.}}</span>{{end}}</div>
+    <div class="card-body">
+    <p class="cluster"><a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">@{{.Handle}}</a>{{if .Private}}<span class="badge">private</span>{{end}}{{if .Missing}}<span class="badge badge-warn">no longer there</span>{{end}}</p>
+    {{with .Disagree}}<div class="alert alert-warn mt-1" role="note">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">{{if eq . "roastery"}}Instagram reads this as a roastery or online shop. Nothing was changed: if it is, press It's a roastery above (r on the Leads list).{{else}}Instagram reads this as a café with seating. Nothing was changed: if it is, press It's a coffee shop above (r on the Leads list).{{end}}</p></div></div>{{end}}
+    <dl class="kv">
+      <dt>Followers</dt><dd>{{if .Counted}}{{thousands .Followers}}{{else}}not counted{{end}}</dd>
+      <dt>Read</dt><dd>{{with .CapturedAt}}{{when .}}{{else}}not read as a profile yet{{end}}</dd>
+      <dt>Instagram says</dt><dd>{{or .Place "not judged yet"}}</dd>
+      <dt>Loyalty</dt><dd>{{or .Loyalty "not judged yet"}}</dd>
+      <dt>Vendor</dt><dd>{{or .Vendor "not judged yet"}}{{with .VendorVia}} <span class="muted small">{{.}}</span>{{end}}</dd>
+      {{with .Hints}}<dt>Hints</dt><dd>{{range $i, $h := .}}{{if $i}} · {{end}}{{$h}}{{end}}</dd>{{end}}
+    </dl>
+    <p class="hint">Read from the café's public profile; it never changes the lead.</p>
+    </div>
+  </section>{{end}}{{end}}

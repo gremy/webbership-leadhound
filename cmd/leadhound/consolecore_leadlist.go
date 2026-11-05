@@ -884,6 +884,9 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		if t, ok := types[id]; ok {
 			p.PlaceType, p.PlaceTypeSource = t.Type, t.Source
 		}
+		if p.Instagram, err = b.leadInstagram(ctx, w.cfg, id, p.PlaceType); err != nil {
+			return console.LeadDetailPage{}, err
+		}
 	}
 	// Every purpose together; 0 (no Claude call on this lead yet) shows nothing.
 	if spent, err := b.s.Q().ClaudeSpendForLead(ctx, id, ""); err != nil {

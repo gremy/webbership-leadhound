@@ -19,6 +19,7 @@ import (
 type outreachSite struct {
 	mux *http.ServeMux
 	b   *fakeBackend
+	srv *server
 }
 
 func newOutreachSite(t *testing.T) *outreachSite {
@@ -29,7 +30,7 @@ func newOutreachSite(t *testing.T) *outreachSite {
 	s := &server{b: b, a: a, opt: Options{Location: time.UTC, Now: func() time.Time { return statusNow }}, log: slog.New(slog.DiscardHandler),
 		cookie: "__Host-lh_session", flash: "__Host-lh_flash", device: "__Host-lh_device", themeName: "__Host-lh_theme"}
 	s.pages = s.parseTemplates()
-	site := &outreachSite{mux: http.NewServeMux(), b: b}
+	site := &outreachSite{mux: http.NewServeMux(), b: b, srv: s}
 	seen := map[string]bool{}
 	for _, rt := range routes {
 		if !seen[rt.pattern] {

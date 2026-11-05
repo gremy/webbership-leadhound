@@ -878,11 +878,25 @@ func (l igReportLine) switchPitch() bool {
 // igCorrection is what Instagram's place call says against the lead's effective place type,
 // or "" when they agree or Instagram cannot tell.
 func (l igReportLine) correction() string {
-	switch {
-	case l.place == leadrate.IGRoasteryOrOnline && l.key.PlaceType == leadstore.PlaceCafe:
+	switch igPlaceDisagrees(l.place, l.key.PlaceType) {
+	case leadstore.PlaceRoastery:
 		return "Instagram reads a roastery or online shop; the lead is a coffee shop"
-	case l.place == leadrate.IGCafeSeating && l.key.PlaceType == leadstore.PlaceRoastery:
+	case leadstore.PlaceCafe:
 		return "Instagram reads a café with seating; the lead is a roastery"
+	}
+	return ""
+}
+
+// igPlaceDisagrees is the place type Instagram's place call igPlace points to when it
+// disagrees with a lead's effective place type placeType (leadstore.PlaceRoastery or
+// leadstore.PlaceCafe), or "" when they agree or Instagram cannot tell. The report's "to
+// correct" list and the lead page's Instagram card both read it; neither changes the lead.
+func igPlaceDisagrees(igPlace, placeType string) string {
+	switch {
+	case igPlace == leadrate.IGRoasteryOrOnline && placeType == leadstore.PlaceCafe:
+		return leadstore.PlaceRoastery
+	case igPlace == leadrate.IGCafeSeating && placeType == leadstore.PlaceRoastery:
+		return leadstore.PlaceCafe
 	}
 	return ""
 }
@@ -1150,7 +1164,7 @@ func igKnown(ctx context.Context, db store.DBTX, handle string) (bool, error) {
 // LEAD_ID attaches it to a café lead (it outranks every later import's match, and writes the
 // lead's instagram route when its org has none); unmatch HANDLE says it is no lead (no import
 // attaches it again, and a handle marked matched goes back on the review list); dismiss and
-// want set its review status.
+// want set its review status. The console's buttons run the same igOperator* functions.
 func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 	want := 1
 	if verb == "match" {
@@ -1159,8 +1173,7 @@ func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 	if len(args) != want {
 		return usageError("%s", igUsage)
 	}
-	handle, ok := enrich.InstagramHandle(args[0])
-	if !ok {
+	if _, ok := enrich.InstagramHandle(args[0]); !ok {
 		return usageError("%q is not an Instagram handle", args[0])
 	}
 	var leadID int64
@@ -1176,24 +1189,45 @@ func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 		return err
 	}
 	defer done()
-	known, err := igKnown(ctx, db, handle)
-	if err != nil {
-		return err
+	err = igOperatorPrint(ctx, lq, db, verb, args[0], leadID)
+	var r igRefusal
+	if errors.As(err, &r) {
+		return usageError("%s", r)
 	}
-	if !known {
-		return usageError("@%s is in no imported capture; import it first", handle)
-	}
+	return err
+}
+
+// igOperatorPrint runs one operator's call and prints what it did.
+func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db store.DBTX, verb, raw string, leadID int64) error {
 	switch verb {
 	case "match":
-		return igMatchLead(ctx, lq, handle, leadID)
+		handle, added, err := igOperatorMatch(ctx, lq, db, raw, leadID)
+		if err != nil {
+			return err
+		}
+		route := "its org already holds an Instagram route"
+		if added {
+			route = "Instagram route added"
+		}
+		_, _ = fmt.Fprintf(stdout, "leads ig match: @%s is lead %d now (%s)\n", handle, leadID, route)
+		return nil
 	case "unmatch":
-		return igUnmatch(ctx, lq, handle)
+		handle, back, err := igOperatorUnmatch(ctx, lq, db, raw)
+		if err != nil {
+			return err
+		}
+		tail := ""
+		if back {
+			tail = "; back on the review list"
+		}
+		_, _ = fmt.Fprintf(stdout, "leads ig unmatch: @%s matches no lead%s\n", handle, tail)
+		return nil
 	}
 	status := leadstore.IGReviewDismissed
 	if verb == "want" {
 		status = leadstore.IGReviewWanted
 	}
-	changed, err := lq.SetIGReviewStatus(ctx, handle, status, "", leadstore.ActorGremy)
+	handle, changed, err := igSetStatus(ctx, lq, db, raw, status)
 	if err != nil {
 		return err
 	}
@@ -1205,52 +1239,86 @@ func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 	return nil
 }
 
-// igMatchLead is `leads ig match HANDLE LEAD_ID`.
-func igMatchLead(ctx context.Context, lq leadstore.Queries, handle string, leadID int64) error {
+// igRefusal is an operator's call on a handle refused, in words the CLI prints as a usage error
+// and the console shows as a refusal: one set of words for both.
+type igRefusal string
+
+func (e igRefusal) Error() string { return string(e) }
+
+// igOperatorHandle is raw as a stored handle, refused unless it is a handle seen in an
+// imported capture (a profile or a following list).
+func igOperatorHandle(ctx context.Context, db store.DBTX, raw string) (string, error) {
+	handle, ok := enrich.InstagramHandle(raw)
+	if !ok {
+		return "", igRefusal(fmt.Sprintf("%q is not an Instagram handle", raw))
+	}
+	known, err := igKnown(ctx, db, handle)
+	if err != nil {
+		return "", err
+	}
+	if !known {
+		return "", igRefusal(fmt.Sprintf("@%s is in no imported capture; import it first", handle))
+	}
+	return handle, nil
+}
+
+// igOperatorMatch is the operator's "it's this lead": raw attaches to café lead leadID (it
+// outranks every later import's match), the handle is marked matched, and the lead's org gets
+// the handle as its instagram route when it holds none. It is `leads ig match` and the
+// console's button alike.
+func igOperatorMatch(ctx context.Context, lq leadstore.Queries, db store.DBTX, raw string, leadID int64) (handle string, routeAdded bool, err error) {
+	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
+		return "", false, err
+	}
 	keys, err := lq.IGLeadKeys(ctx, 0)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	i := slices.IndexFunc(keys, func(k leadstore.IGLeadKey) bool { return k.LeadID == leadID })
 	if i < 0 {
-		return usageError("lead %d is not a café lead Instagram can be matched to", leadID)
+		return "", false, igRefusal(fmt.Sprintf("lead %d is not a café lead Instagram can be matched to", leadID))
 	}
 	if _, err := lq.SetIGMatch(ctx, leadstore.IGMatch{Handle: handle, LeadID: leadID, Tier: leadstore.IGTierOperator,
 		Detail: "your call", Actor: leadstore.ActorGremy}); err != nil {
-		return err
+		return "", false, err
 	}
 	if _, err := lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewMatched, "", leadstore.ActorGremy); err != nil {
-		return err
+		return "", false, err
 	}
-	added, err := igEnsureRoute(ctx, lq, keys[i].OrgID, handle)
-	if err != nil {
-		return err
-	}
-	route := "its org already holds an Instagram route"
-	if added {
-		route = "Instagram route added"
-	}
-	_, _ = fmt.Fprintf(stdout, "leads ig match: @%s is lead %d now (%s)\n", handle, leadID, route)
-	return nil
+	routeAdded, err = igEnsureRoute(ctx, lq, keys[i].OrgID, handle)
+	return handle, routeAdded, err
 }
 
-// igUnmatch is `leads ig unmatch HANDLE`: an operator's match with no lead.
-func igUnmatch(ctx context.Context, lq leadstore.Queries, handle string) error {
+// igOperatorUnmatch is the operator's "it is no lead": an operator's match with no lead, so no
+// import attaches it again; a handle marked matched goes back on the review list (back).
+func igOperatorUnmatch(ctx context.Context, lq leadstore.Queries, db store.DBTX, raw string) (handle string, back bool, err error) {
+	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
+		return "", false, err
+	}
 	if _, err := lq.SetIGMatch(ctx, leadstore.IGMatch{Handle: handle, Tier: leadstore.IGTierOperator,
 		Detail: "unmatched by you", Actor: leadstore.ActorGremy}); err != nil {
-		return err
+		return "", false, err
 	}
 	items, err := lq.IGReview(ctx, leadstore.IGReviewMatched)
 	if err != nil {
-		return err
+		return "", false, err
 	}
-	back := ""
-	if slices.ContainsFunc(items, func(it leadstore.IGReviewItem) bool { return it.Handle == handle }) {
-		if _, err := lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewNew, "unmatched", leadstore.ActorGremy); err != nil {
-			return err
-		}
-		back = "; back on the review list"
+	if !slices.ContainsFunc(items, func(it leadstore.IGReviewItem) bool { return it.Handle == handle }) {
+		return handle, false, nil
 	}
-	_, _ = fmt.Fprintf(stdout, "leads ig unmatch: @%s matches no lead%s\n", handle, back)
-	return nil
+	_, err = lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewNew, "unmatched", leadstore.ActorGremy)
+	return handle, err == nil, err
+}
+
+// igSetStatus is the operator's dismiss (not a lead) or want (wanted as a lead) on raw: its
+// review status, by him; changed is false when it already had that status.
+func igSetStatus(ctx context.Context, lq leadstore.Queries, db store.DBTX, raw, status string) (handle string, changed bool, err error) {
+	if status != leadstore.IGReviewDismissed && status != leadstore.IGReviewWanted {
+		return "", false, fmt.Errorf("leads ig: %q is not an operator's review status", status)
+	}
+	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
+		return "", false, err
+	}
+	changed, err = lq.SetIGReviewStatus(ctx, handle, status, "", leadstore.ActorGremy)
+	return handle, changed, err
 }

@@ -39,6 +39,13 @@ type LeadsBackend interface {
 	// writes. ErrNotFound for no such lead; a lead with no report (no Drupal site finding)
 	// wraps ErrUserFixable with the words to show.
 	LeadReport(ctx context.Context, id int64) (LeadReport, error)
+	// InstagramReview is the Instagram review list at status (one of IGReviewStatuses), with
+	// the count at each. It never writes.
+	InstagramReview(ctx context.Context, status string) (IGReviewPage, error)
+	// InstagramAct runs one operator's call on the review list, as `leads ig` does, and returns
+	// the line to show. A handle in no capture or a lead that is not a café lead wraps
+	// ErrUserFixable with the words to show.
+	InstagramAct(ctx context.Context, a IGAction) (string, error)
 }
 
 // ErrLeadsNotSetUp is what the leads backend returns when this server has no usable

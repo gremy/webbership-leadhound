@@ -1,0 +1,64 @@
+{{define "content"}}
+{{$v := .Data}}
+<div class="page">
+<div class="page-head">
+  <div>
+    <span class="eyebrow"><a href="/leads/home">Leads</a> / Instagram</span>
+    <h1>Instagram</h1>
+    <p class="page-sub">Cafés Instagram showed that match no lead, or only by name. Your call decides; nothing here makes a lead.</p>
+  </div>
+</div>
+<nav aria-label="Review status">
+  <ul class="tabs tabs-wrap">
+    {{range $v.Tabs}}<li><a href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}} ({{thousands .Count}})</a></li>{{end}}
+  </ul>
+</nav>
+{{if $v.Rows}}
+<div class="stack-sm mt-2">
+  {{range $v.Rows}}{{$row := .}}
+  <article class="card card-body stack-sm" id="ig-{{.Handle}}">
+    <div class="list-item">
+      <div class="list-main">
+        <h2 class="list-title"><a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">@{{.Handle}}</a></h2>
+        {{if or .Name .Category}}<p class="list-meta">{{.Name}}{{if and .Name .Category}} · {{end}}{{.Category}}</p>{{end}}
+        <p class="list-meta">Instagram says {{or .Place "nothing yet: not read as a profile"}}</p>
+      </div>
+    </div>
+    {{if .Candidates}}
+    <ul class="item-list">
+      {{range .Candidates}}
+      <li>
+        <span class="item-head"><a href="/leads/{{.LeadID}}">{{or .Name (printf "Lead %d" .LeadID)}}</a>{{with .Town}} <span class="muted small">{{.}}</span>{{end}}</span>
+        {{if and .Matchable (ne $v.Status "matched")}}<form method="post" action="/leads/instagram/match">
+          <input type="hidden" name="handle" value="{{$row.Handle}}">
+          <input type="hidden" name="lead" value="{{.LeadID}}">
+          <input type="hidden" name="status" value="{{$v.Status}}">
+          <button type="submit" class="btn btn-secondary btn-sm">It's this lead<span class="visually-hidden">: @{{$row.Handle}} is {{or .Name (printf "lead %d" .LeadID)}}</span></button>
+        </form>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="muted">No lead it may be.</p>{{end}}
+    <div class="btn-row" role="group" aria-label="Your call on @{{.Handle}}">
+      {{if ne $v.Status "dismissed"}}<form method="post" action="/leads/instagram/dismiss">
+        <input type="hidden" name="handle" value="{{.Handle}}">
+        <input type="hidden" name="status" value="{{$v.Status}}">
+        <button type="submit" class="btn btn-secondary btn-sm">Not a lead</button>
+      </form>{{end}}
+      {{if ne $v.Status "wanted"}}<form method="post" action="/leads/instagram/want">
+        <input type="hidden" name="handle" value="{{.Handle}}">
+        <input type="hidden" name="status" value="{{$v.Status}}">
+        <button type="submit" class="btn btn-secondary btn-sm">Want as lead</button>
+      </form>{{end}}
+    </div>
+  </article>
+  {{end}}
+</div>
+{{else}}
+<div class="card mt-2"><div class="empty empty-compact">
+  <p class="empty-title">Nothing here.</p>
+  <p class="empty-text">{{if eq $v.Status "new"}}An import of an Instagram capture puts the cafés it cannot match here.{{else}}No account has this status yet.{{end}}</p>
+</div></div>
+{{end}}
+</div>
+{{end}}

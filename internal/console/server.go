@@ -119,6 +119,7 @@ var routes = []route{
 	{"GET /leads/calls", "/leads/calls", false, (*server).leadsCalls},
 	{"GET /leads/reports", "/leads/reports", false, (*server).leadsReports},
 	{"GET /leads/proof", "/leads/proof", false, (*server).leadsProof},
+	{"GET /leads/instagram", "/leads/instagram", false, (*server).leadsInstagram},
 	{"GET /leads/calls/{message}", "/leads/calls/9", false, (*server).leadCall},
 	{"GET /leads/batches/{id}", "/leads/batches/3", false, (*server).leadBatch},
 	{"GET /leads/reports/{id}", "/leads/reports/5", false, (*server).leadReport},
@@ -167,6 +168,8 @@ var routes = []route{
 	{"POST /leads/{id}/drafts/{mid}/sent", "/leads/5/drafts/9/sent", false, (*server).leadDraftSent},
 	{"POST /leads/{id}/proposals/{pid}/status", "/leads/5/proposals/3/status", false, (*server).leadProposalStatus},
 	{"POST /leads/proof", "/leads/proof", false, (*server).addProof},
+	// More specific than POST /leads/{id}/{action}, so it wins for its three calls.
+	{"POST /leads/instagram/{action}", "/leads/instagram/dismiss", false, (*server).instagramAct},
 	{"POST /leads/proof/{pid}/retire", "/leads/proof/3/retire", false, (*server).retireProof},
 	{"GET /mailboxes", "/mailboxes", false, (*server).mailboxes},
 	{"GET /mailboxes/new", "/mailboxes/new", false, (*server).newMailbox},
@@ -345,12 +348,12 @@ func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
 		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html", "templates/crm_parts.html",
-		"templates/outreach_parts.html"))
+		"templates/outreach_parts.html", "templates/lead_instagram_card.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
 		"mailboxes", "mailbox", "mailbox_form", "controls", "leads_home", "jobs_home", "account", "status", "send_confirm",
-		"leads_replies", "leads_pipeline", "leads_calls", "leads_reports", "leads_proof"} {
+		"leads_replies", "leads_pipeline", "leads_calls", "leads_reports", "leads_proof", "leads_instagram"} {
 		t := template.Must(base.Clone())
 		pages[name] = template.Must(t.ParseFS(templateFS, "templates/"+name+".html"))
 	}

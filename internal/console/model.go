@@ -547,8 +547,11 @@ type LeadDetailPage struct {
 	ShowReport       bool            // the lead's kind has an upgrade-risk report at all (Drupal sites, hand)
 	Place            *LeadPlaceView  // the map place a café lead came from; nil for a site lead
 	Cafe             *LeadCafeView   // the café finding in words; nil for a lead that is not a café
-	OriginWords      string          // where the lead was found, in words ("a map listing (Overture)")
-	ReachTitle       string          // the heading of what was read about it ("From their site")
+	// Instagram is what the café's matched Instagram profile shows; nil for a lead with no
+	// strong or operator match (a weak match never shows its signals) and for every non-café.
+	Instagram   *LeadInstagramView
+	OriginWords string // where the lead was found, in words ("a map listing (Overture)")
+	ReachTitle  string // the heading of what was read about it ("From their site")
 	// SendNowBlock is why Send now cannot send this lead, known from the lead alone (its
 	// state, or no channel to email it on); "" when the button is offered. The confirm page
 	// still checks the rest (suppression, mailboxes, limits).
@@ -630,6 +633,76 @@ type LeadCafeView struct {
 	Instagram              bool
 	Language               string
 	VendorName, VendorLink string
+}
+
+// LeadInstagramView is a café lead's Instagram card, in words: the handle its strong or operator
+// match names, what its latest capture counted, how it was matched, and the standing answers on
+// its place, loyalty and vendor. It informs only: nothing on it moves the lead.
+type LeadInstagramView struct {
+	Handle, URL string     // the handle without its @, and its canonical profile address
+	Followers   int        // the latest capture's count, when Counted
+	Counted     bool       // the capture counted its followers
+	CapturedAt  *time.Time // the latest capture; nil for an account never read as a profile
+	Private     bool       // the account is private: only its counts were read
+	Missing     bool       // the latest capture found no such account
+	Matched     string     // how it was matched: "its handle", "its website" or "your call"
+	// Place, Loyalty and Vendor are Instagram's answers in words; "" when not judged.
+	Place, Loyalty, Vendor string
+	// VendorVia is how a vendor found by rule was seen ("from a link", "from a tag"); "" for Jev's.
+	VendorVia string
+	Hints     []string // weak signals in words ("followed by Stampino")
+	// Disagree is the place type Instagram's place call points to when it disagrees with the
+	// lead's effective place type ("roastery" or "cafe"); "" when they agree.
+	Disagree string
+}
+
+// The review list's statuses (IGReviewPage.Status), as the store names them.
+const (
+	IGReviewNew       = "new"
+	IGReviewWanted    = "wanted"
+	IGReviewDismissed = "dismissed"
+	IGReviewMatched   = "matched"
+)
+
+// IGReviewStatuses are the review page's tabs, in order.
+var IGReviewStatuses = []string{IGReviewNew, IGReviewWanted, IGReviewDismissed, IGReviewMatched}
+
+// IGReviewPage is the Instagram review list at one status: the cafés Instagram showed that
+// match no lead, or only weakly, and the operator's calls on them.
+type IGReviewPage struct {
+	Status string         // one of IGReviewStatuses
+	Counts map[string]int // handles at each status
+	Rows   []IGReviewRow  // the handles at Status, by handle
+}
+
+// IGReviewRow is one handle of the review list.
+type IGReviewRow struct {
+	Handle, URL    string // the handle without its @, and its canonical profile address
+	Name, Category string // from its latest capture or its following-list row; "" when unknown
+	Place          string // Instagram's place call in words; "" when never judged
+	Candidates     []IGCandidate
+}
+
+// IGCandidate is a lead a review row may be. Matchable is false for a lead Instagram cannot be
+// matched to (no longer a café lead of a campaign), shown without the button.
+type IGCandidate struct {
+	LeadID     int64
+	Name, Town string
+	Matchable  bool
+}
+
+// The operator's calls on a review row (IGAction.Do).
+const (
+	IGMatch   = "match"   // Handle, LeadID: it's this lead
+	IGDismiss = "dismiss" // Handle: not a lead
+	IGWant    = "want"    // Handle: wanted as a lead (making the lead is a later step)
+)
+
+// IGAction is one call on the review list.
+type IGAction struct {
+	Do     string
+	Handle string
+	LeadID int64
 }
 
 // ReportLink is the lead page's upgrade-risk report: Ready when it can be downloaded, else
