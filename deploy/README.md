@@ -1154,6 +1154,32 @@ You still approve the hash you are shown, and an edit after you read it makes th
 The send-time recheck of each message against its `approved_sha256` stays the backstop.
 A form or LinkedIn edit touches none of these: it writes only `message_edit`, so an approved batch is never called changed.
 
+## Leads migration 00030
+
+`make deploy` applies it with the new binary, as the owner role, before the binary is put in place.
+It adds the List's triage:
+
+| Adds | For |
+| --- | --- |
+| `lead_place_type` | a café lead's place type (`cafe` or `roastery`, or Jev's `unclear`), from its name, Jev or you, with the matched word or question and, for Jev, the input hash |
+| `roastery_outreach_switch` | Roasteries in café outreach on Controls; no row means off |
+| `lead_event.skip_label_id` | the "no" call a skip from the List wrote, so Undo clears only that call |
+
+Both new tables are append-only for the app role.
+With the switch off, a roastery or online coffee store is held: kept out of café batches, Send now, the call queue and Draft it, and a pending message to one is cancelled when the send reaches it.
+A held lead that was batched with nothing sent goes back to new, so it is kept for later.
+
+Before the first production café batch, in this order:
+
+1. `make remote HOST=… ARGS='leads place-types report --campaign cafes-loyalty'` counts the leads whose names carry a roastery word and prints a sample; it writes nothing, so it needs no `CONFIRM=1`.
+2. `make remote HOST=… CONFIRM=1 ARGS='leads place-types apply --campaign cafes-loyalty'` stores those name tags.
+3. The first Jev pass: `make remote HOST=… CONFIRM=1 ARGS='leads rate --campaign cafes-loyalty'`, which after the relevance pass also asks each open café lead the place question once, about 2,300 Jev calls, cents of input (see [Relevance](#relevance)).
+   It needs `LEADHOUND_LIVE=1` and the Jev key, as every rating does; the nightly contacts unit asks only leads that are new or changed after that.
+
+`leads transfer` files carry no place types, so run `leads place-types apply` after an import; the café build tags each new lead by its name on its own.
+The build also skips a lead that is the same place as another (same normalised name, address and town) as the system, keeping one; its Undo is refused, because the next build would skip it again.
+`MarkContacted` stays open for a held lead, because it records something you already did yourself; research on a starred roastery stays allowed for the same reason.
+
 ## LinkedIn and your own contacts
 
 - **LeadHound's leads side never fetches LinkedIn's own site.**

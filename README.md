@@ -40,7 +40,7 @@
     The console holds no key, so the Reoon credits come from a row the key-holding jobs write; Refresh asks for a new reading (see "The credits on the Status page" in `deploy/README.md`).
   - Jobs: Home (`/jobs/home`, the job-hunt health and the Run now card), Jobs (the latest brief's jobs to mark applied, skip or maybe, the same writes as `track`, and a page per job at `/jobs/{id}` with its own mark form), Tracked (capped at 500 rows with the total shown), Runs, Rules (add a rule, disable one) and Results.
   - Account (`/account`): who is signed in, and Sign out.
-  - Controls (`/controls`): one sentence on why nothing is going out (or when the next email does), the Sending switch, a switch per leads job (morning batch, inbox sync, site probe, contacts, research, and the email check, with today's checks and the Reoon credits left) with its timer read from systemd and its last run, and the three server-only lines (`LEADHOUND_OUTREACH`, `LEADHOUND_LIVE`, `LEADHOUND_LEADS_TIMERS`) shown read-only; see "Switches in the console" in `deploy/README.md`.
+  - Controls (`/controls`): one sentence on why nothing is going out (or when the next email does), the Sending switch, a switch per leads job (morning batch, inbox sync, site probe, contacts, research, and the email check, with today's checks and the Reoon credits left) with its timer read from systemd and its last run, the Roasteries in café outreach switch, and the three server-only lines (`LEADHOUND_OUTREACH`, `LEADHOUND_LIVE`, `LEADHOUND_LEADS_TIMERS`) shown read-only; see "Switches in the console" in `deploy/README.md`.
     The sending window (start, end, days, in each recipient's local time) is set there and saved over `leads.yaml`, the card says when the hourly send runs (Monday to Friday, 10:00 to 19:00 Bucharest), and a Send now button beside the sentence sends the due emails outside the window for one run, every limit still applying, wherever the send timer is enabled; see "The sending window" and "Send now" in `deploy/README.md`.
   - Leads, in eleven pages on its sub-nav: Home (`/leads/home`), List (`/leads`, with a page per lead), Outreach (`/leads/outreach`, with each batch's page), Today (`/leads/today`), Replies (`/leads/replies`), Pipeline (`/leads/pipeline`), Calls (`/leads/calls`), Drafts (`/leads/drafts`), Proof (`/leads/proof`), Campaigns (`/leads/campaigns`) and Reports (`/leads/reports`); Settings (`/leads/settings`) sits in the gear menu.
     See "The Leads console", "Calls" and "The CRM" under Campaigns and leads.
@@ -157,6 +157,18 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   It prints counts only, and run again it finds nothing left; see "Erasure" in `deploy/README.md` for backups.
 - **The Leads console**: the List (`/leads`) shows every lead with its name, country, kind, the finding in plain words, its channels (email, form, LinkedIn, phone), its relevance and a star.
   It filters by kind, country, channel, starred, has a phone, minimum relevance and status (not contacted yet, contacted, all), and sorts by relevance, newest or your outreach order; the filters survive paging.
+  Campaign tabs sit above the reach tabs, each with its count of open leads, and the campaign you choose is remembered in a cookie for your next visit ("Every campaign" shows them all).
+  With a campaign chosen, a reviewed line says how many of its leads you have dealt with ("312 of 2,293 reviewed": a call made or a skip of yours), and the filter form offers its towns.
+  A café campaign adds chips under the tabs: Coffee shops, Roasteries and Both, each with its count; Coffee shops is the default.
+  Each row shows a two-line summary (the description, or town, category and address with the finding's reason) and a `roastery` badge on a lead tagged one; More expands it to the address, phones, email and form routes, socials and website (opening in a new tab), the finding, Jev's band and number and your call.
+  Row actions: Skip on every lead not yet contacted, Good on a café, and "It's a roastery" or "It's a coffee shop" on a café; they post as plain forms and, with JavaScript, without a reload.
+  Keys, ignored while you type and hidden on a narrow screen: `j` and `k` move, `e` expands, `s` skips, `g` marks Good, `r` switches roastery and coffee shop, `x` selects, `u` undoes the last skip.
+  A skip takes the lead out of the list; on a café with no call yet it also saves your call "no", so skipping teaches Jev.
+  Undo (on the toast, `u`, or the row under Status all) puts the lead back and clears that "no" only if it is still the lead's latest call, so a call you made since stays; a Drupal lead skips with no call written.
+  A lead the system skipped, such as a duplicate of the same place, shows its reason and no Undo.
+  Good saves the call "likely" (a `strong` call stays) and leaves the lead where it is, because an answer key of skips alone can never pass the trust gate.
+  The roastery correction is your own place type, which outranks the name and Jev's answer and writes no call; a café lead's page has the same two buttons.
+  While Roasteries in café outreach is off on Controls (the default), a roastery or online coffee store is kept for later and never contacted by a café campaign: it is left out of batches, Send now, the call queue and Draft it, and a pending message to one is cancelled at send.
   A lead's page (`/leads/{id}`) shows the finding with its evidence, the ways to reach them and the pages they came from, phone numbers, description and social links, the agency page, the site, its history, its place in the queue, its messages and one line per reason it ranks where it does.
   It also has a Next step card, its drafts, its contacts, its proposals and its sector.
   The page shows only the cards that fit the lead's type.
@@ -307,7 +319,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
   The batch, contact research and Draft it units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00029: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand).
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00030: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch).
   The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches, campaign mailbox assignments, contact marks, people, draft edits, sectors, proof and proposals: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 
@@ -341,6 +353,11 @@ COPY (
 - **The loop**: `leads sites probe` reads each café's homepage with the `cafe@1` detector (digital loyalty, online ordering, Instagram, language), then `leads contacts`, then `leads build --campaign cafes-loyalty` and `leads batch new --campaign cafes-loyalty`.
   The timers build and batch `drupal-eol` only, so the café campaign's build and batch run by hand.
   A café whose homepage links your own loyalty product is a customer and gets no lead: list your product's hosts in `leads.yaml` as `probe.cafe_own_vendor_hosts` (private; never in the repository).
+  The build skips a lead that is the same place as another (same normalised name, address and town) as the system, keeping one; a duplicate you called or starred stays.
+- **Place types**: a café lead is a coffee shop or a roastery (roasteries and online-only coffee stores), from its name (the `place_words.roastery` list in `internal/cafe/signals.yaml`), from Jev, or from your correction on the console; your correction wins, then Jev, then the name, and a lead with none is a coffee shop.
+  `leads place-types report [--campaign SLUG] [--sample N]` counts the café leads whose names carry a roastery word and prints a sample of them; it writes nothing.
+  `leads place-types apply [--campaign SLUG]` stores those name tags; the café build tags each new lead the same way, so apply is for leads built before it, or brought in by `leads transfer import`, whose files carry no place types.
+  `leads rate --campaign cafes-loyalty` with the Jev decider also asks Jev, once per lead, whether the place is a café to sit in or a roastery or online store, after a clean relevance pass; an "unclear" answer leaves the name or the default standing.
 - **Kinds**: `cafe@1` sorts each café into one of three kinds, and a kind the spec's `kinds` does not list makes no lead.
   `cafe_no_digital_loyalty` is a café with a website and no digital loyalty on it.
   `cafe_has_loyalty` is a café already on another loyalty platform; the email can name that platform.
