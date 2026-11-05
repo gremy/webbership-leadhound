@@ -13,6 +13,13 @@
 # place_words.roastery: words in a business's name that suggest a roastery rather than a café,
 #   matched case- and diacritic-insensitively as whole words. A name is the weakest source of a
 #   place type, so words that also catch cafés (roasted, shop, magazin) are left out.
+# instagram.coffee_words (coffee-words@1): the prefilter for a following list's accounts. An
+#   account is kept when a word appears anywhere inside its handle or its name, both lower case
+#   with every accent mark dropped. The /ig-signals skill's snippets carry the same list under a
+#   contract test, so change both together.
+instagram:
+  coffee_words: [cafe, caffe, coffee, cafea, cafenea, kafe, kaffee, espresso, roast, prajit, brew, barista, specialty, speciality]
+
 place_words:
   roastery:
     - roastery

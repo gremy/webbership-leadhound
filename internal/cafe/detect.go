@@ -80,10 +80,18 @@ type Words struct {
 	Phrases []string `yaml:"phrases"`
 }
 
+// Instagram is the Instagram part of the signal list.
+type Instagram struct {
+	// CoffeeWords is coffee-words@1, the following-list prefilter: lower-case ASCII words, any
+	// of which inside an account's folded handle or name keeps it.
+	CoffeeWords []string `yaml:"coffee_words"`
+}
+
 // Config is the signal list.
 type Config struct {
-	Vendors []Vendor `yaml:"vendors"`
-	Words   []Words  `yaml:"words"`
+	Vendors   []Vendor  `yaml:"vendors"`
+	Words     []Words   `yaml:"words"`
+	Instagram Instagram `yaml:"instagram"`
 
 	matchers []matcher
 	phrases  []phrase
@@ -123,6 +131,13 @@ var DefaultConfig = sync.OnceValue(func() *Config {
 
 func validKind(k string) bool { return k == SigLoyalty || k == SigOrdering || k == SigInstagram }
 
+// coffeeWordRe is what one coffee word is: the skill's helper refuses anything else.
+var coffeeWordRe = regexp.MustCompile(`^[a-z]+$`)
+
+// CoffeeWords is the instagram.coffee_words list (coffee-words@1), in file order; empty for a
+// list that has none. The slice is a copy.
+func (c *Config) CoffeeWords() []string { return slices.Clone(c.Instagram.CoffeeWords) }
+
 func (c *Config) compile() error {
 	seen := map[string]bool{}
 	for i := range c.Vendors {
@@ -148,6 +163,13 @@ func (c *Config) compile() error {
 			}
 			c.matchers = append(c.matchers, matcher{vendor: v, host: host, path: path, needle: host + path})
 		}
+	}
+	words := map[string]bool{}
+	for _, w := range c.Instagram.CoffeeWords {
+		if !coffeeWordRe.MatchString(w) || words[w] {
+			return fmt.Errorf("cafe signals: instagram.coffee_words: %q is not one lower-case word, or is repeated", w)
+		}
+		words[w] = true
 	}
 	for _, w := range c.Words {
 		if !validKind(w.Kind) || w.ID == "" || len(w.Phrases) == 0 {
@@ -176,7 +198,7 @@ const OwnVendorID = "webbership"
 // hosts ("host" or "host/path-prefix"). A café showing it is already a customer: Classify
 // skips it. The hosts come from the operator's private config, never from this repository.
 func (c *Config) WithOwnVendor(name string, hosts []string) (*Config, error) {
-	out := &Config{Vendors: append(slices.Clone(c.Vendors), Vendor{ID: OwnVendorID, Name: name, Kind: SigLoyalty, Own: true, Match: hosts}), Words: c.Words}
+	out := &Config{Vendors: append(slices.Clone(c.Vendors), Vendor{ID: OwnVendorID, Name: name, Kind: SigLoyalty, Own: true, Match: hosts}), Words: c.Words, Instagram: c.Instagram}
 	if err := out.compile(); err != nil {
 		return nil, err
 	}
@@ -365,20 +387,47 @@ func (d *detection) link(base *url.URL, ref, via string) {
 	if base != nil {
 		u = base.ResolveReference(u)
 	}
+	for _, v := range d.cfg.vendorsAt(u) {
+		d.add(Signal{Kind: v.Kind, Vendor: v.ID, Via: via, Match: cleanURL(u)}, v.Own)
+	}
+}
+
+// vendorsAt is every vendor a match entry of which u is on, once per entry, in list order;
+// none unless u is an absolute http(s) URL.
+func (c *Config) vendorsAt(u *url.URL) []*Vendor {
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return
+		return nil
 	}
 	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 	path := strings.ToLower(u.EscapedPath())
-	for _, m := range d.cfg.matchers {
+	var out []*Vendor
+	for _, m := range c.matchers {
 		if !places.HostIs(host, m.host) {
 			continue
 		}
 		if m.path != "" && path != m.path && !strings.HasPrefix(path, m.path+"/") {
 			continue
 		}
-		d.add(Signal{Kind: m.vendor.Kind, Vendor: m.vendor.ID, Via: via, Match: cleanURL(u)}, m.vendor.Own)
+		out = append(out, m.vendor)
 	}
+	return out
+}
+
+// VendorsAt is every vendor whose match entries link is on, each once, in list order: the
+// test Detect puts every link of a homepage to. A link that is not an absolute http(s) URL is
+// on none.
+func (c *Config) VendorsAt(link string) []*Vendor {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return nil
+	}
+	var out []*Vendor
+	for _, v := range c.vendorsAt(u) {
+		if !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // inline finds vendor hosts named inside an inline script (a widget loader).
