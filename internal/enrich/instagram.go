@@ -19,8 +19,10 @@ var instagramDomains = map[string]bool{"instagram.com": true, "instagr.am": true
 // profile URL (any scheme-less, www or m. form, with or without a trailing slash, query or
 // fragment; only the first path segment counts), "@handle", or a bare handle. A URL on
 // another host, Instagram's own pages (/p/, /reel/, /explore/, /stories/ and the like), a
-// port or a login in the URL, or a segment not shaped like a handle is not ok. It is the one
-// rule every reader of a handle uses (the route backfill in 00031 mirrors it in SQL).
+// port or a login in the URL, or a segment not shaped like a handle is not ok, and neither is
+// Instagram's own host where a handle would be ("instagram.com", "www.instagram.com.", the
+// probe's inline-script needle): a site, not a handle, and Instagram allows no handle naming it. It is the one rule every reader of a handle
+// uses (the route backfill in 00031 mirrors it in SQL).
 func InstagramHandle(raw string) (handle string, ok bool) {
 	s := strings.TrimSpace(raw)
 	if !strings.Contains(s, "/") {
@@ -51,10 +53,19 @@ func InstagramHandle(raw string) (handle string, ok bool) {
 // instagramSegment is InstagramHandle's test of one candidate handle.
 func instagramSegment(s string) (string, bool) {
 	h := strings.ToLower(s)
-	if !instagramHandleRe.MatchString(h) || strings.Trim(h, ".") == "" || notProfile["instagram.com"][h] {
+	if !instagramHandleRe.MatchString(h) || strings.Trim(h, ".") == "" || notProfile["instagram.com"][h] || instagramHost(h) {
 		return "", false
 	}
 	return h, true
+}
+
+// instagramHost reports whether h, read as a host name, is on one of Instagram's own domains.
+func instagramHost(h string) bool {
+	if !strings.Contains(h, ".") {
+		return false
+	}
+	reg, err := sitelist.Registrable(h)
+	return err == nil && instagramDomains[reg]
 }
 
 // InstagramURL is the one canonical address of a handle's profile,

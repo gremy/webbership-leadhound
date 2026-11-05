@@ -400,6 +400,18 @@ func TestIGLeadKeys(t *testing.T) {
 		  {"signal": "instagram", "value": "instagram:instagram:link:https://www.instagram.com/stampino.app/", "fetch_id": 1},
 		  {"signal": "loyalty", "value": "loyalty:stampino:link:https://www.instagram.com/stampino.app/", "fetch_id": 1},
 		  {"signal": "ordering", "value": "ordering:glovo:link:https://glovoapp.com/ro/cafe", "fetch_id": 1}]`)
+	// The bare lead holds only Instagram's own host, never a handle: the probe's inline-script
+	// needle (the bare host, as on dev), a social fact and a map listing's social with no path.
+	bareOrg := f.leadOf(t, bare).OrgID
+	if n := ownerInt(t, f.owner, `WITH u AS (UPDATE site_probe SET signals = $2::jsonb WHERE id = (SELECT probe_id FROM lead WHERE id = $1) RETURNING 1)
+		SELECT count(*) FROM u`, bare,
+		`[{"signal": "instagram", "value": "instagram:instagram:inline-script:instagram.com", "fetch_id": 1},
+		  {"signal": "instagram", "value": "instagram:instagram:inline-script:www.instagram.com", "fetch_id": 1},
+		  {"signal": "instagram", "value": "instagram:instagram:link:https://www.instagram.com/", "fetch_id": 1}]`); n != 1 {
+		t.Fatalf("bare lead's probe: %d rows updated, want 1", n)
+	}
+	f.ownerRun(t, `INSERT INTO org_fact (org_id, kind, value, normalized, fetch_id, derived_by) VALUES ($1, 'social', $2, $2, $3, 'enrich@1')`,
+		bareOrg, "https://instagram.com/", f.fid)
 	// Two releases of its map listing; the latest names the place and the town.
 	imp := ownerInt(t, f.owner, `INSERT INTO place_import (source, release, campaign_id, lines, kept, blank, malformed, not_cafe,
 		low_confidence, other_country, no_name, stored, already, chains, orgs, sites, actor)
@@ -410,6 +422,8 @@ func TestIGLeadKeys(t *testing.T) {
 	f.ownerRun(t, `INSERT INTO place (import_id, source, source_id, release, name, category, confidence, org_id, locality, socials)
 		VALUES ($1, 'overture', 'p1', 'r2', 'Cafe Exemplu', 'cafe', 0.9, $2, 'Exampleton', $3::jsonb)`, imp, org,
 		`["HTTPS://WWW.INSTAGRAM.COM/FROM_FACT.EXAMPLE/"]`)
+	f.ownerRun(t, `INSERT INTO place (import_id, source, source_id, release, name, category, confidence, org_id, socials)
+		VALUES ($1, 'overture', 'p3', 'r1', '', 'cafe', 0.9, $2, $3::jsonb)`, imp, bareOrg, `["instagram.com", "https://instagr.am"]`)
 	if err := f.q.SetPlaceType(ctx, lead, leadstore.PlaceUnclear, leadstore.PlaceFromJev, "q", igSHA(7), leadstore.ActorSystem); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +457,7 @@ func TestIGLeadKeys(t *testing.T) {
 		k.PlaceType != leadstore.PlaceCafe || k.JevPlaceType != leadstore.PlaceUnclear || k.RawHandles != nil {
 		t.Errorf("key = %+v", k)
 	}
-	if b := byID[bare]; len(b.Handles) != 0 || b.Handles == nil || b.PlaceType != leadstore.PlaceRoastery || b.JevPlaceType != "" || b.Town != "" {
+	if b := byID[bare]; len(b.Handles) != 0 || b.Handles == nil || b.PlaceType != leadstore.PlaceRoastery || b.JevPlaceType != "" || b.Town != "" || b.PlaceName != "" {
 		t.Errorf("bare key = %+v", b)
 	}
 

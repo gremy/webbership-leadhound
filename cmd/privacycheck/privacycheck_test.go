@@ -48,6 +48,7 @@ func TestScanLineRules(t *testing.T) {
 		{"instagram post passes", "a.txt", instagramURL("p/AbC123/"), ""},
 		{"instagram reel passes", "a.txt", instagramURL("reel/AbC123/"), ""},
 		{"instagram home passes", "a.txt", instagramURL(""), ""},
+		{"instagram host as a path passes", "a_test.go", instagramURL("instagram.com") + " " + instagramURL("www.instagram.com/"), ""},
 		{"instagram vendor account passes", "internal/cafe/signals.yaml", instagramURL("stampino.app"), ""},
 		{"instagram fixture handles pass", "a_test.go", instagramURL("cafe_exemplu") + " " + instagramURL("bean.example") + ".", ""},
 		{"instagram sample company passes", "a_test.go", instagramURL("northwind.traders"), ""},

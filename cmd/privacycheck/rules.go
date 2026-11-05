@@ -166,6 +166,11 @@ var (
 var instagramPages = map[string]bool{"p": true, "reel": true, "reels": true, "explore": true, "stories": true,
 	"tv": true, "accounts": true}
 
+// instagramHosts are Instagram's own hosts written as a path segment: never a handle, the same
+// refusal enrich.InstagramHandle makes, so a test of that refusal does not trip this rule.
+var instagramHosts = map[string]bool{"instagram.com": true, "www.instagram.com": true, "m.instagram.com": true,
+	"instagr.am": true, "www.instagr.am": true}
+
 // instagramVendors are the loyalty vendors' own accounts listed in internal/cafe/signals.yaml:
 // businesses, not people, and the detector's data. A test keeps this list equal to the file's.
 var instagramVendors = map[string]bool{"stampino.app": true, "pick.coupons": true}
@@ -180,7 +185,7 @@ var instagramFixtures = map[string]bool{"northwind.traders": true, "a": true, "s
 func hasInstagramProfile(s string) bool {
 	for _, m := range instagramRe.FindAllStringSubmatch(s, -1) {
 		h := strings.TrimRight(strings.ToLower(m[1]), ".")
-		if h == "" || len(h) > 30 || instagramPages[h] || instagramVendors[h] || instagramFixtures[h] ||
+		if h == "" || len(h) > 30 || instagramPages[h] || instagramHosts[h] || instagramVendors[h] || instagramFixtures[h] ||
 			strings.Contains(h, "example") || strings.Contains(h, "exemplu") {
 			continue
 		}
