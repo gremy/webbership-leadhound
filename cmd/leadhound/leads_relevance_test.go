@@ -124,11 +124,11 @@ func evalLines(bands ...string) []leadrate.Golden {
 	return out
 }
 
-// repeatBand is band n times.
-func repeatBand(band string, n int) []string {
+// repeatNo is "no" n times.
+func repeatNo(n int) []string {
 	out := make([]string, n)
 	for i := range out {
-		out[i] = band
+		out[i] = "no"
 	}
 	return out
 }
@@ -174,7 +174,7 @@ func TestRelevanceCapCannotStarveTheGate(t *testing.T) {
 	if maxJevEvalLeads < leadrate.TrustMinN {
 		t.Fatalf("the cap %d is under the gate's minimum %d", maxJevEvalLeads, leadrate.TrustMinN)
 	}
-	kept, _ := capEvalLines(evalLines(repeatBand("no", 500)...), maxJevEvalLeads)
+	kept, _ := capEvalLines(evalLines(repeatNo(500)...), maxJevEvalLeads)
 	if n := len(kept); n != maxJevEvalLeads || evalNotRecorded(rateDeciderJev, n) != "" {
 		t.Errorf("500 skips kept %d leads, not recorded: %q", n, evalNotRecorded(rateDeciderJev, n))
 	}
@@ -184,10 +184,10 @@ func TestRelevanceCapCannotStarveTheGate(t *testing.T) {
 // when something was left out.
 func TestRelevanceCapJevEvalWords(t *testing.T) {
 	out := captureStdout(t)
-	if kept := capJevEval(evalLines(repeatBand("no", maxJevEvalLeads)...)); len(kept) != maxJevEvalLeads || out.Len() != 0 {
+	if kept := capJevEval(evalLines(repeatNo(maxJevEvalLeads)...)); len(kept) != maxJevEvalLeads || out.Len() != 0 {
 		t.Errorf("at the cap: kept %d, printed %q", len(kept), out.String())
 	}
-	kept := capJevEval(evalLines(append(repeatBand("no", 200), "maybe")...))
+	kept := capJevEval(evalLines(append(repeatNo(200), "maybe")...))
 	if len(kept) != maxJevEvalLeads {
 		t.Errorf("over the cap: kept %d", len(kept))
 	}
@@ -205,7 +205,7 @@ func TestRelevanceCapJevEvalWords(t *testing.T) {
 // more lines than the cap asks about all of them and says nothing about a cap.
 func TestRelevanceFakeEvalIsNotCapped(t *testing.T) {
 	var b strings.Builder
-	for _, g := range evalLines(repeatBand("no", maxJevEvalLeads+10)...) {
+	for _, g := range evalLines(repeatNo(maxJevEvalLeads + 10)...) {
 		line, err := json.Marshal(g)
 		if err != nil {
 			t.Fatal(err)

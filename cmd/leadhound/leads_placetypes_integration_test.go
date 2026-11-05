@@ -17,8 +17,8 @@ import (
 )
 
 // placeTypesImport imports two fictive cafés with no website, one with a roastery word in its
-// name and one without, then builds their leads. It returns the data dir.
-func placeTypesImport(t *testing.T) string {
+// name and one without, then builds their leads.
+func placeTypesImport(t *testing.T) {
 	t.Helper()
 	dir := leadsDB(t)
 	cafesDataDir(t, dir)
@@ -35,7 +35,6 @@ func placeTypesImport(t *testing.T) string {
 	mustRun(t, "leads", "campaigns", "register")
 	mustRun(t, "leads", "places", "import", "overture", "--campaign", "cafes-loyalty", "--release", placesRelease, file)
 	mustRun(t, "leads", "build", "--campaign", "cafes-loyalty")
-	return dir
 }
 
 // placeRows lists every lead_place_type row as "org name|type|source|detail|actor", in order.

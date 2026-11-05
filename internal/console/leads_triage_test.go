@@ -16,7 +16,7 @@ const (
 
 // remembered is the remembered-campaign cookie as a browser sends it back.
 func remembered(slug string) *http.Cookie {
-	return &http.Cookie{Name: campaignCookie, Value: slug}
+	return &http.Cookie{Name: campaignCookie, Value: slug, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}
 }
 
 // TestLeadListCampaignCookie: the cold-start twins of the remembered campaign. A first visit
