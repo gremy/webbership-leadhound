@@ -440,7 +440,9 @@ func cafeConfig(cfg leadconfig.Config) (*cafe.Config, error) {
 // (already a customer, the homepage not read yet) or a kind the spec does not list (off). A lead rests on a cafe@1
 // finding whose subject holds the Decision's reason and the language source, and whose
 // evidence is the probe's signals. A lead still new is refreshed or skipped as in the
-// Drupal build; one past new is left as it is.
+// Drupal build; one past new is left as it is. Every lead made or refreshed here also gets
+// its name row (tagPlaceNames) in the same transaction, read after the lead is written since
+// a refresh can move it to a probe with another name.
 func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, spec campaign.Spec, campaignID int64) (buildSummary, error) {
 	sum := buildSummary{ByKind: map[string]map[string]int{}, NoLead: map[string]int{}}
 	orgs, err := lq.CafeOrgsForBuild(ctx, campaignID)
@@ -466,6 +468,7 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 		return nil
 	}
 	chains := newBuildChains(lq, spec)
+	var built []int64
 	for _, o := range orgs {
 		sum.Orgs++
 		if o.LeadID != nil && o.LeadState != leadstore.LeadNew {
@@ -532,16 +535,29 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 			if changed {
 				sum.Refreshed++
 			}
-		} else if _, created, err := lq.UpsertLead(ctx, row); err != nil {
-			return sum, err
-		} else if created {
-			sum.Created++
+			built = append(built, *o.LeadID)
+		} else {
+			leadID, created, err := lq.UpsertLead(ctx, row)
+			if err != nil {
+				return sum, err
+			}
+			if created {
+				sum.Created++
+			}
+			built = append(built, leadID)
 		}
 		sum.Leads++
 		if outreach.ReservedDomain(o.Domain) {
 			sum.Reserved++
 		}
 		sum.count(d.Kind, channel)
+	}
+	names, err := lq.CafeLeadNamesByID(ctx, built)
+	if err != nil {
+		return sum, err
+	}
+	if _, err := tagPlaceNames(ctx, lq, names); err != nil {
+		return sum, err
 	}
 	return sum, nil
 }

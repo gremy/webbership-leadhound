@@ -288,5 +288,12 @@ BEGIN
     REVOKE UPDATE ON public.draft_request FROM leadhound_app;
     GRANT UPDATE (status, reason, batch_id, started_at, finished_at) ON public.draft_request TO leadhound_app;
   END IF;
+  -- The place types and the roastery switch (leads 00030) are append-only.
+  IF to_regclass('public.lead_place_type') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_place_type FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.roastery_outreach_switch') IS NOT NULL THEN
+    REVOKE UPDATE ON public.roastery_outreach_switch FROM leadhound_app;
+  END IF;
 END
 $$;

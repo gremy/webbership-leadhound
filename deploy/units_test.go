@@ -1878,6 +1878,8 @@ func TestRemoteKeyOnlyForWorkers(t *testing.T) {
 		{"leads mailboxes add --address a@mail.example", true, false},
 		{"leads mailboxes keygen --out x", true, false},
 		{"leads batch show", false, false},
+		{"leads place-types report --campaign c --sample 5", false, false},
+		{"leads place-types apply", true, false},
 		{"leads sends", true, false},
 		{"track list", false, false},
 		{"serve", true, false},

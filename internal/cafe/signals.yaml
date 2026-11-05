@@ -10,6 +10,19 @@
 #   run time (Config.WithOwnVendor), since this repository never names the live domain.
 # words[].phrases: matched case-insensitively in the page's visible text, as whole words,
 #   runs of spaces folded. Phrases are evidence of the weaker kind ("via word").
+# place_words.roastery: words in a business's name that suggest a roastery rather than a café,
+#   matched case- and diacritic-insensitively as whole words. A name is the weakest source of a
+#   place type, so words that also catch cafés (roasted, shop, magazin) are left out.
+place_words:
+  roastery:
+    - roastery
+    - roasters
+    - coffee roaster
+    - prăjitorie
+    - prăjitoria
+    - microprăjitorie
+    - torrefazione
+
 vendors:
   # Digital loyalty: wallet passes and loyalty apps.
   - {id: stampme, name: Stamp Me, kind: loyalty, match: [stampme.com]}

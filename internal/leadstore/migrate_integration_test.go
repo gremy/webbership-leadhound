@@ -114,7 +114,8 @@ var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_
 	"lead_relevance_eval", "lead_setting", "lead_label", "campaign_version", "account", "call_outcome", "email_consent",
 	"draft_generation", "draft_review", "draft_eval", "phone_screening", "phone_status", "phone_research",
 	"place_import", "place", "job_switch", "campaign_mailbox", "email_check", "send_override", "lead_stage_event",
-	"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire", "lead_proposal", "lead_proposal_status"}
+	"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire", "lead_proposal", "lead_proposal_status",
+	"lead_place_type", "roastery_outreach_switch"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -499,6 +500,10 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM lead_proposal",
 		"DELETE FROM lead_proposal_status",
 		"DELETE FROM draft_request",
+		"DELETE FROM lead_place_type",
+		"DELETE FROM roastery_outreach_switch",
+		"TRUNCATE lead_place_type",
+		"TRUNCATE roastery_outreach_switch",
 		"TRUNCATE contact_mark",
 		"TRUNCATE draft_request",
 		"DELETE FROM lead_kind",
@@ -528,6 +533,10 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE contact_attempt SET routes_found = 0",
 		"UPDATE org SET name = ''",
 		"UPDATE lead_event SET reason = ''",
+		// 00030: the call a skip wrote is set at INSERT and never changes.
+		"UPDATE lead_event SET skip_label_id = NULL",
+		"UPDATE lead_place_type SET place_type = 'cafe'",
+		"UPDATE roastery_outreach_switch SET is_on = true",
 		"UPDATE suppression SET reason = 'manual'",
 		"UPDATE suppression_lift SET reason = 'rewritten'",
 		// An auto-updatable view would write suppression with the owner's rights.
