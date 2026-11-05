@@ -107,7 +107,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // lead_proposal_status are append-only, draft_request takes UPDATE on the columns a drafting
 // run moves only, outreach_message gains subject and body_text and outreach_batch gains
 // content_sha256 for an email edit before approval, and the new outreach_batch.origin,
-// contact_route.person_id and draft_generation.channel columns are fixed at insert (00029). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// contact_route.person_id and draft_generation.channel columns are fixed at insert (00029);
+// lead_place_type and roastery_outreach_switch are append-only (00030), and so are ig_profile,
+// ig_follow, ig_match, ig_judgment, ig_signal_hint and ig_review_status (00031). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -325,6 +327,24 @@ BEGIN
   END IF;
   IF to_regclass('public.roastery_outreach_switch') IS NOT NULL THEN
     REVOKE UPDATE ON public.roastery_outreach_switch FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_profile') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_profile FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_follow') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_follow FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_match') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_match FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_judgment') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_judgment FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_signal_hint') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_signal_hint FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_review_status') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_review_status FROM leadhound_app;
   END IF;
 END
 $$`

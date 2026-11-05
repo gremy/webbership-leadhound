@@ -9,14 +9,22 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/enrich"
 )
 
 // The kinds a contact route can be (contact_route_kind_check).
 const (
-	RouteEmail    = "email"
-	RouteForm     = "form"
-	RouteLinkedIn = "linkedin"
+	RouteEmail     = "email"
+	RouteForm      = "form"
+	RouteLinkedIn  = "linkedin"
+	RouteInstagram = "instagram" // a café's own Instagram profile, never a person's (00031)
 )
+
+// DerivedByInstagram marks an instagram route an Instagram import wrote from a strong match:
+// it came from no page and no place, the one route besides the operator's allowed neither
+// (contact_route_source_check, 00031).
+const DerivedByInstagram = "instagram@1"
 
 // MaxPhraseRunes is the longest agency_finding phrase (agency_finding_phrase_check).
 const MaxPhraseRunes = 120
@@ -26,10 +34,15 @@ const MaxPhraseRunes = 120
 const RouteRetryAfter = 30 * 24 * time.Hour
 
 var (
-	// ErrUnknownRouteKind is returned by InsertRoute for a kind other than email, form or linkedin.
+	// ErrUnknownRouteKind is returned by InsertRoute for a kind other than email, form, linkedin
+	// or instagram.
 	ErrUnknownRouteKind = errors.New("leadstore: unknown route kind")
-	// ErrEmptyRoute is returned by InsertRoute for a blank value.
+	// ErrEmptyRoute is returned by InsertRoute for a blank value, or an instagram value that
+	// names no profile (enrich.InstagramHandle).
 	ErrEmptyRoute = errors.New("leadstore: empty route value")
+	// ErrRouteNoSource is returned by InsertRoute for a route with no fetch that is not an
+	// Instagram import's (DerivedByInstagram on an instagram route).
+	ErrRouteNoSource = errors.New("leadstore: route has no page")
 	// ErrPhraseTooLong is returned by InsertAgencyFinding for a phrase over MaxPhraseRunes.
 	ErrPhraseTooLong = errors.New("leadstore: agency finding phrase too long")
 )
@@ -37,31 +50,38 @@ var (
 // RouteRow is one contact_route row to write.
 type RouteRow struct {
 	OrgID     int64
-	Kind      string // RouteEmail, RouteForm or RouteLinkedIn
-	Value     string // the address (stored lower case), the form page URL or the canonical LinkedIn URL
-	FetchID   int64  // the page it was seen on
+	Kind      string // RouteEmail, RouteForm, RouteLinkedIn or RouteInstagram
+	Value     string // the address (stored lower case), the form page URL, the canonical LinkedIn URL, or an Instagram handle or URL (stored as enrich.InstagramURL)
+	FetchID   int64  // the page it was seen on; 0 only for an Instagram import's route (DerivedByInstagram)
 	MXOK      bool
 	DerivedBy string // e.g. "contacts@1"
 	PersonID  int64  // the person a LinkedIn or email route belongs to; 0 for none
 }
 
 // InsertRoute writes r. A route the org already has (same kind and value) is kept as it
-// was, a retired one stays retired; inserted reports whether this call added the row.
+// was, a retired one stays retired; inserted reports whether this call added the row. An
+// instagram value is stored in its one canonical form (enrich.InstagramURL). Only an
+// Instagram import's route (kind instagram, DerivedByInstagram) is written with no fetch.
 func (q Queries) InsertRoute(ctx context.Context, r RouteRow) (inserted bool, err error) {
 	value := strings.TrimSpace(r.Value)
 	switch r.Kind {
 	case RouteEmail:
 		value = strings.ToLower(value)
 	case RouteForm, RouteLinkedIn:
+	case RouteInstagram:
+		value = enrich.InstagramURL(value)
 	default:
 		return false, fmt.Errorf("leadstore: insert route: %w: %q", ErrUnknownRouteKind, r.Kind)
 	}
 	if value == "" {
 		return false, fmt.Errorf("leadstore: insert route: %w", ErrEmptyRoute)
 	}
+	if r.FetchID == 0 && (r.Kind != RouteInstagram || r.DerivedBy != DerivedByInstagram) {
+		return false, fmt.Errorf("leadstore: insert route: %w: %s from %q", ErrRouteNoSource, r.Kind, r.DerivedBy)
+	}
 	tag, err := q.db.Exec(ctx,
 		`INSERT INTO contact_route (org_id, kind, value, fetch_id, mx_ok, derived_by, person_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0)) ON CONFLICT (org_id, kind, value) DO NOTHING`,
+		 VALUES ($1, $2, $3, nullif($4::bigint, 0), $5, $6, nullif($7::bigint, 0)) ON CONFLICT (org_id, kind, value) DO NOTHING`,
 		r.OrgID, r.Kind, value, r.FetchID, r.MXOK, r.DerivedBy, r.PersonID)
 	if err != nil {
 		return false, fmt.Errorf("leadstore: insert route: %w", err)
@@ -83,8 +103,8 @@ type Route struct {
 	Operator  bool      `db:"operator"`  // the latest mark is a claim: the operator's own
 }
 
-// RoutesFor returns the routes of org orgID without the retired ones: by kind (emails first),
-// the operator's before the rest, then in the order found. Among LinkedIn routes a person
+// RoutesFor returns the routes of org orgID without the retired ones: by kind (emails, forms,
+// LinkedIn, then Instagram, routeKindOrderSQL), the operator's before the rest, then in the order found. Among LinkedIn routes a person
 // profile comes before a company page in the operator's own and after it in the rest, because
 // a company page is the safer default for a route nobody chose.
 func (q Queries) RoutesFor(ctx context.Context, orgID int64) ([]Route, error) {
@@ -94,7 +114,7 @@ func (q Queries) RoutesFor(ctx context.Context, orgID int64) ([]Route, error) {
 		 FROM contact_route r
 		 CROSS JOIN LATERAL (SELECT `+contactLatestMarkSQL("route_id", "r.id")+` AS mark) m
 		 WHERE r.org_id = $1 AND m.mark IS DISTINCT FROM 'retire'
-		 ORDER BY r.kind, operator DESC,
+		 ORDER BY `+routeKindOrderSQL+`, operator DESC,
 		   CASE WHEN r.kind <> 'linkedin' THEN 0
 		     WHEN (r.value LIKE '%/in/%') = (m.mark IS NOT DISTINCT FROM 'claim') THEN 0 ELSE 1 END,
 		   r.id`, orgID)
@@ -103,6 +123,11 @@ func (q Queries) RoutesFor(ctx context.Context, orgID int64) ([]Route, error) {
 	}
 	return routes, nil
 }
+
+// routeKindOrderSQL orders the routes r by kind: email, form, LinkedIn, then Instagram, the
+// manual fallback order (a name order would put Instagram before LinkedIn).
+const routeKindOrderSQL = `CASE r.kind WHEN '` + RouteEmail + `' THEN 0 WHEN '` + RouteForm + `' THEN 1
+		   WHEN '` + RouteLinkedIn + `' THEN 2 WHEN '` + RouteInstagram + `' THEN 3 ELSE 4 END`
 
 // AgencyFindingRow is one agency_finding row to write.
 type AgencyFindingRow struct {

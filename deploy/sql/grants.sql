@@ -295,5 +295,24 @@ BEGIN
   IF to_regclass('public.roastery_outreach_switch') IS NOT NULL THEN
     REVOKE UPDATE ON public.roastery_outreach_switch FROM leadhound_app;
   END IF;
+  -- The Instagram observations, matches, judgments, hints and review rows (leads 00031) are append-only.
+  IF to_regclass('public.ig_profile') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_profile FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_follow') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_follow FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_match') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_match FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_judgment') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_judgment FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_signal_hint') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_signal_hint FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_review_status') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_review_status FROM leadhound_app;
+  END IF;
 END
 $$;

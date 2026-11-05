@@ -209,7 +209,8 @@ func TestLeadKindIsARow(t *testing.T) {
 	if want := []string{"agency_partner", "cafe_has_loyalty", "cafe_no_digital_loyalty", "cafe_no_website", "d10", "hand", "selftest", "unsupported"}; !reflect.DeepEqual(kinds, want) {
 		t.Errorf("lead kinds = %v, want %v", kinds, want)
 	}
-	if want := []string{"email", "form", "linkedin", "none"}; !reflect.DeepEqual(channels, want) {
+	// 00029 adds linkedin, 00031 instagram.
+	if want := []string{"email", "form", "instagram", "linkedin", "none"}; !reflect.DeepEqual(channels, want) {
 		t.Errorf("lead channels = %v, want %v", channels, want)
 	}
 	if n := ownerInt(t, f.owner, `SELECT count(*) FROM lead_kind WHERE outreach`); n != 6 {
@@ -303,8 +304,8 @@ func TestResetKeepsReferenceRows(t *testing.T) {
 	leadstoretest.Reset(t)
 	leadstoretest.Reset(t)
 	owner := storetest.OwnerConn(t)
-	if n := ownerInt(t, owner, `SELECT (SELECT count(*) FROM lead_kind) + (SELECT count(*) FROM lead_channel)`); n != 12 {
-		t.Fatalf("reference rows after Reset = %d, want 12", n)
+	if n := ownerInt(t, owner, `SELECT (SELECT count(*) FROM lead_kind) + (SELECT count(*) FROM lead_channel)`); n != 13 {
+		t.Fatalf("reference rows after Reset = %d, want 13 (8 kinds, 5 channels)", n)
 	}
 	q := leadstoretest.Q(t)
 	org := ownerInt(t, owner, `INSERT INTO org (kind, domain, source) VALUES ('site_owner', 'reset.localhost', 'probe') RETURNING id`)

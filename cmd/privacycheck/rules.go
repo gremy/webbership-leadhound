@@ -15,6 +15,7 @@ const (
 	ruleDenylist       = "denylist"
 	ruleEmail          = "email"
 	ruleProfile        = "linkedin-profile"
+	ruleInstagram      = "instagram-profile"
 	ruleIPv4           = "ipv4"
 	ruleRecruiter      = "recruiter-class"
 	ruleNotAllowlisted = "not-allowlisted"
@@ -124,6 +125,9 @@ func (c *checker) scanLine(path, line string) []string {
 	if strings.Contains(strings.ToLower(line), profilePath) {
 		rules = append(rules, ruleProfile)
 	}
+	if hasInstagramProfile(line) {
+		rules = append(rules, ruleInstagram)
+	}
 	if hasPublicIPv4(line) {
 		rules = append(rules, ruleIPv4)
 	}
@@ -147,6 +151,40 @@ func (c *checker) denyHit(s string) bool {
 		if strings.Contains(n, d) {
 			return true
 		}
+	}
+	return false
+}
+
+// instagramRe finds an Instagram address and the path segment after it; instagramHost is
+// split so this file does not trip its own rule.
+var (
+	instagramHost = "instagram" + `\.com/`
+	instagramRe   = regexp.MustCompile(`(?i)` + instagramHost + `@?([a-z0-9._]+)`)
+)
+
+// instagramPages are Instagram's own pages, never a profile (enrich's notProfile list).
+var instagramPages = map[string]bool{"p": true, "reel": true, "reels": true, "explore": true, "stories": true,
+	"tv": true, "accounts": true}
+
+// instagramVendors are the loyalty vendors' own accounts listed in internal/cafe/signals.yaml:
+// businesses, not people, and the detector's data. A test keeps this list equal to the file's.
+var instagramVendors = map[string]bool{"stampino.app": true, "pick.coupons": true}
+
+// instagramFixtures are the invented handles test data uses beside any handle naming example
+// or exemplu: a sample company, a one-letter account and a vendor look-alike.
+var instagramFixtures = map[string]bool{"northwind.traders": true, "a": true, "stampino.appfan": true}
+
+// hasInstagramProfile reports whether s names an Instagram profile that is neither a vendor's
+// account nor an invented fixture handle (instagramVendors, instagramFixtures, or a handle
+// with example or exemplu in it). A café's or a person's real handle never belongs in the repo.
+func hasInstagramProfile(s string) bool {
+	for _, m := range instagramRe.FindAllStringSubmatch(s, -1) {
+		h := strings.TrimRight(strings.ToLower(m[1]), ".")
+		if h == "" || len(h) > 30 || instagramPages[h] || instagramVendors[h] || instagramFixtures[h] ||
+			strings.Contains(h, "example") || strings.Contains(h, "exemplu") {
+			continue
+		}
+		return true
 	}
 	return false
 }

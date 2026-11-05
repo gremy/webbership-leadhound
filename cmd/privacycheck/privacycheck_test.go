@@ -12,12 +12,13 @@ import (
 // Every blocked sample below is assembled at runtime so this file itself passes
 // `privacycheck tree`. Allowed samples use reserved names only (RFC 2606, RFC 5737).
 
-func blockedEmail() string    { return "someone" + "@" + "corp-mail" + ".com" }
-func blockedIP() string       { return "93.184" + ".216.34" }
-func blockedProfile() string  { return "https://www." + "linkedin.com/" + "in/" + "someone-1" }
-func recruiterClass() string  { return "message-the-" + "recruiter" }
-func fictionalName() string   { return "Ada " + "Placeholder" }
-func allowlistedAddr() string { return "builder" + "@" + "corp-mail" + ".com" }
+func blockedEmail() string         { return "someone" + "@" + "corp-mail" + ".com" }
+func blockedIP() string            { return "93.184" + ".216.34" }
+func blockedProfile() string       { return "https://www." + "linkedin.com/" + "in/" + "someone-1" }
+func recruiterClass() string       { return "message-the-" + "recruiter" }
+func instagramURL(h string) string { return "https://www." + "instagram.com/" + h }
+func fictionalName() string        { return "Ada " + "Placeholder" }
+func allowlistedAddr() string      { return "builder" + "@" + "corp-mail" + ".com" }
 
 func TestScanLineRules(t *testing.T) {
 	c := newChecker([]string{fictionalName(), "Placeholder"}, map[string]bool{allowlistedAddr(): true})
@@ -40,6 +41,17 @@ func TestScanLineRules(t *testing.T) {
 		{"email ignores module versions", "a.txt", "golang.org/x/net@v0.61.0", ""},
 		{"linkedin profile blocks", "a.txt", "see " + blockedProfile(), ruleProfile},
 		{"linkedin jobs URL passes", "a.txt", "https://www.linkedin.com/jobs/view/123", ""},
+		{"instagram profile blocks", "a.txt", "see " + instagramURL("some.cafe") + "/", ruleInstagram},
+		{"instagram profile blocks in any case", "a.txt", instagramURL("Some_Cafe"), ruleInstagram},
+		{"instagram profile blocks with an @", "a.txt", instagramURL("@somecafe"), ruleInstagram},
+		{"instagram profile blocks after an allowed one", "a.txt", instagramURL("cafe.exemplu") + " " + instagramURL("somecafe"), ruleInstagram},
+		{"instagram post passes", "a.txt", instagramURL("p/AbC123/"), ""},
+		{"instagram reel passes", "a.txt", instagramURL("reel/AbC123/"), ""},
+		{"instagram home passes", "a.txt", instagramURL(""), ""},
+		{"instagram vendor account passes", "internal/cafe/signals.yaml", instagramURL("stampino.app"), ""},
+		{"instagram fixture handles pass", "a_test.go", instagramURL("cafe_exemplu") + " " + instagramURL("bean.example") + ".", ""},
+		{"instagram sample company passes", "a_test.go", instagramURL("northwind.traders"), ""},
+		{"instagram SQL pattern passes", "x.sql", "LIKE 'https://" + "instagram.com/%'", ""},
 		{"ipv4 blocks a public address", "a.txt", "host=" + blockedIP() + ":22", ruleIPv4},
 		{"ipv4 allows documentation range", "a.txt", "host=192.0.2.10", ""},
 		{"ipv4 allows loopback", "a.txt", "127.0.0.1:5432", ""},
@@ -345,4 +357,25 @@ func TestHistory(t *testing.T) {
 			t.Fatalf("author check skipped under none:\n%s", out)
 		}
 	})
+}
+
+// TestInstagramVendorsMatchSignals: the vendor accounts the Instagram rule lets through are
+// exactly the Instagram accounts internal/cafe/signals.yaml lists.
+func TestInstagramVendorsMatchSignals(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "cafe", "signals.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, m := range instagramRe.FindAllStringSubmatch(string(data), -1) {
+		got[strings.ToLower(m[1])] = true
+	}
+	if len(got) != len(instagramVendors) {
+		t.Errorf("signals.yaml accounts %v, rule allows %v", got, instagramVendors)
+	}
+	for h := range got {
+		if !instagramVendors[h] {
+			t.Errorf("signals.yaml account %q is not in instagramVendors", h)
+		}
+	}
 }

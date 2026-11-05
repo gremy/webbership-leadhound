@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/gremy/webbership-leadhound/internal/enrich"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/leadstore/leadstoretest"
 	"github.com/gremy/webbership-leadhound/internal/store"
@@ -115,7 +116,8 @@ var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_
 	"draft_generation", "draft_review", "draft_eval", "phone_screening", "phone_status", "phone_research",
 	"place_import", "place", "job_switch", "campaign_mailbox", "email_check", "send_override", "lead_stage_event",
 	"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire", "lead_proposal", "lead_proposal_status",
-	"lead_place_type", "roastery_outreach_switch"}
+	"lead_place_type", "roastery_outreach_switch",
+	"ig_profile", "ig_follow", "ig_match", "ig_judgment", "ig_signal_hint", "ig_review_status"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -504,6 +506,19 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"DELETE FROM roastery_outreach_switch",
 		"TRUNCATE lead_place_type",
 		"TRUNCATE roastery_outreach_switch",
+		// 00031: the Instagram tables are append-only; the owner alone erases from them.
+		"DELETE FROM ig_profile",
+		"DELETE FROM ig_follow",
+		"DELETE FROM ig_match",
+		"DELETE FROM ig_judgment",
+		"DELETE FROM ig_signal_hint",
+		"DELETE FROM ig_review_status",
+		"TRUNCATE ig_profile",
+		"TRUNCATE ig_follow",
+		"TRUNCATE ig_match",
+		"TRUNCATE ig_judgment",
+		"TRUNCATE ig_signal_hint",
+		"TRUNCATE ig_review_status",
 		"TRUNCATE contact_mark",
 		"TRUNCATE draft_request",
 		"DELETE FROM lead_kind",
@@ -537,6 +552,13 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE lead_event SET skip_label_id = NULL",
 		"UPDATE lead_place_type SET place_type = 'cafe'",
 		"UPDATE roastery_outreach_switch SET is_on = true",
+		// 00031: every Instagram row is fixed at insert; the latest row decides.
+		"UPDATE ig_profile SET bio = ''",
+		"UPDATE ig_follow SET full_name = NULL",
+		"UPDATE ig_match SET lead_id = NULL",
+		"UPDATE ig_judgment SET choice = 'unclear'",
+		"UPDATE ig_signal_hint SET value = 'x'",
+		"UPDATE ig_review_status SET status = 'new'",
 		"UPDATE suppression SET reason = 'manual'",
 		"UPDATE suppression_lift SET reason = 'rewritten'",
 		// An auto-updatable view would write suppression with the owner's rights.
@@ -1056,4 +1078,331 @@ func ownerTxInt(t *testing.T, tx pgx.Tx, q string, args ...any) int64 {
 		t.Fatalf("%s: %v", q, err)
 	}
 	return n
+}
+
+const instagramVersion = 31 // 00031_instagram.sql
+
+// instagramTables are the tables 00031 adds.
+var instagramTables = []string{"ig_profile", "ig_follow", "ig_match", "ig_judgment", "ig_signal_hint", "ig_review_status"}
+
+// igURL builds an Instagram profile address in pieces; the handles are invented.
+func igURL(h string) string { return "https://instagram.com/" + h }
+
+// TestMigration00031DownUp: down refuses while an Instagram generation or draft request exists;
+// then, with a row in every new table and a lead on an Instagram route, it moves the lead to no
+// channel, takes every instagram route, restores the old CHECKs and keeps the social facts; up
+// again backfills a route from every Instagram profile fact, in the canonical form.
+func TestMigration00031DownUp(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	owner := f.owner
+	leadA := f.siteLead(t, "harbour-lane.example", nil, 7, "info@harbour-lane.example")
+	leadB := f.siteLead(t, "north-quay.example", nil, 7, "")
+	orgA := ownerInt(t, owner, `SELECT org_id FROM lead WHERE id = $1`, leadA)
+	orgB := ownerInt(t, owner, `SELECT org_id FROM lead WHERE id = $1`, leadB)
+
+	if _, err := f.q.InsertRoute(ctx, leadstore.RouteRow{OrgID: orgA, Kind: leadstore.RouteInstagram, Value: "@Harbour_Example",
+		DerivedBy: leadstore.DerivedByInstagram}); err != nil {
+		t.Fatalf("import route: %v", err)
+	}
+	route := ownerInt(t, owner, `SELECT id FROM contact_route WHERE org_id = $1 AND kind = 'instagram'`, orgA)
+	f.ownerRun(t, `UPDATE lead SET channel = 'instagram', route_id = $2 WHERE id = $1`, leadA, route)
+	f.ownerRun(t, `INSERT INTO contact_mark (route_id, mark, actor) VALUES ($1, 'claim', 'operator')`, route)
+	profile := ownerInt(t, owner, `INSERT INTO ig_profile (handle, source, capture_sha256, captured_at)
+		VALUES ('harbour_example', 'lead', sha256('a'), now()) RETURNING id`)
+	f.ownerRun(t, `INSERT INTO ig_follow (list_owner, handle, captured_at, capture_sha256) VALUES ('vendor.example', 'harbour_example', now(), sha256('b'))`)
+	f.ownerRun(t, `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('harbour_example', $1, 'handle', 'system')`, leadA)
+	f.ownerRun(t, `INSERT INTO ig_judgment (profile_id, question, choice, source) VALUES ($1, 'ig_place', 'unclear', 'rule')`, profile)
+	f.ownerRun(t, `INSERT INTO ig_signal_hint (handle, kind, value, captured_at) VALUES ('harbour_example', 'followed_by_vendor', 'stampino', now())`)
+	f.ownerRun(t, `INSERT INTO ig_review_status (handle, status, actor) VALUES ('harbour_example', 'new', 'system')`)
+
+	p := leadsProvider(t)
+	t.Cleanup(func() { migrateAll(t) })
+
+	// An Instagram generation, then an Instagram draft request, each stops the down whole.
+	for _, row := range []struct{ insert, table string }{
+		{`INSERT INTO draft_generation (lead_id, campaign_id, attempt, model, fact_sha256, facts, output, check_ok, purpose, channel)
+			VALUES ($1, 1, 1, 'm', repeat('a', 64), '{}', '{}', true, 'batch', 'instagram')`, "draft_generation"},
+		{`INSERT INTO draft_request (lead_id, channel) VALUES ($1, 'instagram')`, "draft_request"},
+	} {
+		f.ownerRun(t, row.insert, leadA)
+		_, err := p.DownTo(ctx, instagramVersion-1)
+		if err == nil || !strings.Contains(err.Error(), "erase or move them first") {
+			t.Fatalf("down with an Instagram %s: %v, want refused", row.table, err)
+		}
+		if n := ownerInt(t, owner, `SELECT count(*) FROM goose_db_version_leads WHERE version_id = $1`, instagramVersion); n != 1 {
+			t.Fatalf("a refused down moved the version (%d rows at %d)", n, instagramVersion)
+		}
+		if n := ownerInt(t, owner, `SELECT count(*) FROM lead WHERE id = $1 AND channel = 'instagram'`, leadA); n != 1 {
+			t.Fatal("a refused down moved the lead")
+		}
+		f.ownerRun(t, `DELETE FROM `+row.table+` WHERE channel = 'instagram'`)
+	}
+
+	if _, err := p.DownTo(ctx, instagramVersion-1); err != nil {
+		t.Fatalf("down to %d: %v", instagramVersion-1, err)
+	}
+	for _, table := range instagramTables {
+		var reg *string
+		if err := owner.QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&reg); err != nil || reg != nil {
+			t.Errorf("%s after down: %v %v, want gone", table, reg, err)
+		}
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM lead WHERE id = $1 AND channel = 'none' AND route_id IS NULL`, leadA); n != 1 {
+		t.Error("the Instagram lead after down: not on channel none with no route")
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE kind = 'instagram'`); n != 0 {
+		t.Errorf("instagram routes after down = %d, want 0", n)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE org_id = $1`, orgA); n != 1 {
+		t.Errorf("routes of the org after down = %d, want its email route only", n)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM lead_channel WHERE name = 'instagram'`); n != 0 {
+		t.Error("lead_channel instagram left after down")
+	}
+	org := strconv.FormatInt(orgA, 10)
+	fid := strconv.FormatInt(f.fid, 10)
+	lead := strconv.FormatInt(leadA, 10)
+	for q, want := range map[string]string{
+		`INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by) VALUES (` + org + `, 'instagram', 'x', ` + fid + `, 'x')`: "23514",
+		`INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES (` + org + `, 'form', 'https://a.example/', 'instagram@1')`:  "23514",
+		`INSERT INTO draft_request (lead_id, channel) VALUES (` + lead + `, 'instagram')`:                                                "23514",
+		`UPDATE lead SET channel = 'instagram' WHERE id = ` + lead:                                                                       "23503",
+	} {
+		if _, err := owner.Exec(ctx, q); sqlState(err) != want {
+			t.Errorf("after down, %s: %v, want SQLSTATE %s", q, err, want)
+		}
+	}
+	for _, c := range [][2]string{
+		{"contact_route_kind_check", "'linkedin'::text]"},
+		{"draft_generation_channel_check", "'linkedin'::text]"},
+		{"draft_request_channel_check", "'linkedin'::text]"},
+		{"outreach_message_channel_check", "'phone'::text]"},
+	} {
+		def := ownerString(t, owner, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", c[0])
+		if strings.Contains(def, "instagram") || !strings.Contains(def, c[1]) {
+			t.Errorf("%s after down = %s, want the 00030 list", c[0], def)
+		}
+	}
+
+	// The state the backfill meets: Instagram profiles read from a page and from a place, a
+	// profile under a sub-page, the same profile twice, Instagram's own pages, and others.
+	imp := ownerInt(t, owner, `INSERT INTO place_import (source, release, campaign_id, lines, kept, blank, malformed, not_cafe,
+		low_confidence, other_country, no_name, stored, already, chains, orgs, sites, actor)
+		VALUES ('overture', 'r1', 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 'system') RETURNING id`)
+	place := ownerInt(t, owner, `INSERT INTO place (import_id, source, source_id, release, name, category, confidence, org_id)
+		VALUES ($1, 'overture', 'p1', 'r1', 'North Quay', 'cafe', 0.9, $2) RETURNING id`, imp, orgB)
+	for _, s := range []struct {
+		org   int64
+		url   string
+		fetch *int64
+		place *int64
+	}{
+		{orgA, igURL("harbour_example"), &f.fid, nil},
+		{orgA, igURL("harbour.lane.example/reels"), &f.fid, nil},
+		{orgA, igURL("harbour_example/tagged"), &f.fid, nil}, // the same profile again
+		{orgB, igURL("north.quay.example"), nil, &place},
+		{orgA, igURL("p/abc123"), &f.fid, nil},
+		{orgA, igURL("explore/tags/cafea"), &f.fid, nil},
+		{orgA, igURL("a1234567890123456789012345678901example"), &f.fid, nil}, // too long for a handle
+		{orgA, "https://facebook.com/harbour-lane", &f.fid, nil},
+		{orgA, "https://instagram.com.example/harbour_example", &f.fid, nil},
+	} {
+		f.ownerRun(t, `INSERT INTO org_fact (org_id, kind, value, normalized, fetch_id, place_id, derived_by)
+			VALUES ($1, 'social', $2, $2, $3, $4, 'enrich@1')`, s.org, s.url, s.fetch, s.place)
+	}
+	if _, err := p.UpTo(ctx, instagramVersion); err != nil {
+		t.Fatalf("up again: %v", err)
+	}
+
+	if n := ownerInt(t, owner, `SELECT count(*) FROM lead_channel WHERE name = 'instagram' AND label = 'Instagram'`); n != 1 {
+		t.Error("lead_channel instagram missing after up")
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM contact_route WHERE kind = 'instagram'`); n != 3 {
+		t.Errorf("instagram routes after backfill = %d, want 3 (one per profile per org)", n)
+	}
+	for _, r := range []struct {
+		org   int64
+		fact  string
+		fetch bool
+	}{
+		{orgA, igURL("harbour_example"), true},
+		{orgA, igURL("harbour.lane.example/reels"), true},
+		{orgB, igURL("north.quay.example"), false},
+	} {
+		h, ok := enrich.InstagramHandle(r.fact)
+		if !ok {
+			t.Fatalf("%s is not a profile to enrich", r.fact)
+		}
+		// The SQL backfill and enrich.InstagramURL agree on the one canonical value.
+		q := `SELECT count(*) FROM contact_route WHERE org_id = $1 AND kind = 'instagram' AND value = $2 AND derived_by = 'enrich@1'
+			AND fetch_id IS NOT DISTINCT FROM $3 AND place_id IS NOT DISTINCT FROM $4`
+		var fetch, plc *int64
+		if r.fetch {
+			fetch = &f.fid
+		} else {
+			plc = &place
+		}
+		if n := ownerInt(t, owner, q, r.org, enrich.InstagramURL(h), fetch, plc); n != 1 {
+			t.Errorf("backfilled route %s of %s = %d, want 1 with the fact's own fetch or place", enrich.InstagramURL(h), r.fact, n)
+		}
+	}
+	// A second down with a backfilled route in use, and up again, stays clean; the facts stay.
+	backfilled := ownerInt(t, owner, `SELECT id FROM contact_route WHERE org_id = $1 AND kind = 'instagram' ORDER BY id LIMIT 1`, orgA)
+	f.ownerRun(t, `UPDATE lead SET channel = 'instagram', route_id = $2 WHERE id = $1`, leadA, backfilled)
+	if _, err := p.DownTo(ctx, instagramVersion-1); err != nil {
+		t.Fatalf("second down: %v", err)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM org_fact WHERE kind = 'social' AND normalized LIKE 'https://instagram.com/%'`); n != 7 {
+		t.Errorf("Instagram facts after second down = %d, want all 7 kept", n)
+	}
+	if _, err := p.UpTo(ctx, instagramVersion); err != nil {
+		t.Fatalf("second up: %v", err)
+	}
+}
+
+// ownerString is ownerInt for a text result.
+func ownerString(t *testing.T, owner *pgx.Conn, q string, args ...any) string {
+	t.Helper()
+	var s string
+	if err := owner.QueryRow(context.Background(), q, args...).Scan(&s); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return s
+}
+
+// TestMigration00031Checks: each new CHECK takes the edge that is allowed and refuses a bad row
+// written straight to the table.
+func TestMigration00031Checks(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	lead := f.siteLead(t, "harbour-lane.example", nil, 7, "info@harbour-lane.example")
+	other := f.siteLead(t, "north-quay.example", nil, 7, "")
+	org := ownerInt(t, f.owner, `SELECT org_id FROM lead WHERE id = $1`, lead)
+	profile := ownerInt(t, f.owner, `INSERT INTO ig_profile (handle, source, capture_sha256, captured_at)
+		VALUES ('cafe.exemplu', 'lead', sha256('p'), now()) RETURNING id`)
+	f.ownerRun(t, `INSERT INTO ig_follow (list_owner, handle, captured_at, capture_sha256) VALUES ('vendor.example', 'cafe.exemplu', now(), sha256('f'))`)
+	f.ownerRun(t, `INSERT INTO ig_signal_hint (handle, kind, value, captured_at) VALUES ('cafe.exemplu', 'followed_by_vendor', 'stampino', now())`)
+
+	for _, c := range [][2]string{
+		{"contact_route_kind_check", "'instagram'"},
+		{"contact_route_source_check", "'instagram@1'"},
+		{"draft_generation_channel_check", "'instagram'"},
+		{"draft_request_channel_check", "'instagram'"},
+		{"outreach_message_channel_check", "'instagram'"},
+		{"contact_route_person_check", "'linkedin'"},
+		{"contact_research_want_check", "'linkedin'"},
+	} {
+		def := ownerString(t, f.owner, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", c[0])
+		if !strings.Contains(def, c[1]) {
+			t.Errorf("constraint %s = %s, want it to name %s", c[0], def, c[1])
+		}
+	}
+	// Decision 9: an Instagram route is never a person's, and research never hunts Instagram.
+	for _, name := range []string{"contact_route_person_check", "contact_research_want_check"} {
+		if def := ownerString(t, f.owner, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1", name); strings.Contains(def, "instagram") {
+			t.Errorf("constraint %s = %s, want no instagram", name, def)
+		}
+	}
+
+	tx, err := f.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sha := func(s string) string { return "sha256('" + s + "')" }
+	profileRow := func(cols, vals string) string {
+		return `INSERT INTO ig_profile (handle, source, capture_sha256, captured_at` + cols + `) VALUES (` + vals + `)`
+	}
+	for _, c := range []struct {
+		name, want, sql string
+		args            []any
+	}{
+		// The route and the channels.
+		{"import route neither", "", `INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES ($1, 'instagram', 'https://www.instagram.com/cafe.exemplu/', 'instagram@1')`, []any{org}},
+		{"import route on a form", "23514", `INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES ($1, 'form', 'https://harbour-lane.example/c', 'instagram@1')`, []any{org}},
+		{"other instagram route neither", "23514", `INSERT INTO contact_route (org_id, kind, value, derived_by) VALUES ($1, 'instagram', 'https://www.instagram.com/cafe.exemplu/', 'enrich@1')`, []any{org}},
+		{"import route with a fetch", "", `INSERT INTO contact_route (org_id, kind, value, fetch_id, place_id, derived_by)
+			VALUES ($1, 'instagram', 'https://www.instagram.com/cafe.exemplu/', $2, NULL, 'instagram@1')`, []any{org, f.fid}},
+		{"instagram route on a page", "", `INSERT INTO contact_route (org_id, kind, value, fetch_id, derived_by) VALUES ($1, 'instagram', 'https://www.instagram.com/bean.example/', $2, 'enrich@1')`, []any{org, f.fid}},
+		{"lead on instagram", "", `UPDATE lead SET channel = 'instagram' WHERE id = $1`, []any{lead}},
+		{"request on instagram", "", `INSERT INTO draft_request (lead_id, channel) VALUES ($1, 'instagram')`, []any{lead}},
+		{"generation on instagram", "", `INSERT INTO draft_generation (lead_id, campaign_id, attempt, model, fact_sha256, facts, output, check_ok, purpose, channel)
+			VALUES ($1, 1, 1, 'm', repeat('a', 64), '{}', '{}', true, 'batch', 'instagram')`, []any{lead}},
+		// ig_profile.
+		{"profile edge", "", profileRow(`, outcome, ig_user_id, full_name, category, bio, external_url, followers, following, posts, is_private, captions`,
+			`'a_b.c', 'lead', `+sha("e")+`, now(), 'ok', '123', repeat('n', 150), repeat('c', 100), repeat('b', 600), 'https://cafe.example/', 0, 0, 0, false, jsonb_build_array('x','x','x','x','x','x','x','x','x','x','x','x')`), nil},
+		{"profile missing", "", profileRow(`, outcome`, `'gone.example', 'lead', `+sha("m")+`, now(), 'missing'`), nil},
+		{"profile from a list", "", profileRow(`, source_of, source_lead_id`, `'list.example', 'following', `+sha("l")+`, now(), 'vendor.example', 999999`), nil},
+		{"profile same capture", "23505", profileRow(``, `'cafe.exemplu', 'lead', `+sha("p")+`, now()`), nil},
+		{"profile same handle new capture", "", profileRow(``, `'cafe.exemplu', 'lead', `+sha("p2")+`, now()`), nil},
+		{"profile upper case", "23514", profileRow(``, `'Cafe.Exemplu', 'lead', `+sha("u")+`, now()`), nil},
+		{"profile at", "23514", profileRow(``, `'@cafe.exemplu', 'lead', `+sha("u")+`, now()`), nil},
+		{"profile long handle", "23514", profileRow(``, `repeat('a', 31), 'lead', `+sha("u")+`, now()`), nil},
+		{"profile outcome", "23514", profileRow(`, outcome`, `'a.example', 'lead', `+sha("u")+`, now(), 'private'`), nil},
+		{"profile user id", "23514", profileRow(`, ig_user_id`, `'a.example', 'lead', `+sha("u")+`, now(), 'abc'`), nil},
+		{"profile bio long", "23514", profileRow(`, bio`, `'a.example', 'lead', `+sha("u")+`, now(), repeat('b', 601)`), nil},
+		{"profile name line", "23514", profileRow(`, full_name`, `'a.example', 'lead', `+sha("u")+`, now(), E'a\nb'`), nil},
+		{"profile negative", "23514", profileRow(`, followers`, `'a.example', 'lead', `+sha("u")+`, now(), -1`), nil},
+		{"profile 13 captions", "23514", profileRow(`, captions`, `'a.example', 'lead', `+sha("u")+`, now(), (SELECT jsonb_agg('x'::text) FROM generate_series(1, 13))`), nil},
+		{"profile caption not text", "23514", profileRow(`, captions`, `'a.example', 'lead', `+sha("u")+`, now(), '["x", 1]'`), nil},
+		{"profile captions object", "23514", profileRow(`, captions`, `'a.example', 'lead', `+sha("u")+`, now(), '{"a": "x"}'`), nil},
+		{"profile source", "23514", profileRow(``, `'a.example', 'ad', `+sha("u")+`, now()`), nil},
+		{"profile list without owner", "23514", profileRow(``, `'a.example', 'following', `+sha("u")+`, now()`), nil},
+		{"profile owner without list", "23514", profileRow(`, source_of`, `'a.example', 'lead', `+sha("u")+`, now(), 'vendor.example'`), nil},
+		{"profile short hash", "23514", profileRow(``, `'a.example', 'lead', '\x00'::bytea, now()`), nil},
+		// ig_follow.
+		{"follow same capture", "23505", `INSERT INTO ig_follow (list_owner, handle, captured_at, capture_sha256) VALUES ('vendor.example', 'cafe.exemplu', now(), sha256('f'))`, nil},
+		{"follow bad handle", "23514", `INSERT INTO ig_follow (list_owner, handle, captured_at, capture_sha256) VALUES ('vendor.example', 'Cafe', now(), sha256('g'))`, nil},
+		{"follow name", "", `INSERT INTO ig_follow (list_owner, handle, full_name, captured_at, capture_sha256) VALUES ('vendor.example', 'b.example', repeat('n', 150), now(), sha256('g'))`, nil},
+		{"follow name long", "23514", `INSERT INTO ig_follow (list_owner, handle, full_name, captured_at, capture_sha256) VALUES ('vendor.example', 'c.example', repeat('n', 151), now(), sha256('g'))`, nil},
+		// ig_match: one lead, several candidates, or none.
+		{"match strong", "", `INSERT INTO ig_match (handle, lead_id, tier, detail, actor) VALUES ('cafe.exemplu', $1, 'domain', 'cafe.example', 'system')`, []any{lead}},
+		{"match weak", "", `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('cafe.exemplu', $1, 'name', 'system')`, []any{lead}},
+		{"match tie", "", `INSERT INTO ig_match (handle, tier, candidate_ids, actor) VALUES ('cafe.exemplu', 'name', ARRAY[$1, $2]::bigint[], 'system')`, []any{lead, other}},
+		{"match none", "", `INSERT INTO ig_match (handle, tier, actor) VALUES ('cafe.exemplu', 'none', 'system')`, nil},
+		{"match operator", "", `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('cafe.exemplu', $1, 'operator', 'gremy')`, []any{lead}},
+		{"match unmatch", "", `INSERT INTO ig_match (handle, tier, actor) VALUES ('cafe.exemplu', 'operator', 'gremy')`, nil},
+		{"match operator by system", "23514", `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('cafe.exemplu', $1, 'operator', 'system')`, []any{lead}},
+		{"match none with a lead", "23514", `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('cafe.exemplu', $1, 'none', 'system')`, []any{lead}},
+		{"match none with candidates", "23514", `INSERT INTO ig_match (handle, tier, candidate_ids, actor) VALUES ('cafe.exemplu', 'none', ARRAY[$1, $2]::bigint[], 'system')`, []any{lead, other}},
+		{"match one candidate", "23514", `INSERT INTO ig_match (handle, tier, candidate_ids, actor) VALUES ('cafe.exemplu', 'name', ARRAY[$1]::bigint[], 'system')`, []any{lead}},
+		{"match no lead", "23514", `INSERT INTO ig_match (handle, tier, actor) VALUES ('cafe.exemplu', 'handle', 'system')`, nil},
+		{"match lead and candidates", "23514", `INSERT INTO ig_match (handle, lead_id, tier, candidate_ids, actor) VALUES ('cafe.exemplu', $1, 'name', ARRAY[$1, $2]::bigint[], 'system')`, []any{lead, other}},
+		{"match null candidate", "23514", `INSERT INTO ig_match (handle, tier, candidate_ids, actor) VALUES ('cafe.exemplu', 'name', ARRAY[$1, NULL]::bigint[], 'system')`, []any{lead}},
+		{"match tier", "23514", `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('cafe.exemplu', $1, 'guess', 'system')`, []any{lead}},
+		{"match actor", "23514", `INSERT INTO ig_match (handle, tier, actor) VALUES ('cafe.exemplu', 'none', 'operator')`, nil},
+		{"match unknown lead", "23503", `INSERT INTO ig_match (handle, lead_id, tier, actor) VALUES ('cafe.exemplu', 999999999, 'handle', 'system')`, nil},
+		// ig_judgment.
+		{"judgment jev", "", `INSERT INTO ig_judgment (profile_id, question, choice, raw_choice, confidence, source, model, input_sha256)
+			VALUES ($1, 'ig_place', 'unclear', 'cafe_seating', 0.4, 'jev', 'm', sha256('i'))`, []any{profile}},
+		{"judgment rule", "", `INSERT INTO ig_judgment (profile_id, question, choice, source, detail) VALUES ($1, 'ig_vendor', 'stampino', 'rule', 'link')`, []any{profile}},
+		{"judgment jev no hash", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, raw_choice, source) VALUES ($1, 'ig_place', 'unclear', 'unclear', 'jev')`, []any{profile}},
+		{"judgment jev no raw choice", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, source, input_sha256) VALUES ($1, 'ig_place', 'unclear', 'jev', sha256('i'))`, []any{profile}},
+		{"judgment rule hash", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, source, input_sha256) VALUES ($1, 'ig_place', 'unclear', 'rule', sha256('i'))`, []any{profile}},
+		{"judgment rule confidence", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, confidence, source) VALUES ($1, 'ig_place', 'unclear', 0.5, 'rule')`, []any{profile}},
+		{"judgment confidence", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, raw_choice, confidence, source, input_sha256) VALUES ($1, 'ig_place', 'unclear', 'unclear', 1.5, 'jev', sha256('i'))`, []any{profile}},
+		{"judgment question", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, source) VALUES ($1, 'ig_mood', 'unclear', 'rule')`, []any{profile}},
+		{"judgment choice", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, source) VALUES ($1, 'ig_place', 'Seating!', 'rule')`, []any{profile}},
+		{"judgment source", "23514", `INSERT INTO ig_judgment (profile_id, question, choice, source) VALUES ($1, 'ig_place', 'unclear', 'operator')`, []any{profile}},
+		{"judgment profile", "23503", `INSERT INTO ig_judgment (profile_id, question, choice, source) VALUES (999999999, 'ig_place', 'unclear', 'rule')`, nil},
+		// ig_signal_hint and ig_review_status.
+		{"hint twice", "23505", `INSERT INTO ig_signal_hint (handle, kind, value, captured_at) VALUES ('cafe.exemplu', 'followed_by_vendor', 'stampino', now())`, nil},
+		{"hint kind", "23514", `INSERT INTO ig_signal_hint (handle, kind, value, captured_at) VALUES ('cafe.exemplu', 'runs_scheme', 'stampino', now())`, nil},
+		{"review edge", "", `INSERT INTO ig_review_status (handle, status, note, actor) VALUES ('cafe.exemplu', 'wanted', repeat('n', 200), 'gremy')`, nil},
+		{"review status", "23514", `INSERT INTO ig_review_status (handle, status, actor) VALUES ('cafe.exemplu', 'maybe', 'gremy')`, nil},
+		{"review note long", "23514", `INSERT INTO ig_review_status (handle, status, note, actor) VALUES ('cafe.exemplu', 'new', repeat('n', 201), 'gremy')`, nil},
+		{"review actor", "23514", `INSERT INTO ig_review_status (handle, status, actor) VALUES ('cafe.exemplu', 'new', 'operator')`, nil},
+	} {
+		if _, err := tx.Exec(ctx, "SAVEPOINT s"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := tx.Exec(ctx, c.sql, c.args...)
+		if got := sqlState(err); got != c.want || (c.want == "" && err != nil) {
+			t.Errorf("%s: %v (SQLSTATE %q), want %q", c.name, err, got, c.want)
+		}
+		if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT s"); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
