@@ -40,7 +40,7 @@ func TestCRMPagesRender(t *testing.T) {
 			`action="/leads/5/snooze"`, `name="for" value="1d"`, `name="for" value="1w"`},
 		leadsPipelinePath: {"<h1>Pipeline</h1>", `id="col-talking"`, `id="col-proposal"`, `id="col-won"`, `id="col-lost"`,
 			"£2,400 · €950.50", "£1,200 · €475.25", "RON 1,200", "Halden &amp; Rook", "expected £1,200",
-			`<a href="https://copperleaf.example.com" rel="noopener noreferrer nofollow">Tenant</a>`,
+			`<a href="https://copperleaf.example.com" rel="noopener noreferrer nofollow" target="_blank">Tenant</a>`,
 			"&lt;script&gt;alert(1)&lt;/script&gt; · Tue 3 Nov", `name="back" value="/leads/pipeline"`},
 		leadsCallsPath: {"<h1>Calls</h1>", `href="/leads/calls/9"`, `<a href="tel:&#43;442079460177">&#43;44 20 7946 0177</a>`,
 			`action="/leads/calls/9/outcome"`, `name="back" value="/leads/calls"`, `name="call_back_on" type="date" min="2026-10-24"`,

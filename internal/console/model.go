@@ -462,8 +462,11 @@ type LeadListRow struct {
 	Campaign                     string
 	Finding, Relevance, Position string
 	State, Call                  string
-	HasEmail, HasForm, HasPhone  bool
-	Starred, SmallSite           bool
+	// StateCode is the lead's state as the store names it (new, skipped, ...): what the page
+	// acts on, where State is only its words.
+	StateCode                   string
+	HasEmail, HasForm, HasPhone bool
+	Starred, SmallSite          bool
 	// StarNote says up front what starring the lead does besides ordering it, when it has
 	// no usable way to reach it: StarNoteEmail or StarNotePhone; "" otherwise.
 	StarNote string

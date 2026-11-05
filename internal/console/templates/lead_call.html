@@ -80,4 +80,4 @@
 {{end}}
 
 {{/* call_link shows a URL: a link only when it is http or https, else plain text. */}}
-{{define "call_link"}}{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow">{{.}}</a>{{else}}{{.}}{{end}}{{end}}
+{{define "call_link"}}{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow" target="_blank">{{.}}</a>{{else}}{{.}}{{end}}{{end}}

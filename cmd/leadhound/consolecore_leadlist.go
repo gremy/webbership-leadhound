@@ -308,12 +308,18 @@ func rowExtras(row *console.LeadListRow, state string, x leadstore.RowExtras) {
 
 // rowSummary is a row's description line: the lead's first description on one line, else its
 // town, category and address and the finding's reason, joined by " · "; "" when it has none.
+// The town is left out when the address already names it (compared without case), so the line
+// never says it twice.
 func rowSummary(row console.LeadListRow, x leadstore.RowExtras) string {
 	if d := strings.Join(strings.Fields(x.Description), " "); d != "" {
 		return d
 	}
+	town := row.Town
+	if t := strings.TrimSpace(town); t != "" && strings.Contains(strings.ToLower(x.Address), strings.ToLower(t)) {
+		town = ""
+	}
 	var parts []string
-	for _, v := range []string{row.Town, strings.ReplaceAll(x.Category, "_", " "), x.Address, row.FindingReason} {
+	for _, v := range []string{town, strings.ReplaceAll(x.Category, "_", " "), x.Address, row.FindingReason} {
 		if v = strings.TrimSpace(v); v != "" {
 			parts = append(parts, v)
 		}
@@ -783,7 +789,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		Campaign: r.CampaignName,
 		RType:    r.RType,
 		Finding:  leadview.FindingLine(r.Finding, w.cfg.Facts, today),
-		State:    leadStateWords(r.State),
+		State:    leadStateWords(r.State), StateCode: r.State,
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone, HasLinkedIn: r.HasLinkedIn,
 		Starred: r.Starred, SmallSite: r.SmallSite,
 		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
@@ -868,6 +874,15 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		p.ReachTitle = "From their listing and site"
 		if p.Place, p.Cafe, err = b.cafeViews(ctx, w.cfg, d); err != nil {
 			return console.LeadDetailPage{}, err
+		}
+		// The place type's source is read the same way the list reads it, so the page and the
+		// list always name the same winner.
+		types, err := b.lq().PlaceTypes(ctx, []int64{id})
+		if err != nil {
+			return console.LeadDetailPage{}, err
+		}
+		if t, ok := types[id]; ok {
+			p.PlaceType, p.PlaceTypeSource = t.Type, t.Source
 		}
 	}
 	// Every purpose together; 0 (no Claude call on this lead yet) shows nothing.

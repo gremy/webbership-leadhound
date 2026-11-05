@@ -59,8 +59,11 @@ type leadListView struct {
 	// leads), Relevance and Order only when a row has one, Your call when a row has one or
 	// the list is the leads to label.
 	ShowState, ShowRelevance, ShowOrder, ShowCall bool
-	ToLabel                                       bool // the list is the leads to label
-	Filters                                       int  // how many filters are on, for the folded form's summary
+	// ShowTriage is the review column (Skip, Good, the place type switch, Undo or the system's
+	// skip reason), shown when a row has any of them.
+	ShowTriage bool
+	ToLabel    bool // the list is the leads to label
+	Filters    int  // how many filters are on, for the folded form's summary
 }
 
 // reachTab is one tab of the List: a next action with its number, or All (Counted false). The
@@ -500,6 +503,7 @@ func newLeadListView(p LeadListPage) leadListView {
 		v.ShowRelevance = v.ShowRelevance || row.Relevance != ""
 		v.ShowOrder = v.ShowOrder || row.Position != ""
 		v.ShowCall = v.ShowCall || row.Call != ""
+		v.ShowTriage = v.ShowTriage || rowTriaged(row)
 	}
 	for _, on := range []bool{len(p.Filter.Kinds) > 0, len(p.Filter.Countries) > 0, len(p.Filter.Channels) > 0,
 		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", statusOn, v.ToLabel,
@@ -549,6 +553,109 @@ func leadListURL(f LeadListQuery, n int) string {
 		return leadsPath
 	}
 	return leadsPath + "?" + q.Encode()
+}
+
+// leadListBaseCols is how many columns the list's table always has: the Send now tick, the
+// star, Lead, Country, Kind, Finding and Reach by.
+const leadListBaseCols = 7
+
+// Cols is how many columns the list's table has: the base ones plus each optional one the
+// page shows, so a row's "More" spans the whole table.
+func (v leadListView) Cols() int {
+	n := leadListBaseCols
+	for _, on := range []bool{v.ShowRelevance, v.ShowCall, v.ShowOrder, v.ShowState, v.Order, v.ShowTriage} {
+		if on {
+			n++
+		}
+	}
+	return n
+}
+
+// rowOpen reports a row still in state new, by the store's own name for the state.
+func rowOpen(r LeadListRow) bool { return r.StateCode == "new" }
+
+// rowTriaged reports a row the list's review column has something for: an open lead to skip,
+// a skip the operator can undo, or the system's reason for its own skip.
+func rowTriaged(r LeadListRow) bool { return rowOpen(r) || r.CanUndo || r.SkipReason != "" }
+
+// triageView is one row's review actions in one layout ("w" the table, "n" the cards): the
+// row and its name for a screen reader; Self, the row's own anchor, where Undo comes back to;
+// Next, where an action that moves on comes back to without the script (the next row's
+// anchor, else the one before, else the page); Open, a lead in state new; Good, a café lead
+// open to the operator's "likely"; and the place type switch's action and its words.
+type triageView struct {
+	Row                   LeadListRow
+	Name, Self, Next      string
+	Open, Good            bool
+	SwitchDo, SwitchLabel string
+}
+
+// Triage is row i's review actions in layout ("w" or "n"): see triageView.
+func (v leadListView) Triage(i int, layout string) triageView {
+	rows := v.P.Rows
+	r := rows[i]
+	anchor := func(id int64) string { return v.Back + "#lead-" + layout + "-" + strconv.FormatInt(id, 10) }
+	t := triageView{Row: r, Name: rowName(r), Self: anchor(r.LeadID), Next: v.Back, Open: rowOpen(r)}
+	switch {
+	case i+1 < len(rows):
+		t.Next = anchor(rows[i+1].LeadID)
+	case i > 0:
+		t.Next = anchor(rows[i-1].LeadID)
+	}
+	if t.Open && r.RType == "cafe" {
+		t.Good = true
+		t.SwitchDo, t.SwitchLabel = LeadRoastery, "It's a roastery"
+		if r.PlaceType == "roastery" {
+			t.SwitchDo, t.SwitchLabel = LeadCafe, "It's a coffee shop"
+		}
+	}
+	return t
+}
+
+// Dial is phone as a tel: link's number: a leading plus and the digits, the spaces, dots,
+// dashes and brackets a written number holds dropped; "" when anything else is in it, and the
+// number is then shown as text.
+func (triageView) Dial(phone string) string {
+	s := strings.NewReplacer(" ", "", ".", "", "-", "", "(", "", ")", "", "\u00a0", "").Replace(strings.TrimSpace(phone))
+	return telHref(s)
+}
+
+// FindingWords is the row's finding with its plain reason after it, the reason left out when
+// the finding already says it; "None" with neither.
+func (t triageView) FindingWords() string {
+	f, why := t.Row.Finding, t.Row.FindingReason
+	switch {
+	case why == "" || strings.Contains(f, why):
+		return cmp.Or(f, "None")
+	case f == "":
+		return why
+	}
+	return f + " · " + why
+}
+
+// SourceWords is who decided the row's place type, in words; "" when nobody spoke.
+func (t triageView) SourceWords() string {
+	switch t.Row.PlaceTypeSource {
+	case "operator":
+		return "your tag"
+	case "jev":
+		return "Jev"
+	case "name":
+		return "its name"
+	}
+	return t.Row.PlaceTypeSource
+}
+
+// rowName is what a row is called to a screen reader: its name, else its domain, else its
+// number, as the row's own links say it.
+func rowName(r LeadListRow) string {
+	return cmp.Or(r.Name, siteDomain(r.Domain), "Lead "+strconv.FormatInt(r.LeadID, 10))
+}
+
+// PlaceTypeFiltered reports a café campaign's list showing one place type, which a lead
+// switched to the other leaves; on "Both" it stays.
+func (v leadListView) PlaceTypeFiltered() bool {
+	return v.PlaceTypes != nil && v.P.Filter.PlaceType != campaignAll
 }
 
 // webURL reports whether s is an http or https URL with a host: only such a URL becomes a

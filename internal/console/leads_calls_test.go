@@ -174,7 +174,7 @@ func TestCallCard(t *testing.T) {
 	for _, want := range []string{
 		"<h1>Call Northwind Trading</h1>", `<a href="/leads/calls" aria-current="true">Calls</a>`,
 		`href="tel:&#43;442079460000"`, "&#43;44 (0)20 7946 0000</a>",
-		`Read on <a href="https://northwind.example/contact" rel="noopener noreferrer nofollow">`,
+		`Read on <a href="https://northwind.example/contact" rel="noopener noreferrer nofollow" target="_blank">`,
 		"<dt>Line</dt><dd>a direct line</dd>",
 		"Say who you are and why you're calling. Your number must be shown.",
 		"<li>Your site runs Drupal 10, which ends on 9 December.</li>", "<li>Northwind Trading</li>",

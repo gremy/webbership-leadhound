@@ -18,7 +18,7 @@
     <li>
       <span class="item-head">{{.Title}}</span>
       <p>{{.Line}}</p>
-      <p class="item-meta">{{range .Sectors}}<span class="tag">{{.Label}}</span> {{end}}· {{if and .Public .URL}}<a href="{{.URL}}" rel="noopener noreferrer nofollow">{{.URL}}</a>{{else}}spoken line only{{end}} · added {{when .At}}</p>
+      <p class="item-meta">{{range .Sectors}}<span class="tag">{{.Label}}</span> {{end}}· {{if and .Public .URL}}<a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">{{.URL}}</a>{{else}}spoken line only{{end}} · added {{when .At}}</p>
       <details class="mt-1"{{if eq $v.RetireID .ID}} open{{end}}>
         <summary>Retire…</summary>
         <form method="post" action="/leads/proof/{{.ID}}/retire" class="stack mt-1">

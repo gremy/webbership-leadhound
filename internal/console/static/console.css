@@ -4224,3 +4224,277 @@ a[aria-current="true"] .count {
   row-gap: 0;
   overflow-x: visible;
 }
+
+/* ---------- Leads: triage ----------
+   The campaign tabs, a café campaign's place type chips and its progress, each row's summary
+   (two lines at most), its "More" row, its review actions, the current row's ring, the key hint
+   and the toast the script shows. Every colour is a token, so light and dark both hold. */
+.campaign-tabs {
+  margin-bottom: 0;
+}
+.campaign-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1) var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.chip:hover {
+  border-color: var(--accent);
+}
+.chip[aria-current="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-soft-text);
+}
+.chip-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.chip[aria-current="true"] .chip-count {
+  color: inherit;
+}
+.campaign-progress {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.campaign-progress strong {
+  color: var(--text);
+}
+/* The summary keeps to two lines; the whole of it is in its title and under More. */
+.lead-summary {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.lead-table .lead-cell {
+  min-width: 15rem;
+  max-width: 26rem;
+}
+.lead-table .lead-cell .badge {
+  margin-top: 2px;
+}
+.lead-item-narrow .lead-summary {
+  margin: 4px 0 2px;
+  font-size: var(--fs-md);
+}
+/* A lead is a tbody: its row and its More row read as one, with one rule under them. Its
+   cells wrap and sit at the top, so the review column stays on screen at 1280 px and the
+   summary can take its two lines; the tick, the star and the actions keep to one line. */
+.lead-table .lead-group > tr > td {
+  border-bottom: 0;
+  white-space: normal;
+  vertical-align: top;
+}
+.lead-table .lead-group > tr > td.col-check,
+.lead-table .lead-group > tr > td.col-star {
+  white-space: nowrap;
+}
+.lead-table .lead-group > .lead-extra > td {
+  border-bottom: 1px solid var(--border);
+}
+.lead-table .lead-group:last-child > .lead-extra > td {
+  border-bottom: 0;
+}
+.table.lead-table tbody tr:hover {
+  background: transparent;
+}
+.lead-table .lead-group:hover {
+  background: var(--surface-2);
+}
+.lead-table .lead-group:has(tr.is-selected),
+.lead-table .lead-group:has(tr.is-selected):hover {
+  background: var(--accent-soft);
+}
+.table.lead-table tr.is-selected {
+  background: transparent;
+}
+/* The extra row's cell starts under the lead's name, past the tick and the star columns. */
+.lead-table .lead-group > .lead-extra > td {
+  padding: 0 10px 12px calc(76px + 10px);
+}
+.lead-more > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.lead-more[open] > summary {
+  margin-bottom: var(--sp-1);
+}
+.lead-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-sm);
+}
+.lead-facts dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+.lead-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.lead-item-narrow .lead-more {
+  margin-top: var(--sp-1);
+}
+@media (max-width: 639px) {
+  .lead-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .lead-facts dd + dt {
+    margin-top: 6px;
+  }
+}
+/* Good and Skip side by side, the place type switch under them. */
+.lead-table .triage-cell .row-actions {
+  width: 10.5rem;
+  min-width: 0;
+  align-items: center;
+}
+.lead-table .triage-cell .row-actions .btn-ghost {
+  padding-left: 0;
+}
+/* The columns' shares at 1280 px: the lead and the finding read best wide, the reach column
+   needs no more than its badge and a short line. */
+.lead-table .lead-group > tr > td {
+  padding: 12px 10px;
+}
+.lead-table .lead-group > tr > td.col-check,
+.lead-table .lead-group > tr > td.col-star {
+  padding-right: 0;
+}
+.lead-table .lead-group > tr > .kind-cell {
+  min-width: 7.5rem;
+}
+.lead-table .lead-group > tr > .finding-cell {
+  min-width: 11rem;
+}
+.lead-table .lead-group > tr > .reach-cell {
+  max-width: 13rem;
+}
+.lead-triage .item-meta {
+  align-self: center;
+}
+.lead-list li .lead-triage {
+  align-items: center;
+}
+.skip-reason {
+  display: block;
+  max-width: 16rem;
+  white-space: normal;
+}
+/* The current row of the keys: an accent bar on its first cell and a soft ground. */
+.lead-group.is-current,
+.lead-group.is-current:hover,
+.lead-item-narrow.is-current {
+  background: var(--accent-soft);
+}
+.lead-group.is-current > tr > td:first-child,
+.lead-item-narrow.is-current {
+  box-shadow: inset 3px 0 0 var(--focus);
+}
+.lead-group:focus,
+.lead-item-narrow:focus {
+  outline: none;
+}
+/* The key hint is for a keyboard; a phone-width page leaves it out. */
+@media (max-width: 639px) {
+  .key-hint {
+    display: none;
+  }
+}
+.key-hint {
+  margin: 0;
+  padding: 8px var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 4px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  text-align: center;
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: min(36rem, calc(100vw - 2 * var(--sp-2)));
+  padding: 10px 10px 10px var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  transform: translateX(-50%);
+}
+.toast-error {
+  border-color: var(--bad-border);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+.toast > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.toast > button {
+  flex: none;
+}
+.toast[hidden] {
+  display: none;
+}

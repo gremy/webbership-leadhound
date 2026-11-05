@@ -690,7 +690,7 @@ func (f *fakeBackend) LeadDetail(_ context.Context, id int64) (LeadDetailPage, e
 func richLeadList(text string) LeadListPage {
 	return LeadListPage{
 		Rows: []LeadListRow{{LeadID: 5, OrgID: 2, Name: text, Domain: text, Country: "GB", Kind: text, Finding: text,
-			Relevance: text, Position: "3", State: "new", HasEmail: true, HasPhone: true, Starred: true, SmallSite: true,
+			Relevance: text, Position: "3", State: "new", StateCode: "new", HasEmail: true, HasPhone: true, Starred: true, SmallSite: true,
 			Campaign: "Drupal end-of-life"}},
 		Total: 120, TotalLeads: 130, Page: 2, PerPage: 50,
 		Options: LeadFilterOptions{
@@ -738,14 +738,14 @@ func TestLeadListPage(t *testing.T) {
 		`<a href="/leads" aria-current="page">List</a>`, `<a href="/leads/outreach">Outreach</a>`,
 		`<form method="get" action="/leads" class="lead-filters">`,
 		`<ul class="list narrow-only">`, `<div class="table-wrap wide-only">`,
-		`<li class="list-item lead-item-narrow" id="lead-n-5">`, `<tr id="lead-w-5">`, `<a class="cell-main" href="/leads/5">Northwind Trading</a>`,
+		`<li class="list-item lead-item-narrow" id="lead-n-5" data-state="new">`, `<tr id="lead-w-5">`, `<a class="cell-main" href="/leads/5">Northwind Trading</a>`,
 		"email · phone", "number 3 in the outreach order", `<td class="num">3</td>`,
 		`<form method="post" action="/leads/5/unstar" class="star-form"><input type="hidden" name="back" value="/leads?page=2#lead-w-5">`,
 		`<input type="hidden" name="back" value="/leads?page=2#lead-n-5">`,
 		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="badge">small site</span>`,
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
 		`<p class="hint mt-1">Northwind Trading</p>`,
-		`<span class="item-meta">Drupal end-of-life</span>`, `<td>Northwind Trading<span class="cell-sub">Drupal end-of-life</span></td>`,
+		`<span class="item-meta">Drupal end-of-life</span>`, `<td class="kind-cell">Northwind Trading<span class="cell-sub">Drupal end-of-life</span></td>`,
 		`<a href="/leads/campaigns">Campaigns</a>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -859,12 +859,12 @@ func TestLeadDetailPage(t *testing.T) {
 		"<dt>Reach by</dt><dd>email · form</dd>", "<dt>Outreach order</dt><dd>number 3</dd>",
 		"<dt>Campaign</dt><dd>Drupal end-of-life</dd>",
 		"generator: Northwind Trading",
-		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow">https://northwind.example/</a>`,
-		`ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow">`, "200 OK",
+		`Fetched <a href="https://northwind.example/" rel="noopener noreferrer nofollow" target="_blank">https://northwind.example/</a>`,
+		`ended at <a href="https://www.northwind.example/" rel="noopener noreferrer nofollow" target="_blank">`, "200 OK",
 		`<div class="description">Northwind Trading</div>`,
-		`LinkedIn: <a href="https://social.example/northwind" rel="noopener noreferrer nofollow">https://social.example/northwind</a>`,
+		`LinkedIn: <a href="https://social.example/northwind" rel="noopener noreferrer nofollow" target="_blank">https://social.example/northwind</a>`,
 		"LeadHound never opens them.",
-		`<a href="https://agency.example/drupal" rel="noopener noreferrer nofollow">`, "“Northwind Trading”",
+		`<a href="https://agency.example/drupal" rel="noopener noreferrer nofollow" target="_blank">`, "“Northwind Trading”",
 		"<dt>List rank</dt><dd>12,345</dd>", "<dt>Found through</dt><dd>Northwind Trading</dd>",
 		"finder · Northwind Trading", "Runs Drupal 10: &#43;30",
 	} {
@@ -1444,11 +1444,11 @@ func TestLeadDetailPageCafe(t *testing.T) {
 	for _, want := range []string{
 		"<h2>The place</h2>", "<dt>Category</dt><dd>coffee shop</dd>",
 		"<dt>Address</dt><dd>7 Example Lane, EX2 2BB Exampleton, United Kingdom</dd>",
-		`<dt>Website</dt><dd><a href="https://brewlane.example/" rel="noopener noreferrer nofollow">https://brewlane.example/</a></dd>`,
+		`<dt>Website</dt><dd><a href="https://brewlane.example/" rel="noopener noreferrer nofollow" target="_blank">https://brewlane.example/</a></dd>`,
 		"<dt>Found through</dt><dd>a map listing (Overture)</dd>", "<dt>Country</dt><dd>United Kingdom: email, in English</dd>",
 		"<dt>Digital loyalty</dt><dd>Stamp Me</dd>", "<dt>Online ordering</dt><dd>Uber Eats</dd>",
 		"<dt>Instagram</dt><dd>found</dd>", "<dt>Language</dt><dd>English</dd>",
-		`<a href="https://compare.example/vs/stamp-me" rel="noopener noreferrer nofollow">Compare with Stamp Me</a>`,
+		`<a href="https://compare.example/vs/stamp-me" rel="noopener noreferrer nofollow" target="_blank">Compare with Stamp Me</a>`,
 		"<h2>From their listing and site</h2>", "Found through a map listing: place data from Overture Maps Foundation",
 		"agrees with your calls on at least 30 café leads.", "4 of 30 labelled", `title="A café that would likely switch."`,
 	} {
@@ -1467,7 +1467,7 @@ func TestLeadDetailPageCafe(t *testing.T) {
 	b.detail.Cafe.VendorName, b.detail.Cafe.VendorLink, b.detail.Cafe.Loyalty = "", "https://compare.example/vs", nil
 	body = h.do(get("/leads/5", c)).Body.String()
 	for _, want := range []string{
-		`<a href="https://compare.example/vs" rel="noopener noreferrer nofollow">Compare loyalty apps</a>`,
+		`<a href="https://compare.example/vs" rel="noopener noreferrer nofollow" target="_blank">Compare loyalty apps</a>`,
 		"<dt>Digital loyalty</dt><dd>none seen</dd>",
 	} {
 		if !strings.Contains(body, want) {

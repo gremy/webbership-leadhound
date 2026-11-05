@@ -41,7 +41,7 @@
       <dt>Instagram</dt><dd>{{if .Instagram}}found{{else}}none seen{{end}}</dd>
       {{with .Language}}<dt>Language</dt><dd>{{.}}</dd>{{end}}
     </dl>
-    {{with .VendorLink}}<p class="mt-1">{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow">{{with $d.Cafe.VendorName}}Compare with {{.}}{{else}}Compare loyalty apps{{end}}</a>{{else}}{{.}}{{end}}</p>{{end}}
+    {{with .VendorLink}}<p class="mt-1">{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow" target="_blank">{{with $d.Cafe.VendorName}}Compare with {{.}}{{else}}Compare loyalty apps{{end}}</a>{{else}}{{.}}{{end}}</p>{{end}}
     {{end}}
     {{range $v.Fetches}}
     <div class="signal-fetch">
@@ -154,6 +154,7 @@
   <section class="card">
     <div class="card-head"><h2>The place</h2></div>
     <div class="card-body">
+    {{template "lead_place_type" $v}}
     {{if not $d.Place}}<p class="muted">No map listing on file.</p>{{end}}
     <dl class="kv">
       {{with $d.Place}}
@@ -219,8 +220,19 @@
 </div>
 {{end}}
 
+{{/* lead_place_type is a café lead's place type, who decided it, and the operator's correction; it shows nothing for any other lead. */}}
+{{define "lead_place_type"}}{{$d := .Data}}{{if $d.PlaceType}}{{$roast := eq $d.PlaceType "roastery"}}{{$mine := eq $d.PlaceTypeSource "operator"}}
+    <div class="place-type stack-sm">
+      <p class="cluster"><span class="badge{{if $roast}} badge-accent{{end}}">{{if $roast}}Roastery or online store{{else}}Coffee shop{{end}}</span>{{with $d.PlaceTypeSource}} <span class="muted small">{{if eq . "name"}}from its name{{else if eq . "jev"}}Jev's read{{else if eq . "operator"}}your call{{end}}</span>{{end}}</p>
+      <div class="btn-row" role="group" aria-label="Correct the place type">
+        <form method="post" action="/leads/{{$d.LeadID}}/roastery"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm{{if and $roast $mine}} is-current{{end}}"{{if and $roast $mine}} aria-current="true"{{end}}>It's a roastery</button></form>
+        <form method="post" action="/leads/{{$d.LeadID}}/cafe"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm{{if and (not $roast) $mine}} is-current{{end}}"{{if and (not $roast) $mine}} aria-current="true"{{end}}>It's a coffee shop</button></form>
+      </div>
+    </div>
+{{end}}{{end}}
+
 {{/* lead_link shows a URL: a link only when it is http or https, else plain text. */}}
-{{define "lead_link"}}{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow">{{.}}</a>{{else}}{{.}}{{end}}{{end}}
+{{define "lead_link"}}{{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow" target="_blank">{{.}}</a>{{else}}{{.}}{{end}}{{end}}
 
 {{define "lead_fact"}}<li>
   <span class="item-head">{{with .Label}}{{.}}: {{end}}{{template "lead_link" .Value}}</span>

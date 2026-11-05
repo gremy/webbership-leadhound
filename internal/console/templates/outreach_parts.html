@@ -226,7 +226,7 @@
     <ul class="item-list">
       {{range $d.Proposals}}{{$on := $p.On "proposal" .ID}}{{$cur := .Status}}
       <li class="proposal-row" id="proposal-{{.ID}}">
-        <span class="item-head">{{if webURL .URL}}<a href="{{.URL}}" rel="noopener noreferrer nofollow">{{.Title}}</a>{{else}}{{.Title}}{{end}}{{with money .ValueCents .Currency}} · {{.}}{{end}}</span>
+        <span class="item-head">{{if webURL .URL}}<a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">{{.Title}}</a>{{else}}{{.Title}}{{end}}{{with money .ValueCents .Currency}} · {{.}}{{end}}</span>
         <span class="cluster"><span class="badge">{{proposalStatusWords .Status}}</span><span class="item-meta">{{when .StatusAt}}</span></span>
         {{with .StatusNote}}<span class="item-meta">{{.}}</span>{{end}}
         {{if eq .Status "accepted"}}<span class="item-meta">If the deal is won, <a href="#crm-stage">set the stage to Won</a>.</span>{{end}}

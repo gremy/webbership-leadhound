@@ -21,6 +21,22 @@
 </section>
 {{end}}
 
+{{if and $v.Campaigns (not $v.NoLeads)}}
+<nav class="mt-2" aria-label="Campaigns">
+  <ul class="tabs tabs-wrap campaign-tabs">
+    {{range $v.Campaigns}}<li><a href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}} ({{thousands .Count}})</a></li>{{end}}
+  </ul>
+</nav>
+{{if or $v.PlaceTypes $p.Progress}}
+<div class="campaign-bar">
+  {{with $v.PlaceTypes}}<nav aria-label="Place type"><ul class="chips">
+    {{range .}}<li><a class="chip" href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}} <span class="chip-count">{{thousands .Count}}</span></a></li>{{end}}
+  </ul></nav>{{end}}
+  {{with $p.Progress}}<p class="campaign-progress"><strong>{{thousands .Reviewed}}</strong> of {{thousands .Total}} reviewed</p>{{end}}
+</div>
+{{end}}
+{{end}}
+
 {{if not $v.NoLeads}}
 <nav class="mt-2" aria-label="Next action">
   <ul class="tabs tabs-wrap">
@@ -72,6 +88,16 @@
         </select>
       </div>
       {{end}}
+      {{with $p.Towns}}
+      <div class="field">
+        <label class="label" for="filter-town">Town</label>
+        <select class="select" id="filter-town" name="town">
+          <option value="">Every town</option>
+          {{range .}}<option value="{{.Value}}"{{if eq .Value $f.Town}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </div>
+      {{end}}
+      {{with $f.PlaceType}}<input type="hidden" name="place_type" value="{{.}}">{{end}}
       <div class="field">
         <label class="label" for="filter-starred">Starred</label>
         <select class="select" id="filter-starred" name="starred">
@@ -121,7 +147,7 @@
   <a class="btn btn-secondary" href="/leads">Clear the filter</a>
 </div></div>
 {{else}}
-<section class="card lead-list mt-2">
+<section class="card lead-list mt-2" data-triage-list{{if $v.PlaceTypeFiltered}} data-place-filtered{{end}}>
   <h2 class="visually-hidden">Leads</h2>
   {{/* The row checkboxes join this form through their form attribute: each row holds forms of its own, and forms do not nest. */}}
   <form method="post" action="/leads/send-now/preview" id="send-now-form" class="bulkbar" aria-label="Send now">
@@ -131,16 +157,18 @@
       <button class="btn btn-primary btn-sm" type="submit"><svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg><span>Send now<span data-send-count></span></span></button>
     </span>
   </form>
+  {{if $v.ShowTriage}}<p class="key-hint" data-key-hint hidden>Keys: <kbd>j</kbd> <kbd>k</kbd> move · <kbd>e</kbd> more · <kbd>s</kbd> skip · <kbd>g</kbd> good · <kbd>r</kbd> roastery or coffee shop · <kbd>x</kbd> select · <kbd>u</kbd> undo the last skip</p>{{end}}
   <ul class="list narrow-only">
-    {{range $p.Rows}}
-    {{$back := printf "%s#lead-n-%d" $v.Back .LeadID}}{{$name := or .Name (siteDomain .Domain) (printf "Lead %d" .LeadID)}}
-    <li class="list-item lead-item-narrow" id="lead-n-{{.LeadID}}">
+    {{range $i, $r := $p.Rows}}
+    {{$back := printf "%s#lead-n-%d" $v.Back .LeadID}}{{$name := or .Name (siteDomain .Domain) (printf "Lead %d" .LeadID)}}{{$t := $v.Triage $i "n"}}
+    <li class="list-item lead-item-narrow" id="lead-n-{{.LeadID}}" data-state="{{.StateCode}}">
       <div class="list-main">
       <div class="lead-card-head">
         <input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick>
         {{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}
-        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{with .Reach}} <span class="{{reachBadge .}}">{{reachWords .}}</span>{{end}}</span>
+        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{template "roastery_badge" .}}{{with .Reach}} <span class="{{reachBadge .}}">{{reachWords .}}</span>{{end}}</span>
       </div>
+      {{with .Summary}}<p class="lead-summary">{{.}}</p>{{end}}
       <span class="item-meta">{{with siteDomain .Domain}}{{.}} · {{end}}{{with .Country}}{{.}} · {{end}}{{.Kind}}{{with .State}} · {{.}}{{end}}</span>
       {{with .Campaign}}<span class="item-meta">{{.}}</span>{{end}}
       {{with .Finding}}<span class="item-meta">{{.}}</span>{{end}}
@@ -149,10 +177,14 @@
       {{if eq .Reach "dead"}}{{with reachReasonWords .ReachReason}}<span class="item-meta">{{.}}</span>{{end}}{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}{{end}}
       {{if $v.ShowCall}}<span class="item-meta">{{with .Call}}Your call: <span class="badge badge-accent">{{.}}</span>{{else}}No call yet{{end}}</span>{{end}}
       {{if and $v.Order .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}
+      {{template "lead_triage" $t}}
+      {{template "lead_more" $t}}
       </div>
     </li>
     {{end}}
   </ul>
+  {{/* On one campaign's list each row's campaign is the tab's own, so the Kind column leaves it out. */}}
+  {{$oneCampaign := and $f.Campaign (ne $f.Campaign "all")}}
   <div class="table-wrap wide-only">
   <table class="table lead-table">
     <caption class="visually-hidden">Leads</caption>
@@ -166,26 +198,30 @@
       {{- if $v.ShowOrder}}<th scope="col" class="num">Order</th>{{end}}
       {{- if $v.ShowState}}<th scope="col">State</th>{{end}}
       {{- if $v.Order}}<th scope="col">Move</th>{{end}}
+      {{- if $v.ShowTriage}}<th scope="col">Review</th>{{end}}
     </tr></thead>
-    <tbody>
-    {{range $p.Rows}}
-    {{$back := printf "%s#lead-w-%d" $v.Back .LeadID}}{{$name := or .Name (siteDomain .Domain) (printf "Lead %d" .LeadID)}}
+    {{range $i, $r := $p.Rows}}
+    {{$back := printf "%s#lead-w-%d" $v.Back .LeadID}}{{$name := or .Name (siteDomain .Domain) (printf "Lead %d" .LeadID)}}{{$t := $v.Triage $i "w"}}
+    {{/* Each lead is a tbody of its own, its row and its "More" row, so the two stay together. */}}
+    <tbody class="lead-group" data-state="{{.StateCode}}">
     <tr id="lead-w-{{.LeadID}}">
       <td class="col-check"><input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick></td>
       <td class="star-cell col-star">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
-      <td class="lead-cell"><a class="cell-main" href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a>{{with siteDomain .Domain}}<span class="cell-sub" title="{{.}}">{{.}}</span>{{end}}{{if .SmallSite}} <span class="badge">small site</span>{{end}}</td>
+      <td class="lead-cell"><a class="cell-main" href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a>{{with siteDomain .Domain}}<span class="cell-sub" title="{{.}}">{{.}}</span>{{end}}{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{template "roastery_badge" .}}{{with .Summary}}<p class="lead-summary" title="{{.}}">{{.}}</p>{{end}}</td>
       <td>{{.Country}}</td>
-      <td>{{.Kind}}{{with .Campaign}}<span class="cell-sub">{{.}}</span>{{end}}</td>
-      <td>{{.Finding}}</td>
-      <td>{{with .Reach}}<span class="{{reachBadge .}}">{{reachWords .}}</span> {{end}}{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}{{if eq .Reach "dead"}}{{with reachReasonWords .ReachReason}}<span class="item-meta">{{.}}</span>{{end}}{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}{{end}}</td>
+      <td class="kind-cell">{{.Kind}}{{if not $oneCampaign}}{{with .Campaign}}<span class="cell-sub">{{.}}</span>{{end}}{{end}}</td>
+      <td class="finding-cell">{{.Finding}}</td>
+      <td class="reach-cell">{{with .Reach}}<span class="{{reachBadge .}}">{{reachWords .}}</span> {{end}}{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note">{{.StarNote}}</span>{{end}}{{if eq .Reach "dead"}}{{with reachReasonWords .ReachReason}}<span class="item-meta">{{.}}</span>{{end}}{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}{{end}}</td>
       {{- if $v.ShowRelevance}}<td>{{.Relevance}}</td>{{end}}
       {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="badge badge-accent">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
       {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}
       {{- if $v.ShowState}}<td class="state-cell"><span class="badge">{{.State}}</span></td>{{end}}
       {{- if $v.Order}}<td>{{if .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}</td>{{end}}
+      {{- if $v.ShowTriage}}<td class="triage-cell">{{template "lead_triage" $t}}</td>{{end}}
     </tr>
-    {{end}}
+    <tr class="lead-extra"><td colspan="{{$v.Cols}}">{{template "lead_more" $t}}</td></tr>
     </tbody>
+    {{end}}
   </table>
   </div>
   {{if or $v.Prev $v.Next}}
@@ -203,14 +239,50 @@
 {{end}}
 
 
-{{/* lead_order is a starred lead's moves in the outreach order: the lead's ID, Back and its name in SR. Its Unstar is the row's star toggle. */}}
+{{/* lead_order is a starred lead's moves in the outreach order: the lead's ID, Back and its name in SR. Its Unstar is the row's star toggle, and its Skip the row's own (lead_triage). */}}
 {{define "lead_order"}}
 {{template "lead_move" (leadAct .ID "up" "Up" .Back .SR)}}
 {{template "lead_move" (leadAct .ID "down" "Down" .Back .SR)}}
 {{template "lead_move" (leadAct .ID "top" "Pin to top" .Back .SR)}}
 {{template "lead_move" (leadAct .ID "defer" "Push back" .Back .SR)}}
-{{template "lead_move" (leadAct .ID "skip" "Skip" .Back .SR)}}
 {{end}}
 
 {{/* lead_move is one move button in the board's button style (lead_act's bare button has no style inside a .page). */}}
 {{define "lead_move"}}<form method="post" action="/leads/{{.ID}}/{{.Do}}"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm">{{.Label}}{{with .SR}}<span class="visually-hidden"> {{.}}</span>{{end}}</button></form>{{end}}
+
+{{/* lead_triage is a row's review actions (a triageView): Good on a café lead, Skip, and the place type switch for a lead still open; Undo for a lead the operator skipped; the system's reason for a lead it skipped, with no Undo. Each form carries data-triage, which the list's script posts by fetch; without the script it posts as it is and comes back to the next row (Next), or for Undo to the row itself (Self). */}}
+{{define "lead_triage"}}
+{{- if .Open}}<div class="row-actions lead-triage" data-lead="{{.Row.LeadID}}" data-name="{{.Name}}">
+{{- if .Good}}<form method="post" action="/leads/{{.Row.LeadID}}/good" data-triage="good"><input type="hidden" name="back" value="{{.Next}}"><button type="submit" class="btn btn-secondary btn-sm">Good<span class="visually-hidden"> {{.Name}}</span></button></form>{{end}}
+<form method="post" action="/leads/{{.Row.LeadID}}/skip" data-triage="skip"><input type="hidden" name="back" value="{{.Next}}"><button type="submit" class="btn btn-secondary btn-sm">Skip<span class="visually-hidden"> {{.Name}}</span></button></form>
+{{- with .SwitchDo}}<form method="post" action="/leads/{{$.Row.LeadID}}/{{.}}" data-triage="{{.}}"><input type="hidden" name="back" value="{{$.Next}}"><button type="submit" class="btn btn-ghost btn-sm">{{$.SwitchLabel}}<span class="visually-hidden">: {{$.Name}}</span></button></form>{{end -}}
+</div>
+{{- else if .Row.CanUndo}}<div class="row-actions lead-triage" data-lead="{{.Row.LeadID}}" data-name="{{.Name}}"><span class="item-meta">You skipped it</span><form method="post" action="/leads/{{.Row.LeadID}}/unskip" data-triage="unskip"><input type="hidden" name="back" value="{{.Self}}"><button type="submit" class="btn btn-secondary btn-sm">Undo<span class="visually-hidden"> the skip of {{.Name}}</span></button></form></div>
+{{- else if .Row.SkipReason}}<span class="item-meta skip-reason">Skipped by LeadHound: {{.Row.SkipReason}}</span>
+{{- end}}
+{{- end}}
+
+{{/* lead_more is a row's "More" (a triageView): where the lead is, how to reach it, and what is known of it, each link from the data opened in a new tab and only when it is an http or https address (webURL); anything else is text. */}}
+{{define "lead_more"}}{{$r := .Row}}{{$d := $r.Details}}
+<details class="lead-more">
+  <summary>More<span class="visually-hidden"> about {{.Name}}</span></summary>
+  <dl class="lead-facts">
+    {{with $d.Address}}<dt>Address</dt><dd>{{.}}</dd>{{end}}
+    {{with $d.Phones}}<dt>{{if gt (len .) 1}}Phones{{else}}Phone{{end}}</dt><dd>{{range $i, $ph := .}}{{if $i}} · {{end}}{{with $.Dial $ph}}<a href="tel:{{.}}">{{$ph}}</a>{{else}}{{$ph}}{{end}}{{end}}</dd>{{end}}
+    {{with $d.Routes}}<dt>Reach by</dt><dd>{{range $i, $l := .}}{{if $i}} · {{end}}{{template "row_link" $l}}{{end}}</dd>{{end}}
+    {{with $d.Socials}}<dt>Social</dt><dd>{{range $i, $l := .}}{{if $i}} · {{end}}{{template "row_link" $l}}{{end}}</dd>{{end}}
+    {{with siteDomain $r.Domain}}{{$u := printf "https://%s" .}}<dt>Website</dt><dd>{{if webURL $u}}<a href="{{$u}}" target="_blank" rel="noopener noreferrer nofollow">{{.}}</a>{{else}}{{.}}{{end}}</dd>{{end}}
+    {{with $r.Town}}<dt>Town</dt><dd>{{.}}</dd>{{end}}
+    {{with $r.PlaceType}}<dt>Place type</dt><dd>{{if eq . "roastery"}}Roastery or online store{{else}}Coffee shop{{end}}{{with $.SourceWords}}, from {{.}}{{end}}</dd>{{end}}
+    <dt>Finding</dt><dd>{{.FindingWords}}</dd>
+    <dt>Jev</dt><dd>{{or $r.RelevanceWords "Not rated yet"}}</dd>
+    <dt>Your call</dt><dd>{{or $r.Call "No call yet"}}</dd>
+  </dl>
+</details>
+{{- end}}
+
+{{/* row_link is one RowLink: a link opened in a new tab when its address is an http or https one, else its words as text, with the address beside them when it differs. An email route has no address and stays text. */}}
+{{define "row_link"}}{{if webURL .URL}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer nofollow">{{.Label}}</a>{{else}}{{.Label}}{{if and .URL (ne .URL .Label)}} ({{.URL}}){{end}}{{end}}{{end}}
+
+{{/* roastery_badge marks a lead tagged a roastery or online store (a row). */}}
+{{define "roastery_badge"}}{{if eq .PlaceType "roastery"}} <span class="badge badge-warn roastery-badge">roastery</span>{{end}}{{end}}

@@ -43,7 +43,7 @@ func TestLeadPageOutreachCards(t *testing.T) {
 		`action="/leads/5/drafts/9/sent"`, `name="hash" value="0123456789ab"`,
 		`action="/leads/5/drafts/9/save"`, "<summary>Show the original</summary>", "Harbour Lane Studio before",
 		"19 of 200 characters", "Written from the template, because Claude refused twice.", "Written by Claude.",
-		`<a href="https://linkedin.com/company/harbourlane" rel="noopener noreferrer nofollow">`,
+		`<a href="https://linkedin.com/company/harbourlane" rel="noopener noreferrer nofollow" target="_blank">`,
 		`name="subject"`, "To hello@harbourlane.example", "Drafting… asked at 09:32.",
 		`hx-get="/leads/draft-status/5" hx-trigger="every 5s"`, "Asked for at 09:12.",
 		`action="/leads/5/draft-discard"`, `name="batch_id" value="3"`,

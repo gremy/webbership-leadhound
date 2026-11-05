@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -169,8 +170,8 @@ func TestConsoleLeadList(t *testing.T) {
 	detail := list(fmt.Sprintf("/leads/%d", contoso))
 	for _, want := range []string{
 		strings.ReplaceAll(phone, "+", "&#43;"), template.HTMLEscapeString(desc), // html/template writes + as &#43;
-		`<a href="https://contoso.example/" rel="noopener noreferrer nofollow">https://contoso.example/</a>`,
-		`<a href="https://contoso.example/kontakt" rel="noopener noreferrer nofollow">`,
+		`<a href="https://contoso.example/" rel="noopener noreferrer nofollow" target="_blank">https://contoso.example/</a>`,
+		`<a href="https://contoso.example/kontakt" rel="noopener noreferrer nofollow" target="_blank">`,
 		"social.example: ", "200 OK", "Drupal 10.6.14, security support ends 9 December 2026",
 	} {
 		if !strings.Contains(detail, want) {
@@ -241,7 +242,7 @@ func TestConsoleLeadPageCafe(t *testing.T) {
 	body := show(bean)
 	for _, want := range []string{
 		"<h2>The place</h2>", "3 Example Street, 000000 Springfield, United States", "<dt>Digital loyalty</dt><dd>Stamp Me</dd>",
-		`<a href="https://compare.example/vs/stamp-me" rel="noopener noreferrer nofollow">Compare with Stamp Me</a>`,
+		`<a href="https://compare.example/vs/stamp-me" rel="noopener noreferrer nofollow" target="_blank">Compare with Stamp Me</a>`,
 		"<h2>From their listing and site</h2>", "<dt>Found through</dt><dd>a map listing (Overture)</dd>", "at least 30 café leads",
 	} {
 		if !strings.Contains(body, want) {
@@ -257,7 +258,7 @@ func TestConsoleLeadPageCafe(t *testing.T) {
 		t.Errorf("the café with nothing seen: %+v %+v %v", d.Cafe, d.Place, err)
 	}
 	body = show(harbour)
-	if want := `<a href="https://compare.example/vs" rel="noopener noreferrer nofollow">Compare loyalty apps</a>`; !strings.Contains(body, want) {
+	if want := `<a href="https://compare.example/vs" rel="noopener noreferrer nofollow" target="_blank">Compare loyalty apps</a>`; !strings.Contains(body, want) {
 		t.Errorf("the café with nothing seen lacks %q", want)
 	}
 	cafePageClean(t, "Harbour Lane Coffee", body)
@@ -275,6 +276,28 @@ func TestConsoleLeadPageCafe(t *testing.T) {
 		t.Error("the café with no website does not say so")
 	}
 	cafePageClean(t, "the café with no website", body)
+
+	// The place type: a café nobody spoke about is a coffee shop by default and names no
+	// source; the operator's correction, posted from the page, makes it a roastery by their call.
+	if d, err := b.LeadDetail(ctx, bean); err != nil || d.PlaceType != leadstore.PlaceCafe || d.PlaceTypeSource != "" {
+		t.Errorf("the default place type %q from %q: %v", d.PlaceType, d.PlaceTypeSource, err)
+	}
+	if !strings.Contains(show(bean), `<span class="badge">Coffee shop</span>`) {
+		t.Error("the default café does not show its badge")
+	}
+	if w := c.post(fmt.Sprintf("/leads/%d/roastery", bean), url.Values{"back": {fmt.Sprintf("/leads/%d", bean)}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("the roastery correction: %d\n%s", w.Code, w.Body.String())
+	}
+	if d, err := b.LeadDetail(ctx, bean); err != nil || d.PlaceType != leadstore.PlaceRoastery || d.PlaceTypeSource != leadstore.PlaceFromOperator {
+		t.Errorf("the corrected place type %q from %q: %v", d.PlaceType, d.PlaceTypeSource, err)
+	}
+	body = show(bean)
+	for _, want := range []string{`<span class="badge badge-accent">Roastery or online store</span>`,
+		`<span class="muted small">your call</span>`, `aria-current="true">It's a roastery</button>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the corrected café lacks %q", want)
+		}
+	}
 }
 
 // cafePageClean fails when a café lead's page shows the upgrade-risk report, a list rank or
