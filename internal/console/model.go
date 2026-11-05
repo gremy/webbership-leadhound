@@ -366,7 +366,14 @@ type LeadListQuery struct {
 	Sort                       string   // "" (relevance) | relevance | newest | order
 	Page                       string   // 1 and up
 	ToLabel                    string   // "" any | "1" the leads to label: the spread sample and the leads with a call
-	Campaign                   string   // "" every campaign | one campaign's slug
+	Campaign                   string   // "" every campaign | "all" every campaign, said outright | one campaign's slug
+	// CampaignFromCookie reports that Campaign was not in the request but read from the
+	// remembered-campaign cookie: a slug that no longer names a live campaign is then dropped
+	// silently, never with the "no campaign is called" note.
+	CampaignFromCookie bool
+	Town               string // "" every town | one town, compared without case
+	// PlaceType is "" (coffee shops on a café campaign, every lead elsewhere) | cafe | roastery | all.
+	PlaceType string
 	// Reach is the tab: "" every next action, or a Reach* bucket. A bucket picks its own states,
 	// so with Reach set a blank Status means every state: the tabs must not default Status to open.
 	Reach string
@@ -391,6 +398,38 @@ type LeadListPage struct {
 	LabelGoal int
 	// ReachCounts is the List's tabs' numbers: the rest of the filter, counted by next action.
 	ReachCounts ReachCounts
+	// CampaignTabs are the live campaigns, in the order they were made, each with its open
+	// leads; nil when there are none.
+	CampaignTabs []CampaignTab
+	// PlaceTypeCounts is the open leads of the chosen café campaign by place type, for its
+	// chips; nil with no campaign chosen or one that is not a café campaign.
+	PlaceTypeCounts *PlaceTypeCounts
+	// Progress is how far the chosen campaign is reviewed; nil with no campaign chosen.
+	Progress *CampaignProgress
+	// Towns are the towns of the chosen campaign's open leads, most leads first, each labelled
+	// with its count; nil with no campaign chosen or a campaign with no town.
+	Towns []FilterOption
+}
+
+// CampaignTab is one campaign of the list's tabs: its slug and name, how many of its leads are
+// open (state new, both place types), and whether it is a café campaign, whose every lead is a
+// café lead and whose list shows coffee shops unless asked otherwise.
+type CampaignTab struct {
+	Slug, Name string
+	Open       int
+	Cafe       bool
+}
+
+// PlaceTypeCounts is how many open leads of a café campaign are coffee shops and how many are
+// roasteries or online-only stores.
+type PlaceTypeCounts struct {
+	Cafe, Roastery int
+}
+
+// CampaignProgress is the "312 of 2,293 reviewed" line: Reviewed is the leads with the
+// operator's call or skipped by him, Total those plus the leads still open.
+type CampaignProgress struct {
+	Reviewed, Total int
 }
 
 // TypeCount is how many leads of one rating type carry the operator's call: Type is the
@@ -434,6 +473,40 @@ type LeadListRow struct {
 	// Channel is the lead's channel (ChannelEmail, ChannelForm, ChannelLinkedIn, or "none").
 	Channel     string
 	HasLinkedIn bool
+	// Town is a café lead's town and PlaceType its place type (cafe or roastery), both "" for
+	// any other lead, which shows no chip. PlaceTypeSource is who decided the place type
+	// (operator, jev or name), "" when nobody spoke and café is the default.
+	Town, PlaceType, PlaceTypeSource string
+	// Summary is the row's description line: the lead's first description, or with none its
+	// town, category and address and the finding's reason, joined by " · ". The list fills it.
+	Summary string
+	// FindingReason is the finding's own plain reason ("" when it gives none).
+	FindingReason string
+	// RelevanceWords is Jev's number and band in words ("72, likely match"), "" when not rated.
+	// Jev stores no reason, so there is none to show.
+	RelevanceWords string
+	// CanUndo reports a lead the operator skipped himself, whose skip Undo takes back.
+	// SkipReason is why the system skipped a lead, in words; "" for every other lead.
+	CanUndo    bool
+	SkipReason string
+	// Details is what the row's "More" shows; the list fills it.
+	Details LeadRowDetails
+}
+
+// LeadRowDetails is what a list row's expansion shows: the place's address, the phone numbers,
+// the live email, form and LinkedIn routes and the social links. A link whose URL is not an
+// http or https address is shown as text (webURL).
+type LeadRowDetails struct {
+	Address string
+	Phones  []string
+	Routes  []RowLink
+	Socials []RowLink
+}
+
+// RowLink is one link of a row's expansion: its words and its address. An email route has no
+// address, so it is shown as text.
+type RowLink struct {
+	Label, URL string
 }
 
 // The star control's notes (LeadListRow.StarNote): a lead with no usable route, in a country

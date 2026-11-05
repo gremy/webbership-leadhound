@@ -16,8 +16,8 @@ import (
 // needs); the per-mailbox reads stay within budget on a year of outreach.
 func TestScaleMailboxSeed(t *testing.T) {
 	q, s, now, loc := scaleLeads(t)
-	if info := leadstoretest.ScaleSeeded(t); info.Leads != "v8" {
-		t.Fatalf("leads seed = %q, want v8", info.Leads)
+	if info := leadstoretest.ScaleSeeded(t); info.Leads != "v9" {
+		t.Fatalf("leads seed = %q, want v9", info.Leads)
 	}
 	ctx := context.Background()
 	since := time.Date(now.In(loc).Year(), now.In(loc).Month(), now.In(loc).Day(), 0, 0, 0, 0, loc)

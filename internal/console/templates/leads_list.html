@@ -67,7 +67,7 @@
       <div class="field">
         <label class="label" for="filter-campaign">Campaign</label>
         <select class="select" id="filter-campaign" name="campaign">
-          <option value="">Every campaign</option>
+          <option value="all">Every campaign</option>
           {{range .}}<option value="{{.Value}}"{{if eq .Value $f.Campaign}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
       </div>

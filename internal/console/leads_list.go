@@ -21,7 +21,20 @@ const maxFilterValues = 50
 const maxBack = 2048
 
 // leadActions are the writes POST /leads/{id}/{action} takes.
-var leadActions = []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear, LeadLabel, LeadLookAgain}
+var leadActions = []string{LeadStar, LeadUnstar, LeadUp, LeadDown, LeadTop, LeadDefer, LeadSkip, LeadClear, LeadLabel, LeadLookAgain,
+	LeadUnskip, LeadGood, LeadRoastery, LeadCafe}
+
+// triageHeader is the request header the list's script sends with a lead action it posts by
+// fetch: the answer is then a bare status, 204 on success and 422 with the refusal's words, so
+// the page keeps its place and no flash is left for the next page.
+const triageHeader = "X-Triage"
+
+// campaignAll is the campaign value that says every campaign outright, so that a remembered
+// campaign does not stand in for it.
+const campaignAll = "all"
+
+// leadsCampaignTTL is how long the list remembers the campaign it last named.
+const leadsCampaignTTL = 90 * 24 * time.Hour
 
 // badBand is the refusal of a call whose band the form did not offer.
 const badBand = "Choose strong, likely, maybe, unlikely or no, or Clear; your call was not changed."
@@ -39,6 +52,9 @@ type leadListView struct {
 	Back       string // this page, filter and page kept: where a row's action comes back to
 	Order      bool   // sorted by the outreach order: rows carry Up, Down, Pin to top, Push back, Skip
 	Tabs       []reachTab
+	// Campaigns are the campaign tabs, All campaigns last, and PlaceTypes the chips of a café
+	// campaign (coffee shops, roasteries, both); each is nil when the page has none.
+	Campaigns, PlaceTypes []reachTab
 	// The table's optional columns: State only when the filter is not the default (open
 	// leads), Relevance and Order only when a row has one, Your call when a row has one or
 	// the list is the leads to label.
@@ -47,7 +63,8 @@ type leadListView struct {
 	Filters                                       int  // how many filters are on, for the folded form's summary
 }
 
-// reachTab is one tab of the List: a next action with its number, or All (Counted false).
+// reachTab is one tab of the List: a next action with its number, or All (Counted false). The
+// campaign tabs and the place type chips are tabs of the same shape.
 type reachTab struct {
 	Label, URL       string
 	Count            int
@@ -73,6 +90,44 @@ func reachTabs(f LeadListQuery, c ReachCounts) []reachTab {
 		tabs = append(tabs, reachTab{Label: ReachWords(bucket), URL: tab(bucket), Count: c.Of(bucket), Counted: true, Current: f.Reach == bucket})
 	}
 	return append(tabs, reachTab{Label: "All", URL: tab(""), Current: f.Reach == ""})
+}
+
+// campaignTabs are the list's campaign tabs under f: each campaign with its open leads, then
+// All campaigns with their sum. A tab keeps the rest of the filter but not the town or place
+// type, which belong to one campaign, and goes back to the first page. nil with no campaign.
+func campaignTabs(f LeadListQuery, tabs []CampaignTab) []reachTab {
+	if len(tabs) == 0 {
+		return nil
+	}
+	tab := func(slug string) string {
+		f := f
+		f.Campaign, f.Town, f.PlaceType = slug, "", ""
+		return leadListURL(f, 1)
+	}
+	out := make([]reachTab, 0, len(tabs)+1)
+	all := 0
+	for _, c := range tabs {
+		out = append(out, reachTab{Label: c.Name, URL: tab(c.Slug), Count: c.Open, Counted: true, Current: f.Campaign == c.Slug})
+		all += c.Open
+	}
+	return append(out, reachTab{Label: "All campaigns", URL: tab(campaignAll), Count: all, Counted: true,
+		Current: f.Campaign == "" || f.Campaign == campaignAll})
+}
+
+// placeTypeChips are a café campaign's chips under f: coffee shops, roasteries, and both, each
+// with its open leads, keeping the rest of the filter and going back to the first page. nil
+// when c is nil (no café campaign chosen).
+func placeTypeChips(f LeadListQuery, c *PlaceTypeCounts) []reachTab {
+	if c == nil {
+		return nil
+	}
+	chip := func(label, placeType string, n int) reachTab {
+		g := f
+		g.PlaceType = placeType
+		return reachTab{Label: label, URL: leadListURL(g, 1), Count: n, Counted: true, Current: f.PlaceType == placeType}
+	}
+	return []reachTab{chip("Coffee shops", "cafe", c.Cafe), chip("Roasteries", "roastery", c.Roastery),
+		chip("Both", campaignAll, c.Cafe+c.Roastery)}
 }
 
 // leadDetailView is what a lead's page renders: the lead, its signals grouped by the fetch
@@ -106,16 +161,56 @@ type leadActView struct {
 	Do, Label, Back, SR string
 }
 
-// leadList is GET /leads: the leads under the query's filter, one page of them.
+// leadList is GET /leads: the leads under the query's filter, one page of them. A query that
+// names no campaign takes the remembered one from the cookie, and one that names a campaign the
+// list offers (or all) is remembered, except the leads to label and the outreach order, which
+// span campaigns and neither read nor set it.
 func (s *server) leadList(w http.ResponseWriter, r *http.Request) {
-	s.renderList(w, r, http.StatusOK, r.URL.Query(), s.takeFlash(w, r), false)
+	q := leadListQuery(r.URL.Query())
+	spans := q.ToLabel == "1" || strings.EqualFold(q.Sort, "order")
+	named := q.Campaign != ""
+	if !named && !spans {
+		if c, err := r.Cookie(s.leadsCampaign); err == nil && strings.TrimSpace(c.Value) != "" {
+			q.Campaign, q.CampaignFromCookie = strings.TrimSpace(c.Value), true
+		}
+	}
+	msg := s.takeFlash(w, r)
+	p, err := s.b.LeadList(r.Context(), q)
+	if s.leadsRead(w, r, http.StatusOK, err) {
+		return
+	}
+	if named && !spans && (q.Campaign == campaignAll ||
+		slices.ContainsFunc(p.Options.Campaigns, func(o FilterOption) bool { return o.Value == q.Campaign })) {
+		s.rememberCampaign(w, q.Campaign)
+	}
+	s.renderListPage(w, r, http.StatusOK, p, msg, false)
 }
 
+// rememberCampaign sets the remembered-campaign cookie to slug, as the session cookie is set
+// but SameSite Lax, so a link from elsewhere still opens the list on it.
+func (s *server) rememberCampaign(w http.ResponseWriter, slug string) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure is off only in dev mode, over plain http on loopback
+		Name:     s.leadsCampaign,
+		Value:    slug,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !s.opt.Dev,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(leadsCampaignTTL / time.Second),
+	})
+}
+
+// renderList shows the list under query q with a line; a refusal comes back through it. It
+// neither reads nor sets the remembered campaign: q is the page the form came from.
 func (s *server) renderList(w http.ResponseWriter, r *http.Request, code int, q url.Values, msg string, isErr bool) {
 	p, err := s.b.LeadList(r.Context(), leadListQuery(q))
 	if s.leadsRead(w, r, code, err) {
 		return
 	}
+	s.renderListPage(w, r, code, p, msg, isErr)
+}
+
+func (s *server) renderListPage(w http.ResponseWriter, r *http.Request, code int, p LeadListPage, msg string, isErr bool) {
 	v := newLeadListView(p)
 	v.Message, v.Error = msg, isErr
 	s.render(w, r, code, "leads_list", page{Title: "Leads", Active: leadsPath, SignedIn: true, Data: v})
@@ -197,6 +292,10 @@ func (s *server) leadAct(w http.ResponseWriter, r *http.Request) {
 	}
 	back := leadsBack(r.PostForm.Get("back"))
 	again := func(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool) {
+		if triageFetch(r) {
+			triageRefused(w, code, msg)
+			return
+		}
 		if u, err := url.Parse(back); err == nil && u.Path == leadsPath {
 			s.renderList(w, r, code, u.Query(), msg, isErr)
 			return
@@ -217,6 +316,19 @@ func (s *server) leadAct(w http.ResponseWriter, r *http.Request) {
 		back = atCallBlock(back)
 	}
 	s.leadsAct(w, r, a, back, again)
+}
+
+// triageFetch reports whether r is a lead action the list's script posted by fetch.
+func triageFetch(r *http.Request) bool { return r.Header.Get(triageHeader) == "1" }
+
+// triageRefused answers a fetched lead action that was refused: code with the refusal's words
+// as plain text, which the script shows as they are.
+func triageRefused(w http.ResponseWriter, code int, msg string) {
+	h := w.Header()
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(code)
+	_, _ = w.Write([]byte(msg))
 }
 
 // leadReport is GET /leads/reports/{id}: the lead's upgrade-risk report as a file to save,
@@ -359,6 +471,8 @@ func leadListQuery(v url.Values) LeadListQuery {
 		Page:         one("page"),
 		ToLabel:      one("to_label"),
 		Campaign:     one("campaign"),
+		Town:         one("town"),
+		PlaceType:    one("place_type"),
 		Reach:        one("reach"),
 	}
 }
@@ -379,6 +493,8 @@ func newLeadListView(p LeadListPage) leadListView {
 	statusOn := p.Filter.Status != "" && p.Filter.Status != "open"
 	v.ShowState = statusOn || p.Filter.Reach != "" // a next action spans states
 	v.Tabs = reachTabs(p.Filter, p.ReachCounts)
+	v.Campaigns = campaignTabs(p.Filter, p.CampaignTabs)
+	v.PlaceTypes = placeTypeChips(p.Filter, p.PlaceTypeCounts)
 	v.ShowCall = v.ToLabel
 	for _, row := range p.Rows {
 		v.ShowRelevance = v.ShowRelevance || row.Relevance != ""
@@ -387,7 +503,7 @@ func newLeadListView(p LeadListPage) leadListView {
 	}
 	for _, on := range []bool{len(p.Filter.Kinds) > 0, len(p.Filter.Countries) > 0, len(p.Filter.Channels) > 0,
 		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", statusOn, v.ToLabel,
-		p.Filter.Campaign != ""} {
+		p.Filter.Campaign != "" && p.Filter.Campaign != campaignAll, p.Filter.Town != ""} {
 		if on {
 			v.Filters++
 		}
@@ -420,7 +536,8 @@ func leadListURL(f LeadListQuery, n int) string {
 		}
 	}
 	for k, v := range map[string]string{"starred": f.Starred, "has_phone": f.HasPhone, "min_relevance": f.MinRelevance,
-		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel, "campaign": f.Campaign, "reach": f.Reach} {
+		"status": f.Status, "sort": f.Sort, "to_label": f.ToLabel, "campaign": f.Campaign, "reach": f.Reach,
+		"town": f.Town, "place_type": f.PlaceType} {
 		if v != "" {
 			q.Set(k, v)
 		}

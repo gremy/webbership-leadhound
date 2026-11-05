@@ -171,9 +171,19 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 			return console.LeadListPage{}, err
 		}
 	}
-	if err := campaignFilter(ctx, lq, q.Campaign, &f, &echo, &notes); err != nil {
+	chosen, err := campaignFilter(ctx, lq, q.Campaign, q.CampaignFromCookie, &f, &echo, &notes)
+	if err != nil {
 		return console.LeadListPage{}, err
 	}
+	tabs, open, err := campaignTabs(ctx, b, campaigns, chosen)
+	if err != nil {
+		return console.LeadListPage{}, err
+	}
+	var mix campaignMix
+	if chosen != nil {
+		mix = open[chosen.ID]
+	}
+	placeTypeFilter(q.PlaceType, mix.cafeOnly(), &f, &echo, &notes)
 	pf, err := leadstore.ListProfileJSON(w.profile)
 	if err != nil {
 		return console.LeadListPage{}, err
@@ -195,7 +205,11 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if f.Page == 1 {
 		echo.Page = ""
 	}
-	p := console.LeadListPage{Total: total, Page: f.Page, PerPage: per, Filter: echo, Options: opts, Notes: notes, LabelGoal: labelGoal}
+	p := console.LeadListPage{Total: total, Page: f.Page, PerPage: per, Filter: echo, Options: opts, Notes: notes, LabelGoal: labelGoal,
+		CampaignTabs: tabs}
+	if err := campaignReads(ctx, lq, chosen, mix, &p); err != nil {
+		return console.LeadListPage{}, err
+	}
 	// The tabs link to a blank Status (leadListURL leaves open out), so they count what they link to.
 	counted := f
 	if counted.Status == leadstore.ListOpen {
@@ -232,6 +246,22 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
+	extras, err := lq.ListExtras(ctx, ids)
+	if err != nil {
+		return console.LeadListPage{}, err
+	}
+	var cafeIDs []int64
+	for _, r := range rows {
+		if r.PlaceType != "" {
+			cafeIDs = append(cafeIDs, r.LeadID)
+		}
+	}
+	sources := map[int64]leadstore.PlaceTypeRow{}
+	if len(cafeIDs) > 0 {
+		if sources, err = lq.PlaceTypes(ctx, cafeIDs); err != nil {
+			return console.LeadListPage{}, err
+		}
+	}
 	if w.research, err = w.research.withPhones(ctx, lq, newLeadOrgs(rows...)); err != nil {
 		return console.LeadListPage{}, err
 	}
@@ -241,30 +271,193 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		if l := calls[r.LeadID]; l.Band != nil {
 			row.Call = *l.Band
 		}
+		row.PlaceTypeSource = sources[r.LeadID].Source
+		rowExtras(&row, r.State, extras[r.LeadID])
 		p.Rows = append(p.Rows, row)
 	}
 	return p, nil
 }
 
-// campaignFilter narrows f to campaign slug of the operator's account, echoed so it
-// survives paging. An unknown slug lists no lead, with a note: never an error page.
-func campaignFilter(ctx context.Context, lq leadstore.Queries, slug string, f *leadstore.ListFilter, echo *console.LeadListQuery, notes *[]string) error {
-	slug = strings.TrimSpace(slug)
-	if slug == "" {
+// rowExtras fills what a list row shows beyond its own columns from x: the summary line, the
+// expansion's details, and for a skipped lead whether the operator's Undo applies or why the
+// system skipped it.
+func rowExtras(row *console.LeadListRow, state string, x leadstore.RowExtras) {
+	row.Summary = rowSummary(*row, x)
+	row.Details.Address = x.Address
+	row.Details.Phones = x.Phones
+	for _, e := range x.Emails {
+		row.Details.Routes = append(row.Details.Routes, console.RowLink{Label: e})
+	}
+	for _, u := range x.Forms {
+		row.Details.Routes = append(row.Details.Routes, console.RowLink{Label: "Contact form", URL: u})
+	}
+	for _, u := range x.LinkedIns {
+		row.Details.Routes = append(row.Details.Routes, console.RowLink{Label: "LinkedIn", URL: u})
+	}
+	for _, u := range x.Socials {
+		row.Details.Socials = append(row.Details.Socials, console.RowLink{Label: cmp.Or(socialLabel(u), u), URL: u})
+	}
+	if state == leadstore.LeadSkipped {
+		if x.LastActor == leadstore.ActorGremy {
+			row.CanUndo = true
+		} else {
+			row.SkipReason = leadEventReason(x.LastReason)
+		}
+	}
+}
+
+// rowSummary is a row's description line: the lead's first description on one line, else its
+// town, category and address and the finding's reason, joined by " · "; "" when it has none.
+func rowSummary(row console.LeadListRow, x leadstore.RowExtras) string {
+	if d := strings.Join(strings.Fields(x.Description), " "); d != "" {
+		return d
+	}
+	var parts []string
+	for _, v := range []string{row.Town, strings.ReplaceAll(x.Category, "_", " "), x.Address, row.FindingReason} {
+		if v = strings.TrimSpace(v); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// campaignMix is what kinds of lead one campaign holds, and how many of them are open.
+type campaignMix struct {
+	open          int
+	cafe, nonCafe bool // it holds a café lead; it holds a lead of another rating type
+}
+
+// cafeOnly reports a café campaign: one with leads, every one a café lead.
+func (m campaignMix) cafeOnly() bool { return m.cafe && !m.nonCafe }
+
+// campaignTabs are the list's campaign tabs: each live campaign (and the chosen one, even
+// retired), in campaigns' order, with its open leads (state new, both place types). The
+// counts come from one small GROUP BY over lead, not from the list's own query, so they cost
+// the same whatever the filter; mix holds each campaign's counts by id. nil with no campaign.
+func campaignTabs(ctx context.Context, b *backend, campaigns []leadstore.Campaign, chosen *leadstore.Campaign) ([]console.CampaignTab, map[int64]campaignMix, error) {
+	mix := map[int64]campaignMix{}
+	if len(campaigns) == 0 {
+		return nil, mix, nil
+	}
+	rows, err := b.s.Pool().Query(ctx,
+		`SELECT l.campaign_id, l.kind, count(*) FILTER (WHERE l.state = 'new')::int
+		 FROM lead l JOIN org o ON o.id = l.org_id
+		 WHERE l.kind <> 'selftest' AND o.kind <> 'selftest'
+		 GROUP BY l.campaign_id, l.kind`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("console: campaign tabs: %w", err)
+	}
+	var (
+		id   int64
+		kind string
+		n    int
+	)
+	if _, err := pgx.ForEachRow(rows, []any{&id, &kind, &n}, func() error {
+		m := mix[id]
+		m.open += n
+		if leadstore.TypeOf(kind) == leadstore.TypeCafe {
+			m.cafe = true
+		} else {
+			m.nonCafe = true
+		}
+		mix[id] = m
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("console: campaign tabs: %w", err)
+	}
+	var tabs []console.CampaignTab
+	for _, c := range campaigns {
+		if c.RetiredAt != nil && (chosen == nil || chosen.ID != c.ID) {
+			continue
+		}
+		m := mix[c.ID]
+		tabs = append(tabs, console.CampaignTab{Slug: c.Slug, Name: c.Name, Open: m.open, Cafe: m.cafeOnly()})
+	}
+	return tabs, mix, nil
+}
+
+// campaignReads fills the reads that only a chosen campaign needs: its progress line, its
+// towns when it holds café leads, and its place type chips when it is a café campaign.
+// Nothing is read with no campaign chosen.
+func campaignReads(ctx context.Context, lq leadstore.Queries, chosen *leadstore.Campaign, mix campaignMix, p *console.LeadListPage) error {
+	if chosen == nil {
 		return nil
 	}
-	echo.Campaign = slug
-	c, err := lq.CampaignBySlug(ctx, leadstore.DefaultAccountID, slug)
-	if errors.Is(err, leadstore.ErrCampaignNotFound) {
-		*notes = append(*notes, fmt.Sprintf("No campaign is called %s, so no lead is listed.", noteValue(slug)))
-		f.LeadIDs = []int64{}
-		return nil
-	}
+	reviewed, total, err := lq.CampaignProgress(ctx, chosen.ID)
 	if err != nil {
 		return err
 	}
-	f.CampaignID = c.ID
+	p.Progress = &console.CampaignProgress{Reviewed: reviewed, Total: total}
+	if !mix.cafe {
+		return nil
+	}
+	towns, err := lq.ListTowns(ctx, chosen.ID)
+	if err != nil {
+		return err
+	}
+	for _, t := range towns {
+		p.Towns = append(p.Towns, console.FilterOption{Value: t.Town, Label: fmt.Sprintf("%s (%d)", t.Town, t.Count)})
+	}
+	if mix.cafeOnly() {
+		c, err := lq.PlaceTypeCounts(ctx, chosen.ID)
+		if err != nil {
+			return err
+		}
+		p.PlaceTypeCounts = &console.PlaceTypeCounts{Cafe: c.Cafe, Roastery: c.Roastery}
+	}
 	return nil
+}
+
+// placeTypeFilter reads the place type v into f: cafe or roastery keeps that type, all keeps
+// both, and blank is coffee shops on a café campaign and every lead elsewhere. The echo is the
+// type the list shows (cafe for the café campaign's default), so the chips know which is on;
+// any other value is ignored with a note.
+func placeTypeFilter(v string, cafeCampaign bool, f *leadstore.ListFilter, echo *console.LeadListQuery, notes *[]string) {
+	switch v = strings.ToLower(v); v {
+	case leadstore.PlaceCafe, leadstore.PlaceRoastery:
+		f.PlaceType, echo.PlaceType = v, v
+		return
+	case "all":
+		echo.PlaceType = v
+		return
+	case "":
+	default:
+		*notes = append(*notes, fmt.Sprintf("Ignored the place type %s: it takes cafe, roastery or all.", noteValue(v)))
+	}
+	if cafeCampaign {
+		f.PlaceType, echo.PlaceType = leadstore.PlaceCafe, leadstore.PlaceCafe
+	}
+}
+
+// campaignFilter narrows f to campaign slug of the operator's account, echoed so it
+// survives paging, and returns it; "all" (or blank) is every campaign and returns nil. An
+// unknown slug lists no lead, with a note: never an error page. A slug read from the
+// remembered-campaign cookie (fromCookie) that names no campaign, or a retired one, is
+// dropped silently and the list shows every campaign.
+func campaignFilter(ctx context.Context, lq leadstore.Queries, slug string, fromCookie bool, f *leadstore.ListFilter, echo *console.LeadListQuery, notes *[]string) (*leadstore.Campaign, error) {
+	slug = strings.TrimSpace(slug)
+	switch slug {
+	case "":
+		return nil, nil
+	case "all":
+		echo.Campaign = slug
+		return nil, nil
+	}
+	c, err := lq.CampaignBySlug(ctx, leadstore.DefaultAccountID, slug)
+	switch {
+	case fromCookie && (errors.Is(err, leadstore.ErrCampaignNotFound) || err == nil && c.RetiredAt != nil):
+		return nil, nil
+	case errors.Is(err, leadstore.ErrCampaignNotFound):
+		echo.Campaign = slug
+		*notes = append(*notes, fmt.Sprintf("No campaign is called %s, so no lead is listed.", noteValue(slug)))
+		f.LeadIDs = []int64{}
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	echo.Campaign = slug
+	f.CampaignID = c.ID
+	return &c, nil
 }
 
 // labelGoal is how many leads with the operator's call the trust gate needs (D9).
@@ -435,6 +628,9 @@ func leadListFilter(q console.LeadListQuery, o console.LeadFilterOptions) (f lea
 	f.Countries = known("country", q.Countries, o.Countries, strings.ToUpper)
 	f.Channels = known("channel", q.Channels, o.Channels, strings.ToLower)
 	echo.Kinds, echo.Countries, echo.Channels = f.Kinds, f.Countries, f.Channels
+	if q.Town != "" {
+		f.Towns, echo.Town = []string{q.Town}, q.Town
+	}
 
 	switch q.Starred {
 	case "":
@@ -592,12 +788,14 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		Starred: r.Starred, SmallSite: r.SmallSite,
 		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
 		Reach:    r.Reach, ReachReason: r.ReachReason, Channel: r.Channel,
+		Town: r.Town, PlaceType: r.PlaceType, FindingReason: r.Finding.Reason,
 	}
 	if strings.HasPrefix(row.Name, leadstore.PlaceOrgPrefix) {
 		row.Name = "Lead " + strconv.FormatInt(r.LeadID, 10) // a place's stand-in domain is no name
 	}
 	if r.Relevance != nil {
 		row.Relevance = leadview.RelevanceWords(r.Relevance, r.Band, slices.Contains(w.trusted, r.RType))
+		row.RelevanceWords = row.Relevance // Jev's number and band; Jev stores no reason
 	}
 	if n, ok := order[r.LeadID]; ok {
 		row.Position = strconv.Itoa(n)

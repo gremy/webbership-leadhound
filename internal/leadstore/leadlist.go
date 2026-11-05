@@ -58,7 +58,8 @@ const (
 // contactedStates are the states ListContacted shows.
 var contactedStates = []string{LeadBatched, LeadContacted, LeadReplied, LeadBounced, LeadOptedOut}
 
-// ErrBadListFilter is returned by LeadList for a status, sort or channel it does not know.
+// ErrBadListFilter is returned by LeadList for a status, sort, channel, reach or place type it
+// does not know.
 var ErrBadListFilter = errors.New("leadstore: unknown list filter value")
 
 // FindingSubject is what a lead's own finding says, from its subject: a site finding's
@@ -95,6 +96,13 @@ type ListFilter struct {
 	// Reach keeps only the leads of one bucket (ReachEmail, ...); "" keeps every bucket. A
 	// bucket picks its own states, so with Reach set a blank Status is every state.
 	Reach string
+	// Towns keeps only the leads in one of these towns, compared by lower(); a blank value names
+	// no town and is dropped, so a list of blanks filters nothing. A lead with no town, such as a
+	// Drupal lead, is left out when any town is named.
+	Towns []string
+	// PlaceType keeps only the café leads of that effective place type (PlaceCafe or
+	// PlaceRoastery); "" keeps every lead.
+	PlaceType string
 }
 
 // ListContext is what the list is weighed by.
@@ -133,6 +141,8 @@ type ListRow struct {
 	CreatedAt                   time.Time
 	Reach                       string // the lead's next action (a Reach* bucket)
 	ReachReason                 string // why a dead end; LeadDetail leaves ReachCountry to ReachOf
+	Town                        string // a café lead's latest place's locality; "" for every other lead
+	PlaceType                   string // a café lead's effective place type; "" for every other lead
 }
 
 // Detail is one lead in full: its list row and everything behind it.
@@ -288,6 +298,8 @@ type listRow struct {
 	CreatedAt       time.Time  `db:"created_at"`
 	Reach           string     `db:"reach"`
 	ReachReason     string     `db:"reach_reason"`
+	Town            string     `db:"town"`
+	PlaceType       string     `db:"place_type"`
 	Total           int        `db:"total"`
 }
 
@@ -305,6 +317,7 @@ func (r listRow) row() ListRow {
 			Reason: r.Reason, Language: r.Language, LanguageVia: r.LanguageVia,
 		},
 		CreatedAt: r.CreatedAt, Reach: r.Reach, ReachReason: r.ReachReason,
+		Town: r.Town, PlaceType: r.PlaceType,
 	}
 }
 
@@ -315,7 +328,9 @@ func (r listRow) row() ListRow {
 // latest is listed with its own finding. A site lead is one with a probe. Its relevance is
 // the latest rating under its own type's question (rtype, typeQuestionSQL): a rating under
 // another type's question is not its number. A retired route or phone counts for nothing. No
-// message body is read.
+// message body is read. Town and place_type are scalar sub-selects in the select list rather
+// than joins: this query is pulled up into its caller, so a count that names neither drops
+// them, and a page reads them only for the rows its LIMIT keeps.
 var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
 	   cg.name AS campaign_name, o.domain,
 	   coalesce(nullif(p.site_name, ''), nullif(o.name, ''), o.domain) AS name,
@@ -340,7 +355,9 @@ var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS c
 	   coalesce(f.subject->>'language_via', '') AS f_language_via,
 	   s.list_rank, coalesce(s.origin, o.source) AS origin,
 	   coalesce(p.major, 0) AS probe_major, coalesce(p.exact_version, '') AS probe_exact,
-	   rc.reach, ` + reachReasonSQL + ` AS reach_reason
+	   rc.reach, ` + reachReasonSQL + ` AS reach_reason,
+	   ` + leadTownSQL + ` AS town,
+	   ` + effectivePlaceTypeSQL + ` AS place_type
 	 FROM lead l
 	 CROSS JOIN (SELECT $1::jsonb AS pf) pf
 	 JOIN org o ON o.id = l.org_id
@@ -403,6 +420,16 @@ func listConds(f ListFilter, arg func(any) string) ([]string, error) {
 	if f.MinRelevance > 0 {
 		conds = append(conds, "m.relevance >= "+arg(min(f.MinRelevance, 100)))
 	}
+	if towns := listTowns(f.Towns); len(towns) > 0 {
+		conds = append(conds, "lower(m.town) IN (SELECT lower(t) FROM unnest("+arg(towns)+"::text[]) t)")
+	}
+	switch f.PlaceType {
+	case "":
+	case PlaceCafe, PlaceRoastery:
+		conds = append(conds, "m.place_type = "+arg(f.PlaceType))
+	default:
+		return nil, fmt.Errorf("place type %q: %w", f.PlaceType, ErrBadListFilter)
+	}
 	switch f.Status {
 	case "":
 		if f.Reach == "" {
@@ -452,8 +479,8 @@ func listWhere(conds []string) string {
 //   - newest: created, newest first, then id, highest first;
 //   - order: the starred leads only, by position, then id.
 //
-// A page past the last returns no rows and the true total. An unknown status, sort, channel
-// or reach is ErrBadListFilter.
+// A page past the last returns no rows and the true total. An unknown status, sort, channel,
+// reach or place type is ErrBadListFilter.
 func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]ListRow, int, error) {
 	args := []any{profileOrEmpty(c.ProfileJSON), c.SkipRankOver}
 	arg := func(v any) string {

@@ -23,8 +23,9 @@ import (
 // seeds as the app role, within a second each; the Leads list and the page of the lead with
 // the most messages, end to end, within half a second each (D15: read live); the dashboard,
 // which reads the leads card live, within its half second with leads set up; the Settings
-// page, which reads leads.yaml whole and the profile in force, within half a second. The old
-// queue page answers with the list in the outreach order. Nothing is written.
+// page, which reads leads.yaml whole and the profile in force, within half a second; the Leads
+// list of the café campaign alone, its rows the campaign's and no Drupal lead's, within half a
+// second. The old queue page answers with the list in the outreach order. Nothing is written.
 func TestScaleConsolePages(t *testing.T) {
 	info := leadstoretest.ScaleSeeded(t)
 	ctx := context.Background()
@@ -74,15 +75,17 @@ func TestScaleConsolePages(t *testing.T) {
 	for _, p := range []struct {
 		path, want string
 		budget     time.Duration
+		not        string // what the page must not hold, when the row names one
 	}{
-		{"/leads/outreach", "Batches waiting for approval", time.Second},
-		{fmt.Sprintf("/leads/batches/%d", batchID), fmt.Sprintf("Batch %d", batchID), time.Second},
-		{fmt.Sprintf("/jobs/%d", jobID), "<dt>Apply link</dt>", time.Second},
-		{"/leads", `<tr id="lead-w-`, 500 * time.Millisecond},
-		{"/leads?status=all&sort=relevance&page=100", "Previous page", 500 * time.Millisecond},
-		{fmt.Sprintf("/leads/%d", leadID), "Why it ranks here", 500 * time.Millisecond},
-		{"/leads?to_label=1", "35 of 30 labelled.", 500 * time.Millisecond},
-		{"/leads/settings", "Fallback order", 500 * time.Millisecond},
+		{"/leads/outreach", "Batches waiting for approval", time.Second, ""},
+		{fmt.Sprintf("/leads/batches/%d", batchID), fmt.Sprintf("Batch %d", batchID), time.Second, ""},
+		{fmt.Sprintf("/jobs/%d", jobID), "<dt>Apply link</dt>", time.Second, ""},
+		{"/leads", `<tr id="lead-w-`, 500 * time.Millisecond, ""},
+		{"/leads?campaign=" + leadstoretest.ScaleCafeCampaign, ">Fictive Cafe ", 500 * time.Millisecond, `<span class="item-meta">Drupal end-of-life</span>`},
+		{"/leads?status=all&sort=relevance&page=100", "Previous page", 500 * time.Millisecond, ""},
+		{fmt.Sprintf("/leads/%d", leadID), "Why it ranks here", 500 * time.Millisecond, ""},
+		{"/leads?to_label=1", "35 of 30 labelled", 500 * time.Millisecond, ""},
+		{"/leads/settings", "Fallback order", 500 * time.Millisecond, ""},
 	} {
 		r := httptest.NewRequest(http.MethodGet, p.path, nil)
 		r.Header.Set("Cookie", "lh_session="+token)
@@ -94,6 +97,9 @@ func TestScaleConsolePages(t *testing.T) {
 		budgets(t, p.path, peak, took, p.budget)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), p.want) {
 			t.Errorf("%s: %d, %d bytes, lacks %q", p.path, w.Code, w.Body.Len(), p.want)
+		}
+		if p.not != "" && strings.Contains(w.Body.String(), p.not) {
+			t.Errorf("%s holds %q", p.path, p.not)
 		}
 		if strings.HasPrefix(p.path, "/leads/batches/") {
 			t.Logf("%s holds %d messages", p.path, msgs)

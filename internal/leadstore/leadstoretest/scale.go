@@ -10,18 +10,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
+	"github.com/gremy/webbership-leadhound/internal/places"
 	"github.com/gremy/webbership-leadhound/internal/store/storetest"
 )
 
 // The leads part of the scale database (storetest.Seeded): a year of lead finding and
-// outreach on top of the jobs seed, seeded once and reused by every leads scale test.
+// outreach, plus a café campaign imported from map places, on top of the jobs seed, seeded
+// once and reused by every leads scale test.
 const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v8"
+	scaleLeadsVersion = "v9"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -30,6 +33,13 @@ const (
 	// scaleSeedNote marks the run rows this seed writes; their fetches hang from them, so a
 	// reseed removes exactly what the last one wrote from the core tables.
 	scaleSeedNote = "leads-seeded"
+
+	// ScaleCafeCampaign is the slug of the seed's café campaign, the one a scale test names
+	// to read the café leads alone.
+	ScaleCafeCampaign = "scale-cafes"
+
+	// scaleCafeCampaignID is the café campaign's id: campaign 1 is the default Drupal one.
+	scaleCafeCampaignID = 2
 )
 
 // The seed's sizes.
@@ -44,6 +54,7 @@ const (
 	scaleShadow      = 60
 	scaleMailboxes   = 10 // sending mailboxes, two on each of scaleMailDomains reserved domains
 	scaleMailDomains = 5
+	scaleCafes       = 2_300 // the café campaign's leads, production's size, on top of scaleLeads
 )
 
 // leadsTables are the tables of the leads migration set, emptied before a reseed.
@@ -146,6 +157,18 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 		  THEN $1::timestamptz - (60 + ` + rnd("k", 21, 305) + `) * interval '1 day' + ` + rnd("k", 22, 86400) + ` * interval '1 second'
 		  ELSE $1::timestamptz - ` + rnd("k", 21, 60) + ` * interval '1 day' + ` + rnd("k", 22, 86400) + ` * interval '1 second' END`
 	senderSHA := sha256.Sum256([]byte("sender.example"))
+	// Café i (1..scaleCafes) is place i, site scaleSites+i, org scaleOrgs+i and lead
+	// scaleLeads+i. Its domain is on the reserved .invalid, so the transfer scale test, which
+	// treats .example as carried, leaves the café campaign behind: a target holds no such
+	// campaign, and the transfer refuses a lead of a campaign it does not hold.
+	cafeSeries := `generate_series(1, ` + fmt.Sprint(scaleCafes) + `) i`
+	cafeDomain := `'cafe' || i || '.invalid'`
+	cafeName := `CASE WHEN i % 50 = 0 THEN 'Fictive Roastery ' ELSE 'Fictive Cafe ' END || i`
+	cafeCountry := `(ARRAY['GB', 'GB', 'GB', 'GB', 'GB', 'GB', 'GB', 'US', 'US', 'IE'])[1 + i % 10]`
+	cafeRegion := `(ARRAY['GB-ENG', 'GB-ENG', 'GB-ENG', 'GB-ENG', 'GB-ENG', 'GB-ENG', 'GB-ENG', 'US-IL', 'US-IL', 'IE-D'])[1 + i % 10]`
+	cafeEmail := `'hello@' || ` + cafeDomain
+	cafePhone := `'+44 20 7946 ' || lpad((i % 1000)::text, 4, '0')`
+	cafeSocial := `'https://social1.example/cafe' || i`
 	// leadPick is the CTE c of the orgs that become leads: their kind, probe, agency finding
 	// and best email and form routes.
 	leadPick := `c AS (
@@ -474,6 +497,87 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			       CASE WHEN c.k = 2 THEN NULL ELSE jsonb_build_object('kind', c.kind, 'major', 7, 'country', 'GB') END,
 			       'operator', $1::timestamptz - (3 - c.k) * interval '1 day'
 			FROM c ORDER BY c.k, c.id`, []any{day}},
+		// The café campaign, after every step above so none of them reads a café row. The
+		// campaign stays through a reseed, as its table is no lead table.
+		{"campaign cafes", `INSERT INTO campaign (id, account_id, slug, name) VALUES (` + fmt.Sprint(scaleCafeCampaignID) + `, 1, '` + ScaleCafeCampaign + `', 'Scale cafes')
+			ON CONFLICT (id) DO NOTHING`, nil},
+		// One import of one Overture release, every line kept and stored.
+		{"place_import", `INSERT INTO place_import (id, source, release, campaign_id, file_name, lines, kept, blank, malformed,
+			  not_cafe, low_confidence, other_country, no_name, stored, already, chains, orgs, sites, actor, at)
+			SELECT 1, 'overture', '2026-10-21.0', ` + fmt.Sprint(scaleCafeCampaignID) + `, 'places.ndjson', n, n, 0, 0, 0, 0, 0, 0, n, 0, 0, n, n, 'operator',
+			       $1::timestamptz - interval '20 days'
+			FROM (SELECT ` + fmt.Sprint(scaleCafes) + `::int AS n) c`, []any{day}},
+		{"site cafes", `INSERT INTO site (id, domain, country, origin, added_at, state)
+			SELECT ` + fmt.Sprint(scaleSites) + ` + i, ` + cafeDomain + `, ` + cafeCountry + `, 'place',
+			       $1::timestamptz - interval '20 days', 'new'
+			FROM ` + cafeSeries, []any{day}},
+		{"org cafes", `INSERT INTO org (id, kind, domain, name, country, region, site_id, source, created_at)
+			SELECT ` + fmt.Sprint(scaleOrgs) + ` + i, 'site_owner', ` + cafeDomain + `, ` + cafeName + `, ` + cafeCountry + `, ` + cafeRegion + `,
+			       ` + fmt.Sprint(scaleSites) + ` + i, 'place', $1::timestamptz - interval '20 days'
+			FROM ` + cafeSeries, []any{day}},
+		// Each café's place: one of 150 towns, its address and category, and its map listing's
+		// website, email on 7 in 10, phone on 8 in 10 and social page on 3 in 10.
+		{"place", `INSERT INTO place (id, import_id, source, source_id, release, name, category, country, region, region_iso,
+			  locality, postcode, freeform, websites, phones, socials, emails, confidence, org_id, imported_at)
+			SELECT i, 1, 'overture', 'scale-cafe-' || i, '2026-10-21.0', ` + cafeName + `,
+			       (ARRAY['coffee_shop', 'coffee_shop', 'coffee_shop', 'cafe', 'bakery'])[1 + i % 5],
+			       ` + cafeCountry + `, split_part(` + cafeRegion + `, '-', 2), ` + cafeRegion + `,
+			       'Testville ' || (1 + ` + rnd("i", 31, 150) + `), 'ZZ' || (i % 90) || ' 1AA', i || ' Fictive Street',
+			       jsonb_build_array('https://' || ` + cafeDomain + ` || '/'),
+			       CASE WHEN i % 10 < 8 THEN jsonb_build_array(` + cafePhone + `) ELSE '[]'::jsonb END,
+			       CASE WHEN i % 10 >= 7 THEN jsonb_build_array(` + cafeSocial + `) ELSE '[]'::jsonb END,
+			       CASE WHEN i % 10 < 7 THEN jsonb_build_array(` + cafeEmail + `) ELSE '[]'::jsonb END,
+			       0.9, ` + fmt.Sprint(scaleOrgs) + ` + i, $1::timestamptz - interval '20 days'
+			FROM ` + cafeSeries, []any{day}},
+		{"contact_route cafes", `INSERT INTO contact_route (org_id, kind, value, place_id, mx_ok, derived_by, found_at)
+			SELECT ` + fmt.Sprint(scaleOrgs) + ` + i, 'email', ` + cafeEmail + `, i, true, '` + places.DerivedBy + `', $1::timestamptz - interval '20 days'
+			FROM ` + cafeSeries + ` WHERE i % 10 < 7`, []any{day}},
+		{"org_fact cafes", `INSERT INTO org_fact (org_id, kind, value, normalized, place_id, derived_by, found_at)
+			SELECT ` + fmt.Sprint(scaleOrgs) + ` + i, 'phone', ` + cafePhone + `, '+44207946' || lpad((i % 1000)::text, 4, '0'), i, '` + places.DerivedBy + `',
+			       $1::timestamptz - interval '20 days'
+			FROM ` + cafeSeries + ` WHERE i % 10 < 8
+			UNION ALL
+			SELECT ` + fmt.Sprint(scaleOrgs) + ` + i, 'social', ` + cafeSocial + `, ` + cafeSocial + `, i, '` + places.DerivedBy + `',
+			       $1::timestamptz - interval '20 days'
+			FROM ` + cafeSeries + ` WHERE i % 10 >= 7`, []any{day}},
+		{"finding cafes", `INSERT INTO finding (org_id, kind, detector, subject, evidence, source_table, source_id, observed_at, created_at)
+			SELECT ` + fmt.Sprint(scaleOrgs) + ` + i, '` + cafe.KindNoDigitalLoyalty + `', '` + cafe.DerivedBy + `',
+			       jsonb_build_object('reason', 'no digital loyalty on the homepage', 'website', ` + cafeDomain + `, 'language', 'en'),
+			       '[]'::jsonb, '` + leadstore.FindingSourcePlace + `', i,
+			       $1::timestamptz - interval '20 days', $1::timestamptz - interval '19 days'
+			FROM ` + cafeSeries, []any{day}},
+		// Half still new, the rest moved on, as the Drupal leads; an email lead has its
+		// listing's address, the rest wait for a route.
+		{"lead cafes", `INSERT INTO lead (id, org_id, kind, finding_id, channel, route_id, state, state_at, created_at, campaign_id)
+			SELECT ` + fmt.Sprint(scaleLeads) + ` + f.source_id, f.org_id, f.kind, f.id, CASE WHEN r.id IS NULL THEN 'none' ELSE 'email' END, r.id,
+			       CASE WHEN ` + rnd("f.source_id", 32, 2) + ` = 0 THEN 'new'
+			            ELSE (ARRAY['contacted', 'contacted', 'replied', 'bounced', 'opted_out', 'skipped', 'closed'])[1 + ` + rnd("f.source_id", 33, 7) + `] END,
+			       $1::timestamptz - interval '19 days', $1::timestamptz - interval '19 days', ` + fmt.Sprint(scaleCafeCampaignID) + `
+			FROM finding f LEFT JOIN contact_route r ON r.org_id = f.org_id AND r.kind = 'email'
+			WHERE f.source_table = '` + leadstore.FindingSourcePlace + `'
+			ORDER BY f.source_id`, []any{day}},
+		{"lead_event cafes", `INSERT INTO lead_event (lead_id, state, reason, actor, at)
+			SELECT id, 'new', 'created', 'system', created_at FROM lead WHERE campaign_id = ` + fmt.Sprint(scaleCafeCampaignID) + `
+			UNION ALL
+			SELECT id, state, 'seeded', CASE WHEN state = 'skipped' THEN 'gremy' ELSE 'system' END, state_at
+			FROM lead WHERE campaign_id = ` + fmt.Sprint(scaleCafeCampaignID) + ` AND state <> 'new'
+			ORDER BY 1, 5`, nil},
+		// Half the cafés rated under the café question.
+		{"lead_relevance cafes", `WITH s AS (
+			  SELECT i, ` + rnd("i", 34, 101) + ` AS score FROM ` + cafeSeries + ` WHERE i % 2 = 0
+			)
+			INSERT INTO lead_relevance (lead_id, question, decider, model, input_sha256, band, score, probabilities, input_tokens, run_id, created_at)
+			SELECT ` + fmt.Sprint(scaleLeads) + ` + s.i, '` + leadstore.QuestionCafe + `', 'jev', 'seed-model', sha256(convert_to('cafe:' || s.i, 'UTF8')),
+			       CASE WHEN s.score >= 88 THEN 'strong' WHEN s.score >= 63 THEN 'likely' WHEN s.score >= 38 THEN 'maybe'
+			            WHEN s.score >= 13 THEN 'unlikely' ELSE 'no' END,
+			       s.score, jsonb_build_object('strong', s.score / 100.0, 'no', 1 - s.score / 100.0), 1900, $2::bigint + 1,
+			       $1::timestamptz - interval '5 days'
+			FROM s ORDER BY s.i`, []any{day, runBase}},
+		// The roasteries: a name word speaks for about 2% of the cafés.
+		{"lead_place_type", `INSERT INTO lead_place_type (lead_id, place_type, source, detail, actor, created_at)
+			SELECT ` + fmt.Sprint(scaleLeads) + ` + i, '` + leadstore.PlaceRoastery + `', '` + leadstore.PlaceFromName + `', 'roastery', 'system',
+			       $1::timestamptz - interval '5 days'
+			FROM ` + cafeSeries + ` WHERE i % 50 = 0`, []any{day}},
 	}
 	for _, s := range steps {
 		if reuse && (s.name == "run" || s.name == "http_fetch") {
@@ -494,7 +598,8 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 	}
 	// The explicit ids above leave their sequences behind; a test's own insert must not
 	// collide with them.
-	for _, tbl := range []string{"run", "http_fetch", "site", "site_probe", "org", "lead", "outreach_batch", "outreach_message", "sender_mailbox"} {
+	for _, tbl := range []string{"run", "http_fetch", "site", "site_probe", "org", "lead", "outreach_batch", "outreach_message", "sender_mailbox",
+		"campaign", "place_import", "place"} {
 		if _, err := conn.Exec(ctx,
 			fmt.Sprintf("SELECT setval(pg_get_serial_sequence('%s', 'id'), (SELECT max(id) FROM %s))", tbl, tbl)); err != nil {
 			return fmt.Errorf("seed leads: sequence %s: %w", tbl, err)

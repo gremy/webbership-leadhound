@@ -204,7 +204,9 @@ func (q Queries) TriageGood(ctx context.Context, leadID int64, input []byte) (Tr
 // CampaignProgress counts campaign campaignID's non-selftest leads for the list's "reviewed"
 // line. total is the leads in state new, skipped by the operator, or having a current call;
 // reviewed is those with a current call or skipped by the operator. A lead the system skipped,
-// such as a duplicate, counts in neither unless it has a call.
+// such as a duplicate, counts in neither unless it has a call. The latest event of each
+// skipped lead is read in one pass (DISTINCT ON over the campaign's skipped leads), because
+// lead_event has no index on lead_id and a read per lead would scan the table once for each.
 func (q Queries) CampaignProgress(ctx context.Context, campaignID int64) (reviewed, total int, err error) {
 	err = q.db.QueryRow(ctx,
 		`SELECT count(*) FILTER (WHERE s.has_call OR s.skipped_by_gremy)::int,
@@ -212,8 +214,14 @@ func (q Queries) CampaignProgress(ctx context.Context, campaignID int64) (review
 		 FROM (
 		   SELECT l.state,
 		          `+currentBandSQL("l.id")+` IS NOT NULL AS has_call,
-		          l.state = 'skipped' AND (SELECT e.actor FROM lead_event e WHERE e.lead_id = l.id ORDER BY e.id DESC LIMIT 1) IS NOT DISTINCT FROM 'gremy' AS skipped_by_gremy
+		          l.state = 'skipped' AND ev.actor IS NOT DISTINCT FROM 'gremy' AS skipped_by_gremy
 		   FROM lead l JOIN org o ON o.id = l.org_id
+		   LEFT JOIN (
+		     SELECT DISTINCT ON (e.lead_id) e.lead_id, e.actor
+		     FROM lead_event e JOIN lead x ON x.id = e.lead_id
+		     WHERE x.campaign_id = $1 AND x.state = 'skipped'
+		     ORDER BY e.lead_id, e.id DESC
+		   ) ev ON ev.lead_id = l.id
 		   WHERE l.campaign_id = $1 AND l.kind <> 'selftest' AND o.kind <> 'selftest'
 		 ) s`, campaignID).Scan(&reviewed, &total)
 	if err != nil {

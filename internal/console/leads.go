@@ -395,11 +395,17 @@ func leadsForm(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // leadsAct runs a and answers: on success a redirect to next (or to the new batch) with
-// the outcome in the one-time cookie; on a refusal the page back renders with it (422).
+// the outcome in the one-time cookie; on a refusal the page back renders with it (422). A
+// fetched triage action (triageFetch) gets 204 on success, with no flash and no redirect, and
+// its refusals are back's to answer.
 func (s *server) leadsAct(w http.ResponseWriter, r *http.Request, a LeadAction, next string,
 	back func(w http.ResponseWriter, r *http.Request, code int, msg string, isErr bool)) {
 	out, err := s.b.LeadAct(r.Context(), a)
 	switch {
+	case errors.Is(err, ErrLeadsNotSetUp) && triageFetch(r):
+		s.leadsLog(a.Do, "not set up")
+		triageRefused(w, http.StatusUnprocessableEntity, "Leads are not set up on this server; nothing changed.")
+		return
 	case errors.Is(err, ErrLeadsNotSetUp):
 		s.leadsLog(a.Do, "not set up")
 		s.render(w, r, http.StatusUnprocessableEntity, "leads_off", page{Title: "Leads", Active: leadsPath, SignedIn: true})
@@ -414,6 +420,11 @@ func (s *server) leadsAct(w http.ResponseWriter, r *http.Request, a LeadAction, 
 		return
 	}
 	s.leadsLog(a.Do, "ok")
+	if triageFetch(r) {
+		// The script removes the row and words the outcome itself: no flash, no redirect.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if out.BatchID > 0 {
 		next = leadBatchPath + strconv.FormatInt(out.BatchID, 10)
 	}

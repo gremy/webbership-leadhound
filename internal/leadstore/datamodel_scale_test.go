@@ -30,10 +30,10 @@ func TestScaleDataModelSeed(t *testing.T) {
 	}{
 		{"leads without their finding", `SELECT count(*) FROM lead l LEFT JOIN finding f ON f.id = l.finding_id
 			WHERE f.id IS NULL OR f.org_id <> l.org_id OR f.source_id <> coalesce(l.probe_id, l.agency_finding_id)`, 0},
-		{"findings", `SELECT count(*) FROM finding`, 5000},
-		{"orgs with facts", `SELECT count(DISTINCT org_id) FROM org_fact`, 4500},
-		{"latest relevance rows", `SELECT count(DISTINCT lead_id) FROM lead_relevance`, 4000},
-		{"relevance rows", `SELECT count(*) FROM lead_relevance`, 5500},
+		{"findings", `SELECT count(*) FROM finding`, 7300},
+		{"orgs with facts", `SELECT count(DISTINCT org_id) FROM org_fact`, 6800},
+		{"latest relevance rows", `SELECT count(DISTINCT lead_id) FROM lead_relevance`, 5150},
+		{"relevance rows", `SELECT count(*) FROM lead_relevance`, 6650},
 		{"settings rows", `SELECT count(*) FROM lead_setting`, 3},
 		{"label rows", `SELECT count(*) FROM lead_label`, 55},
 	} {

@@ -224,7 +224,7 @@ func scaleListContext(t *testing.T, q leadstore.Queries, trusted bool) (leadstor
 }
 
 // TestScaleLeadList: the Leads list's reads (D15: live, no snapshot) on the scale seed's
-// 5,000 leads: the default page, each filter alone, the last page by relevance over every
+// 7,300 leads (5,000 Drupal leads and the café campaign's 2,300): the default page, each filter alone, the last page by relevance over every
 // lead with the trust gate passed, within 300 ms each; the outreach order within 200 ms.
 func TestScaleLeadList(t *testing.T) {
 	q, _, _, _ := scaleLeads(t)
@@ -289,8 +289,8 @@ func TestScaleLeadList(t *testing.T) {
 	}
 }
 
-// TestScaleReachCounts: the List's tab counts, on the scale seed's 5,000 leads, within 300 ms
-// each, agreeing with the List's own totals; and one lead's next action within 150 ms.
+// TestScaleReachCounts: the List's tab counts, on the scale seed's 7,300 leads (5,000 Drupal
+// leads and the café campaign's 2,300), within 300 ms each, agreeing with the List's own totals; and one lead's next action within 150 ms.
 func TestScaleReachCounts(t *testing.T) {
 	q, s, _, _ := scaleLeads(t)
 	ctx := context.Background()

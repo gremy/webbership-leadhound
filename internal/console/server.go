@@ -217,9 +217,12 @@ type server struct {
 	flash     string // the one-time message cookie's name
 	device    string // the trusted-device cookie's name
 	themeName string // the theme cookie's name
-	pages     map[string]*template.Template
-	next      map[string]bool // the pages a sign-in may return to
-	nextAt    []string        // the patterns of signed-in pages with an id in their path
+	// leadsCampaign is the remembered-campaign cookie's name: the campaign the Leads list
+	// last named, applied when a visit names none.
+	leadsCampaign string
+	pages         map[string]*template.Template
+	next          map[string]bool // the pages a sign-in may return to
+	nextAt        []string        // the patterns of signed-in pages with an id in their path
 }
 
 // page is what the layout renders. Product and Shell are set by render from the request's
@@ -283,18 +286,20 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 		opt.Logger = slog.New(slog.DiscardHandler)
 	}
 	s := &server{
-		b:         b,
-		a:         a,
-		opt:       opt,
-		log:       opt.Logger,
-		cookie:    "__Host-lh_session",
-		flash:     "__Host-lh_flash",
-		device:    "__Host-lh_device",
-		themeName: "__Host-lh_theme",
-		next:      make(map[string]bool),
+		b:             b,
+		a:             a,
+		opt:           opt,
+		log:           opt.Logger,
+		cookie:        "__Host-lh_session",
+		flash:         "__Host-lh_flash",
+		device:        "__Host-lh_device",
+		themeName:     "__Host-lh_theme",
+		leadsCampaign: "__Host-lh_leads_campaign",
+		next:          make(map[string]bool),
 	}
 	if opt.Dev {
 		s.cookie, s.flash, s.device, s.themeName = "lh_session", "lh_flash", "lh_device", "lh_theme"
+		s.leadsCampaign = "lh_leads_campaign"
 	}
 	s.pages = s.parseTemplates()
 
