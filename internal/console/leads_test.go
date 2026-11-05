@@ -1595,3 +1595,30 @@ func TestResearchLinkedInWords(t *testing.T) {
 		t.Errorf("foundWords = %q", got)
 	}
 }
+
+// TestBatchPageNamesHeldLeads: a lead held out of café outreach after drafting is named on
+// the batch page, with the words the backend gives, before the approve form; a batch with
+// none held carries no hold line.
+func TestBatchPageNamesHeldLeads(t *testing.T) {
+	const why = "It is a roastery, held out of café outreach until you switch roasteries on in Controls or mark it a coffee shop on its row."
+	for _, held := range []bool{false, true} {
+		b := richBackend("x")
+		if held {
+			b.batch.Items[0].Held = why
+		}
+		h := newHarness(t, b, false)
+		w := h.do(get("/leads/batches/3", h.session(t)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d", w.Code)
+		}
+		body := w.Body.String()
+		named := strings.Contains(body, template.HTMLEscapeString(why))
+		summary := strings.Contains(body, "1 lead here is a roastery held out of café outreach, named below.")
+		if named != held || summary != held {
+			t.Errorf("held %v: item line %v, summary %v", held, named, summary)
+		}
+		if held && strings.Index(body, template.HTMLEscapeString(why)) > strings.Index(body, `id="approve-form"`) {
+			t.Error("the hold is named after the approve form")
+		}
+	}
+}

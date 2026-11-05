@@ -604,6 +604,8 @@ type CallQueueRow struct {
 //     message the outcome route takes). A lead that has since opted out, bounced, been
 //     suppressed or closed is left out, and so is one already queued with a due call.
 //
+// A lead held out of café outreach (roasteryHeldSQL, under its batch's account) has neither.
+//
 // CallRow.Phone is read as the call page reads it (the phone fact the step dials).
 func (q Queries) CallQueue(ctx context.Context, day time.Time, loc *time.Location) ([]CallQueueRow, error) {
 	if loc == nil {
@@ -627,13 +629,15 @@ func (q Queries) CallQueue(ctx context.Context, day time.Time, loc *time.Locatio
 	due, err := collect(ctx, q.db, pgx.RowToStructByName[CallQueueRow], lastco+wrap(callRowSQL+callPhoneLiveSQL+
 		` AND m.state = 'approved' AND b.approved_at IS NOT NULL AND NOT b.shadow AND b.discarded_at IS NULL
 		  AND m.due_at IS NOT NULL AND m.due_at < $1
-		  AND NOT EXISTS (SELECT 1 FROM call_outcome c WHERE c.message_id = m.id)`, CallQueueDue), dayEnd)
+		  AND NOT EXISTS (SELECT 1 FROM call_outcome c WHERE c.message_id = m.id)
+		  AND NOT `+roasteryHeldSQL("b.account_id"), CallQueueDue), dayEnd)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: call queue: %w", err)
 	}
 	backs, err := collect(ctx, q.db, pgx.RowToStructByName[CallQueueRow], lastco+wrap(callRowSQL+callPhoneLiveSQL+
 		` AND m.id IN (SELECT message_id FROM lastco WHERE call_back_on <= $1::date)
-		  AND l.state NOT IN ('opted_out', 'bounced', 'suppressed', 'closed')`, CallQueueBack), d.Format(time.DateOnly))
+		  AND l.state NOT IN ('opted_out', 'bounced', 'suppressed', 'closed')
+		  AND NOT `+roasteryHeldSQL("b.account_id"), CallQueueBack), d.Format(time.DateOnly))
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: call queue: %w", err)
 	}

@@ -80,9 +80,11 @@
     {{range $p.Jobs}}
     {{template "control_row" .}}
     {{end}}
+    {{template "roasteries_row" $p}}
   </ul>
   {{else}}
   <div class="empty empty-compact"><p class="empty-title">No jobs to switch</p><p class="empty-text">Jobs show here once leads are set up on this server.</p></div>
+  <ul class="list">{{template "roasteries_row" $p}}</ul>
   {{end}}
   <div class="card-foot">Rating leads with Jev is {{if $p.RatingOn}}on{{else}}off{{end}}. <a href="{{$p.RatingPath}}">Change it in Settings</a></div>
 </section>
@@ -152,5 +154,16 @@
     </form>
     {{end}}
     {{end}}
+  </span>
+</li>{{end}}
+
+{{define "roasteries_row"}}<li class="list-item" id="control-roasteries">
+  <span class="list-main">
+    <span class="list-title">Roasteries in café outreach <span class="badge {{if .RoasteriesOn}}badge-good{{else}}badge-warn{{end}}">{{if .RoasteriesOn}}On{{else}}Off{{end}}</span></span>
+    <span class="list-meta">Off: roasteries and online coffee stores are kept for later and never contacted by a café campaign.</span>
+    <form method="post" action="/controls/roasteries" class="mt-1">
+      <input type="hidden" name="do" value="{{if .RoasteriesOn}}off{{else}}on{{end}}">
+      <button type="submit" class="btn {{if .RoasteriesOn}}btn-secondary{{else}}btn-primary{{end}} btn-sm">{{if .RoasteriesOn}}Switch off{{else}}Switch on{{end}}<span class="visually-hidden"> Roasteries in café outreach</span></button>
+    </form>
   </span>
 </li>{{end}}

@@ -489,3 +489,44 @@ func TestControlsSwitchWithBrokenSettings(t *testing.T) {
 		t.Errorf("research switch %+v, %v", sw, err)
 	}
 }
+
+// TestControlRoasteriesStore: roasteries in café outreach is off with no row; switching it on
+// and off through ControlAct writes one row per real change and none for a repeat, the page
+// reads it back, and every outcome says nothing was sent.
+func TestControlRoasteriesStore(t *testing.T) {
+	ctx := context.Background()
+	_, b := controlsWorld(t, 10)
+	page := func() bool {
+		t.Helper()
+		p, err := b.Controls(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.RoasteriesOn
+	}
+	if page() {
+		t.Fatal("cold start: roasteries are on")
+	}
+	for i, step := range []struct {
+		do, want string
+		on       bool
+		rows     int
+	}{
+		{console.ControlRoasteriesOff, "Roasteries are already out of café outreach; nothing changed and nothing was sent.", false, 0},
+		{console.ControlRoasteriesOn, "Roasteries are now in café outreach: the next café batch may include roasteries and online coffee stores. Nothing was sent.", true, 1},
+		{console.ControlRoasteriesOn, "Roasteries are already in café outreach; nothing changed and nothing was sent.", true, 1},
+		{console.ControlRoasteriesOff, "Roasteries are out of café outreach: they are kept for later and no café campaign contacts them. Nothing was sent.", false, 2},
+		{console.ControlRoasteriesOff, "Roasteries are already out of café outreach; nothing changed and nothing was sent.", false, 2},
+	} {
+		out, err := b.ControlAct(ctx, console.ControlAction{Do: step.do})
+		if err != nil || out.Message != step.want {
+			t.Errorf("step %d: %+v, %v", i, out, err)
+		}
+		if got := page(); got != step.on {
+			t.Errorf("step %d: page reads %v, want %v", i, got, step.on)
+		}
+		if n := switchRows(t, "roastery_outreach_switch"); n != step.rows {
+			t.Errorf("step %d: %d rows, want %d", i, n, step.rows)
+		}
+	}
+}

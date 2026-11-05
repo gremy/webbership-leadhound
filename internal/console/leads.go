@@ -234,6 +234,17 @@ type LeadBatch struct {
 	Items     []LeadItem
 }
 
+// HeldCount is how many of the batch's leads are held out of café outreach (LeadItem.Held).
+func (b LeadBatch) HeldCount() int {
+	n := 0
+	for _, it := range b.Items {
+		if it.Held != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // LeadItem is one lead of a batch, numbered as the approval's skip list.
 type LeadItem struct {
 	N                            int
@@ -241,6 +252,10 @@ type LeadItem struct {
 	Domain, Kind, Channel, Route string
 	Finding                      []string // the finding and each piece of evidence, one line each
 	Messages                     []LeadMessage
+	// Held is why the lead is held out of café outreach now (a roastery while roasteries are
+	// off), as a sentence; "" when it is not. Read when the page is drawn, so a tag made after
+	// drafting shows before approval.
+	Held string
 }
 
 // LeadMessage is one drafted message.

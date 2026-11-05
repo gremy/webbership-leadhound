@@ -35,7 +35,8 @@ func TestLeadsSwitchListSet(t *testing.T) {
 	leadsDB(t)
 	out := switchRun(t, "leads", "switches", "list")
 	wantLines(t, "cold list", out, "Sending: on · never switched", "Morning batch: on · never switched", "Inbox sync: on",
-		"Site probe: on", "Contacts: on", "Research: on", "Email check: on")
+		"Site probe: on", "Contacts: on", "Research: on", "Email check: on",
+		"Roasteries in café outreach: off (set on the Controls page)")
 
 	out = switchRun(t, "leads", "switches", "set", "probe", "off", "--reason", "too many fetches")
 	wantLines(t, "off", out, "Site probe is switched off")
@@ -53,6 +54,11 @@ func TestLeadsSwitchListSet(t *testing.T) {
 	if err != nil || !s.On || s.Actor != leadstore.ActorGremy {
 		t.Errorf("probe after on: %+v %v", s, err)
 	}
+	if _, err := leadstoretest.Q(t).SetRoasteryOutreach(context.Background(), leadstore.DefaultAccountID, true, leadstore.ActorGremy); err != nil {
+		t.Fatal(err)
+	}
+	out = switchRun(t, "leads", "switches", "list")
+	wantLines(t, "list with roasteries on", out, "Roasteries in café outreach: on (set on the Controls page)")
 
 	for _, args := range [][]string{
 		{"leads", "switches"},

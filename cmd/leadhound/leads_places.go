@@ -442,7 +442,8 @@ func cafeConfig(cfg leadconfig.Config) (*cafe.Config, error) {
 // evidence is the probe's signals. A lead still new is refreshed or skipped as in the
 // Drupal build; one past new is left as it is. Every lead made or refreshed here also gets
 // its name row (tagPlaceNames) in the same transaction, read after the lead is written since
-// a refresh can move it to a probe with another name.
+// a refresh can move it to a probe with another name. Last, the campaign's duplicates
+// (skipDuplicates) are skipped.
 func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config, spec campaign.Spec, campaignID int64) (buildSummary, error) {
 	sum := buildSummary{ByKind: map[string]map[string]int{}, NoLead: map[string]int{}}
 	orgs, err := lq.CafeOrgsForBuild(ctx, campaignID)
@@ -469,6 +470,7 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 	}
 	chains := newBuildChains(lq, spec)
 	var built []int64
+	tally := map[int64][2]string{} // each lead built here → its kind and channel in sum
 	for _, o := range orgs {
 		sum.Orgs++
 		if o.LeadID != nil && o.LeadState != leadstore.LeadNew {
@@ -536,6 +538,7 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 				sum.Refreshed++
 			}
 			built = append(built, *o.LeadID)
+			tally[*o.LeadID] = [2]string{d.Kind, channel}
 		} else {
 			leadID, created, err := lq.UpsertLead(ctx, row)
 			if err != nil {
@@ -545,6 +548,7 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 				sum.Created++
 			}
 			built = append(built, leadID)
+			tally[leadID] = [2]string{d.Kind, channel}
 		}
 		sum.Leads++
 		if outreach.ReservedDomain(o.Domain) {
@@ -559,7 +563,63 @@ func buildCafeLeads(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Co
 	if _, err := tagPlaceNames(ctx, lq, names); err != nil {
 		return sum, err
 	}
-	return sum, nil
+	return sum, skipDuplicates(ctx, lq, campaignID, &sum, tally)
+}
+
+// noLeadDuplicate is the no-lead reason a duplicate is counted under on the summary.
+const noLeadDuplicate = "duplicate of another lead"
+
+// skipDuplicates skips every duplicate lead of the campaign (leadstore.DuplicateLeads) with
+// the reason "duplicate of lead N", N its keeper, as the system, so the operator's Undo
+// refuses it: the next build would skip it again. Whenever the campaign holds a duplicate
+// group, the summary's no-lead line counts the leads this build moved, so a rebuild reads 0
+// (a duplicate already skipped is not moved again), and names the called or starred leads
+// that stayed beside their keeper. A lead moved here leaves the build's lead tally (tally
+// holds the kind and channel each lead built in this run was counted under).
+func skipDuplicates(ctx context.Context, lq leadstore.Queries, campaignID int64, sum *buildSummary, tally map[int64][2]string) error {
+	dups, err := lq.DuplicateLeads(ctx, campaignID)
+	if err != nil {
+		return err
+	}
+	if dups.Groups == 0 {
+		return nil
+	}
+	skipped := 0
+	for _, d := range dups.Skips {
+		moved, err := lq.SkipNewLead(ctx, d.LeadID, fmt.Sprintf("duplicate of lead %d", d.KeeperID))
+		if err != nil {
+			return err
+		}
+		if !moved {
+			continue
+		}
+		skipped++
+		if kc, ok := tally[d.LeadID]; ok {
+			sum.Leads--
+			if sum.ByKind[kc[0]][kc[1]]--; sum.ByKind[kc[0]][kc[1]] <= 0 {
+				delete(sum.ByKind[kc[0]], kc[1])
+			}
+		}
+	}
+	sum.NoLead[duplicateReason(dups.Collisions)] = skipped
+	return nil
+}
+
+// duplicateReason is noLeadDuplicate with, when a called or starred lead stayed beside its
+// keeper, which leads those are, so the operator can settle them by hand.
+func duplicateReason(collisions []leadstore.DuplicateCollision) string {
+	if len(collisions) == 0 {
+		return noLeadDuplicate
+	}
+	parts := make([]string, len(collisions))
+	for i, c := range collisions {
+		ids := make([]string, len(c.Stayed))
+		for j, id := range c.Stayed {
+			ids[j] = fmt.Sprint(id)
+		}
+		parts[i] = fmt.Sprintf("lead %s beside lead %d", strings.Join(ids, ", "), c.KeeperID)
+	}
+	return fmt.Sprintf("%s (called or starred, so kept: %s)", noLeadDuplicate, strings.Join(parts, "; "))
 }
 
 // cafeFinding is the finding a café lead rests on: the Decision's reason and the language

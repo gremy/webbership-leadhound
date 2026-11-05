@@ -599,6 +599,11 @@ func discardOpenManual(ctx context.Context, tq leadstore.Queries, ids []int64) e
 	return nil
 }
 
+// roasteryHeldWhy is why a lead held out of café outreach (leadstore.HeldLeads) is not sent
+// or drafted, with the two places to change it, as a clause: manualStopWords makes it the
+// sentence Send now, the lead page, Draft it and the batch page show.
+const roasteryHeldWhy = "it is a roastery, held out of café outreach until you switch roasteries on in Controls or mark it a coffee shop on its row"
+
 // manualStopWords is a reason newBatch gave, as one sentence that starts with a capital.
 func manualStopWords(why string) string {
 	why = strings.TrimSpace(why)
@@ -748,6 +753,10 @@ func manualLeftOut(ctx context.Context, lq leadstore.Queries, bs batchSetup, cam
 	if err != nil {
 		return d, err
 	}
+	held, err := lq.HeldLeads(ctx, []int64{id})
+	if err != nil {
+		return d, err
+	}
 	switch {
 	case l.CampaignID != campaignID:
 		d.Why = "it is in another campaign; send it on its own"
@@ -757,6 +766,8 @@ func manualLeftOut(ctx context.Context, lq leadstore.Queries, bs batchSetup, cam
 		d.Why = "its state is " + leadStateWords(l.State) + ", and only a new lead can be sent"
 	case outreach.Suppressed(route, o.Domain, outreach.NewSuppressionSet(s.Addresses, s.Domains)):
 		d.Why = "it is suppressed (opted out or blocked)"
+	case held[id]:
+		d.Why = roasteryHeldWhy
 	case !bs.shadow && !leadsMail.allowReserved && (outreach.ReservedDomain(o.Domain) || outreach.ReservedDomain(recipientDomain(route))):
 		d.Why = "it is on a reserved test domain, never sent for real"
 	}
@@ -959,6 +970,12 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 	if err != nil {
 		return plan, f, err
 	}
+	// The roastery hold as it stands now, read once: a lead tagged after the page was drawn is
+	// stopped here, whatever the page showed.
+	roastery, err := lq.HeldLeads(ctx, leadIDs)
+	if err != nil {
+		return plan, f, err
+	}
 
 	type cand struct {
 		i    int // index in plan.Leads
@@ -1007,6 +1024,10 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 		case all != "":
 			l.Stop = all
 		case suppressed, it.Lead.State != want:
+		case roastery[it.Lead.ID]:
+			// Before the by-hand steps: a held lead's contact form, LinkedIn note or call is
+			// never approved either.
+			l.Stop = manualStopWords(roasteryHeldWhy)
 		case addr == "" && batchMode:
 			byHand++ // approved as Approve approves it; nothing of it is sent by email now
 		case addr == "":
@@ -1265,7 +1286,7 @@ func (b *backend) manualSendPlan(ctx context.Context, setup leadsSetup, id int64
 			plan.Notes = append(plan.Notes, what+" approved for you to do by hand.")
 		}
 		for _, l := range plan.Leads {
-			if l.Stop != "" && all == "" && emailLead[l.LeadID] {
+			if l.Stop != "" && all == "" && (emailLead[l.LeadID] || roastery[l.LeadID]) {
 				blocked = true
 				plan.Notes = append(plan.Notes, fmt.Sprintf("%s can't go now: %s Use Approve to send the batch on its normal schedule, or pick the other leads on the Leads list.",
 					cmp.Or(l.Name, l.Domain, fmt.Sprintf("Lead %d", l.LeadID)), l.Stop))

@@ -99,6 +99,46 @@ func (s *server) controlAct(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, controlsPath, http.StatusSeeOther)
 }
 
+// roasteriesAnchor is the roasteries switch's row on the Controls page.
+const roasteriesAnchor = "#control-roasteries"
+
+// roasteriesAct is POST /controls/roasteries: do=on puts roasteries and online coffee stores
+// in café outreach, do=off keeps them out of it. It sends nothing either way.
+func (s *server) roasteriesAct(w http.ResponseWriter, r *http.Request) {
+	if !leadsForm(w, r) {
+		return
+	}
+	var a ControlAction
+	switch r.PostForm.Get("do") {
+	case "on":
+		a.Do = ControlRoasteriesOn
+	case "off":
+		a.Do = ControlRoasteriesOff
+	default:
+		s.controlsLog("roasteries", "", "refused")
+		s.renderControls(w, r, http.StatusUnprocessableEntity, "Choose on or off; nothing was changed.", true)
+		return
+	}
+	out, err := s.b.ControlAct(r.Context(), a)
+	switch {
+	case errors.Is(err, ErrLeadsNotSetUp):
+		s.controlsLog("roasteries", a.Do, "not set up")
+		s.render(w, r, http.StatusUnprocessableEntity, "leads_off", page{Title: "Controls", Active: controlsPath, SignedIn: true})
+		return
+	case errors.Is(err, ErrUserFixable):
+		s.controlsLog("roasteries", a.Do, "refused")
+		s.renderControls(w, r, http.StatusUnprocessableEntity, refusalWords(err), true)
+		return
+	case err != nil:
+		s.controlsLog("roasteries", a.Do, "failed")
+		s.leadsFail(w, r, err)
+		return
+	}
+	s.controlsLog("roasteries", a.Do, "ok")
+	s.setFlash(w, out.Message)
+	http.Redirect(w, r, controlsPath+roasteriesAnchor, http.StatusSeeOther)
+}
+
 // sendNow is POST /controls/send-now: one send that skips the sending window. An optional
 // back of exactly the Outreach list's path returns there; any other value is ignored, so the
 // form can never send the browser elsewhere.

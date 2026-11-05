@@ -908,7 +908,11 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		}
 		p.HasLinkedIn = p.HasLinkedIn || r.Kind == leadstore.RouteLinkedIn
 	}
-	p.SendNowBlock = sendNowBlock(w.cfg, d.ListRow, len(addrs) > 0, hasMX)
+	held, err := b.lq().HeldLeads(ctx, []int64{id})
+	if err != nil {
+		return console.LeadDetailPage{}, err
+	}
+	p.SendNowBlock = sendNowBlock(w.cfg, d.ListRow, len(addrs) > 0, hasMX, held[id])
 	checks, err := b.lq().EmailChecks(ctx, leadstore.DefaultAccountID, addrs, time.Time{})
 	if err != nil {
 		return console.LeadDetailPage{}, err
@@ -1082,9 +1086,12 @@ func placeAddress(pl leadstore.LeadPlace) string {
 }
 
 // sendNowBlock is why Send now cannot send lead r, from the lead alone, in the words the
-// manual send's refusal uses (manualLeftOut); "" when it may be tried.
-func sendNowBlock(cfg leadconfig.Config, r leadstore.ListRow, hasEmail, hasMX bool) string {
+// manual send's refusal uses (manualLeftOut); "" when it may be tried. held is the lead's
+// roastery hold (leadstore.HeldLeads): a roastery while roasteries are off in café outreach.
+func sendNowBlock(cfg leadconfig.Config, r leadstore.ListRow, hasEmail, hasMX, held bool) string {
 	switch {
+	case held && (r.State == leadstore.LeadNew || r.State == leadstore.LeadBatched):
+		return manualStopWords(roasteryHeldWhy)
 	case r.State == leadstore.LeadBatched:
 		return "It is already in a batch that waits for approval; send that batch instead."
 	case r.State != leadstore.LeadNew:

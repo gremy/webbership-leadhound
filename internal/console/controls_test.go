@@ -226,3 +226,72 @@ func TestNoGuardSwitchOnAnyPage(t *testing.T) {
 		}
 	}
 }
+
+// TestControlsRoasteriesRow: the roasteries switch sits with the job switches, off by
+// default with a Switch on button, and on with a Switch off button, its plain line both ways.
+func TestControlsRoasteriesRow(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		b := controlsBackend()
+		b.controls.RoasteriesOn = on
+		h := newHarness(t, b, false)
+		body := h.do(get("/controls", h.session(t))).Body.String()
+		row := body[strings.Index(body, `id="control-roasteries"`):]
+		row = row[:strings.Index(row, "</li>")]
+		badge, do, button := `badge-warn">Off`, `name="do" value="on"`, "Switch on"
+		if on {
+			badge, do, button = `badge-good">On`, `name="do" value="off"`, "Switch off"
+		}
+		for _, want := range []string{
+			"Roasteries in café outreach", badge, `action="/controls/roasteries"`, do, button,
+			"Off: roasteries and online coffee stores are kept for later and never contacted by a café campaign.",
+		} {
+			if !strings.Contains(row, want) {
+				t.Errorf("on=%v: the row lacks %q", on, want)
+			}
+		}
+		jobsAt, rowAt, guardsAt := strings.Index(body, `id="jobs-h"`), strings.Index(body, `id="control-roasteries"`), strings.Index(body, `id="guards-h"`)
+		if jobsAt < 0 || rowAt < jobsAt || guardsAt < rowAt {
+			t.Errorf("on=%v: the row is not in the Jobs card", on)
+		}
+	}
+}
+
+// TestControlsRoasteriesPosts: on and off reach ControlAct as their own actions and return to
+// the row; anything else is refused without a write.
+func TestControlsRoasteriesPosts(t *testing.T) {
+	for do, want := range map[string]string{"on": ControlRoasteriesOn, "off": ControlRoasteriesOff} {
+		h := newHarness(t, controlsBackend(), false)
+		w := h.do(post("/controls/roasteries", url.Values{"do": {do}}, h.session(t)))
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/controls#control-roasteries" {
+			t.Fatalf("%s: got %d to %q", do, w.Code, w.Header().Get("Location"))
+		}
+		if h.b.lastControl != (ControlAction{Do: want}) {
+			t.Errorf("%s: ControlAct got %+v", do, h.b.lastControl)
+		}
+		if c := cookieNamed(w, "__Host-lh_flash"); c == nil || c.Value == "" {
+			t.Errorf("%s: no flash", do)
+		}
+	}
+
+	h := newHarness(t, controlsBackend(), false)
+	w := h.do(post("/controls/roasteries", url.Values{"do": {"maybe"}}, h.session(t)))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "Choose on or off; nothing was changed.") {
+		t.Errorf("a bad do: %d", w.Code)
+	}
+	if n := h.b.n("ControlAct"); n != 0 {
+		t.Errorf("a bad do called ControlAct %d times", n)
+	}
+
+	h = newHarness(t, controlsBackend(), false)
+	h.b.ctlErr = errors.New("database gone")
+	if w := h.do(post("/controls/roasteries", url.Values{"do": {"on"}}, h.session(t))); w.Code != http.StatusInternalServerError {
+		t.Errorf("a backend failure: %d, want 500", w.Code)
+	}
+
+	h = newHarness(t, controlsBackend(), false)
+	r := post("/controls/roasteries", url.Values{"do": {"on"}}, h.session(t))
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	if w := h.do(r); w.Code != http.StatusForbidden || h.b.total() != 0 {
+		t.Errorf("cross-site: %d, backend called %d times", w.Code, h.b.total())
+	}
+}

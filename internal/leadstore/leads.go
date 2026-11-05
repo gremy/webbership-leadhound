@@ -363,8 +363,8 @@ type CandidateOptions struct {
 // bounced or opted out), of a kind batches draft (lead_kind.outreach), a site lead's probe still its site's
 // latest (else it waits for RefreshLead), not deferred through o.Today, not in a country
 // the profile excludes, not on a reserved TLD unless o.IncludeReserved (ReservedTLDs;
-// RA25), not of a kind in o.KindsOff, not a site lead left out by o.SkipRankOver, and, with
-// o.StarredOnly, starred. They come starred first, by the operator's position (then id),
+// RA25), not of a kind in o.KindsOff, not a site lead left out by o.SkipRankOver, not a
+// roastery held out of café outreach (roasteryHeldSQL), and, with o.StarredOnly, starred. They come starred first, by the operator's position (then id),
 // then the unstarred: those of a type in o.TrustedTypes by relevance (unrated last, every
 // other lead after them), then by their
 // score under the profile (EffectiveProfile over o.Profile, computed in SQL so the limit
@@ -464,6 +464,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     AND (NOT $8::bool OR coalesce(st.action <> 'unstar', false))
 		     AND ($11::bigint = 0 OR l.campaign_id = $11::bigint)
 		     AND ($12::text[] IS NULL OR upper(o.country) = ANY($12::text[]))
+		     AND NOT `+roasteryHeldSQL("$10")+`
 		 ), acct AS MATERIALIZED (
 		   SELECT id FROM campaign WHERE account_id = $10
 		 ), reached AS MATERIALIZED (

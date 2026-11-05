@@ -509,6 +509,7 @@ type starredFacts struct {
 	Reached        bool       `db:"reached"`
 	ResearchStatus *string    `db:"research_status"`
 	ResearchAt     *time.Time `db:"research_at"`
+	Held           bool       `db:"held"` // a roastery held out of café outreach (roasteryHeldSQL)
 }
 
 // StarredStatus returns every starred lead of o's account (and campaign, when set) in the
@@ -518,7 +519,8 @@ type starredFacts struct {
 // predicates CandidateLeads applies (leads.go), checked in this order: suppressed (or opted out), not
 // new, reached, deferred, the country rule (the profile's exclude_countries, then o.Countries),
 // another exclusion (kind not drafted or turned off, a stale probe, a selftest or reserved
-// domain), skip_rank_over, then for a lead with no usable route its research (looking,
+// domain), skip_rank_over, a roastery held out of café outreach (StarredRoasteryWords; its
+// research stays allowed, as a star is the operator's own act), then for a lead with no usable route its research (looking,
 // found nothing) or no email yet. A lead offered past o.Limit is ranked out. Cross-campaign
 // skips (cmd's OpenElsewhere) are not judged here.
 func (q Queries) StarredStatus(ctx context.Context, o StarredStatusOptions) ([]StarredState, error) {
@@ -561,7 +563,8 @@ func (q Queries) StarredStatus(ctx context.Context, o StarredStatusOptions) ([]S
 		       AND (o2.domain IN (o.domain, nullif(lower(split_part(CASE WHEN r.kind = 'email' THEN r.value END, '@', 2)), ''))
 		         OR nullif(lower(split_part(r2.value, '@', 2)), '') IN (o.domain, nullif(lower(split_part(CASE WHEN r.kind = 'email' THEN r.value END, '@', 2)), '')))
 		   ) AS reached,
-		   rs.status AS research_status, coalesce(rs.finished_at, rs.requested_at) AS research_at
+		   rs.status AS research_status, coalesce(rs.finished_at, rs.requested_at) AS research_at,
+		   `+roasteryHeldSQL("$1")+` AS held
 		 FROM lead l
 		 JOIN LATERAL (
 		   SELECT x.action, x.position FROM lead_star x WHERE x.lead_id = l.id ORDER BY x.id DESC LIMIT 1
@@ -641,6 +644,8 @@ func starredReason(f starredFacts, offered map[int64]int, o StarredStatusOptions
 		return StarredOther, "it is on a reserved domain", nil
 	case f.HasProbe && o.SkipRankOver > 0 && (f.ListRank == nil || *f.ListRank > o.SkipRankOver):
 		return StarredRankedOut, fmt.Sprintf("skip_rank_over is %d", o.SkipRankOver), nil
+	case f.Held:
+		return StarredOther, StarredRoasteryWords, nil
 	case f.Channel != ChannelNone:
 		return StarredOther, "the batch does not offer it", nil // a predicate this list does not name
 	}

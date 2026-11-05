@@ -347,6 +347,13 @@ func draftableNow(ctx context.Context, s *store.Store, lq leadstore.Queries, lea
 	if suppressed {
 		return refused("It is suppressed (opted out or blocked).")
 	}
+	held, err := lq.HeldLeads(ctx, []int64{lead.ID})
+	if err != nil {
+		return err
+	}
+	if held[lead.ID] {
+		return refused("%s", manualStopWords(roasteryHeldWhy))
+	}
 	why, err := lq.OpenElsewhere(ctx, leadstore.DefaultAccountID, lead.CampaignID, []int64{org.ID})
 	if err != nil {
 		return err

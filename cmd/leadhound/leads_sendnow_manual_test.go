@@ -95,16 +95,21 @@ func TestNoChannelWhy(t *testing.T) {
 // the refusal's own words as a sentence.
 func TestSendNowBlock(t *testing.T) {
 	cfg := leadconfig.Config{Countries: map[string]leadconfig.Country{"DE": {Channel: leadconfig.ChannelForm}}}
+	held := manualStopWords(roasteryHeldWhy)
 	for _, c := range []struct {
 		row  leadstore.ListRow
+		held bool
 		want string
 	}{
-		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelEmail}, ""},
-		{leadstore.ListRow{State: leadstore.LeadBatched, Channel: leadstore.ChannelEmail}, "It is already in a batch that waits for approval; send that batch instead."},
-		{leadstore.ListRow{State: leadstore.LeadOptedOut, Channel: leadstore.ChannelEmail}, "Its state is opted out, and only a new lead can be sent."},
-		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelNone, Country: "DE"}, "Germany is written to by contact form only in leads.yaml, and it has no contact form."},
+		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelEmail}, false, ""},
+		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelEmail}, true, held},
+		{leadstore.ListRow{State: leadstore.LeadBatched, Channel: leadstore.ChannelEmail}, true, held},
+		{leadstore.ListRow{State: leadstore.LeadOptedOut, Channel: leadstore.ChannelEmail}, true, "Its state is opted out, and only a new lead can be sent."},
+		{leadstore.ListRow{State: leadstore.LeadBatched, Channel: leadstore.ChannelEmail}, false, "It is already in a batch that waits for approval; send that batch instead."},
+		{leadstore.ListRow{State: leadstore.LeadOptedOut, Channel: leadstore.ChannelEmail}, false, "Its state is opted out, and only a new lead can be sent."},
+		{leadstore.ListRow{State: leadstore.LeadNew, Channel: leadstore.ChannelNone, Country: "DE"}, false, "Germany is written to by contact form only in leads.yaml, and it has no contact form."},
 	} {
-		if got := sendNowBlock(cfg, c.row, true, true); got != c.want {
+		if got := sendNowBlock(cfg, c.row, true, true, c.held); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.row, got, c.want)
 		}
 	}

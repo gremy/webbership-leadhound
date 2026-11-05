@@ -12,6 +12,7 @@
 {{if $v.Message}}<p class="notice{{if $v.Error}} notice-error{{end}}" role="{{if $v.Error}}alert{{else}}status{{end}}">{{$v.Message}}</p>{{end}}
 {{if and (not $b.ApprovedAt) (not $b.DiscardedAt)}}<p>Read each lead's finding and every message. Approve the batch at the bottom, leaving out any lead you do not want written to.</p>{{end}}
 {{if $b.Shadow}}<p class="muted">A shadow batch: nothing in it is sent, and its leads stay new.</p>{{end}}
+{{with $b.HeldCount}}<p class="notice notice-error" role="alert">{{plural . "lead here is a roastery" "leads here are roasteries"}} held out of café outreach, named below. Nothing is sent to {{if eq . 1}}it{{else}}them{{end}}: approved anyway, {{if eq . 1}}its{{else}}their{{end}} messages are cancelled when the send reaches them.</p>{{end}}
 
 <div class="stack mt-2">
 {{range $b.Items}}
@@ -19,6 +20,7 @@
   <div class="card-head"><h2>{{.N}}. {{.Domain}}</h2></div>
   <div class="card-body">
   <p class="muted small">{{.Kind}} · {{.Channel}}{{with .Route}} · {{.}}{{end}}</p>
+  {{with .Held}}<p class="notice notice-error">{{.}}{{if and $b.HashPrefix (not $b.Changed)}} Leave it out below.{{end}}</p>{{end}}
   {{if .Finding}}<ul class="evidence">{{range .Finding}}<li>{{.}}</li>{{end}}</ul>{{end}}
   {{range .Messages}}
   <section class="message mt-2">

@@ -1167,8 +1167,9 @@ type ControlsBackend interface {
 	// SendingWhy is the one sentence about sending the Controls page leads with, for the
 	// Leads page and the dashboard. It never writes.
 	SendingWhy(ctx context.Context) (SendingWhy, error)
-	// ControlAct runs one write: a job switch (ControlSwitchOn, ControlSwitchOff) or a
-	// campaign's mailbox (ControlAssign, ControlUnassign). The sending switch is not one: it
+	// ControlAct runs one write: a job switch (ControlSwitchOn, ControlSwitchOff), roasteries
+	// in café outreach (ControlRoasteriesOn, ControlRoasteriesOff) or a campaign's mailbox
+	// (ControlAssign, ControlUnassign). The sending switch is not one: it
 	// stays LeadAct's LeadPause and LeadResume. A refusal the operator can fix wraps
 	// ErrUserFixable with the words to show.
 	ControlAct(ctx context.Context, a ControlAction) (ControlOutcome, error)
@@ -1201,6 +1202,10 @@ const (
 	ControlSwitchOff = "off"      // Job, Reason
 	ControlAssign    = "assign"   // Campaign, MailboxID
 	ControlUnassign  = "unassign" // Campaign, MailboxID
+	// ControlRoasteriesOn and ControlRoasteriesOff put roasteries and online coffee stores in
+	// café outreach or keep them out of it; they take no other field.
+	ControlRoasteriesOn  = "roasteries-on"
+	ControlRoasteriesOff = "roasteries-off"
 )
 
 // The jobs a switch turns on and off, as the store names them; the route segment of a
@@ -1317,6 +1322,10 @@ type ControlsPage struct {
 	// WindowProblems are why the window last submitted was refused, in plain words; the form
 	// then holds what was submitted.
 	WindowProblems []string
+	// RoasteriesOn is whether roasteries and online coffee stores are in café outreach. It is
+	// off until the operator switches it on: off, they are kept for later and never contacted
+	// by a café campaign.
+	RoasteriesOn bool
 }
 
 // RatingSettingsPath is the rating setting on the Settings page.

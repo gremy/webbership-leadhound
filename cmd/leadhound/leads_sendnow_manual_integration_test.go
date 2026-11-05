@@ -269,6 +269,9 @@ func TestSendNowPlanHardStops(t *testing.T) {
 		{name: "draft changed", whole: true, after: func(t *testing.T, b *backend, lead int64) {
 			ownerExec(t, `UPDATE outreach_message SET body_text = body_text || ' changed' WHERE lead_id = $1 AND step = 0`, lead)
 		}},
+		{name: "roastery held", after: func(t *testing.T, b *backend, lead int64) {
+			holdAsRoastery(t, lead)
+		}},
 		{name: "lead skipped", after: func(t *testing.T, b *backend, lead int64) {
 			ownerExec(t, `UPDATE lead SET state = 'closed' WHERE id = $1`, lead)
 		}},

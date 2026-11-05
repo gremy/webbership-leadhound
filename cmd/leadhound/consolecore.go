@@ -689,10 +689,25 @@ func (b *backend) LeadBatch(ctx context.Context, id int64) (console.LeadBatch, e
 		}
 		out.SendAgain = waiting && !gone
 	}
+	// The roastery hold as it stands now, read once for the batch: a lead tagged after drafting
+	// is named before approval (its messages are cancelled at send time if approved anyway).
+	var held map[int64]bool
+	if v.Batch.DiscardedAt == nil {
+		ids := make([]int64, 0, len(v.Items))
+		for _, it := range v.Items {
+			ids = append(ids, it.Lead.ID)
+		}
+		if held, err = b.lq().HeldLeads(ctx, ids); err != nil {
+			return console.LeadBatch{}, err
+		}
+	}
 	gens := map[int64]*outreach.WrittenDraft{}
 	for _, it := range v.Items {
 		li := console.LeadItem{N: it.N, LeadID: it.Lead.ID, Domain: it.Org.Domain, Kind: it.Lead.Kind, Channel: it.Lead.Channel, Route: it.Route,
 			Finding: findingLines(v.Evidence[it.Lead.ID])}
+		if held[it.Lead.ID] {
+			li.Held = manualStopWords(roasteryHeldWhy)
+		}
 		for _, m := range it.Msgs {
 			lm := console.LeadMessage{ID: m.ID, Label: consoleMessageLabel(m, stepCount(v.Batch, it.Msgs)), Channel: m.Channel, To: m.ToAddress,
 				Subject: m.Subject, Body: strings.TrimRight(m.BodyText, "\n"), CancelReason: m.CancelReason}

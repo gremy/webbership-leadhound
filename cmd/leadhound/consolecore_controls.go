@@ -819,6 +819,9 @@ func (b *backend) Controls(ctx context.Context) (console.ControlsPage, error) {
 	if err != nil {
 		return console.ControlsPage{}, err
 	}
+	if p.RoasteriesOn, err = lq.RoasteryOutreachOn(ctx, leadstore.DefaultAccountID); err != nil {
+		return console.ControlsPage{}, err
+	}
 	p.Sending = controlView(controlSending, "Sending", !f.paused, f.pausedAt, f.pauseReason, pausedBy, timers, last, b.now())
 	sws, err := lq.JobSwitches(ctx, leadstore.DefaultAccountID)
 	if err != nil {
@@ -1045,7 +1048,8 @@ func serverGuards(getenv func(string) string) []console.ServerGuard {
 	return []console.ServerGuard{o, l, t}
 }
 
-// ControlAct runs one Controls write: a job switch, or a campaign's mailbox.
+// ControlAct runs one Controls write: a job switch, roasteries in café outreach, or a
+// campaign's mailbox.
 // It reads no leads settings: a switch must work while leads.yaml is broken (switching a job
 // off is how a broken run is stopped), and the request file a switch-on writes lives in
 // LEADHOUND_DATA_DIR itself.
@@ -1053,6 +1057,8 @@ func (b *backend) ControlAct(ctx context.Context, a console.ControlAction) (cons
 	switch a.Do {
 	case console.ControlSwitchOn, console.ControlSwitchOff:
 		return b.setJobSwitch(ctx, a.Job, a.Do == console.ControlSwitchOn, a.Reason)
+	case console.ControlRoasteriesOn, console.ControlRoasteriesOff:
+		return b.setRoasteryOutreach(ctx, a.Do == console.ControlRoasteriesOn)
 	case console.ControlAssign, console.ControlUnassign:
 		return b.setCampaignMailbox(ctx, a.Campaign, a.MailboxID, a.Do == console.ControlAssign)
 	}
@@ -1096,6 +1102,24 @@ func (b *backend) setJobSwitch(ctx context.Context, job string, on bool, reason 
 		msg += requestedWords(job, err)
 	}
 	return console.ControlOutcome{Message: msg}, nil
+}
+
+// setRoasteryOutreach puts roasteries and online coffee stores in café outreach (on) or keeps
+// them out of it, as the operator. Only a real change writes a row; either way nothing is sent.
+func (b *backend) setRoasteryOutreach(ctx context.Context, on bool) (console.ControlOutcome, error) {
+	changed, err := b.lq().SetRoasteryOutreach(ctx, leadstore.DefaultAccountID, on, leadstore.ActorGremy)
+	if err != nil {
+		return console.ControlOutcome{}, err
+	}
+	switch {
+	case !changed && on:
+		return console.ControlOutcome{Message: "Roasteries are already in café outreach; nothing changed and nothing was sent."}, nil
+	case !changed:
+		return console.ControlOutcome{Message: "Roasteries are already out of café outreach; nothing changed and nothing was sent."}, nil
+	case on:
+		return console.ControlOutcome{Message: "Roasteries are now in café outreach: the next café batch may include roasteries and online coffee stores. Nothing was sent."}, nil
+	}
+	return console.ControlOutcome{Message: "Roasteries are out of café outreach: they are kept for later and no café campaign contacts them. Nothing was sent."}, nil
 }
 
 // setCampaignMailbox assigns or unassigns mailbox id to campaign slug, as the operator.

@@ -119,6 +119,17 @@ func switchesList(ctx context.Context) error {
 	for _, s := range sw {
 		_, _ = fmt.Fprintln(stdout, switchLine(jobName(s.Job), s.On, s.At, s.Reason, loc))
 	}
+	// Roasteries in café outreach is set on the Controls page only; the list shows it so a
+	// remote check can read it.
+	roast, err := lq.RoasteryOutreachOn(ctx, leadstore.DefaultAccountID)
+	if err != nil {
+		return err
+	}
+	state := "off (set on the Controls page)"
+	if roast {
+		state = "on (set on the Controls page)"
+	}
+	_, _ = fmt.Fprintln(stdout, "Roasteries in café outreach: "+state)
 	return nil
 }
 

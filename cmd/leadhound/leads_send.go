@@ -441,6 +441,9 @@ type sendRun struct {
 	// assigned caches, per campaign id, its assigned mailboxes for the planning loop (the
 	// claim transaction reads the assignment again).
 	assigned map[int64]map[int64]bool
+	// held is the run's leads held out of café outreach (a roastery while roasteries are off),
+	// read once with the run's rows; nil until then, and sendOne sends nothing while it is nil.
+	held map[int64]bool
 }
 
 // assignedTo reports whether mailbox mailboxID is assigned to campaign campaignID, as read
@@ -832,6 +835,15 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 	// maybe_sent and sending count, shadow_sent never does.
 	rows, err := r.lq.SendRows(ctx, now, !r.live)
 	if err != nil {
+		return err
+	}
+	// The roastery hold, read once for every lead the run may reach: the switch and each
+	// lead's place type as they stand now (sendOne cancels a held lead's messages).
+	leadIDs := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		leadIDs = append(leadIDs, row.LeadID)
+	}
+	if r.held, err = r.lq.HeldLeads(ctx, leadIDs); err != nil {
 		return err
 	}
 	var items, plan []outreach.PlanItem
@@ -1435,6 +1447,14 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	if !canSend {
 		return false, r.cancel(ctx, row, leadstore.SkipLeadState+row.LeadState)
 	}
+	// A roastery while roasteries are off in café outreach: tagged after it was batched, so
+	// its messages are cancelled here and, with nothing of it sent yet, it goes back to new.
+	if r.held == nil {
+		return false, errors.New("leads send: the roastery hold was not read for this run")
+	}
+	if r.held[row.LeadID] {
+		return false, r.cancelHeld(ctx, row, label)
+	}
 	// A manual send checks the address once more (amendment 6).
 	if ok, err := r.emailCheck(ctx, row, to, label); err != nil || !ok {
 		return false, err
@@ -1675,6 +1695,35 @@ func (r *sendRun) cancel(ctx context.Context, row leadstore.SendRow, reason stri
 	n, err := r.lq.CancelPending(ctx, leadstore.CancelTarget{LeadID: row.LeadID}, reason)
 	r.rep.cancelled += n
 	return err
+}
+
+// cancelHeld holds row's lead out of café outreach (leadstore.CancelHeldLead): its unsent
+// messages are cancelled with leadstore.SkipRoasteryHeld, in one transaction with moving a
+// lead with nothing sent back to new, and the run says so.
+func (r *sendRun) cancelHeld(ctx context.Context, row leadstore.SendRow, label string) error {
+	var out leadstore.HeldLeadOutcome
+	hold := func(tq leadstore.Queries) error {
+		var err error
+		out, err = tq.CancelHeldLead(ctx, row.LeadID)
+		return err
+	}
+	var err error
+	if r.s != nil {
+		err = leadsInTx(ctx, r.s.Pool(), hold)
+	} else {
+		err = hold(r.lq)
+	}
+	if err != nil {
+		return err
+	}
+	r.rep.cancelled += out.Cancelled
+	back := ""
+	if out.BackToNew {
+		back = " It is back to new, kept for later."
+	}
+	r.printf("Not sent: %s (%s, %s). Switch roasteries on in Controls, or mark it a coffee shop on its row.%s\n",
+		label, row.OrgDomain, leadstore.SkipRoasteryHeld, back)
+	return nil
 }
 
 // followUp schedules the sequence's next step in its own statement, after the send is
