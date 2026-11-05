@@ -256,21 +256,6 @@ func (q Queries) steer(ctx context.Context, leadID int64, action string, until *
 	return nil
 }
 
-// SkipLead moves lead leadID from new to skipped by the operator, so it is never offered
-// again. A lead past new (a batch may just have taken it) does not move: moved is false.
-func (q Queries) SkipLead(ctx context.Context, leadID int64) (moved bool, err error) {
-	moved, err = q.setLeadStateFrom(ctx, leadID, []string{LeadNew}, LeadSkipped, "skipped from the queue", ActorGremy)
-	if err != nil {
-		return false, fmt.Errorf("leadstore: skip lead: %w", err)
-	}
-	if !moved {
-		if _, err := q.LeadByID(ctx, leadID); err != nil {
-			return false, err
-		}
-	}
-	return moved, nil
-}
-
 // NextUp is the console's queue: CandidateLeads in the order a batch drafts from, at most
 // limit leads (NextUpPage when limit <= 0).
 func (q Queries) NextUp(ctx context.Context, o CandidateOptions, limit int) ([]Candidate, error) {

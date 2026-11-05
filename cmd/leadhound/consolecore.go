@@ -948,10 +948,20 @@ func (b *backend) LeadAct(ctx context.Context, a console.LeadAction) (console.Le
 		return out, err
 	case console.LeadLookAgain:
 		return b.lookAgain(ctx, setup, a.ID)
-	case console.LeadDefer, console.LeadSkip, console.LeadClear:
+	case console.LeadDefer, console.LeadClear:
 		return b.steer(ctx, a)
 	case console.LeadLabel:
 		return b.label(ctx, setup, a)
+	case console.LeadSkip:
+		return b.triageSkip(ctx, setup, a.ID)
+	case console.LeadUnskip:
+		return b.triageUndo(ctx, a.ID)
+	case console.LeadGood:
+		return b.triageGood(ctx, setup, a.ID)
+	case console.LeadRoastery:
+		return b.correctPlaceType(ctx, a.ID, leadstore.PlaceRoastery)
+	case console.LeadCafe:
+		return b.correctPlaceType(ctx, a.ID, leadstore.PlaceCafe)
 	}
 	return console.LeadOutcome{}, refused("That is not something the leads pages do.")
 }
@@ -1285,13 +1295,6 @@ func (b *backend) steer(ctx context.Context, a console.LeadAction) (console.Lead
 			return console.LeadOutcome{}, refused("Pick a day from today on.")
 		}
 		err, msg = lq.DeferLead(ctx, a.ID, until), fmt.Sprintf("Lead %d pushed back: it comes back after %s.", a.ID, until.Format("Mon 2 Jan"))
-	case console.LeadSkip:
-		var moved bool
-		moved, err = lq.SkipLead(ctx, a.ID)
-		msg = fmt.Sprintf("Lead %d skipped for good.", a.ID)
-		if err == nil && !moved {
-			msg = fmt.Sprintf("Lead %d no longer waits in the queue (a batch may have taken it); nothing changed.", a.ID)
-		}
 	}
 	if errors.Is(err, leadstore.ErrLeadNotFound) {
 		return console.LeadOutcome{}, refused("There is no lead %d.", a.ID)

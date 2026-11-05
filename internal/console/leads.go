@@ -67,6 +67,10 @@ const (
 	LeadTop       = "top"       // ID lead: pinned to the top of the order
 	LeadDefer     = "defer"     // ID lead, Until ("" is the default push-back)
 	LeadSkip      = "skip"      // ID lead
+	LeadUnskip    = "unskip"    // ID lead: undoes the operator's own skip
+	LeadGood      = "good"      // ID lead: the operator's call "likely" on a café lead
+	LeadRoastery  = "roastery"  // ID lead: the operator says this café lead is a roastery or an online store
+	LeadCafe      = "cafe"      // ID lead: the operator says this café lead is a coffee shop
 	LeadClear     = "clear"     // ID lead
 	LeadLabel     = "label"     // ID lead, Value the band (LabelBands) or LabelClear
 	// LeadLookAgain asks the research job to look for a contact again (ID lead); refused

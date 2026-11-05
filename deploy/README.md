@@ -582,7 +582,10 @@ It asks Jev one question about every open lead whose facts changed since its las
 The number orders the list only once it passes its trust gate: an eval with `--decider jev` on at least 30 of your own calls ("Your call" on a lead's page, listed under To label) that is within one band of you on at least 80% of them, with Spearman's rho at least 0.5.
 Until then the list and the batches order by the fallback order's points, and starred leads always come first.
 Run the eval by hand once you have labelled the leads: `make remote HOST=… CONFIRM=1 ARGS='leads relevance eval --decider jev'`.
-It says how many calls it will make before the first, is not capped, and is recorded only with 30 or more labelled leads; the latest recorded eval decides.
+It says how many calls it will make before the first, and is recorded only with 30 or more labelled leads; the latest recorded eval decides.
+A Jev eval grades at most 120 labelled leads, every call other than `no` first and then the newest `no` calls, and prints how many it left out.
+That cap changes what the gate measures: past 120 calls it grades the leads kept, not all your calls, so skips count for less than they do in your list.
+It cannot starve the gate, because 120 is well above the 30 the gate needs.
 
 Each lead type has its own question, its own 30 calls and its own gate.
 The command above measures Drupal leads (sites and agencies), because `--type drupal` is the default.

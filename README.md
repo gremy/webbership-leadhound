@@ -259,7 +259,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
 - **Measuring relevance**: `leads relevance eval [--type drupal|cafe] [--golden FILE] [--runs N] [--decider fake|jev]` asks about every lead of that type with your call, N times (3 by default, 1 to 5), and prints how often Jev's band matches yours exactly and within one band, the mean error, Spearman's rho, the disagreements between runs, and the input tokens with their estimated cost.
   By default it reads your calls from the database; `--golden FILE` reads a golden file instead (one JSON lead per line, such as the demo `examples/leads-relevance.demo.jsonl`).
   With no call yet it refuses and says to open To label; a golden file with no labelled line is refused too.
-  The decider is the fake unless you pass `--decider jev`, which needs `TYPESAFE_API_KEY` and `LEADHOUND_LIVE=1`, says how many calls it will make before the first, and is not capped.
+  The decider is the fake unless you pass `--decider jev`, which needs `TYPESAFE_API_KEY` and `LEADHOUND_LIVE=1`, says how many calls it will make before the first, and grades at most 120 labelled leads, every call other than `no` first and then the newest `no` calls, printing how many it left out.
   `--type` is `drupal` (Drupal sites and agencies, the default) or `cafe`.
   With `--golden FILE` it keeps only that type's lines and says how many of another type it skipped; a file with none of that type is refused.
   A café call in the database made before cafés had their own question is rebuilt from the lead's facts now, and the eval says how many it rebuilt.

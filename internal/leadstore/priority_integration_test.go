@@ -362,23 +362,23 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 	}
 
 	// Skip: new → skipped, never offered again; a batched lead does not move.
-	moved, err := f.q.SkipLead(ctx, c)
-	if err != nil || !moved || f.leadState(t, c) != leadstore.LeadSkipped {
-		t.Errorf("skip c: %v %v, state %s", moved, err, f.leadState(t, c))
+	skip, err := f.q.TriageSkip(ctx, c, nil)
+	if err != nil || !skip.Moved || f.leadState(t, c) != leadstore.LeadSkipped {
+		t.Errorf("skip c: %+v %v, state %s", skip, err, f.leadState(t, c))
 	}
 	if got := order(until.AddDate(0, 1, 0)); slices.Contains(got, c) {
 		t.Errorf("skipped lead offered: %v", got)
 	}
 	f.batch(t, false, b)
-	if moved, err := f.q.SkipLead(ctx, b); err != nil || moved || f.leadState(t, b) != leadstore.LeadBatched {
-		t.Errorf("skip a batched lead: %v %v, state %s", moved, err, f.leadState(t, b))
+	if r, err := f.q.TriageSkip(ctx, b, nil); err != nil || r.Moved || f.leadState(t, b) != leadstore.LeadBatched {
+		t.Errorf("skip a batched lead: %+v %v, state %s", r, err, f.leadState(t, b))
 	}
 	// The build's skip is the same: a lead a batch took after the build read it stays batched.
 	if moved, err := f.q.SkipNewLead(ctx, b, "build: test"); err != nil || moved || f.leadState(t, b) != leadstore.LeadBatched {
 		t.Errorf("build skip of a batched lead: %v %v, state %s", moved, err, f.leadState(t, b))
 	}
 	var ev string
-	if err := f.owner.QueryRow(ctx, `SELECT reason || ' ' || actor FROM lead_event WHERE lead_id = $1 AND state = 'skipped'`, c).Scan(&ev); err != nil || ev != "skipped from the queue gremy" {
+	if err := f.owner.QueryRow(ctx, `SELECT reason || ' ' || actor FROM lead_event WHERE lead_id = $1 AND state = 'skipped'`, c).Scan(&ev); err != nil || ev != "skipped from the list gremy" {
 		t.Errorf("skip event = %q, %v", ev, err)
 	}
 	for name, err := range map[string]error{
@@ -390,7 +390,7 @@ func TestPriorityPinDeferSkip(t *testing.T) {
 			t.Errorf("%s an unknown lead: err = %v", name, err)
 		}
 	}
-	if _, err := f.q.SkipLead(ctx, 999); !errors.Is(err, leadstore.ErrLeadNotFound) {
+	if _, err := f.q.TriageSkip(ctx, 999, nil); !errors.Is(err, leadstore.ErrLeadNotFound) {
 		t.Errorf("skip an unknown lead: err = %v", err)
 	}
 }

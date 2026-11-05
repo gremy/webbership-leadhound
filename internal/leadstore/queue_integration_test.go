@@ -178,8 +178,8 @@ func TestQueueStarredStatusGrid(t *testing.T) {
 	// Skip a starred new lead: out of the queue, still starred.
 	skipped := f.siteLead(t, "skip-me.localhost", intp(1), 7, "info@skip-me.localhost")
 	f.star(t, skipped)
-	if ok, err := f.q.SkipLead(ctx, skipped); err != nil || !ok {
-		t.Fatalf("skip: %v %v", ok, err)
+	if r, err := f.q.TriageSkip(ctx, skipped, nil); err != nil || !r.Moved {
+		t.Fatalf("skip: %+v %v", r, err)
 	}
 	if got := leadIDs(candidates(t, f.q, leadstore.CandidateOptions{Profile: testProfile})); slices.Contains(got, skipped) {
 		t.Errorf("a skipped starred lead is offered: %v", got)

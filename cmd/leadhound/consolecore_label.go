@@ -47,9 +47,9 @@ func (b *backend) label(ctx context.Context, setup leadsSetup, a console.LeadAct
 		if _, ok := leadrate.Weight(a.Value); !ok {
 			return console.LeadOutcome{}, refused("Choose strong, likely, maybe, unlikely or no, or Clear; your call was not changed.")
 		}
-		doc, err := json.Marshal(rateInput(l, setup.leads))
+		doc, err := callInput(l, setup)
 		if err != nil {
-			return console.LeadOutcome{}, fmt.Errorf("console: label: %w", err)
+			return console.LeadOutcome{}, err
 		}
 		band := a.Value
 		if _, err := lq.SetLeadLabel(ctx, a.ID, &band, doc, leadstore.ActorOperator); err != nil {
@@ -58,6 +58,16 @@ func (b *backend) label(ctx context.Context, setup leadsSetup, a console.LeadAct
 		msg = fmt.Sprintf("Saved your call on %s: %s.", name, band)
 	}
 	return console.LeadOutcome{Message: msg}, nil
+}
+
+// callInput is the document a call on lead l stores: the lead's facts as the relevance
+// question reads them now.
+func callInput(l leadstore.RateLead, setup leadsSetup) ([]byte, error) {
+	doc, err := json.Marshal(rateInput(l, setup.leads))
+	if err != nil {
+		return nil, fmt.Errorf("console: call input: %w", err)
+	}
+	return doc, nil
 }
 
 // labelName is the lead as the call's outcome names it: its domain, or for a café with no

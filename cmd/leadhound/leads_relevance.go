@@ -275,8 +275,9 @@ func spreadSample(leads []leadstore.RateLead, n int) []leadstore.RateLead {
 // the database (lead_label: the latest call per lead, on the facts he saw; dbGolden), or
 // with --golden a golden file's lines of that type instead (the demo set, tests), saying
 // how many lines of other types it skipped. The decider is the fake
-// unless --decider jev is given; a jev eval needs TYPESAFE_API_KEY and LEADHOUND_LIVE=1, is
-// uncapped (eval.MaxRuns bounds it), and announces its calls before the first one. Only a
+// unless --decider jev is given; a jev eval needs TYPESAFE_API_KEY and LEADHOUND_LIVE=1,
+// grades at most maxJevEvalLeads labelled leads (capJevEval; eval.MaxRuns bounds the runs),
+// and announces its calls before the first one. Only a
 // jev eval on at least leadrate.TrustMinN labelled leads is recorded in lead_relevance_eval,
 // under the type's question, where the list and the queue read that type's trust gate from.
 func runRelevanceEval(ctx context.Context, args []string) error {
@@ -347,13 +348,10 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	labelled := 0
-	for _, g := range lines {
-		if g.Label != nil {
-			labelled++
-		}
+	if kind == rateDeciderJev {
+		lines = capJevEval(lines)
 	}
-	announceRelevanceEval(decider, labelled, *runs)
+	announceRelevanceEval(decider, labelledCount(lines), *runs)
 	rep, err := leadrate.Evaluate(ctx, decider, lines, *runs)
 	if errors.Is(err, leadrate.ErrNoLabels) && *golden == "" {
 		return usageError("%s", noCallsWordsFor(rt))
@@ -391,6 +389,63 @@ func runRelevanceEval(ctx context.Context, args []string) error {
 	return nil
 }
 
+// maxJevEvalLeads is the most labelled leads one jev eval grades. Every lead is asked once
+// per run, so hundreds of skips would otherwise cost thousands of paid calls. It stays well
+// above leadrate.TrustMinN, so the cap alone can never keep an eval from being recorded.
+const maxJevEvalLeads = 120
+
+// capJevEval is lines cut to maxJevEvalLeads labelled leads for a jev eval. When it leaves
+// any out it says how many, and that the trust gate then measures the leads it kept; when it
+// leaves none out it prints nothing and returns lines as they came.
+func capJevEval(lines []leadrate.Golden) []leadrate.Golden {
+	kept, leftOut := capEvalLines(lines, maxJevEvalLeads)
+	if leftOut > 0 {
+		_, _ = fmt.Fprintf(stdout, "leads relevance eval: capped at %d labelled leads, %d left out: every call other than no first, then the newest no calls\n",
+			maxJevEvalLeads, leftOut)
+		_, _ = fmt.Fprintf(stdout, "leads relevance eval: the cap changes what the trust gate measures: it grades the %d leads kept, not all %d, and those lean away from no calls\n",
+			maxJevEvalLeads, maxJevEvalLeads+leftOut)
+	}
+	return kept
+}
+
+// capEvalLines keeps at most limit labelled lines of lines, which it reads as oldest first:
+// the newest lines labelled anything other than no, then the newest labelled no. The kept
+// lines stay in their order. Unlabelled lines are always kept, because Evaluate counts them
+// and never asks about them. leftOut is how many labelled lines were dropped.
+func capEvalLines(lines []leadrate.Golden, limit int) (kept []leadrate.Golden, leftOut int) {
+	leftOut = labelledCount(lines) - limit
+	if leftOut <= 0 {
+		return lines, 0
+	}
+	keep := make([]bool, len(lines))
+	room := limit
+	for _, wantNo := range []bool{false, true} {
+		for i := len(lines) - 1; i >= 0 && room > 0; i-- {
+			if l := lines[i].Label; l != nil && (*l == leadstore.BandNo) == wantNo {
+				keep[i] = true
+				room--
+			}
+		}
+	}
+	for i, g := range lines {
+		if keep[i] || g.Label == nil {
+			kept = append(kept, g)
+		}
+	}
+	return kept, leftOut
+}
+
+// labelledCount is how many of lines carry a label, the ones an eval asks about.
+func labelledCount(lines []leadrate.Golden) int {
+	n := 0
+	for _, g := range lines {
+		if g.Label != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // noCallsWords is the refusal of an eval from the database when no lead has a call.
 const noCallsWords = "No lead has your call yet: open Leads, choose To label, and give each lead your call on its page."
 
@@ -408,7 +463,8 @@ func noCallsWordsFor(t string) string {
 // when he made it. A café call stored before café leads had their own question holds no café
 // facts (its input has no Cafe); its input is rebuilt from the lead's facts now
 // (RateLeadByID through rateInput, as a call made now would store it), and rebuilt counts
-// them. A café input reads no setting, so the rebuild needs no leads config.
+// them. A café input reads no setting, so the rebuild needs no leads config. The lines come
+// oldest call first, the order capEvalLines reads as newest last.
 func dbGolden(ctx context.Context, cfg config.Config, t string) (lines []leadrate.Golden, rebuilt int, err error) {
 	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
@@ -434,6 +490,7 @@ func dbGolden(ctx context.Context, cfg config.Config, t string) (lines []leadrat
 		}
 		rebuilt++
 	}
+	slices.SortFunc(labels, func(a, b leadstore.LeadLabel) int { return cmp.Compare(a.ID, b.ID) })
 	lines, err = leadrate.GoldenFromLabels(labels)
 	if err != nil {
 		return nil, 0, err
@@ -461,6 +518,6 @@ func announceRelevanceEval(d ai.Decider, labelled, runs int) {
 	if _, ok := d.(*ai.Jev); !ok {
 		return
 	}
-	_, _ = fmt.Fprintf(notes, "leads relevance eval: %s will make %d calls (%d labelled leads × %d runs), uncapped\n",
+	_, _ = fmt.Fprintf(notes, "leads relevance eval: %s will make %d calls (%d labelled leads × %d runs)\n",
 		d.Name(), eval.PlannedCalls(labelled, runs), labelled, runs)
 }
