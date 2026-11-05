@@ -110,6 +110,7 @@ type igSummary struct {
 	Hints                                  int
 	ByTier                                 map[string]int // the matcher's result: handle, domain, name, tie, none
 	OperatorKept, MatchesWritten           int
+	NotCoffee, Held                        int // strong matches not attached: a not_coffee place call, or no call yet
 	Calls, Unchanged, NoText, Failures     int
 	Due                                    int // profiles with text Jev was not asked about: a stop, or a failed call
 	StopReason                             string
@@ -138,12 +139,14 @@ type igImporter struct {
 	maxCalls int
 	dry      bool
 
-	sum     igSummary
-	matches map[string]leadstore.IGMatch
-	status  map[string]string
-	pending map[string]igPending
-	order   []string // pending handles in file order
-	inARow  int
+	sum       igSummary
+	matches   map[string]leadstore.IGMatch
+	status    map[string]string
+	places    map[string]string // the standing ig_place call of each profile read in this import
+	notCoffee map[string]string // handles whose strong match was held back as not coffee: the note
+	pending   map[string]igPending
+	order     []string // pending handles in file order
+	inARow    int
 }
 
 // igImportCmd is `leads ig import FILE`: it reads a capture file (ig-capture@1), stores every
@@ -250,7 +253,7 @@ func newIGImporter(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg
 		return nil, err
 	}
 	im := &igImporter{lq: lq, db: db, cfg: cfg, matcher: igsignal.NewMatcher(cfg, keys), keys: map[int64]leadstore.IGLeadKey{},
-		status: map[string]string{}, pending: map[string]igPending{}, sum: igSummary{ByTier: map[string]int{}}}
+		status: map[string]string{}, notCoffee: map[string]string{}, pending: map[string]igPending{}, sum: igSummary{ByTier: map[string]int{}}}
 	for _, k := range keys {
 		im.keys[k.LeadID] = k
 	}
@@ -279,11 +282,12 @@ func newIGImporter(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg
 	return im, nil
 }
 
-// run is one import: the profiles first (stored, judged, matched), their review decisions
-// once every profile is judged, then the following lists, whose accounts a profile read
-// (now or before) leaves to that profile.
+// run is one import: the profiles first (stored and judged), then matched once every one is
+// judged (a strong match attaches only on the place call this import leaves standing), their
+// review decisions, then the following lists, whose accounts a profile read (now or before)
+// leaves to that profile.
 func (im *igImporter) run(ctx context.Context, recs []igsignal.Record) error {
-	var lists []igsignal.Record
+	var lists, read []igsignal.Record
 	for _, r := range recs {
 		im.sum.Records++
 		if r.Wall() != "" {
@@ -300,6 +304,12 @@ func (im *igImporter) run(ctx context.Context, recs []igsignal.Record) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		if r.Profile.Outcome != igsignal.OutcomeMissing {
+			read = append(read, r)
+		}
+	}
+	if err := im.matchProfiles(ctx, read); err != nil {
+		return err
 	}
 	if err := im.reviewProfiles(ctx); err != nil {
 		return err
@@ -329,9 +339,9 @@ func igProfileRow(p igsignal.Profile, sha []byte) leadstore.IGProfile {
 	return row
 }
 
-// profile stores one profile capture, writes its rule rows when the capture is new, asks Jev
-// when it has text, and matches it. A missing handle is stored and judged by rule only: it
-// matches nothing and is never reviewed.
+// profile stores one profile capture, writes its rule rows when the capture is new and asks
+// Jev when it has text; matchProfiles matches it after. A missing handle is stored and judged
+// by rule only: it matches nothing and is never reviewed.
 func (im *igImporter) profile(ctx context.Context, rec igsignal.Record) error {
 	wctx := context.WithoutCancel(ctx)
 	p := rec.Profile
@@ -357,23 +367,41 @@ func (im *igImporter) profile(ctx context.Context, rec igsignal.Record) error {
 			return err
 		}
 	}
-	if err := im.judge(ctx, row); err != nil {
+	return im.judge(ctx, row)
+}
+
+// matchProfiles matches every profile read in this import, once all of them are judged, on the
+// place call each one's judgment left standing, and records each for its review decision. A
+// strong match held for want of a place call (Jev was not reached) waits for the next import.
+func (im *igImporter) matchProfiles(ctx context.Context, read []igsignal.Record) error {
+	wctx := context.WithoutCancel(ctx)
+	handles := make([]string, len(read))
+	for i, r := range read {
+		handles[i] = r.Profile.Handle
+	}
+	places, err := igStandingPlaces(ctx, im.db, handles)
+	if err != nil {
 		return err
 	}
-	if p.Outcome == igsignal.OutcomeMissing {
-		return nil
+	im.places = places
+	for _, rec := range read {
+		p := rec.Profile
+		if err := im.hintFromSource(wctx, *p); err != nil {
+			return err
+		}
+		r := im.matcher.Match(*p)
+		held, err := im.applyMatch(wctx, p.Handle, r, places[p.Handle], true)
+		if err != nil {
+			return err
+		}
+		if held {
+			continue
+		}
+		if _, seen := im.pending[p.Handle]; !seen {
+			im.order = append(im.order, p.Handle)
+		}
+		im.pending[p.Handle] = igPending{ownCustomer: r.OwnCustomer, vendor: r.VendorAccount != ""}
 	}
-	if err := im.hintFromSource(wctx, *p); err != nil {
-		return err
-	}
-	r := im.matcher.Match(*p)
-	if err := im.applyMatch(wctx, p.Handle, r); err != nil {
-		return err
-	}
-	if _, seen := im.pending[p.Handle]; !seen {
-		im.order = append(im.order, p.Handle)
-	}
-	im.pending[p.Handle] = igPending{ownCustomer: r.OwnCustomer, vendor: r.VendorAccount != ""}
 	return nil
 }
 
@@ -488,15 +516,50 @@ func tierWord(r igsignal.Result) string {
 	return r.Tier
 }
 
+// igNotCoffeeWords end the note of a strong match held back because the profile's place call
+// is not_coffee: the lead's website links someone else's account (a theme author's, another
+// café's or roaster's).
+const igNotCoffeeWords = "but not a coffee account"
+
+// igNotCoffeeNote is the review note (and the stored match's detail) of a strong match at tier
+// held back as not coffee.
+func igNotCoffeeNote(tier string) string {
+	if tier == leadstore.IGTierDomain {
+		return "links to the lead's site, " + igNotCoffeeWords
+	}
+	return "linked from the lead's site, " + igNotCoffeeWords
+}
+
 // applyMatch stores r as handle's match unless the operator's own call stands (the latest
 // match is his, a match or an unmatch: it always wins), and writes the instagram route of the
-// handle's strong match when the lead's org has none.
-func (im *igImporter) applyMatch(ctx context.Context, handle string, r igsignal.Result) error {
+// handle's strong match when the lead's org has none. For a profile read (judged), place is
+// its standing ig_place call: a strong match attaches only when that call is known and not
+// not_coffee. A not_coffee one is stored as a weak match naming the lead (the operator's
+// "it's this lead" still attaches it) with the not-coffee note; with no call yet nothing is
+// stored and held is true. A following-list account never read has no call and attaches.
+func (im *igImporter) applyMatch(ctx context.Context, handle string, r igsignal.Result, place string, judged bool) (held bool, err error) {
 	im.sum.ByTier[tierWord(r)]++
 	latest, had := im.matches[handle]
 	switch {
 	case had && latest.Actor == leadstore.ActorGremy:
 		im.sum.OperatorKept++
+	case judged && r.Strong() && place == "":
+		im.sum.Held++
+		return true, nil
+	case judged && r.Strong() && place == leadrate.IGNotCoffee:
+		im.sum.NotCoffee++
+		note := igNotCoffeeNote(r.Tier)
+		im.notCoffee[handle] = note
+		m := leadstore.IGMatch{Handle: handle, LeadID: r.LeadIDs[0], Tier: leadstore.IGTierName, Detail: note, Actor: leadstore.ActorSystem}
+		changed, err := im.lq.SetIGMatch(ctx, m)
+		if err != nil {
+			return false, err
+		}
+		if changed {
+			im.sum.MatchesWritten++
+			im.matches[handle] = m
+		}
+		return false, nil
 	case had && latest.Strong() && r.Strong() && latest.LeadID == r.LeadIDs[0]:
 		// The same lead, strongly: a domain match turned handle match by the route this
 		// import wrote is not a new match, so a re-import stores nothing.
@@ -504,14 +567,14 @@ func (im *igImporter) applyMatch(ctx context.Context, handle string, r igsignal.
 		m := r.Store(handle)
 		changed, err := im.lq.SetIGMatch(ctx, m)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if changed {
 			im.sum.MatchesWritten++
 			im.matches[handle] = m
 		}
 	}
-	return im.ensureRoute(ctx, handle)
+	return false, im.ensureRoute(ctx, handle)
 }
 
 // ensureRoute writes handle as the instagram route of the lead its latest match strongly
@@ -580,16 +643,12 @@ func igCoffeePlace(choice string) bool {
 // handle the operator unmatched are never queued; a handle reviewed before keeps its status.
 func (im *igImporter) reviewProfiles(ctx context.Context) error {
 	wctx := context.WithoutCancel(ctx)
-	places, err := igStandingPlaces(ctx, im.db, im.order)
-	if err != nil {
-		return err
-	}
 	for _, h := range im.order {
 		p := im.pending[h]
 		if p.ownCustomer || p.vendor {
 			continue
 		}
-		if err := im.review(wctx, h, igCoffeePlace(places[h])); err != nil {
+		if err := im.review(wctx, h, igCoffeePlace(im.places[h])); err != nil {
 			return err
 		}
 	}
@@ -597,10 +656,22 @@ func (im *igImporter) reviewProfiles(ctx context.Context) error {
 }
 
 // review queues handle or marks it matched from its latest match; coffee says the handle is
-// a coffee place with no lead to show it on (an unmatched one is queued only then).
+// a coffee place with no lead to show it on (an unmatched one is queued only then). A strong
+// match held back as not coffee goes on the list with its note, new or back from a matched
+// status the import gave it; a dismissed, wanted or operator's status stands.
 func (im *igImporter) review(ctx context.Context, h string, coffee bool) error {
 	m := im.matches[h]
 	switch {
+	case im.notCoffee[h] != "":
+		if st := im.status[h]; st != "" && st != leadstore.IGReviewMatched {
+			return nil
+		}
+		changed, err := im.lq.SetIGReviewStatus(ctx, h, leadstore.IGReviewNew, im.notCoffee[h], leadstore.ActorSystem)
+		if changed {
+			im.sum.Queued++
+			im.status[h] = leadstore.IGReviewNew
+		}
+		return err
 	case m.Strong():
 		if im.status[h] != leadstore.IGReviewNew {
 			return nil
@@ -678,7 +749,7 @@ func (im *igImporter) followAccount(ctx context.Context, k igsignal.Follow, read
 			im.sum.ByTier[tierWord(r)]++
 			return false, nil
 		}
-		if err := im.applyMatch(ctx, k.Handle, r); err != nil {
+		if _, err := im.applyMatch(ctx, k.Handle, r, "", false); err != nil {
 			return false, err
 		}
 		if err := im.review(ctx, k.Handle, true); err != nil {
@@ -778,9 +849,10 @@ func printIGImport(w io.Writer, runID int64, slug, decider string, maxCalls, dai
 		s.ProfilesNew, s.ProfilesKnown, s.Missing, s.Private)
 	_, _ = fmt.Fprintf(w, "  following lists: %d (%d cut short) · %d accounts kept · %d rows new · %d hints new\n",
 		s.Lists, s.ListsPartial, s.Kept, s.FollowsNew, s.Hints)
-	_, _ = fmt.Fprintf(w, "  matches: handle %d · domain %d · name %d · tie %d · none %d · the operator's call kept %d · %d rows written\n",
+	_, _ = fmt.Fprintf(w, "  matches: handle %d · domain %d · name %d · tie %d · none %d · the operator's call kept %d · %d rows written"+
+		" · not attached: not coffee %d, no place call yet %d\n",
 		s.ByTier[leadstore.IGTierHandle], s.ByTier[leadstore.IGTierDomain], s.ByTier[leadstore.IGTierName], s.ByTier["tie"],
-		s.ByTier[leadstore.IGTierNone], s.OperatorKept, s.MatchesWritten)
+		s.ByTier[leadstore.IGTierNone], s.OperatorKept, s.MatchesWritten, s.NotCoffee, s.Held)
 	_, _ = fmt.Fprintf(w, "  jev: calls %d · unchanged %d · no text %d · failed %d · still due %d · stop %s · vendor by rule %d\n",
 		s.Calls, s.Unchanged, s.NoText, s.Failures, s.Due, cmp.Or(s.StopReason, "none"), s.RuleVendors)
 	switch s.StopReason {
@@ -961,9 +1033,10 @@ func igReportCmd(ctx context.Context, args []string) error {
 	}
 	w := stdout
 	_, _ = fmt.Fprintf(w, "leads ig report: %s, %s with a strong Instagram match\n", label, plural(len(lines), "café lead", "café leads"))
-	_, _ = fmt.Fprintf(w, "  latest match per handle: handle %d · domain %d · name %d · tie %d · yours %d · unmatched by you %d · none %d\n",
+	_, _ = fmt.Fprintf(w, "  latest match per handle: handle %d · domain %d · name %d · tie %d · yours %d · unmatched by you %d · none %d"+
+		" · not coffee, not attached %d\n",
 		tiers[leadstore.IGTierHandle], tiers[leadstore.IGTierDomain], tiers[leadstore.IGTierName], tiers["tie"],
-		tiers[leadstore.IGTierOperator], tiers["unmatched"], tiers[leadstore.IGTierNone])
+		tiers[leadstore.IGTierOperator], tiers["unmatched"], tiers[leadstore.IGTierNone], tiers["not coffee"])
 	for _, q := range []string{leadstore.IGPlace, leadstore.IGLoyalty, leadstore.IGVendor} {
 		_, _ = fmt.Fprintf(w, "  %s on matched leads: %s\n", strings.TrimPrefix(q, "ig_"), countWords(judged[q]))
 	}
@@ -1010,25 +1083,28 @@ func countWords(counts map[string]int) string {
 	return strings.Join(parts, " · ")
 }
 
-// igLatestTiers counts every handle's latest match by tier (a tie, the operator's match and
-// his unmatch counted apart) and lists the leads a latest strong match names.
+// igLatestTiers counts every handle's latest match by tier (a tie, the operator's match, his
+// unmatch and a strong match held back as not coffee counted apart) and lists the leads a
+// latest strong match names.
 func igLatestTiers(ctx context.Context, db store.DBTX) (map[string]int, []int64, error) {
 	rows, err := db.Query(ctx,
-		`SELECT m.tier, coalesce(m.lead_id, 0), cardinality(m.candidate_ids)
-		 FROM (SELECT DISTINCT ON (handle) tier, lead_id, candidate_ids FROM ig_match ORDER BY handle, id DESC) m`)
+		`SELECT m.tier, coalesce(m.lead_id, 0), cardinality(m.candidate_ids), m.detail
+		 FROM (SELECT DISTINCT ON (handle) tier, lead_id, candidate_ids, detail FROM ig_match ORDER BY handle, id DESC) m`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("leads ig report: matches: %w", err)
 	}
 	tiers := map[string]int{}
 	var leads []int64
-	var tier string
+	var tier, detail string
 	var lead int64
 	var cands int
-	if _, err := pgx.ForEachRow(rows, []any{&tier, &lead, &cands}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&tier, &lead, &cands, &detail}, func() error {
 		m := leadstore.IGMatch{Tier: tier, LeadID: lead}
 		switch {
 		case cands > 0:
 			tiers["tie"]++
+		case tier == leadstore.IGTierName && strings.HasSuffix(detail, igNotCoffeeWords):
+			tiers["not coffee"]++
 		case tier == leadstore.IGTierOperator && lead == 0:
 			tiers["unmatched"]++
 		default:
@@ -1128,6 +1204,9 @@ func igReviewCmd(ctx context.Context, args []string) error {
 		}
 		line := fmt.Sprintf("  @%s · %s · %s · place %s · candidates %s", it.Handle, cmp.Or(name, "-"), cmp.Or(category, "-"),
 			cmp.Or(it.Place, "-"), cmp.Or(strings.Join(cands, ", "), "none"))
+		if it.Note != "" {
+			line += " · " + it.Note
+		}
 		if *status == "all" {
 			line += " · " + it.Status
 		}

@@ -683,3 +683,137 @@ func TestLeadsIGDeciderDefault(t *testing.T) {
 	wantLines(t, "default", mustRun(t, "leads", "ig", "import", path), "· decider fake ·")
 	// Erasing an org and importing again is CP4's test (leads_forget, the ForgetOrg sweep).
 }
+
+// igAddRoute gives lead's org handle as an instagram route, as a website's link would.
+func igAddRoute(t *testing.T, lead int64, handle string) {
+	t.Helper()
+	if _, err := leadstoretest.Q(t).InsertRoute(context.Background(), leadstore.RouteRow{OrgID: igOrgOf(t, lead),
+		Kind: leadstore.RouteInstagram, Value: enrich.InstagramURL(handle), DerivedBy: leadstore.DerivedByInstagram}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// igNotCoffeeAns is Jev sure the profile is no coffee place.
+func igNotCoffeeAns() map[string]ai.Answer {
+	return map[string]ai.Answer{leadrate.IGPlace: igAns(leadrate.IGNotCoffee, 0.9),
+		leadrate.IGLoyalty: igAns(leadrate.IGNoneSeen, 0.9), leadrate.IGVendor: igAns(leadrate.IGNoVendor, 0.9)}
+}
+
+// TestLeadsIGNotCoffeeStrongMatch: a lead's website can link the wrong account (a theme
+// author's, another café's). A handle or domain match whose standing place call is not_coffee
+// does not attach: no route, no signals on the lead's card or the report, and the handle waits
+// on the review list with the lead as its candidate and the reason. A seated café's handle
+// match attaches as before; a handle two leads hold is a tie on the review list; the identical
+// re-import is a no-op with no call; the operator's match over the not_coffee profile attaches.
+func TestLeadsIGNotCoffeeStrongMatch(t *testing.T) {
+	s := newIGScene(t)
+	igAddRoute(t, s.B, "theme_author.example")
+	igAddRoute(t, s.A, "shared_roaster.example")
+	igAddRoute(t, s.D, "shared_roaster.example")
+	theme := igP{handle: "theme_author.example", name: "Theme Author Example", category: "Web designer", bio: "Websites for small shops"}
+	agency := igP{handle: "agency.example", name: "Agency Example", category: "Marketing agency", bio: "We build cafe websites",
+		link: "https://cafeneaua-exemplu.example/credits"}
+	shared := igP{handle: "shared_roaster.example", name: "Shared Roaster Example", category: "Coffee roaster", bio: "Beans for many cafes"}
+	f := igSceneFake(t)
+	f.ByState[igStateOf(t, igProfileLine(theme))] = igNotCoffeeAns()
+	f.ByState[igStateOf(t, igProfileLine(agency))] = igNotCoffeeAns()
+	lines := []string{igProfileLine(igA), igProfileLine(theme), igProfileLine(agency), igProfileLine(shared)}
+
+	out := igImport(t, lines)
+	wantLines(t, "first import", out,
+		"  matches: handle 2 · domain 1 · name 0 · tie 1 · none 0 · the operator's call kept 0 · 4 rows written · not attached: not coffee 2, no place call yet 0",
+		"  jev: calls 4", "  review: 3 added", "  routes: 0 added")
+	if got := igChoices(igFor(t, s.A)); got != "cafe_seating/runs_scheme/stampino(rule)" {
+		t.Errorf("the seated café's handle match did not attach as before: %s", got)
+	}
+	for name, lead := range map[string]int64{"B (theme author)": s.B, "C (agency)": s.C, "D (tie)": s.D} {
+		if ig := igFor(t, lead); ig != nil {
+			t.Errorf("%s shows Instagram signals: %+v", name, ig.Match)
+		}
+	}
+	if n := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM contact_route WHERE org_id = %d AND kind = 'instagram'`, igOrgOf(t, s.C))); n != 0 {
+		t.Errorf("the not_coffee domain match wrote %d routes", n)
+	}
+	for h, want := range map[string]struct {
+		note  string
+		cands []int64
+	}{
+		"theme_author.example":   {"linked from the lead's site, but not a coffee account", []int64{s.B}},
+		"agency.example":         {"links to the lead's site, but not a coffee account", []int64{s.C}},
+		"shared_roaster.example": {"", []int64{s.A, s.D}},
+	} {
+		it := igReviewItem(t, h)
+		if it == nil || it.Status != leadstore.IGReviewNew || it.Note != want.note || fmt.Sprint(it.Candidates) != fmt.Sprint(want.cands) {
+			t.Errorf("%s's review row %+v, want new, %q, candidates %v", h, it, want.note, want.cands)
+		}
+	}
+	report := mustRun(t, "leads", "ig", "report")
+	wantLines(t, "report", report, "1 café lead with a strong Instagram match",
+		"  latest match per handle: handle 1 · domain 0 · name 0 · tie 1 · yours 0 · unmatched by you 0 · none 0 · not coffee, not attached 2",
+		"  place on matched leads: cafe_seating 1")
+	for _, h := range []string{"theme_author.example", "agency.example", "shared_roaster.example"} {
+		if strings.Contains(report, "@"+h) {
+			t.Errorf("the report shows a lead line for %s:\n%s", h, report)
+		}
+	}
+	wantLines(t, "review", mustRun(t, "leads", "ig", "review"),
+		fmt.Sprintf("  @theme_author.example · Theme Author Example · Web designer · place not_coffee · candidates %d · linked from the lead's site, but not a coffee account", s.B))
+
+	before, calls := igTables(t), f.Calls()
+	wantLines(t, "identical re-import", igImport(t, lines), "  jev: calls 0 · unchanged 4", "0 rows written", "  review: 0 added", "  routes: 0 added")
+	if got := igTables(t); got != before || f.Calls() != calls {
+		t.Errorf("the re-import stored %s (was %s) and called %d times", got, before, f.Calls()-calls)
+	}
+
+	// The operator's call wins over the place call: "it's this lead" attaches it, and a later
+	// import keeps it.
+	mustRun(t, "leads", "ig", "match", "theme_author.example", strconv.FormatInt(s.B, 10))
+	igImport(t, lines)
+	if ig := igFor(t, s.B); ig == nil || ig.Match.Tier != leadstore.IGTierOperator || ig.Judgments[leadstore.IGPlace].Choice != leadrate.IGNotCoffee {
+		t.Errorf("B after the operator's match: %+v", ig)
+	}
+	if got := igStatus(t, "theme_author.example"); got != leadstore.IGReviewMatched {
+		t.Errorf("theme_author after the operator's match: %q", got)
+	}
+}
+
+// TestLeadsIGNotCoffeeRecapture: a handle attached as a seated café whose recapture Jev reads
+// as no coffee place leaves the lead's card and goes on the review list with the reason.
+func TestLeadsIGNotCoffeeRecapture(t *testing.T) {
+	s := newIGScene(t)
+	igAddRoute(t, s.B, "turned.example")
+	p := igP{handle: "turned.example", name: "Turned Example", category: "Cafe", bio: "Coffee and cake"}
+	f := igStub(t, igDefaultFake())
+	igImport(t, []string{igProfileLine(p)})
+	if ig := igFor(t, s.B); ig == nil || ig.Match.Tier != leadstore.IGTierHandle {
+		t.Fatalf("the café's handle match did not attach: %+v", ig)
+	}
+	p.category, p.bio, p.at = "Web designer", "Now we build websites", "2026-11-06T09:00:00Z"
+	f.ByState[igStateOf(t, igProfileLine(p))] = igNotCoffeeAns()
+	wantLines(t, "recapture", igImport(t, []string{igProfileLine(p)}), "not attached: not coffee 1", "  review: 1 added")
+	if ig := igFor(t, s.B); ig != nil {
+		t.Errorf("B still shows the not_coffee profile: %+v", ig.Match)
+	}
+	if it := igReviewItem(t, "turned.example"); it == nil || it.Status != leadstore.IGReviewNew || !strings.HasSuffix(it.Note, "but not a coffee account") {
+		t.Errorf("turned's review row: %+v", it)
+	}
+}
+
+// TestLeadsIGStrongMatchWaitsForPlaceCall: a strong match whose profile Jev was not reached for
+// has no place call, so it is neither attached nor stored; the next import asks and attaches.
+func TestLeadsIGStrongMatchWaitsForPlaceCall(t *testing.T) {
+	s := newIGScene(t)
+	igSceneFake(t)
+	lines := []string{igProfileLine(igA)}
+	wantLines(t, "--max-calls 0", igImport(t, lines, "--max-calls", "0"), "not attached: not coffee 0, no place call yet 1", "  review: 0 added")
+	if ig := igFor(t, s.A); ig != nil {
+		t.Errorf("A attached with no place call: %+v", ig.Match)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_match`); n != 0 {
+		t.Errorf("%d matches stored with no place call", n)
+	}
+	wantLines(t, "next import", igImport(t, lines), "  jev: calls 1", "no place call yet 0")
+	if got := igChoices(igFor(t, s.A)); got != "cafe_seating/runs_scheme/stampino(rule)" {
+		t.Errorf("A after the place call: %s", got)
+	}
+}
