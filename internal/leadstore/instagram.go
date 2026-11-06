@@ -61,6 +61,22 @@ const (
 	IGFromRule = "rule"
 )
 
+// IGFakeModel is the model of a Jev-source judgment the keyless fake decider wrote (ai.FakeName):
+// a test or an unattended run's stand-in, never an answer about a café. A real Jev answer on any
+// capture of a handle outranks every fake one (igRealJudgedSQL), and the importer never asks the
+// fake about a handle Jev has answered.
+const IGFakeModel = "fake"
+
+// igFakeRowSQL is true for a judgment j the fake decider wrote.
+const igFakeRowSQL = `(j.source = '` + IGFromJev + `' AND j.model IS NOT DISTINCT FROM '` + IGFakeModel + `')`
+
+// igRealJudgedSQL is true when some capture of handle (a column or parameter) holds a real Jev
+// answer: a Jev-source judgment of a model other than the fake's.
+func igRealJudgedSQL(handle string) string {
+	return `EXISTS (SELECT 1 FROM ig_judgment rj JOIN ig_profile rp ON rp.id = rj.profile_id
+	   WHERE rp.handle = ` + handle + ` AND rj.source = '` + IGFromJev + `' AND rj.model IS DISTINCT FROM '` + IGFakeModel + `')`
+}
+
 // The review list's statuses (ig_review_status_status_check).
 const (
 	IGReviewNew       = "new"
@@ -344,10 +360,12 @@ func (q Queries) AddIGJudgment(ctx context.Context, j IGJudgment) (int64, error)
 	return id, nil
 }
 
-// IGJudgmentHash is the input hash of Jev's latest answer on question for any capture of
-// handle, nil when Jev was never asked. It is read by handle, never by profile: each capture is
-// a new profile row, so a recapture with unchanged text compares equal and costs no call.
-func (q Queries) IGJudgmentHash(ctx context.Context, handle, question string) ([]byte, error) {
+// IGJudgmentHash is the input hash of the latest Jev-source answer on question for any capture
+// of handle, nil when none: of the fake decider's answers when fake, else of real Jev's only, so a
+// fake run in between never makes a real run ask again. It is read by handle, never by profile:
+// each capture is a new profile row, so a recapture with unchanged text compares equal and costs
+// no call.
+func (q Queries) IGJudgmentHash(ctx context.Context, handle, question string, fake bool) ([]byte, error) {
 	h, err := igHandle(handle)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: ig judgment hash: %w", err)
@@ -355,8 +373,8 @@ func (q Queries) IGJudgmentHash(ctx context.Context, handle, question string) ([
 	var sha []byte
 	err = q.db.QueryRow(ctx,
 		`SELECT j.input_sha256 FROM ig_judgment j JOIN ig_profile p ON p.id = j.profile_id
-		 WHERE p.handle = $1 AND j.question = $2 AND j.source = '`+IGFromJev+`'
-		 ORDER BY j.id DESC LIMIT 1`, h, question).Scan(&sha)
+		 WHERE p.handle = $1 AND j.question = $2 AND j.source = '`+IGFromJev+`' AND `+igFakeRowSQL+` = $3
+		 ORDER BY j.id DESC LIMIT 1`, h, question, fake).Scan(&sha)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -366,11 +384,26 @@ func (q Queries) IGJudgmentHash(ctx context.Context, handle, question string) ([
 	return sha, nil
 }
 
-// igJudgmentsFor reads the standing judgment of each handle in handles on each question: from
-// the newest capture holding any answer on that question, a rule row before Jev's, then the
-// latest. A recapture Jev was not asked about (equal hash) leaves the older answer standing;
-// a rule is written against each new capture, so it never outlives the text it read.
-func (q Queries) igJudgmentsFor(ctx context.Context, handles []string) (map[string]map[string]IGJudgment, error) {
+// IGRealJudged reports whether any capture of handle holds a real Jev answer (not the fake's).
+func (q Queries) IGRealJudged(ctx context.Context, handle string) (bool, error) {
+	h, err := igHandle(handle)
+	if err != nil {
+		return false, fmt.Errorf("leadstore: ig real judged: %w", err)
+	}
+	var ok bool
+	if err := q.db.QueryRow(ctx, `SELECT `+igRealJudgedSQL("$1"), h).Scan(&ok); err != nil {
+		return false, fmt.Errorf("leadstore: ig real judged %s: %w", h, err)
+	}
+	return ok, nil
+}
+
+// IGStandingJudgments reads the standing judgment of each handle in handles on each question:
+// from the newest capture holding any answer on that question, a rule row before Jev's, then
+// the latest. A recapture Jev was not asked about (equal hash) leaves the older answer standing;
+// a rule is written against each new capture, so it never outlives the text it read. The fake
+// decider's answers never stand for a handle real Jev has answered. The lead card, the review
+// list and the importer's place calls all read it.
+func (q Queries) IGStandingJudgments(ctx context.Context, handles []string) (map[string]map[string]IGJudgment, error) {
 	type row struct {
 		Handle string `db:"handle"`
 		IGJudgment
@@ -378,7 +411,7 @@ func (q Queries) igJudgmentsFor(ctx context.Context, handles []string) (map[stri
 	rows, err := collect(ctx, q.db, pgx.RowToStructByName[row],
 		`SELECT DISTINCT ON (p.handle, j.question) p.handle, `+igJudgmentColumns+`
 		 FROM ig_judgment j JOIN ig_profile p ON p.id = j.profile_id
-		 WHERE p.handle = ANY($1::text[])
+		 WHERE p.handle = ANY($1::text[]) AND NOT (`+igFakeRowSQL+` AND `+igRealJudgedSQL("p.handle")+`)
 		 ORDER BY p.handle, j.question, j.profile_id DESC, (j.source = '`+IGFromRule+`') DESC, j.id DESC`, handles)
 	if err != nil {
 		return nil, err
@@ -491,8 +524,9 @@ type IGReviewItem struct {
 	Match *IGMatch
 	// Candidates are the leads it may be: the weak match's lead, or the tied candidates.
 	Candidates []int64
-	// Place is the standing ig_place choice; empty when never judged.
-	Place string
+	// Place, Loyalty and Vendor are the standing ig_place, ig_loyalty and ig_vendor choices
+	// (IGStandingJudgments, as the lead card reads them); empty when never judged.
+	Place, Loyalty, Vendor string
 }
 
 // IGReview reads the handles whose latest review status is status (empty: every status), by
@@ -523,7 +557,7 @@ func (q Queries) IGReview(ctx context.Context, status string) ([]IGReviewItem, e
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: ig review: %w", err)
 	}
-	judgments, err := q.igJudgmentsFor(ctx, handles)
+	judgments, err := q.IGStandingJudgments(ctx, handles)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: ig review: judgments: %w", err)
 	}
@@ -544,7 +578,8 @@ func (q Queries) IGReview(ctx context.Context, status string) ([]IGReviewItem, e
 	out := make([]IGReviewItem, 0, len(sts))
 	for _, s := range sts {
 		it := IGReviewItem{Handle: s.Handle, Status: s.Status, Note: s.Note, StatusAt: s.CreatedAt,
-			FollowName: nameOf[s.Handle], Place: judgments[s.Handle][IGPlace].Choice}
+			FollowName: nameOf[s.Handle], Place: judgments[s.Handle][IGPlace].Choice,
+			Loyalty: judgments[s.Handle][IGLoyalty].Choice, Vendor: judgments[s.Handle][IGVendor].Choice}
 		if p, ok := profiles[s.Handle]; ok {
 			it.Profile = &p
 		}
@@ -598,7 +633,7 @@ func (q Queries) IGForLead(ctx context.Context, leadID int64) (*IGLead, error) {
 	if p, ok := profiles[m.Handle]; ok {
 		out.Profile = &p
 	}
-	judgments, err := q.igJudgmentsFor(ctx, handles)
+	judgments, err := q.IGStandingJudgments(ctx, handles)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: ig for lead %d: judgments: %w", leadID, err)
 	}
@@ -629,6 +664,11 @@ type IGLeadKey struct {
 	// places' socials, all through enrich.InstagramHandle. A loyalty or ordering vendor's own
 	// account (signals.yaml) is never one: a café linking to its vendor does not hold it.
 	Handles []string `db:"-"`
+	// TrustedHandles are those of Handles the lead holds from the operator (a route he typed or
+	// claimed) or its map listing (a place's socials, a route or fact read from a place), not
+	// only from a website: a site can link someone else's account (a theme author's, another
+	// café's), so a handle a site alone gave needs more to attach (the importer's name check).
+	TrustedHandles []string `db:"-"`
 	// PlaceType is the lead's effective place type (effectivePlaceTypeSQL).
 	PlaceType string `db:"place_type"`
 	// JevPlaceType is the place type of the lead's latest Jev row (unclear included); empty
@@ -636,6 +676,7 @@ type IGLeadKey struct {
 	JevPlaceType string `db:"jev_place_type"`
 
 	RawHandles []string `db:"raw_handles"` // the values Handles is read from
+	RawTrusted []string `db:"raw_trusted"` // the values TrustedHandles is read from
 }
 
 // igLeadKeySQL is every café lead (any state, never a selftest one) whose org's domain is not
@@ -660,7 +701,19 @@ var igLeadKeySQL = `SELECT l.id AS lead_id, o.id AS org_id, coalesce(o.name, '')
 	     FROM jsonb_array_elements(p.signals) AS e(v) WHERE e.v->>'signal' = ` + sqlLiteral(cafe.SigInstagram) + `
 	     UNION
 	     SELECT s.v FROM place pa CROSS JOIN LATERAL jsonb_array_elements_text(pa.socials) AS s(v) WHERE pa.org_id = o.id
-	   ) AS raw_handles
+	   ) AS raw_handles,
+	   ARRAY(
+	     SELECT r.value FROM contact_route r
+	     CROSS JOIN LATERAL (SELECT ` + contactLatestMarkSQL("route_id", "r.id") + ` AS mark) m
+	     WHERE r.org_id = o.id AND r.kind = ` + sqlLiteral(RouteInstagram) + ` AND m.mark IS DISTINCT FROM 'retire'
+	       AND (m.mark = 'claim' OR r.derived_by = ` + sqlLiteral(DerivedByOperator) + ` OR r.place_id IS NOT NULL)
+	     UNION
+	     SELECT f.normalized FROM org_fact f
+	     WHERE f.org_id = o.id AND f.kind = 'social' AND f.normalized LIKE 'https://instagram.com/%' AND f.place_id IS NOT NULL
+	       AND ` + contactLatestMarkSQL("fact_id", "f.id") + ` IS DISTINCT FROM 'retire'
+	     UNION
+	     SELECT s.v FROM place pa CROSS JOIN LATERAL jsonb_array_elements_text(pa.socials) AS s(v) WHERE pa.org_id = o.id
+	   ) AS raw_trusted
 	 FROM lead l
 	 JOIN org o ON o.id = l.org_id
 	 LEFT JOIN site_probe p ON p.id = l.probe_id
@@ -676,17 +729,49 @@ func (q Queries) IGLeadKeys(ctx context.Context, campaignID int64) ([]IGLeadKey,
 		return nil, fmt.Errorf("leadstore: ig lead keys: %w", err)
 	}
 	vendors := vendorIGHandles()
-	for i := range rows {
+	own := func(raw []string) []string {
 		hs := []string{}
-		for _, h := range igHandles(rows[i].RawHandles) {
+		for _, h := range igHandles(raw) {
 			if !vendors[h] {
 				hs = append(hs, h)
 			}
 		}
 		slices.Sort(hs)
-		rows[i].Handles, rows[i].RawHandles = hs, nil
+		return hs
+	}
+	for i := range rows {
+		rows[i].Handles, rows[i].TrustedHandles = own(rows[i].RawHandles), own(rows[i].RawTrusted)
+		rows[i].RawHandles, rows[i].RawTrusted = nil, nil
 	}
 	return rows, nil
+}
+
+// IsVendorIGHandle reports whether v (a handle or a profile URL) is a loyalty or ordering
+// vendor's own Instagram account (signals.yaml): never a café's route, never its channel.
+func IsVendorIGHandle(v string) bool {
+	h, ok := enrich.InstagramHandle(v)
+	return ok && vendorIGHandles()[h]
+}
+
+// IGImportRoutes are the live instagram routes of handle that an Instagram import wrote
+// (DerivedByInstagram) and nobody has marked since: the ones an import may take back. A route
+// the operator typed or claimed, or one already retired, is never among them.
+func (q Queries) IGImportRoutes(ctx context.Context, handle string) ([]Route, error) {
+	h, err := igHandle(handle)
+	if err != nil {
+		return nil, fmt.Errorf("leadstore: ig import routes: %w", err)
+	}
+	routes, err := collect(ctx, q.db, pgx.RowToStructByName[Route],
+		`SELECT r.id, r.org_id, r.kind, r.value, coalesce(r.fetch_id, 0) AS fetch_id, r.mx_ok, r.derived_by, r.found_at,
+		   coalesce(r.person_id, 0) AS person_id, false AS operator
+		 FROM contact_route r
+		 WHERE r.kind = `+sqlLiteral(RouteInstagram)+` AND r.value = $1 AND r.derived_by = `+sqlLiteral(DerivedByInstagram)+`
+		   AND `+contactLatestMarkSQL("route_id", "r.id")+` IS NULL
+		 ORDER BY r.id`, enrich.InstagramURL(h))
+	if err != nil {
+		return nil, fmt.Errorf("leadstore: ig import routes %s: %w", h, err)
+	}
+	return routes, nil
 }
 
 // vendorIGHandles are the handles of the vendors' own Instagram accounts in signals.yaml

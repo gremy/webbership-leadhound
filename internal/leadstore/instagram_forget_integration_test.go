@@ -41,16 +41,18 @@ func TestForgetOrgInstagram(t *testing.T) {
 	keepMsg := ownerInt(t, f.owner, addMessage, batch, keep, "https://www.instagram.com/keep_cafe.example/", f.mailbox(t))
 
 	// Captures. friend is read from the erased café's own following list; hinted names the
-	// erased lead only as its capture's hint.
+	// erased lead only as its capture's hint (it was read for that lead, so it goes too), and
+	// hinted_other names it as a hint too, but its latest match is the kept lead's: it stays,
+	// its hint cleared.
 	at := time.Date(2026, 11, 5, 21, 0, 0, 0, time.UTC)
 	profiles := map[string]int64{}
 	for i, h := range []string{"gone_cafe.example", "gone_route.example", "gone_tie.example", "gone_name.example",
-		"gone_old.example", "keep_cafe.example", "stampino.app", "gone_friend.example", "hinted.example"} {
+		"gone_old.example", "keep_cafe.example", "stampino.app", "gone_friend.example", "hinted.example", "hinted_other.example"} {
 		p := igProfile(h, byte(i+1))
 		switch h {
 		case "gone_friend.example":
 			p.Source, p.SourceOf = leadstore.IGSourceFollowing, "gone_cafe.example"
-		case "hinted.example":
+		case "hinted.example", "hinted_other.example":
 			p.SourceLeadID = gone
 		}
 		id, _, err := f.q.InsertIGProfile(ctx, p)
@@ -93,13 +95,15 @@ func TestForgetOrgInstagram(t *testing.T) {
 	match(leadstore.IGMatch{Handle: "gone_old.example", LeadID: gone, Tier: leadstore.IGTierName})
 	match(leadstore.IGMatch{Handle: "gone_old.example", LeadID: keep, Tier: leadstore.IGTierOperator, Actor: leadstore.ActorGremy})
 	match(leadstore.IGMatch{Handle: "keep_cafe.example", LeadID: keep, Tier: leadstore.IGTierHandle})
+	match(leadstore.IGMatch{Handle: "hinted_other.example", LeadID: keep, Tier: leadstore.IGTierHandle})
 	for _, h := range []string{"gone_tie.example", "gone_name.example", "gone_old.example"} {
 		if _, err := f.q.QueueIGReview(ctx, h); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	erased := []string{"gone_cafe.example", "gone_route.example", "gone_tie.example", "gone_name.example", "gone_friend.example"}
+	erased := []string{"gone_cafe.example", "gone_route.example", "gone_tie.example", "gone_name.example", "gone_friend.example",
+		"hinted.example"}
 	before := dumpLeadTables(t, f.owner)
 	for _, h := range erased {
 		if !strings.Contains(before, h) {
@@ -118,9 +122,9 @@ func TestForgetOrgInstagram(t *testing.T) {
 	ig := [10]int64{got.IGLeadRoutes, got.IGTargets, got.IGRoutes, got.IGJudgments, got.IGHints,
 		got.IGMatches, got.IGReviews, got.IGProfiles, got.IGFollows, got.IGLeadHints}
 	// Routes: gone_cafe, gone_route and the vendor's. Matches: gone_cafe, the tie, gone_name and
-	// gone_old's old row. Profiles: the four erased handles' and friend's. Follows: the vendor's
-	// row of gone_cafe and gone_cafe's own list.
-	if want := [10]int64{1, 1, 3, 2, 1, 4, 2, 5, 2, 1}; ig != want {
+	// gone_old's old row. Profiles: the four erased handles', friend's and hinted's. Follows: the
+	// vendor's row of gone_cafe and gone_cafe's own list. Lead hints: hinted_other's.
+	if want := [10]int64{1, 1, 3, 2, 1, 4, 2, 6, 2, 1}; ig != want {
 		t.Errorf("instagram counts = %v, want %v (%+v)", ig, want, got)
 	}
 
@@ -164,8 +168,8 @@ func TestForgetOrgInstagram(t *testing.T) {
 		sql  string
 		want int64
 	}{
-		{"kept and vendor and hinted profiles", `SELECT count(*) FROM ig_profile WHERE handle IN ('keep_cafe.example', 'stampino.app', 'hinted.example', 'gone_old.example')`, 4},
-		{"kept matches", `SELECT count(*) FROM ig_match WHERE handle IN ('keep_cafe.example', 'gone_old.example')`, 2},
+		{"kept and vendor profiles", `SELECT count(*) FROM ig_profile WHERE handle IN ('keep_cafe.example', 'stampino.app', 'hinted_other.example', 'gone_old.example')`, 4},
+		{"kept matches", `SELECT count(*) FROM ig_match WHERE handle IN ('keep_cafe.example', 'gone_old.example', 'hinted_other.example')`, 3},
 		{"kept follow", `SELECT count(*) FROM ig_follow WHERE list_owner = 'stampino.app' AND handle = 'keep_cafe.example'`, 1},
 		{"kept judgment", `SELECT count(*) FROM ig_judgment j JOIN ig_profile p ON p.id = j.profile_id WHERE p.handle = 'keep_cafe.example'`, 1},
 		{"kept hint", `SELECT count(*) FROM ig_signal_hint WHERE handle = 'keep_cafe.example'`, 1},

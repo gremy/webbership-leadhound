@@ -299,11 +299,13 @@ func (es enrichRun) enrich(ctx context.Context, o leadstore.Org, sum *enrichSumm
 		routed := false
 		// A company page is a LinkedIn route and an Instagram profile an instagram one (the
 		// business's own account, in its one canonical form), each from the page it was seen on.
+		// A loyalty or ordering vendor's own account a café links is not the café's route.
 		kind := leadstore.RouteLinkedIn
 		value, ok := enrich.LinkedInRoute(f.Fact)
 		if !ok {
 			kind = leadstore.RouteInstagram
 			value, ok = enrich.InstagramRoute(f.Fact)
+			ok = ok && !leadstore.IsVendorIGHandle(value)
 		}
 		if ok {
 			routed, err = lq.InsertRoute(wctx, leadstore.RouteRow{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -103,7 +104,9 @@ type Route struct {
 	Operator  bool      `db:"operator"`  // the latest mark is a claim: the operator's own
 }
 
-// RoutesFor returns the routes of org orgID without the retired ones: by kind (emails, forms,
+// RoutesFor returns the routes of org orgID without the retired ones, nor an instagram route
+// naming a loyalty or ordering vendor's own account (IsVendorIGHandle: a café's site links its
+// vendor; the 00031 backfill read such links as routes), so no channel is ever picked on one: by kind (emails, forms,
 // LinkedIn, then Instagram, routeKindOrderSQL), the operator's before the rest, then in the order found. Among LinkedIn routes a person
 // profile comes before a company page in the operator's own and after it in the rest, because
 // a company page is the safer default for a route nobody chose.
@@ -121,7 +124,7 @@ func (q Queries) RoutesFor(ctx context.Context, orgID int64) ([]Route, error) {
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: routes for org %d: %w", orgID, err)
 	}
-	return routes, nil
+	return slices.DeleteFunc(routes, func(r Route) bool { return r.Kind == RouteInstagram && IsVendorIGHandle(r.Value) }), nil
 }
 
 // routeKindOrderSQL orders the routes r by kind: email, form, LinkedIn, then Instagram, the
@@ -167,7 +170,8 @@ func (q Queries) RecordContactAttempt(ctx context.Context, orgID, runID int64, r
 
 // OrgsNeedingRoutes returns up to limit orgs (limit <= 0: all of them) with no route search
 // and no route found in the RouteRetryAfter before now, oldest org first. A route read from a
-// place's map listing (00022), typed by the operator or retired does not count: the org's own
+// place's map listing (00022), typed by the operator, an Instagram profile (a café's account
+// says nothing about the contact pages the search looks for) or retired does not count: the org's own
 // pages are still searched. Selftest orgs are never returned, nor an org whose domain is suppressed
 // (orgDomainSuppressedSQL).
 func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time) ([]Org, error) {
@@ -181,7 +185,8 @@ func (q Queries) OrgsNeedingRoutes(ctx context.Context, limit int, now time.Time
 		 WHERE o.kind <> 'selftest'
 		   AND NOT (o.source = 'place' AND o.site_id IS NULL)
 		   AND NOT EXISTS (SELECT 1 FROM contact_attempt a WHERE a.org_id = o.id AND a.attempted_at > $1)
-		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1 AND r.fetch_id IS NOT NULL AND `+reachRouteLiveSQL+`)
+		   AND NOT EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = o.id AND r.found_at > $1 AND r.fetch_id IS NOT NULL
+		     AND r.kind <> '`+RouteInstagram+`' AND `+reachRouteLiveSQL+`)
 		   AND NOT `+orgDomainSuppressedSQL("o")+`
 		 ORDER BY o.id
 		 LIMIT $2`, now.Add(-RouteRetryAfter), lim)

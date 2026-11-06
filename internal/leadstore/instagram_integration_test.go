@@ -223,7 +223,7 @@ func TestIGForLead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sha, err := f.q.IGJudgmentHash(ctx, "@"+h, leadstore.IGPlace); err != nil || !bytes.Equal(sha, igSHA(0xa1)) {
+	if sha, err := f.q.IGJudgmentHash(ctx, "@"+h, leadstore.IGPlace, true); err != nil || !bytes.Equal(sha, igSHA(0xa1)) {
 		t.Fatalf("hash by handle after a recapture: %x %v", sha, err)
 	}
 	if got, _ = f.q.IGForLead(ctx, lead); got.Profile.ID != p2 || !reflect.DeepEqual(choices(got), want) {
@@ -240,11 +240,40 @@ func TestIGForLead(t *testing.T) {
 	if got, _ = f.q.IGForLead(ctx, lead); !reflect.DeepEqual(choices(got), want) {
 		t.Fatalf("after new answers: %v, want %v", choices(got), want)
 	}
-	if sha, err := f.q.IGJudgmentHash(ctx, h, leadstore.IGPlace); err != nil || !bytes.Equal(sha, igSHA(0xa2)) {
+	if sha, err := f.q.IGJudgmentHash(ctx, h, leadstore.IGPlace, true); err != nil || !bytes.Equal(sha, igSHA(0xa2)) {
 		t.Fatalf("latest hash: %x %v", sha, err)
 	}
-	if sha, err := f.q.IGJudgmentHash(ctx, "never.example", leadstore.IGPlace); err != nil || sha != nil {
+	if sha, err := f.q.IGJudgmentHash(ctx, "never.example", leadstore.IGPlace, true); err != nil || sha != nil {
 		t.Fatalf("never asked: %x %v", sha, err)
+	}
+
+	// Real Jev's answer, on the older capture: it stands over the fake's newer ones, and each
+	// kind of decider's hash is read from its own rows only.
+	if sha, err := f.q.IGJudgmentHash(ctx, h, leadstore.IGPlace, false); err != nil || sha != nil {
+		t.Fatalf("real hash before any real answer: %x %v", sha, err)
+	}
+	if ok, err := f.q.IGRealJudged(ctx, h); err != nil || ok {
+		t.Fatalf("real judged before any real answer: %v %v", ok, err)
+	}
+	for q, c := range map[string]string{leadstore.IGPlace: "cafe_seating", leadstore.IGLoyalty: "none_seen"} {
+		real := jev(p1, q, c, 0xb1)
+		real.Model = "jev-test-1"
+		if _, err := f.q.AddIGJudgment(ctx, real); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want[leadstore.IGPlace], want[leadstore.IGLoyalty], want[leadstore.IGVendor] = "cafe_seating/jev", "none_seen/jev", "stampino/rule"
+	if got, _ = f.q.IGForLead(ctx, lead); !reflect.DeepEqual(choices(got), want) || got.Judgments[leadstore.IGPlace].Model != "jev-test-1" {
+		t.Fatalf("after a real answer: %v, want %v (real Jev's over the fake's)", choices(got), want)
+	}
+	if sha, err := f.q.IGJudgmentHash(ctx, h, leadstore.IGPlace, false); err != nil || !bytes.Equal(sha, igSHA(0xb1)) {
+		t.Fatalf("real hash: %x %v", sha, err)
+	}
+	if sha, err := f.q.IGJudgmentHash(ctx, h, leadstore.IGPlace, true); err != nil || !bytes.Equal(sha, igSHA(0xa2)) {
+		t.Fatalf("fake hash after a real answer: %x %v", sha, err)
+	}
+	if ok, err := f.q.IGRealJudged(ctx, h); err != nil || !ok {
+		t.Fatalf("real judged: %v %v", ok, err)
 	}
 
 	// An operator's unmatch hides it; another lead never sees it.

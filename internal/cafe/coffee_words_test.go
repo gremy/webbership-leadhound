@@ -2,6 +2,7 @@ package cafe
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -9,9 +10,15 @@ import (
 // /ig-signals skill's snippets and its helper hold the same list under their own contract test.
 func TestCoffeeWordsDecided(t *testing.T) {
 	want := []string{"cafe", "caffe", "coffee", "cafea", "cafenea", "kafe", "kaffee", "espresso", "roast", "prajit",
-		"brew", "barista", "specialty", "speciality"}
+		"brew", "specialty", "speciality"}
 	if got := DefaultConfig().CoffeeWords(); !slices.Equal(got, want) {
 		t.Fatalf("instagram.coffee_words = %q, want %q", got, want)
+	}
+	// "barista" names people: a barista's personal account would pass and its name be kept.
+	for _, w := range DefaultConfig().CoffeeWords() {
+		if strings.Contains("barista", w) || strings.Contains(w, "barista") {
+			t.Fatalf("coffee word %q keeps baristas' own accounts", w)
+		}
 	}
 	got := DefaultConfig().CoffeeWords()
 	got[0] = "changed"

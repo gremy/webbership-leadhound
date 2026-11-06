@@ -34,10 +34,7 @@ func newIGScene(t *testing.T) igScene {
 	cafeScene(t)
 	s := igScene{A: leadIDOf(t, "harbour-lane-coffee.example"), B: leadIDOf(t, "bean-house.example"),
 		C: leadIDOf(t, "cafeneaua-exemplu.example"), D: placeLeadID(t, "Facebook Only Example")}
-	if _, err := leadstoretest.Q(t).InsertRoute(context.Background(), leadstore.RouteRow{OrgID: igOrgOf(t, s.A),
-		Kind: leadstore.RouteInstagram, Value: "harbour_lane.example", DerivedBy: leadstore.DerivedByInstagram}); err != nil {
-		t.Fatal(err)
-	}
+	igAddRoute(t, s.A, "harbour_lane.example")
 	return s
 }
 
@@ -53,6 +50,7 @@ type igP struct {
 	leadID                                                     int64
 	private                                                    bool
 	wall                                                       string
+	followers, following, posts                                int // 100, 50 and 10 when 0
 }
 
 func igProfileLine(p igP) string {
@@ -83,7 +81,7 @@ func igProfileLine(p igP) string {
 	m := map[string]any{"v": 1, "kind": "profile", "handle": p.handle, "url": enrich.InstagramURL(p.handle),
 		"captured_at": cmp.Or(p.at, "2026-11-05T21:00:00Z"), "source": src, "outcome": outcome, "ig_user_id": nil,
 		"full_name": nul(p.name), "category": nul(p.category), "bio": nul(p.bio), "external_url": nul(p.link),
-		"followers": 100, "following": 50, "posts": 10, "is_private": p.private, "captions": captions, "wall": nul(p.wall)}
+		"followers": cmp.Or(p.followers, 100), "following": cmp.Or(p.following, 50), "posts": cmp.Or(p.posts, 10), "is_private": p.private, "captions": captions, "wall": nul(p.wall)}
 	b, err := json.Marshal(m)
 	if err != nil {
 		panic(err)
@@ -684,11 +682,13 @@ func TestLeadsIGDeciderDefault(t *testing.T) {
 	// Erasing an org and importing again is CP4's test (leads_forget, the ForgetOrg sweep).
 }
 
-// igAddRoute gives lead's org handle as an instagram route, as a website's link would.
+// igAddRoute gives lead's org handle as an instagram route, as a website's link does (read from
+// a page by enrich).
 func igAddRoute(t *testing.T, lead int64, handle string) {
 	t.Helper()
 	if _, err := leadstoretest.Q(t).InsertRoute(context.Background(), leadstore.RouteRow{OrgID: igOrgOf(t, lead),
-		Kind: leadstore.RouteInstagram, Value: enrich.InstagramURL(handle), DerivedBy: leadstore.DerivedByInstagram}); err != nil {
+		Kind: leadstore.RouteInstagram, Value: enrich.InstagramURL(handle), FetchID: int64(dbCount(t, `SELECT max(id) FROM http_fetch`)),
+		DerivedBy: enrich.DerivedBy}); err != nil {
 		t.Fatal(err)
 	}
 }

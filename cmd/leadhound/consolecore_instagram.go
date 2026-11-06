@@ -134,7 +134,12 @@ func (b *backend) leadInstagram(ctx context.Context, cfg leadconfig.Config, id i
 // each row's candidate leads named. A candidate that is no longer a café lead Instagram can be
 // matched to is shown without the button.
 func (b *backend) InstagramReview(ctx context.Context, status string) (console.IGReviewPage, error) {
-	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
+	if err != nil {
+		return console.IGReviewPage{}, err
+	}
+	ccfg, err := cafeConfig(setup.leads)
+	if err != nil {
 		return console.IGReviewPage{}, err
 	}
 	if !slices.Contains(console.IGReviewStatuses, status) {
@@ -159,7 +164,8 @@ func (b *backend) InstagramReview(ctx context.Context, status string) (console.I
 		if it.Status != status {
 			continue
 		}
-		row := console.IGReviewRow{Handle: it.Handle, URL: enrich.InstagramURL(it.Handle), Name: it.FollowName, Place: igPlaceWords(it.Place)}
+		row := console.IGReviewRow{Handle: it.Handle, URL: enrich.InstagramURL(it.Handle), Name: it.FollowName, Place: igPlaceWords(it.Place),
+			Loyalty: igReviewWords(it.Loyalty, igLoyaltyWords), Vendor: igReviewWords(it.Vendor, func(c string) string { return igVendorWords(ccfg, c) })}
 		if it.Profile != nil {
 			row.Name, row.Category = cmp.Or(it.Profile.FullName, row.Name), it.Profile.Category
 		}
@@ -175,18 +181,29 @@ func (b *backend) InstagramReview(ctx context.Context, status string) (console.I
 	return p, nil
 }
 
+// igReviewWords is a review row's loyalty or vendor answer choice in words (words), or "" when it
+// says nothing worth reading before "Want as lead": never judged, unclear, none seen or none.
+func igReviewWords(choice string, words func(string) string) string {
+	switch choice {
+	case "", leadrate.IGUnclear, leadrate.IGNoneSeen, leadrate.IGNoVendor:
+		return ""
+	}
+	return words(choice)
+}
+
 // InstagramAct runs one call on the review list through the CLI's own functions: match is
 // `leads ig match`, dismiss and want are `leads ig dismiss|want`. Their refusals (a handle in no
 // capture, a lead that is not a café lead) come back as the console's refusals in the same words.
 func (b *backend) InstagramAct(ctx context.Context, a console.IGAction) (string, error) {
-	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
+	setup, err := b.leadsSetup(ctx, leadsForProbe)
+	if err != nil {
 		return "", err
 	}
 	lq, db := b.lq(), b.s.Pool()
 	msg, err := func() (string, error) {
 		switch a.Do {
 		case console.IGMatch:
-			handle, added, err := igOperatorMatch(ctx, lq, db, a.Handle, a.LeadID)
+			handle, added, err := igOperatorMatch(ctx, lq, db, setup.leads, a.Handle, a.LeadID)
 			if err != nil {
 				return "", err
 			}

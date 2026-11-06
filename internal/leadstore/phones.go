@@ -457,13 +457,18 @@ const personRouteSQL = `(person_id IS NOT NULL OR (kind = 'linkedin' AND value L
 
 // igHandlesOfOrg is every Instagram handle whose rows erasing org orgID removes (Decision 9),
 // sorted, once each, read while its routes still exist: each handle whose latest match names
-// one of its leads (the lead, or a tied candidate), and each handle of its instagram routes
-// unless that handle's latest match names only leads of other orgs (its rows are then theirs)
-// or it is a loyalty or ordering vendor's own account (a café linking its vendor does not hold
-// it: vendorIGHandles, as IGLeadKeys reads them).
+// one of its leads (the lead, or a tied candidate), and each handle of its instagram routes or
+// of a capture whose lead hint (source_lead_id) is one of its leads, unless that handle's latest
+// match names only leads of other orgs (its rows are then theirs) or it is a loyalty or
+// ordering vendor's own account (a café linking its vendor does not hold it: vendorIGHandles,
+// as IGLeadKeys reads them).
 func (q Queries) igHandlesOfOrg(ctx context.Context, orgID int64) ([]string, error) {
 	values, err := collect(ctx, q.db, pgx.RowTo[string],
-		`SELECT value FROM contact_route WHERE org_id = $1 AND kind = 'instagram' ORDER BY id`, orgID)
+		`SELECT value FROM (
+		   SELECT value, 0 AS src, id FROM contact_route WHERE org_id = $1 AND kind = 'instagram'
+		   UNION ALL
+		   SELECT handle, 1, id FROM ig_profile WHERE source_lead_id IN (SELECT id FROM lead WHERE org_id = $1)) v
+		 ORDER BY src, id`, orgID)
 	if err != nil {
 		return nil, err
 	}

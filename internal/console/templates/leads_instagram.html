@@ -17,12 +17,11 @@
 <div class="stack-sm mt-2">
   {{range $v.Rows}}{{$row := .}}
   <article class="card card-body stack-sm" id="ig-{{.Handle}}">
-    <div class="list-item">
-      <div class="list-main">
-        <h2 class="list-title"><a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">@{{.Handle}}</a></h2>
-        {{if or .Name .Category}}<p class="list-meta">{{.Name}}{{if and .Name .Category}} · {{end}}{{.Category}}</p>{{end}}
-        <p class="list-meta">Instagram says {{or .Place "nothing yet: not read as a profile"}}</p>
-      </div>
+    <div class="list-main">
+      <h2 class="list-title"><a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">@{{.Handle}}</a></h2>
+      {{if or .Name .Category}}<p class="list-meta">{{.Name}}{{if and .Name .Category}} · {{end}}{{.Category}}</p>{{end}}
+      <p class="list-meta">Instagram says {{or .Place "nothing yet: not read as a profile"}}</p>
+      {{if or .Loyalty .Vendor}}<p class="list-meta">{{with .Loyalty}}Loyalty: {{.}}{{end}}{{if and .Loyalty .Vendor}} · {{end}}{{with .Vendor}}Vendor: {{.}}{{end}}</p>{{end}}
     </div>
     {{if .Candidates}}
     <ul class="item-list">

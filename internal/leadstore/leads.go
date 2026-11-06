@@ -596,7 +596,8 @@ func (q Queries) MarkContacted(ctx context.Context, campaignID int64, domain, no
 }
 
 // handLeadRow is the lead MarkContacted creates for org orgID: its finding when it has
-// one, else a hand lead; its channel and route from its best route.
+// one, else a hand lead; its channel and route from its best route. Its kinds are never a
+// café's, so an Instagram profile is never its route (Instagram is a café campaign's channel).
 func (q Queries) handLeadRow(ctx context.Context, orgID int64, orgKind string) (LeadRow, error) {
 	row := LeadRow{OrgID: orgID, Kind: LeadHand, Channel: ChannelNone}
 	switch orgKind {
@@ -629,7 +630,7 @@ func (q Queries) handLeadRow(ctx context.Context, orgID int64, orgKind string) (
 	var routeID int64
 	var routeKind string
 	err := q.db.QueryRow(ctx,
-		`SELECT id, kind FROM contact_route WHERE org_id = $1
+		`SELECT id, kind FROM contact_route WHERE org_id = $1 AND kind <> '`+RouteInstagram+`'
 		   AND `+contactLatestMarkSQL("route_id", "contact_route.id")+` IS DISTINCT FROM 'retire'
 		 ORDER BY CASE WHEN kind = 'email' AND mx_ok THEN 0 WHEN kind = 'form' THEN 1 ELSE 2 END, id
 		 LIMIT 1`, orgID).Scan(&routeID, &routeKind)

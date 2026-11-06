@@ -16,9 +16,10 @@
 # instagram.coffee_words (coffee-words@1): the prefilter for a following list's accounts. An
 #   account is kept when a word appears anywhere inside its handle or its name, both lower case
 #   with every accent mark dropped. The /ig-signals skill's snippets carry the same list under a
-#   contract test, so change both together.
+#   contract test, so change both together. "barista" is left out: it names people (a barista's
+#   own account), and a kept account's name is stored.
 instagram:
-  coffee_words: [cafe, caffe, coffee, cafea, cafenea, kafe, kaffee, espresso, roast, prajit, brew, barista, specialty, speciality]
+  coffee_words: [cafe, caffe, coffee, cafea, cafenea, kafe, kaffee, espresso, roast, prajit, brew, specialty, speciality]
 
 place_words:
   roastery:

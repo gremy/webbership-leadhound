@@ -133,6 +133,49 @@ func TestInstagramReviewPage(t *testing.T) {
 	}
 }
 
+// TestInstagramReviewRowLayout: each row's handle, name and answers sit straight in the card's
+// body, on the one content edge its "No lead it may be." line and buttons use (no .list-item
+// padding of their own); the loyalty and vendor answers follow "Instagram says" on one line,
+// each part only when known, and a row with neither has no such line.
+func TestInstagramReviewRowLayout(t *testing.T) {
+	b := richBackend("x")
+	b.igRows[IGReviewNew] = []IGReviewRow{
+		{Handle: "both.example", URL: "https://www.instagram.com/both.example/", Place: "a café with seating",
+			Loyalty: "runs a loyalty or stamp scheme", Vendor: "Stampino"},
+		{Handle: "vendor.example", URL: "https://www.instagram.com/vendor.example/", Vendor: "a paper card"},
+		{Handle: "loyal.example", URL: "https://www.instagram.com/loyal.example/", Loyalty: "runs a loyalty or stamp scheme"},
+		{Handle: "none.example", URL: "https://www.instagram.com/none.example/"},
+	}
+	h := newHarness(t, b, false)
+	body := igMarkup(t, h.do(get(leadsIGPath, h.session(t))).Body.String())
+	if strings.Contains(body, "list-item") {
+		t.Error("a row wraps its head in .list-item, indenting it past the card's content edge")
+	}
+	rows := map[string]string{}
+	for _, part := range strings.Split(body, `<article class="card card-body stack-sm" id="ig-`)[1:] {
+		handle, rest, _ := strings.Cut(part, `"`)
+		rows[handle], _, _ = strings.Cut(rest, "</article>")
+		if !strings.HasPrefix(rows[handle], ">\n    <div class=\"list-main\">\n      <h2 class=\"list-title\">") {
+			t.Errorf("@%s: the card body does not open on its head: %.120q", handle, rows[handle])
+		}
+	}
+	for handle, want := range map[string]string{
+		"both.example":   `Instagram says a café with seating</p>` + "\n      " + `<p class="list-meta">Loyalty: runs a loyalty or stamp scheme · Vendor: Stampino</p>`,
+		"vendor.example": `<p class="list-meta">Vendor: a paper card</p>`,
+		"loyal.example":  `<p class="list-meta">Loyalty: runs a loyalty or stamp scheme</p>`,
+	} {
+		if !strings.Contains(rows[handle], want) {
+			t.Errorf("@%s lacks %q", handle, want)
+		}
+	}
+	if strings.Contains(rows["vendor.example"], "Loyalty:") || strings.Contains(rows["loyal.example"], "Vendor:") {
+		t.Error("an unknown answer shows its label")
+	}
+	if r := rows["none.example"]; r == "" || strings.Count(r, `<p class="list-meta">`) != 1 || strings.Contains(r, "Loyalty:") || strings.Contains(r, "Vendor:") {
+		t.Errorf("a row with no loyalty or vendor answer has the line: %q", r)
+	}
+}
+
 // TestInstagramReviewTabs: each other status reads its own rows; a tab hides the call that would
 // leave a row where it is (no "Not a lead" on Dismissed, no "Want as lead" on Wanted, no "It's
 // this lead" on Matched); an unknown status is a 404 and reads nothing; an empty tab says so.
@@ -329,6 +372,8 @@ func TestLeadInstagramCard(t *testing.T) {
 			`<dt>Vendor</dt><dd>Stampino <span class="muted small">from a link</span></dd>`,
 			"<dt>Hints</dt><dd>followed by Stampino · followed by Cardora</dd>",
 			`<div class="alert alert-warn mt-1" role="note">`,
+			// The footnote keeps the space other cards' footnotes have under a key/value list.
+			"</dl>\n    <p class=\"hint mt-1\">Read from the café's public profile; it never changes the lead.</p>",
 			"Instagram reads this as a roastery or online shop. Nothing was changed: if it is, press It's a roastery above (r on the Leads list).",
 		} {
 			if !strings.Contains(card, want) {

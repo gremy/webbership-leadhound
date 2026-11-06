@@ -42,6 +42,9 @@ const (
 	ProvenanceCrawl    = "crawl"
 	ProvenanceOverture = "overture"
 	ProvenanceEnrich   = "enrich"
+	// ProvenanceInstagram is an instagram route an Instagram import wrote from a strong match
+	// (DerivedByInstagram): read from the profile, not from the org's site.
+	ProvenanceInstagram = "instagram"
 )
 
 // MaxContactNoteRunes is the longest note on a contact (contact_mark_note_check).
@@ -199,6 +202,9 @@ type Mark struct {
 	Note              string
 	ReplacedByRouteID int64 // a retired route's replacement; 0 for none
 	ReplacedByFactID  int64 // a retired phone's replacement; 0 for none
+	// System marks it as LeadHound's own (actor system), not the operator's: an Instagram import
+	// or the operator's unmatch taking back a route an import wrote.
+	System bool
 }
 
 // MarkContact appends m. A target or a replacement that is not the org's is ErrContactNotFound.
@@ -433,11 +439,15 @@ func (q Queries) writeContactMark(ctx context.Context, m Mark, note *string) err
 			return err
 		}
 	}
+	actor := "operator"
+	if m.System {
+		actor = ActorSystem
+	}
 	_, err := q.db.Exec(ctx,
 		`INSERT INTO contact_mark (route_id, fact_id, person_id, mark, note, replaced_by_route_id, replaced_by_fact_id, actor)
 		 VALUES (nullif($1::bigint, 0), nullif($2::bigint, 0), nullif($3::bigint, 0), $4, $5,
-		   nullif($6::bigint, 0), nullif($7::bigint, 0), 'operator')`,
-		m.RouteID, m.FactID, m.PersonID, m.Mark, note, m.ReplacedByRouteID, m.ReplacedByFactID)
+		   nullif($6::bigint, 0), nullif($7::bigint, 0), $8)`,
+		m.RouteID, m.FactID, m.PersonID, m.Mark, note, m.ReplacedByRouteID, m.ReplacedByFactID, actor)
 	return err
 }
 
@@ -628,6 +638,8 @@ func contactProvenance(derivedBy string, claimed bool) string {
 		return ProvenanceOverture
 	case "enrich":
 		return ProvenanceEnrich
+	case "instagram":
+		return ProvenanceInstagram
 	}
 	return ProvenanceCrawl
 }

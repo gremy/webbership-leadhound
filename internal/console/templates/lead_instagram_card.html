@@ -13,6 +13,6 @@
       <dt>Vendor</dt><dd>{{or .Vendor "not judged yet"}}{{with .VendorVia}} <span class="muted small">{{.}}</span>{{end}}</dd>
       {{with .Hints}}<dt>Hints</dt><dd>{{range $i, $h := .}}{{if $i}} · {{end}}{{$h}}{{end}}</dd>{{end}}
     </dl>
-    <p class="hint">Read from the café's public profile; it never changes the lead.</p>
+    <p class="hint mt-1">Read from the café's public profile; it never changes the lead.</p>
     </div>
   </section>{{end}}{{end}}

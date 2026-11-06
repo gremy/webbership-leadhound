@@ -683,7 +683,11 @@ type IGReviewRow struct {
 	Handle, URL    string // the handle without its @, and its canonical profile address
 	Name, Category string // from its latest capture or its following-list row; "" when unknown
 	Place          string // Instagram's place call in words; "" when never judged
-	Candidates     []IGCandidate
+	// Loyalty and Vendor are Instagram's loyalty and vendor answers in words, the vendor by
+	// the name signals.yaml gives it; each "" when unclear, none or never judged, and the
+	// row's Loyalty line is left out when both are "".
+	Loyalty, Vendor string
+	Candidates      []IGCandidate
 }
 
 // IGCandidate is a lead a review row may be. Matchable is false for a lead Instagram cannot be
@@ -2128,6 +2132,8 @@ const (
 	ProvenanceCrawl    = "crawl"
 	ProvenanceOverture = "overture"
 	ProvenanceEnrich   = "enrich"
+	// ProvenanceInstagram is an Instagram route an Instagram import wrote from the profile itself.
+	ProvenanceInstagram = "instagram"
 )
 
 // ProvenanceWords is where a contact came from, as its badge says it.
@@ -2141,6 +2147,8 @@ func ProvenanceWords(p string) string {
 		return "from their site"
 	case ProvenanceOverture:
 		return "from the map"
+	case ProvenanceInstagram:
+		return "from Instagram"
 	}
 	return ""
 }

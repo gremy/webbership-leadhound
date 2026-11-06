@@ -107,6 +107,30 @@ func TestIGQuestionsTrackConfig(t *testing.T) {
 	}
 }
 
+// TestIGStateCountBands: the counts show as size bands, so a recapture whose counts moved a
+// little gives the same state (and the same hash: no call), and one that crossed a band does not.
+func TestIGStateCountBands(t *testing.T) {
+	for n, want := range map[int]string{0: "under 1k", 999: "under 1k", 1000: "1k-10k", 9999: "1k-10k",
+		10_000: "10k-100k", 99_999: "10k-100k", 100_000: "100k+", 4_000_000: "100k+", -1: "unknown"} {
+		if got := countWords(igInt(n)); got != want {
+			t.Errorf("countWords(%d) = %q, want %q", n, got, want)
+		}
+	}
+	if got := countWords(nil); got != "unknown" {
+		t.Errorf("countWords(nil) = %q", got)
+	}
+	moved := igProfile()
+	moved.Followers, moved.Following, moved.Posts = igInt(1213), igInt(298), igInt(87)
+	if IGState(moved) != IGState(igProfile()) {
+		t.Errorf("counts that moved a little changed the state:\n%s\n---\n%s", IGState(moved), IGState(igProfile()))
+	}
+	grown := igProfile()
+	grown.Followers = igInt(10_400)
+	if IGState(grown) == IGState(igProfile()) {
+		t.Error("followers that crossed a band left the state unchanged")
+	}
+}
+
 // TestIGState: deterministic, every line present, no handle, no @-tag, no email or phone,
 // the link reduced to its host.
 func TestIGState(t *testing.T) {
@@ -125,7 +149,7 @@ func TestIGState(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"Name: Cafe Exemplu", "Category: Coffee shop", "Website link host: cafe.example",
-		"Followers: 1200", "Following: 300", "Posts: 85", "Private account: no",
+		"Followers: 1k-10k", "Following: under 1k", "Posts: under 1k", "Private account: no",
 		"Caption 1: New beans from @account", "Caption 2: Come sit with us all weekend", "ștampile, @account."} {
 		if !strings.Contains(s, want) {
 			t.Errorf("state lacks %q:\n%s", want, s)

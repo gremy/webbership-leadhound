@@ -325,11 +325,12 @@ func TestLeadsEnrichKeepsOnlyUsefulBodies(t *testing.T) {
 }
 
 // TestLeadsEnrichWritesInstagramRoute: an Instagram profile read as a social fact is also an
-// instagram route in the one canonical form, citing the same page; a post link gives neither.
+// instagram route in the one canonical form, citing the same page; a post link gives neither, nor
+// a link to a loyalty vendor's own account (signals.yaml), which is not the café's.
 func TestLeadsEnrichWritesInstagramRoute(t *testing.T) {
 	leadsDB(t)
 	orgs := enrichFixture(t, enrichSite{domain: "northwind.example", home: `<a href="https://instagram.com/Northwind_Cafe.example/?hl=en">Instagram</a>
-		<a href="https://www.instagram.com/p/abc123/">A post</a>`})
+		<a href="https://www.instagram.com/p/abc123/">A post</a> <a href="https://www.instagram.com/stampino.app/">Our stamp card</a>`})
 	mustRun(t, "leads", "enrich", "--dry-run", "--fixtures", enrichFixtureDir)
 
 	routes, err := leadstoretest.Q(t).RoutesFor(context.Background(), orgs["northwind.example"])
@@ -344,9 +345,12 @@ func TestLeadsEnrichWritesInstagramRoute(t *testing.T) {
 	if r.Kind != leadstore.RouteInstagram || r.Value != want || r.DerivedBy != "enrich@1" || r.Operator {
 		t.Errorf("route %+v, want instagram %s by enrich@1", r, want)
 	}
-	if n := sitesCount(t, `SELECT count(*) FROM org_fact x JOIN contact_route r ON r.org_id = x.org_id AND r.fetch_id = x.fetch_id
+	if n := sitesCount(t, `SELECT count(DISTINCT r.id) FROM org_fact x JOIN contact_route r ON r.org_id = x.org_id AND r.fetch_id = x.fetch_id
 		WHERE x.kind = 'social' AND r.kind = 'instagram'`); n != 1 {
 		t.Errorf("%d instagram routes beside their fact on the same fetch, want 1", n)
+	}
+	if n := sitesCount(t, `SELECT count(*) FROM contact_route WHERE value LIKE '%stampino.app%'`); n != 0 {
+		t.Errorf("the vendor's own account was written as %d routes", n)
 	}
 	sweepFacts(t)
 }

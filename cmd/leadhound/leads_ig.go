@@ -13,14 +13,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/gremy/webbership-leadhound/internal/ai"
 	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/config"
 	"github.com/gremy/webbership-leadhound/internal/enrich"
 	"github.com/gremy/webbership-leadhound/internal/igsignal"
+	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 	"github.com/gremy/webbership-leadhound/internal/leadrate"
 	"github.com/gremy/webbership-leadhound/internal/leadstore"
 	"github.com/gremy/webbership-leadhound/internal/scoring"
@@ -78,6 +81,10 @@ var igFake = func() ai.Decider {
 	return &ai.Fake{Answers: map[string]ai.Answer{leadrate.IGPlace: a, leadrate.IGLoyalty: a, leadrate.IGVendor: a}}
 }
 
+// igJev is the real decider for import's --decider jev (pickDecider: TYPESAFE_API_KEY). A var
+// so a test can stand in a scripted decider under a real model's name, never reaching Jev.
+var igJev = func(cfg config.Config) (ai.Decider, error) { return pickDecider(cfg, igDeciderJev, "leads ig import") }
+
 // igDecider resolves --decider for import: with no flag it is jev when LEADHOUND_LIVE=1 and
 // the fake otherwise, so an unattended run never reaches Jev. jev needs LEADHOUND_LIVE=1 and
 // TYPESAFE_API_KEY (pickDecider).
@@ -95,7 +102,7 @@ func igDecider(cfg config.Config, name string) (ai.Decider, string, error) {
 		if cfg.Live != config.LiveAll {
 			return nil, "", usageError("--decider jev needs LEADHOUND_LIVE=1 (%s)", liveOffMessage)
 		}
-		d, err := pickDecider(cfg, igDeciderJev, "leads ig import")
+		d, err := igJev(cfg)
 		return d, name, err
 	}
 	return nil, "", usageError("--decider must be jev or fake, not %q", name)
@@ -111,7 +118,10 @@ type igSummary struct {
 	ByTier                                 map[string]int // the matcher's result: handle, domain, name, tie, none
 	OperatorKept, MatchesWritten           int
 	NotCoffee, Held                        int // strong matches not attached: a not_coffee place call, or no call yet
+	SiteWeak                               int // handle matches from a website alone under another name: weak, for review
+	RoutesTaken                            int // routes an earlier import wrote, taken back (retired)
 	Calls, Unchanged, NoText, Failures     int
+	RealKept                               int // profiles the fake left alone: real Jev has answered their handle
 	Due                                    int // profiles with text Jev was not asked about: a stop, or a failed call
 	StopReason                             string
 	Queued, MarkedMatched, RoutesAdded     int
@@ -130,7 +140,8 @@ type igPending struct {
 // current as the import writes.
 type igImporter struct {
 	lq       leadstore.Queries
-	db       store.DBTX
+	db       *pgxpool.Pool
+	leads    leadconfig.Config // leads.yaml: a route taken back re-picks the channel by its policy
 	cfg      *cafe.Config
 	matcher  *igsignal.Matcher
 	keys     map[int64]leadstore.IGLeadKey
@@ -143,7 +154,7 @@ type igImporter struct {
 	matches   map[string]leadstore.IGMatch
 	status    map[string]string
 	places    map[string]string // the standing ig_place call of each profile read in this import
-	notCoffee map[string]string // handles whose strong match was held back as not coffee: the note
+	notCoffee map[string]string // handles whose strong match was held back (not coffee, or a site's handle under another name): the note
 	pending   map[string]igPending
 	order     []string // pending handles in file order
 	inARow    int
@@ -205,7 +216,7 @@ func igImportCmd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	im, err := newIGImporter(ctx, lq, s.Pool(), ccfg, c.ID, recs)
+	im, err := newIGImporter(ctx, lq, s.Pool(), setup.leads, ccfg, c.ID, recs)
 	if err != nil {
 		return err
 	}
@@ -247,12 +258,13 @@ func igImportCmd(ctx context.Context, args []string) error {
 
 // newIGImporter reads what an import compares against: the campaign's café leads (the
 // matcher's keys) and the latest match and review status of every handle in recs.
-func newIGImporter(ctx context.Context, lq leadstore.Queries, db store.DBTX, cfg *cafe.Config, campaignID int64, recs []igsignal.Record) (*igImporter, error) {
+func newIGImporter(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, leads leadconfig.Config, cfg *cafe.Config, campaignID int64,
+	recs []igsignal.Record) (*igImporter, error) {
 	keys, err := lq.IGLeadKeys(ctx, campaignID)
 	if err != nil {
 		return nil, err
 	}
-	im := &igImporter{lq: lq, db: db, cfg: cfg, matcher: igsignal.NewMatcher(cfg, keys), keys: map[int64]leadstore.IGLeadKey{},
+	im := &igImporter{lq: lq, db: db, leads: leads, cfg: cfg, matcher: igsignal.NewMatcher(cfg, keys), keys: map[int64]leadstore.IGLeadKey{},
 		status: map[string]string{}, notCoffee: map[string]string{}, pending: map[string]igPending{}, sum: igSummary{ByTier: map[string]int{}}}
 	for _, k := range keys {
 		im.keys[k.LeadID] = k
@@ -379,7 +391,7 @@ func (im *igImporter) matchProfiles(ctx context.Context, read []igsignal.Record)
 	for i, r := range read {
 		handles[i] = r.Profile.Handle
 	}
-	places, err := igStandingPlaces(ctx, im.db, handles)
+	places, err := igStandingPlaces(ctx, im.lq, handles)
 	if err != nil {
 		return err
 	}
@@ -389,7 +401,7 @@ func (im *igImporter) matchProfiles(ctx context.Context, read []igsignal.Record)
 		if err := im.hintFromSource(wctx, *p); err != nil {
 			return err
 		}
-		r := im.matcher.Match(*p)
+		r := im.siteCheck(im.matcher.Match(*p), p.Handle, p.FullName, p.ExternalURL)
 		held, err := im.applyMatch(wctx, p.Handle, r, places[p.Handle], true)
 		if err != nil {
 			return err
@@ -436,17 +448,22 @@ func (im *igImporter) rules(ctx context.Context, row leadstore.IGProfile, p igsi
 }
 
 // judge asks Jev the three questions about a profile with text, once per input: a profile of
-// a handle whose latest Jev answer was asked on the same input (decider, questions, state,
-// threshold, version) is unchanged and costs nothing. After a stop every further profile with
-// text is due. Only a store error or a cancel is returned.
+// a handle whose latest answer from the same kind of decider (the fake, or real Jev) was asked
+// on the same input (decider, questions, state, threshold, version) is unchanged and costs
+// nothing. The fake never answers a handle real Jev has answered (its answers stand). After a
+// stop every further profile with text is due. Only a store error or a cancel is returned.
 func (im *igImporter) judge(ctx context.Context, row leadstore.IGProfile) error {
 	if !leadrate.IGHasText(row) {
 		im.sum.NoText++
 		return nil
 	}
+	fake := im.name == ai.FakeName
+	if kept, err := im.realKept(ctx, row.Handle, fake); err != nil || kept {
+		return err
+	}
 	state := leadrate.IGState(row)
 	hash := leadrate.IGHash(im.name, *im.cfg, state)
-	prev, err := im.lq.IGJudgmentHash(ctx, row.Handle, leadstore.IGPlace)
+	prev, err := im.lq.IGJudgmentHash(ctx, row.Handle, leadstore.IGPlace, fake)
 	if err != nil {
 		return err
 	}
@@ -498,6 +515,9 @@ func (im *igImporter) judge(ctx context.Context, row leadstore.IGProfile) error 
 	im.inARow = 0
 	wctx := context.WithoutCancel(ctx)
 	model := cutRunes(cmp.Or(usage.Model, im.name), rateModelRunes)
+	if fake {
+		model = leadstore.IGFakeModel // what tells the fake's rows from real Jev's
+	}
 	for _, q := range qs {
 		choice, raw, conf := leadrate.IGEffective(answers[q.Name])
 		if _, err := im.lq.AddIGJudgment(wctx, leadstore.IGJudgment{ProfileID: row.ID, Question: q.Name, Choice: choice,
@@ -506,6 +526,19 @@ func (im *igImporter) judge(ctx context.Context, row leadstore.IGProfile) error 
 		}
 	}
 	return nil
+}
+
+// realKept reports, for the fake decider (fake), whether real Jev has answered handle, counting
+// it: the fake then neither asks nor writes, so real answers stay standing.
+func (im *igImporter) realKept(ctx context.Context, handle string, fake bool) (bool, error) {
+	if !fake {
+		return false, nil
+	}
+	answered, err := im.lq.IGRealJudged(ctx, handle)
+	if answered {
+		im.sum.RealKept++
+	}
+	return answered, err
 }
 
 // tierWord is how a match result is counted: its tier, or tie for two or more leads.
@@ -537,12 +570,19 @@ func igNotCoffeeNote(tier string) string {
 // not_coffee. A not_coffee one is stored as a weak match naming the lead (the operator's
 // "it's this lead" still attaches it) with the not-coffee note; with no call yet nothing is
 // stored and held is true. A following-list account never read has no call and attaches.
+// Once stored, a route an earlier import wrote for the handle on any org the match no longer
+// strongly names is taken back (igTakeBack).
 func (im *igImporter) applyMatch(ctx context.Context, handle string, r igsignal.Result, place string, judged bool) (held bool, err error) {
 	im.sum.ByTier[tierWord(r)]++
 	latest, had := im.matches[handle]
+	if r.Detail == igSiteHandleNote && (!had || latest.Actor != leadstore.ActorGremy) {
+		im.sum.SiteWeak++
+		im.notCoffee[handle] = igSiteHandleNote
+	}
 	switch {
 	case had && latest.Actor == leadstore.ActorGremy:
 		im.sum.OperatorKept++
+		return false, im.ensureRoute(ctx, handle)
 	case judged && r.Strong() && place == "":
 		im.sum.Held++
 		return true, nil
@@ -559,7 +599,7 @@ func (im *igImporter) applyMatch(ctx context.Context, handle string, r igsignal.
 			im.sum.MatchesWritten++
 			im.matches[handle] = m
 		}
-		return false, nil
+		return false, im.takeBack(ctx, handle)
 	case had && latest.Strong() && r.Strong() && latest.LeadID == r.LeadIDs[0]:
 		// The same lead, strongly: a domain match turned handle match by the route this
 		// import wrote is not a new match, so a re-import stores nothing.
@@ -574,7 +614,98 @@ func (im *igImporter) applyMatch(ctx context.Context, handle string, r igsignal.
 			im.matches[handle] = m
 		}
 	}
+	if err := im.takeBack(ctx, handle); err != nil {
+		return false, err
+	}
 	return false, im.ensureRoute(ctx, handle)
+}
+
+// igSiteHandleNote is the review note (and the stored match's detail) of a handle match demoted
+// by siteCheck.
+const igSiteHandleNote = "linked from the lead's site, under another name"
+
+// siteCheck demotes r, a handle match on one lead, to a weak match naming that lead (it waits
+// for review) when the lead holds the handle from a website alone (not from the operator nor
+// its map listing: IGLeadKey.TrustedHandles), the profile's link is not the lead's own domain,
+// and the profile's name shares no word with the lead's names (igSharesNameWord): a site can
+// link a theme author's or another café's account.
+func (im *igImporter) siteCheck(r igsignal.Result, handle, fullName, link string) igsignal.Result {
+	if r.Tier != leadstore.IGTierHandle || len(r.LeadIDs) != 1 {
+		return r
+	}
+	k, ok := im.keys[r.LeadIDs[0]]
+	h, _ := enrich.InstagramHandle(handle)
+	if !ok || slices.Contains(k.TrustedHandles, h) || (k.Domain != "" && im.matcher.Domain(link) == k.Domain) ||
+		igSharesNameWord(fullName, k.OrgName, k.SiteName, k.PlaceName) {
+		return r
+	}
+	r.Tier, r.Detail = leadstore.IGTierName, igSiteHandleNote
+	return r
+}
+
+// igFillerWords are words two unrelated names share without saying they are one business.
+var igFillerWords = map[string]bool{"the": true, "and": true, "din": true, "for": true, "from": true, "shop": true, "bar": true}
+
+// igSharesNameWord reports whether profileName and one of leadNames share a word, as NameKey
+// folds them: three letters or more, not a coffee word (igsignal.CoffeeName: every café's name
+// may hold one) and not a filler word.
+func igSharesNameWord(profileName string, leadNames ...string) bool {
+	words := func(s string) []string {
+		var out []string
+		for _, w := range strings.Fields(igsignal.NameKey(s)) {
+			if utf8.RuneCountInString(w) >= 3 && !igFillerWords[w] && !igsignal.CoffeeName("", w) {
+				out = append(out, w)
+			}
+		}
+		return out
+	}
+	mine := words(profileName)
+	for _, n := range leadNames {
+		for _, w := range words(n) {
+			if slices.Contains(mine, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// takeBack retires the routes an earlier import wrote for handle on every org its latest match
+// does not strongly name (igTakeBack), counting them. A dry run never gets here.
+func (im *igImporter) takeBack(ctx context.Context, handle string) error {
+	var keep int64
+	if m := im.matches[handle]; m.Strong() {
+		keep = im.keys[m.LeadID].OrgID
+	}
+	n, err := igTakeBack(ctx, im.db, im.leads, handle, keep)
+	im.sum.RoutesTaken += n
+	return err
+}
+
+// igTakeBackNote is the note on a route an import wrote and took back.
+const igTakeBackNote = "taken back: Instagram no longer matches this account to the lead"
+
+// igTakeBack retires every route an Instagram import wrote for handle (IGImportRoutes: never one
+// the operator typed or claimed, never one already marked) on an org other than keep (0: none
+// kept), the way `leads contacts retire` does (a contact_mark retire, by the system, its unsent
+// messages cancelled), and re-picks each such org's new leads' channels. n is how many it retired.
+func igTakeBack(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig.Config, handle string, keep int64) (n int, err error) {
+	routes, err := leadstore.NewQueries(pool).IGImportRoutes(ctx, handle)
+	if err != nil {
+		return 0, err
+	}
+	for _, r := range routes {
+		if r.OrgID == keep {
+			continue
+		}
+		if err := contactTx(ctx, pool, cfg, r.OrgID, func(tq leadstore.Queries) error {
+			return tq.MarkContact(ctx, leadstore.Mark{OrgID: r.OrgID, RouteID: r.ID, Mark: leadstore.MarkRetire, Note: igTakeBackNote, System: true})
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // ensureRoute writes handle as the instagram route of the lead its latest match strongly
@@ -597,8 +728,12 @@ func (im *igImporter) ensureRoute(ctx context.Context, handle string) error {
 }
 
 // igEnsureRoute writes handle as org orgID's instagram route (DerivedByInstagram) unless the
-// org already holds a live instagram route; added reports whether it wrote one.
+// org already holds a live instagram route, or handle is a loyalty or ordering vendor's own
+// account (never a café's route); added reports whether it wrote one.
 func igEnsureRoute(ctx context.Context, lq leadstore.Queries, orgID int64, handle string) (bool, error) {
+	if leadstore.IsVendorIGHandle(handle) {
+		return false, nil
+	}
 	routes, err := lq.RoutesFor(ctx, orgID)
 	if err != nil {
 		return false, err
@@ -744,7 +879,7 @@ func (im *igImporter) following(ctx context.Context, rec igsignal.Record) error 
 // name is kept.
 func (im *igImporter) followAccount(ctx context.Context, k igsignal.Follow, read bool) (keepName bool, err error) {
 	if !read {
-		r := im.matcher.MatchFollow(k)
+		r := im.siteCheck(im.matcher.MatchFollow(k), k.Handle, k.FullName, "")
 		if r.VendorAccount != "" {
 			im.sum.ByTier[tierWord(r)]++
 			return false, nil
@@ -781,23 +916,27 @@ func (im *igImporter) dryRun(ctx context.Context, recs []igsignal.Record) error 
 			row := igProfileRow(*p, r.SHA256)
 			if leadrate.IGHasText(row) {
 				im.sum.ProfilesWithText++
-				prev, err := im.lq.IGJudgmentHash(ctx, p.Handle, leadstore.IGPlace)
+				kept, err := im.realKept(ctx, p.Handle, true)
 				if err != nil {
 					return err
 				}
-				if !bytes.Equal(prev, leadrate.IGHash(ai.FakeName, *im.cfg, leadrate.IGState(row))) {
+				prev, err := im.lq.IGJudgmentHash(ctx, p.Handle, leadstore.IGPlace, true)
+				if err != nil {
+					return err
+				}
+				if !kept && !bytes.Equal(prev, leadrate.IGHash(ai.FakeName, *im.cfg, leadrate.IGState(row))) {
 					im.sum.WouldAsk++
 				}
 			}
 			if _, _, ok := igsignal.Vendor(*p, im.cfg); ok {
 				im.sum.RuleVendors++
 			}
-			im.sum.ByTier[tierWord(im.matcher.Match(*p))]++
+			im.sum.ByTier[tierWord(im.siteCheck(im.matcher.Match(*p), p.Handle, p.FullName, p.ExternalURL))]++
 		case r.Following != nil:
 			im.sum.Lists++
 			im.sum.Kept += len(r.Following.Kept)
 			for _, k := range r.Following.Kept {
-				im.sum.ByTier[tierWord(im.matcher.MatchFollow(k))]++
+				im.sum.ByTier[tierWord(im.siteCheck(im.matcher.MatchFollow(k), k.Handle, k.FullName, ""))]++
 			}
 		}
 	}
@@ -822,20 +961,17 @@ func igReadHandles(ctx context.Context, db store.DBTX, handles []string) (map[st
 }
 
 // igStandingPlaces is the standing ig_place choice of each of handles, read as leadstore's
-// lead card reads it: from the newest capture holding an answer, a rule's before Jev's.
-func igStandingPlaces(ctx context.Context, db store.DBTX, handles []string) (map[string]string, error) {
-	rows, err := db.Query(ctx,
-		`SELECT DISTINCT ON (p.handle) p.handle, j.choice
-		 FROM ig_judgment j JOIN ig_profile p ON p.id = j.profile_id
-		 WHERE p.handle = ANY($1::text[]) AND j.question = '`+leadstore.IGPlace+`'
-		 ORDER BY p.handle, j.profile_id DESC, (j.source = '`+leadstore.IGFromRule+`') DESC, j.id DESC`, handles)
+// lead card reads it (IGStandingJudgments).
+func igStandingPlaces(ctx context.Context, lq leadstore.Queries, handles []string) (map[string]string, error) {
+	js, err := lq.IGStandingJudgments(ctx, handles)
 	if err != nil {
 		return nil, fmt.Errorf("leads ig: standing places: %w", err)
 	}
 	out := map[string]string{}
-	var h, choice string
-	if _, err := pgx.ForEachRow(rows, []any{&h, &choice}, func() error { out[h] = choice; return nil }); err != nil {
-		return nil, fmt.Errorf("leads ig: standing places: %w", err)
+	for h, byQ := range js {
+		if j, ok := byQ[leadstore.IGPlace]; ok {
+			out[h] = j.Choice
+		}
 	}
 	return out, nil
 }
@@ -850,11 +986,12 @@ func printIGImport(w io.Writer, runID int64, slug, decider string, maxCalls, dai
 	_, _ = fmt.Fprintf(w, "  following lists: %d (%d cut short) · %d accounts kept · %d rows new · %d hints new\n",
 		s.Lists, s.ListsPartial, s.Kept, s.FollowsNew, s.Hints)
 	_, _ = fmt.Fprintf(w, "  matches: handle %d · domain %d · name %d · tie %d · none %d · the operator's call kept %d · %d rows written"+
-		" · not attached: not coffee %d, no place call yet %d\n",
+		" · not attached: not coffee %d, no place call yet %d · a site's handle under another name %d\n",
 		s.ByTier[leadstore.IGTierHandle], s.ByTier[leadstore.IGTierDomain], s.ByTier[leadstore.IGTierName], s.ByTier["tie"],
-		s.ByTier[leadstore.IGTierNone], s.OperatorKept, s.MatchesWritten, s.NotCoffee, s.Held)
-	_, _ = fmt.Fprintf(w, "  jev: calls %d · unchanged %d · no text %d · failed %d · still due %d · stop %s · vendor by rule %d\n",
-		s.Calls, s.Unchanged, s.NoText, s.Failures, s.Due, cmp.Or(s.StopReason, "none"), s.RuleVendors)
+		s.ByTier[leadstore.IGTierNone], s.OperatorKept, s.MatchesWritten, s.NotCoffee, s.Held, s.SiteWeak)
+	_, _ = fmt.Fprintf(w, "  jev: calls %d · unchanged %d · no text %d · failed %d · still due %d · stop %s · vendor by rule %d"+
+		" · real Jev's answers kept from the fake %d\n",
+		s.Calls, s.Unchanged, s.NoText, s.Failures, s.Due, cmp.Or(s.StopReason, "none"), s.RuleVendors, s.RealKept)
 	switch s.StopReason {
 	case rateStopMax:
 		_, _ = fmt.Fprintf(w, "  stopped at --max-calls %d: %s still due; import the same file again to ask them\n",
@@ -867,7 +1004,7 @@ func printIGImport(w io.Writer, runID int64, slug, decider string, maxCalls, dai
 		_, _ = fmt.Fprintf(w, "  stopped: %d failed calls in a row; %s still due\n", rateFailuresInARow, plural(s.Due, "profile", "profiles"))
 	}
 	_, _ = fmt.Fprintf(w, "  review: %d added · %d marked matched\n", s.Queued, s.MarkedMatched)
-	_, _ = fmt.Fprintf(w, "  routes: %d added\n", s.RoutesAdded)
+	_, _ = fmt.Fprintf(w, "  routes: %d added · %d taken back\n", s.RoutesAdded, s.RoutesTaken)
 }
 
 // printIGDryRun prints what a dry run counted.
@@ -1263,12 +1400,12 @@ func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 		}
 		leadID = id
 	}
-	lq, db, done, err := igOpen(ctx)
+	s, setup, err := leadsOpen(ctx, leadsForProbe)
 	if err != nil {
 		return err
 	}
-	defer done()
-	err = igOperatorPrint(ctx, lq, db, verb, args[0], leadID)
+	defer s.Close()
+	err = igOperatorPrint(ctx, leadstore.NewQueries(s.Pool()), s.Pool(), setup.leads, verb, args[0], leadID)
 	var r igRefusal
 	if errors.As(err, &r) {
 		return usageError("%s", r)
@@ -1277,10 +1414,10 @@ func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 }
 
 // igOperatorPrint runs one operator's call and prints what it did.
-func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db store.DBTX, verb, raw string, leadID int64) error {
+func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config, verb, raw string, leadID int64) error {
 	switch verb {
 	case "match":
-		handle, added, err := igOperatorMatch(ctx, lq, db, raw, leadID)
+		handle, added, err := igOperatorMatch(ctx, lq, db, cfg, raw, leadID)
 		if err != nil {
 			return err
 		}
@@ -1291,7 +1428,7 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db store.DBTX, v
 		_, _ = fmt.Fprintf(stdout, "leads ig match: @%s is lead %d now (%s)\n", handle, leadID, route)
 		return nil
 	case "unmatch":
-		handle, back, err := igOperatorUnmatch(ctx, lq, db, raw)
+		handle, back, err := igOperatorUnmatch(ctx, lq, db, cfg, raw)
 		if err != nil {
 			return err
 		}
@@ -1342,10 +1479,12 @@ func igOperatorHandle(ctx context.Context, db store.DBTX, raw string) (string, e
 }
 
 // igOperatorMatch is the operator's "it's this lead": raw attaches to café lead leadID (it
-// outranks every later import's match), the handle is marked matched, and the lead's org gets
-// the handle as its instagram route when it holds none. It is `leads ig match` and the
-// console's button alike.
-func igOperatorMatch(ctx context.Context, lq leadstore.Queries, db store.DBTX, raw string, leadID int64) (handle string, routeAdded bool, err error) {
+// outranks every later import's match), the handle is marked matched, the lead's org gets the
+// handle as its instagram route when it holds none (a retired one of that handle is claimed back
+// as his), and a route an import wrote for the handle on another org (the lead it matched before)
+// is taken back. It is `leads ig match` and the console's button alike.
+func igOperatorMatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config, raw string,
+	leadID int64) (handle string, routeAdded bool, err error) {
 	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
 		return "", false, err
 	}
@@ -1364,18 +1503,57 @@ func igOperatorMatch(ctx context.Context, lq leadstore.Queries, db store.DBTX, r
 	if _, err := lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewMatched, "", leadstore.ActorGremy); err != nil {
 		return "", false, err
 	}
-	routeAdded, err = igEnsureRoute(ctx, lq, keys[i].OrgID, handle)
+	org := keys[i].OrgID
+	if _, err := igTakeBack(ctx, db, cfg, handle, org); err != nil {
+		return "", false, err
+	}
+	if routeAdded, err = igEnsureRoute(ctx, lq, org, handle); err != nil || routeAdded {
+		return handle, routeAdded, err
+	}
+	routeAdded, err = igClaimRetiredRoute(ctx, db, cfg, org, handle)
 	return handle, routeAdded, err
 }
 
+// igClaimRetiredRoute claims org orgID's retired instagram route of handle back as the
+// operator's (a contact_mark claim, as `leads contacts` claims one), when the org holds no live
+// instagram route: his "it's this lead" undoes a take-back. It re-picks the org's new leads and
+// reports whether it claimed one.
+func igClaimRetiredRoute(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig.Config, orgID int64, handle string) (bool, error) {
+	if leadstore.IsVendorIGHandle(handle) {
+		return false, nil
+	}
+	lq := leadstore.NewQueries(pool)
+	routes, err := lq.RoutesFor(ctx, orgID)
+	if err != nil || slices.ContainsFunc(routes, func(r leadstore.Route) bool { return r.Kind == leadstore.RouteInstagram }) {
+		return false, err
+	}
+	var id int64
+	err = pool.QueryRow(ctx, `SELECT id FROM contact_route WHERE org_id = $1 AND kind = $2 AND value = $3`,
+		orgID, leadstore.RouteInstagram, enrich.InstagramURL(handle)).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("leads ig: retired route: %w", err)
+	}
+	err = contactTx(ctx, pool, cfg, orgID, func(tq leadstore.Queries) error {
+		return tq.MarkContact(ctx, leadstore.Mark{OrgID: orgID, RouteID: id, Mark: leadstore.MarkClaim, Note: "your Instagram match"})
+	})
+	return err == nil, err
+}
+
 // igOperatorUnmatch is the operator's "it is no lead": an operator's match with no lead, so no
-// import attaches it again; a handle marked matched goes back on the review list (back).
-func igOperatorUnmatch(ctx context.Context, lq leadstore.Queries, db store.DBTX, raw string) (handle string, back bool, err error) {
+// import attaches it again; every route an import wrote for the handle is taken back
+// (igTakeBack); a handle marked matched goes back on the review list (back).
+func igOperatorUnmatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config, raw string) (handle string, back bool, err error) {
 	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
 		return "", false, err
 	}
 	if _, err := lq.SetIGMatch(ctx, leadstore.IGMatch{Handle: handle, Tier: leadstore.IGTierOperator,
 		Detail: "unmatched by you", Actor: leadstore.ActorGremy}); err != nil {
+		return "", false, err
+	}
+	if _, err := igTakeBack(ctx, db, cfg, handle, 0); err != nil {
 		return "", false, err
 	}
 	items, err := lq.IGReview(ctx, leadstore.IGReviewMatched)

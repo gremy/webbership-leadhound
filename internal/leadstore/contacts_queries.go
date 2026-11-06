@@ -159,7 +159,8 @@ type ExportRow struct {
 	ExactVersion string `db:"exact_version"`
 	Phrase       string `db:"phrase"`
 	FindingURL   string `db:"finding_url"`
-	// The best route: an email with MX first, then a form, then an email without MX.
+	// The best route: an email with MX first, then a form, then an email without MX or a
+	// LinkedIn page, an Instagram profile last.
 	RouteKind string `db:"route_kind"`
 	Route     string `db:"route"`
 	MXOK      bool   `db:"mx_ok"`
@@ -187,7 +188,8 @@ func (q Queries) ExportRoutes(ctx context.Context, limit int) ([]ExportRow, erro
 		 JOIN LATERAL (
 		   SELECT kind, value, mx_ok FROM contact_route c WHERE c.org_id = o.id
 		     AND `+contactLatestMarkSQL("route_id", "c.id")+` IS DISTINCT FROM 'retire'
-		   ORDER BY CASE WHEN c.kind = 'email' AND c.mx_ok THEN 0 WHEN c.kind = 'form' THEN 1 ELSE 2 END, c.id
+		   ORDER BY CASE WHEN c.kind = 'email' AND c.mx_ok THEN 0 WHEN c.kind = 'form' THEN 1
+		       WHEN c.kind = '`+RouteInstagram+`' THEN 3 ELSE 2 END, c.id
 		   LIMIT 1
 		 ) r ON true
 		 WHERE o.kind <> 'selftest'
