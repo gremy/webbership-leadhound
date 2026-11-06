@@ -62,12 +62,12 @@
 </section>
 
 <section class="card today-section" id="today-manual" aria-labelledby="today-manual-title">
-  <div class="card-head"><h2 id="today-manual-title"><span class="today-step" aria-hidden="true">{{index $v.Num "manual"}}</span> Forms and LinkedIn notes to send by hand{{with $t.Manual}} <span class="today-count">{{len .}}</span>{{end}}</h2></div>
+  <div class="card-head"><h2 id="today-manual-title"><span class="today-step" aria-hidden="true">{{index $v.Num "manual"}}</span> Forms, LinkedIn notes and Instagram DMs to send by hand{{with $t.Manual}} <span class="today-count">{{len .}}</span>{{end}}</h2></div>
   {{if $t.Manual}}
   <ul class="list">{{range $t.Manual}}{{template "today_lead" .}}{{end}}</ul>
   <div class="card-foot">Send each one yourself, then mark it done on <a href="/leads/outreach">Outreach</a>.</div>
-  {{else if $t.ShadowManual}}<div class="empty empty-compact"><p class="empty-title">Only practice items</p><p class="empty-text">{{plural $t.ShadowManual "form or LinkedIn note is" "forms and LinkedIn notes are"}} in shadow batches and not listed here: shadow batches are practice.</p></div>
-  {{else}}<div class="empty empty-compact"><p class="empty-title">Nothing to send by hand</p><p class="empty-text">No forms or LinkedIn notes due. They show here once a batch with them is approved.</p></div>{{end}}
+  {{else if $t.ShadowManual}}<div class="empty empty-compact"><p class="empty-title">Only practice items</p><p class="empty-text">{{plural $t.ShadowManual "form, LinkedIn note or Instagram DM is" "forms, LinkedIn notes and Instagram DMs are"}} in shadow batches and not listed here: shadow batches are practice.</p></div>
+  {{else}}<div class="empty empty-compact"><p class="empty-title">Nothing to send by hand</p><p class="empty-text">No forms, LinkedIn notes or Instagram DMs due. They show here once a batch with them is approved.</p></div>{{end}}
 </section>
 
 <section class="card today-section" id="today-calls-waiting" aria-labelledby="today-calls-waiting-title">

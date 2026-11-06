@@ -17,7 +17,7 @@ import (
 
 // The outreach writes' refusals, in plain words. Each says nothing was saved.
 const (
-	badContactKind     = "Choose email, phone, contact form, LinkedIn or person. Nothing was saved."
+	badContactKind     = "Choose email, phone, contact form, LinkedIn, Instagram or person. Nothing was saved."
 	needContactValue   = "Give the address, number or link. Nothing was saved."
 	needPersonText     = "Give the person's name or role. Nothing was saved."
 	contactTooLong     = "That is longer than 500 characters; shorten it. Nothing was saved."
@@ -30,7 +30,7 @@ const (
 	draftSubjectLong   = "The subject is longer than 200 characters; shorten it. Nothing was saved."
 	draftSubjectLines  = "The subject must be one line. Nothing was saved."
 	draftChanged       = "This draft changed; reload."
-	badDraftChannel    = "Choose email, contact form or LinkedIn. Nothing was saved."
+	badDraftChannel    = "Choose email, contact form, LinkedIn or Instagram. Nothing was saved."
 	badDiscard         = "That draft could not be read; reload. Nothing was discarded."
 	needSector         = "Choose a sector. Nothing was saved."
 	needProposalTitle  = "Give the proposal a title. Nothing was saved."
@@ -284,8 +284,11 @@ func (s *server) leadDraftSent(w http.ResponseWriter, r *http.Request) {
 	s.outreachAnswer(w, r, do, id, draftCard(mid), posted, out, "Marked sent.", err)
 }
 
-// leadDraftIt is POST /leads/{id}/draft-it, through leadAct: channel is email, form, linkedin, or
-// empty for the lead's own.
+// draftChannels are the channels Draft it writes for.
+var draftChannels = []string{ChannelEmail, ChannelForm, ChannelLinkedIn, ChannelInstagram}
+
+// leadDraftIt is POST /leads/{id}/draft-it, through leadAct: channel is email, form, linkedin,
+// instagram, or empty for the lead's own.
 func (s *server) leadDraftIt(w http.ResponseWriter, r *http.Request, id int64) {
 	const do = "draft it"
 	if !leadsForm(w, r) {
@@ -293,7 +296,7 @@ func (s *server) leadDraftIt(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	posted := OutreachPosted{Form: "draft-it", Values: postedValues(r, "channel")}
 	channel := r.PostForm.Get("channel")
-	if channel != "" && channel != ChannelEmail && channel != ChannelForm && channel != ChannelLinkedIn {
+	if channel != "" && !slices.Contains(draftChannels, channel) {
 		s.outreachRefuse(w, r, do, id, posted, badDraftChannel)
 		return
 	}

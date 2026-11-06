@@ -1,0 +1,1 @@
+Hello, I'm {{.SenderName}}. I built Demo Loyalty and run it at my own café. It is a stamp card in Apple Wallet or Google Wallet with the name of {{.OrgName}} on it, and your regulars need no app. Reply here and I will send you the demo card.

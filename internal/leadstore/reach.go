@@ -17,7 +17,7 @@ import (
 //   - contacted: someone was reached: state contacted, replied, bounced or opted_out, or batched
 //     with a live message sent, maybe sent or done. A shadow batch's message reaches nobody.
 //   - email: new or batched, not contacted, on channel email.
-//   - manual: new or batched, not contacted, on channel form or linkedin, or on no channel with
+//   - manual: new or batched, not contacted, on channel form, linkedin or instagram, or on no channel with
 //     a phone that is not retired.
 //   - dead: new, on no channel, with no phone (ReachReason says why).
 //   - other: every other lead: skipped, suppressed, closed, and a batched lead on no channel
@@ -51,6 +51,16 @@ const (
 	reachFactLiveSQL  = `coalesce((SELECT cm.mark FROM contact_mark cm WHERE cm.fact_id = x.id ORDER BY cm.id DESC LIMIT 1), '') <> 'retire'`
 )
 
+// manualChannelsSQL is the channels the operator works by hand (form, LinkedIn, Instagram), as
+// a SQL list, and manualChannel the same test in Go: the Manual tab, Today's manual items, the
+// timeline's marked-sent items, Mark done and a manual edit all read these two, so a new manual
+// channel is added in one place.
+const manualChannelsSQL = `('form', 'linkedin', 'instagram')`
+
+func manualChannel(c string) bool {
+	return c == ChannelForm || c == RouteLinkedIn || c == RouteInstagram
+}
+
 // reachBucketSQL is a lead l's bucket.
 const reachBucketSQL = `CASE
 	   WHEN l.state IN ('contacted', 'replied', 'bounced', 'opted_out') THEN 'contacted'
@@ -60,7 +70,7 @@ const reachBucketSQL = `CASE
 	     WHERE rm.lead_id = l.id AND rm.state IN ('sent', 'maybe_sent', 'done') AND NOT rmb.shadow
 	   ) THEN 'contacted'
 	   WHEN l.channel = 'email' THEN 'email'
-	   WHEN l.channel IN ('form', 'linkedin') THEN 'manual'
+	   WHEN l.channel IN ` + manualChannelsSQL + ` THEN 'manual'
 	   WHEN l.channel = 'none' AND EXISTS (
 	     SELECT 1 FROM org_fact x WHERE x.org_id = l.org_id AND x.kind = 'phone' AND ` + reachFactLiveSQL + `
 	   ) THEN 'manual'

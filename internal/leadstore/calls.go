@@ -41,7 +41,7 @@ var (
 // none is named) or, when it waits on nothing, the due time still to come (nil: none yet).
 type NotDueError struct {
 	WaitsOnStep    int
-	WaitsOnChannel string // the waited-on step's channel: email | phone | form | linkedin
+	WaitsOnChannel string // the waited-on step's channel: email | phone | form | linkedin | instagram
 	DueAt          *time.Time
 }
 
@@ -630,7 +630,7 @@ func (q Queries) CallByID(ctx context.Context, accountID, messageID int64) (Call
 	return rows[0], nil
 }
 
-// TodayItem is one email or manual (form, LinkedIn) step due today.
+// TodayItem is one email or manual (form, LinkedIn, Instagram) step due today.
 type TodayItem struct {
 	MessageID  int64     `db:"message_id" json:"message_id"`
 	LeadID     int64     `db:"lead_id" json:"lead_id"`
@@ -639,7 +639,7 @@ type TodayItem struct {
 	OrgName    string    `db:"org_name" json:"org_name"`
 	OrgDomain  string    `db:"org_domain" json:"org_domain"`
 	Country    string    `db:"country" json:"country"`
-	Channel    string    `db:"channel" json:"channel"` // email | form | linkedin
+	Channel    string    `db:"channel" json:"channel"` // email | form | linkedin | instagram
 	Step       int       `db:"step" json:"step"`
 	DueAt      time.Time `db:"due_at" json:"due_at"`
 	Shadow     bool      `db:"shadow" json:"shadow"`
@@ -669,7 +669,7 @@ type Today struct {
 	RepliesWaiting []TodayLead `json:"replies_waiting"` // leads in state replied, newest first
 	EmailsDueCount int         `json:"emails_due_count"`
 	EmailsDue      []TodayItem `json:"emails_due"` // the first TodayFirstFew, oldest due first
-	Manual         []TodayItem `json:"manual"`     // form and LinkedIn steps due by the end of today
+	Manual         []TodayItem `json:"manual"`     // form, LinkedIn and Instagram steps due by the end of today
 }
 
 // TodayView returns Today for account accountID (0: DefaultAccountID) and campaign campaignID
@@ -719,7 +719,7 @@ func (q Queries) TodayView(ctx context.Context, accountID, campaignID int64, now
 		return Today{}, fmt.Errorf("leadstore: today: emails: %w", err)
 	}
 	if t.Manual, err = collect(ctx, q.db, pgx.RowToStructByName[TodayItem],
-		itemSQL+` AND m.channel IN ('form', 'linkedin') ORDER BY m.due_at, m.id`, accountID, campaignID, dayEnd); err != nil {
+		itemSQL+` AND m.channel IN `+manualChannelsSQL+` ORDER BY m.due_at, m.id`, accountID, campaignID, dayEnd); err != nil {
 		return Today{}, fmt.Errorf("leadstore: today: manual: %w", err)
 	}
 	return t, nil
@@ -749,7 +749,7 @@ type SequenceStep struct {
 // the newest), in step order: the batch's frozen sequence for the lead, each step with its row
 // when it has one. A step with no row reads NoNumber when the sequence has a call step (no
 // callable number at batch time), else "not drafted". A legacy batch (no stored sequence) lists
-// its rows as they are, and so does a form or LinkedIn lead's, because the frozen sequence is the
+// its rows as they are, and so does a form, LinkedIn or Instagram lead's, because the frozen sequence is the
 // campaign's emails and calls, none of which it was drafted. No batch: an empty list.
 func (q Queries) SequenceOf(ctx context.Context, leadID int64) ([]SequenceStep, error) {
 	var (
@@ -812,7 +812,7 @@ func (q Queries) SequenceOf(ctx context.Context, leadID int64) ([]SequenceStep, 
 	}
 	seq := seqs.For(name)
 	out := []SequenceStep{}
-	manual := slices.ContainsFunc(rows, func(r row) bool { return r.Channel == RouteForm || r.Channel == RouteLinkedIn })
+	manual := slices.ContainsFunc(rows, func(r row) bool { return manualChannel(r.Channel) })
 	if seq == nil || manual { // its rows as they are
 		for _, r := range rows {
 			s := SequenceStep{BatchID: batchID, Shadow: shadow, Step: r.Step, Type: stepType(r.Channel), When: r.Condition}

@@ -75,6 +75,14 @@ const (
 	MaxLinkedInNoteMax     = 300
 )
 
+// sender.instagram_dm_max: the default when the file leaves it out and the bounds a value
+// must hold. Instagram takes far longer messages; a first DM is kept short by choice.
+const (
+	DefaultInstagramDMMax = 500
+	MinInstagramDMMax     = 1
+	MaxInstagramDMMax     = 1000
+)
+
 // ErrInvalid wraps every problem with the file's content or its templates.
 var ErrInvalid = errors.New("invalid leads config")
 
@@ -88,6 +96,11 @@ const (
 // ChannelLinkedIn is the channel of a lead reached on LinkedIn by hand. It is a lead's channel
 // and never a country policy: PickChannel reaches it from an email, form or none policy.
 const ChannelLinkedIn = "linkedin"
+
+// ChannelInstagram is the channel of a lead reached by a direct message on Instagram, sent by
+// hand. Like ChannelLinkedIn it is a lead's channel and never a country policy: PickChannel
+// reaches it after a form and LinkedIn.
+const ChannelInstagram = "instagram"
 
 // Lead kinds kinds_priority may name; each has its own templates.
 const (
@@ -295,6 +308,10 @@ type Sender struct {
 	// MinLinkedInNoteMax to MaxLinkedInNoteMax, DefaultLinkedInNoteMax when the file leaves
 	// it out. read seeds the default before decoding, so a written 0 stays 0 and is refused.
 	LinkedInNoteMax int `yaml:"linkedin_note_max"`
+	// InstagramDMMax is the longest first Instagram DM in runes after rendering,
+	// MinInstagramDMMax to MaxInstagramDMMax, DefaultInstagramDMMax when the file leaves it
+	// out. read seeds the default before decoding, so a written 0 stays 0 and is refused.
+	InstagramDMMax int `yaml:"instagram_dm_max"`
 }
 
 // PrivacyLinePrefix opens the footer's privacy line, before the notice's URL.
@@ -514,7 +531,7 @@ func read(dataDir string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("leadconfig: %w", err)
 	}
-	cfg := Config{Sender: Sender{LinkedInNoteMax: DefaultLinkedInNoteMax}}
+	cfg := Config{Sender: Sender{LinkedInNoteMax: DefaultLinkedInNoteMax, InstagramDMMax: DefaultInstagramDMMax}}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
@@ -670,6 +687,9 @@ func (cfg *Config) checkRest() []string {
 	}
 	if s.LinkedInNoteMax < MinLinkedInNoteMax || s.LinkedInNoteMax > MaxLinkedInNoteMax {
 		p = append(p, fmt.Sprintf("sender.linkedin_note_max must be from %d to %d", MinLinkedInNoteMax, MaxLinkedInNoteMax))
+	}
+	if s.InstagramDMMax < MinInstagramDMMax || s.InstagramDMMax > MaxInstagramDMMax {
+		p = append(p, fmt.Sprintf("sender.instagram_dm_max must be from %d to %d", MinInstagramDMMax, MaxInstagramDMMax))
 	}
 
 	p = append(p, cfg.Facts.D6EOL.check("facts.d6_eol")...)
@@ -856,10 +876,13 @@ type Email struct {
 
 // Set is one kind's templates in one language. Steps is empty when the language is used by
 // form countries only. A campaign's own templates (LoadCampaignTemplates) fill Email, by step
-// number, and Call instead of Steps, Form and LinkedIn.
+// number, and Call instead of Steps, Form and LinkedIn. Instagram is the optional
+// <kind>/<lang>/instagram.txt (InstagramFile), nil when the folder holds none: an Instagram
+// lead then has no template text and only a Claude draft.
 type Set struct {
 	Steps          []Email
 	Form, LinkedIn *template.Template
+	Instagram      *template.Template
 	Email          map[int]Email      // a campaign's email steps by step number; nil for leads.yaml's
 	Call           *template.Template // a campaign's call.txt: three talking points, one per line
 	// Named are a campaign's named sequences' email steps (call_first), by sequence name and
@@ -936,6 +959,10 @@ func (cfg Config) requiredTemplates() required {
 // loadTemplates reads, parses and test-renders every required template, reporting each
 // missing, unparsable or unrenderable file.
 func loadTemplates(dir string, req required) (Templates, []string) {
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+		return err == nil
+	}
 	var p []string
 	files := map[string][]byte{}
 	readT := func(rel string) (string, bool) {
@@ -1007,6 +1034,11 @@ func loadTemplates(dir string, req required) (Templates, []string) {
 		}
 		if text, ok := readT(base + "linkedin.txt"); ok {
 			set.LinkedIn = parse(base+"linkedin.txt", text, all)
+		}
+		if rel := base + InstagramFile; exists(rel) {
+			if text, ok := readT(rel); ok {
+				set.Instagram = parse(rel, text, all)
+			}
 		}
 		t.Sets[key] = set
 	}
@@ -1112,6 +1144,12 @@ const (
 	LinkedInFile = "linkedin.txt"
 )
 
+// InstagramFile is a kind's optional Instagram DM text, in the same language folders as
+// FormFile. It is never required: present, it parses and renders like the form text (in a
+// campaign's folder it replaces leads.yaml's for the campaign); absent, the Set's Instagram
+// is nil (leads.yaml) or leads.yaml's (a campaign).
+const InstagramFile = "instagram.txt"
+
 // CallFile is a campaign's call card template; CallPoints is how many lines it holds: one
 // talking point each.
 const (
@@ -1142,7 +1180,8 @@ type CampaignTemplates struct {
 // LoadCampaignTemplates reads, parses and test-renders a campaign's templates from dir, as
 // req names them, reporting every missing, unparsable or unrenderable file at once. call.txt
 // must hold exactly CallPoints non-blank lines. Each Set has Email (by step number) and Call
-// filled, and Form and LinkedIn when the folder holds them; Footers is empty. SHA256 is the digest over every file read.
+// filled, Form and LinkedIn when the folder holds them, and Instagram when it holds
+// instagram.txt; Footers is empty. SHA256 is the digest over every file read.
 func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error) {
 	exists := func(rel string) bool {
 		_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
@@ -1231,6 +1270,11 @@ func LoadCampaignTemplates(dir string, req CampaignTemplates) (Templates, error)
 				}
 				if text, ok := readT(linkedInRel); ok {
 					set.LinkedIn = parse(linkedInRel, text)
+				}
+			}
+			if rel := base + InstagramFile; exists(rel) {
+				if text, ok := readT(rel); ok {
+					set.Instagram = parse(rel, text)
 				}
 			}
 			if req.Call {

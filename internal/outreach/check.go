@@ -53,12 +53,12 @@ type Problem struct {
 func (p Problem) String() string { return p.Rule + ": " + p.Detail }
 
 // Check fact-checks a rendered draft against the drafting rules. step is the email's place
-// in the sequence (0 is the first email); it is ignored for a form or LinkedIn text.
+// in the sequence (0 is the first email); it is ignored for a form, LinkedIn or Instagram text.
 //
 // Every text gets the placeholder, empty-slot, source, banned-word, opt-out-word, number and
 // URL rules.
 // An email also gets the step, word-bound, subject and footer (opt-out and identity) rules;
-// a form or LinkedIn text has no subject or footer and is not held to an email's length.
+// a form, LinkedIn or Instagram text has no subject or footer and is not held to an email's length.
 //
 // The number rule: a number is a run of digits, with any further digit runs joined to it
 // by a single ".", ":", "/" or "-" (10, 10.6.14, 2026-12-09, 09:30), that touches no

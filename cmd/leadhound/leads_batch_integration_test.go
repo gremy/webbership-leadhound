@@ -219,7 +219,7 @@ func TestLeadsBuildBatchApproveFlow(t *testing.T) {
 	wantLines(t, "approve", out,
 		"Batch 1 (shadow) approved: 7 messages approved, 3 messages skipped.",
 		"First emails are due from Tue 27 Oct 09:30 UTC",
-		"Contact forms and LinkedIn notes wait for you")
+		"Contact forms, LinkedIn notes and Instagram DMs wait for you")
 	if n := batchCount(t, `SELECT count(*) FROM outreach_message m JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 		WHERE o.domain = 'wingtip.example' AND m.state = 'skipped'`); n != 3 {
 		t.Errorf("--skip 4: %d wingtip messages skipped, want 3", n)

@@ -346,6 +346,8 @@ func sentWords(channel, state string, step int) string {
 		what = "Contact form"
 	case "linkedin":
 		what = "LinkedIn note"
+	case "instagram":
+		what = "Instagram DM" // sent by hand: "Instagram DM sent"
 	}
 	verb := " sent"
 	switch {

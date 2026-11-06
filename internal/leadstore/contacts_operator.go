@@ -114,8 +114,8 @@ func (q Queries) ApprovedOperatorEmails(ctx context.Context) ([]string, error) {
 // OperatorRoute is a route the operator adds.
 type OperatorRoute struct {
 	OrgID    int64
-	Kind     string // RouteEmail, RouteForm or RouteLinkedIn
-	Value    string // the address, the form page URL or the LinkedIn URL
+	Kind     string // RouteEmail, RouteForm, RouteLinkedIn or RouteInstagram
+	Value    string // the address, the form page URL, the LinkedIn URL, or the Instagram handle or profile URL
 	Note     string // his words; "" for none
 	PersonID int64  // the person it belongs to (email or LinkedIn only); 0 for none
 }
@@ -150,6 +150,9 @@ func (q Queries) AddOperatorRoute(ctx context.Context, r OperatorRoute) (Contact
 	}
 	if r.PersonID != 0 && r.Kind == RouteForm {
 		return ContactAdded{}, fmt.Errorf("leadstore: add route: %w: a form cannot belong to a person", ErrBadContact)
+	}
+	if r.PersonID != 0 && r.Kind == RouteInstagram { // a business's own account (contact_route_person_check)
+		return ContactAdded{}, fmt.Errorf("leadstore: add route: %w: an Instagram account here is the business's own, never a person's", ErrBadContact)
 	}
 	var res ContactAdded
 	err = q.inTx(ctx, func(tq Queries) error {
@@ -519,6 +522,11 @@ func operatorRouteValue(kind, raw string) (string, error) {
 			return "", fmt.Errorf("%w: that is not a LinkedIn company, school or profile address", ErrBadContact)
 		}
 		value = canonical
+	case RouteInstagram:
+		// The one canonical form (Decision 8), the value every other Instagram route holds.
+		if value = enrich.InstagramURL(value); value == "" {
+			return "", fmt.Errorf("%w: that is not an Instagram profile address or handle", ErrBadContact)
+		}
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownRouteKind, kind)
 	}
@@ -555,7 +563,7 @@ func contactNote(note string) (*string, error) {
 
 // Contact is one of an org's routes, phones or people, for the lead page.
 type Contact struct {
-	Kind       string    `db:"kind"`  // RouteEmail, RouteForm, RouteLinkedIn, ContactPhone or ContactPerson
+	Kind       string    `db:"kind"`  // RouteEmail, RouteForm, RouteLinkedIn, RouteInstagram, ContactPhone or ContactPerson
 	ID         int64     `db:"id"`    // the row: contact_route, org_fact or org_person, by Kind
 	Value      string    `db:"value"` // the route's value, the phone as shown, a person's name
 	PersonID   int64     `db:"person_id"`

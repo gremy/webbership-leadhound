@@ -42,6 +42,7 @@ var (
 		{Value: leadstore.ListChannelEmail, Label: "Email address"},
 		{Value: leadstore.ListChannelForm, Label: "Contact form"},
 		{Value: leadstore.ListChannelLinkedIn, Label: "LinkedIn page"},
+		{Value: leadstore.ListChannelInstagram, Label: "Instagram account"},
 		{Value: leadstore.ListChannelPhone, Label: "Phone number"},
 	}
 	leadStatusOptions = []console.FilterOption{
@@ -790,7 +791,7 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		RType:    r.RType,
 		Finding:  leadview.FindingLine(r.Finding, w.cfg.Facts, today),
 		State:    leadStateWords(r.State), StateCode: r.State,
-		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone, HasLinkedIn: r.HasLinkedIn,
+		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone, HasLinkedIn: r.HasLinkedIn, HasInstagram: r.HasInstagram,
 		Starred: r.Starred, SmallSite: r.SmallSite,
 		StarNote: starNote(w.research, r.State, w.research.listLead(r)),
 		Reach:    r.Reach, ReachReason: r.ReachReason, Channel: r.Channel,
@@ -910,6 +911,7 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 			hasMX = hasMX || r.MXOK
 		}
 		p.HasLinkedIn = p.HasLinkedIn || r.Kind == leadstore.RouteLinkedIn
+		p.HasInstagram = p.HasInstagram || r.Kind == leadstore.RouteInstagram
 	}
 	held, err := b.lq().HeldLeads(ctx, []int64{id})
 	if err != nil {
@@ -1147,6 +1149,8 @@ func routeKindWords(kind string) string {
 		return "Email"
 	case leadstore.RouteForm:
 		return "Contact form"
+	case leadstore.RouteInstagram:
+		return "Instagram"
 	}
 	return kind
 }
@@ -1179,6 +1183,8 @@ func channelWords(ch string) string {
 		return "contact form"
 	case "linkedin":
 		return "LinkedIn"
+	case leadstore.RouteInstagram:
+		return "Instagram"
 	case leadstore.ChannelPhone:
 		return "phone call"
 	}
@@ -1236,6 +1242,8 @@ func detailMessageLabel(m leadstore.DetailMessage) string {
 		l = fmt.Sprintf("Contact form text · message %d", m.ID)
 	case "linkedin":
 		l = fmt.Sprintf("LinkedIn note · message %d", m.ID)
+	case leadstore.RouteInstagram:
+		l = fmt.Sprintf("Instagram DM · message %d", m.ID)
 	case leadstore.ChannelPhone:
 		l = fmt.Sprintf("Step %d · call · message %d", m.Step+1, m.ID)
 	default:

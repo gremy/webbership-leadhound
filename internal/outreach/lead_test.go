@@ -130,7 +130,8 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// TestPickChannel walks every policy over every route mix. The routes come in the order
+// TestPickChannel walks every policy over every route mix, with Instagram allowed (a café
+// campaign); TestPickChannelInstagramOff holds the default. The routes come in the order
 // leadstore.RoutesFor gives them, retired ones already gone; a mix written against that order
 // (a scraped form before an operator's) shows the pick follows the order given.
 func TestPickChannel(t *testing.T) {
@@ -142,11 +143,14 @@ func TestPickChannel(t *testing.T) {
 		opForm = Route{ID: 5, Kind: RouteForm, Operator: true}
 		li     = Route{ID: 6, Kind: RouteLinkedIn}
 		opLI   = Route{ID: 7, Kind: RouteLinkedIn, Operator: true}
+		ig     = Route{ID: 8, Kind: RouteInstagram}
+		opIG   = Route{ID: 9, Kind: RouteInstagram, Operator: true}
 	)
 	const (
 		email    = leadconfig.ChannelEmail
 		formCh   = leadconfig.ChannelForm
 		linkedin = leadconfig.ChannelLinkedIn
+		insta    = leadconfig.ChannelInstagram
 		none     = leadconfig.ChannelNone
 	)
 	type pick struct {
@@ -184,6 +188,16 @@ func TestPickChannel(t *testing.T) {
 		{"operator email, scraped form", []Route{opMail, form}, pick{email, 3}, pick{formCh, 4}, nothing},
 		{"operator email, operator LinkedIn", []Route{opMail, opLI}, pick{email, 3}, pick{linkedin, 7}, pick{linkedin, 7}},
 		{"every route", []Route{opMail, mx, noMX, opForm, form, opLI, li}, pick{email, 3}, pick{formCh, 5}, pick{formCh, 5}},
+		{"scraped Instagram", []Route{ig}, pick{insta, 8}, pick{insta, 8}, nothing},
+		{"operator Instagram", []Route{opIG}, pick{insta, 9}, pick{insta, 9}, pick{insta, 9}},
+		{"scraped Instagram first", []Route{ig, opIG}, pick{insta, 8}, pick{insta, 8}, pick{insta, 9}},
+		{"LinkedIn beats Instagram", []Route{ig, li}, pick{linkedin, 6}, pick{linkedin, 6}, nothing},
+		{"form beats Instagram", []Route{ig, form}, pick{formCh, 4}, pick{formCh, 4}, nothing},
+		{"operator LinkedIn beats operator Instagram", []Route{opIG, opLI}, pick{linkedin, 7}, pick{linkedin, 7}, pick{linkedin, 7}},
+		{"scraped LinkedIn, operator Instagram", []Route{li, opIG}, pick{linkedin, 6}, pick{linkedin, 6}, pick{insta, 9}},
+		{"no-MX email falls to Instagram", []Route{noMX, ig}, pick{insta, 8}, pick{insta, 8}, nothing},
+		{"MX email beats Instagram", []Route{ig, mx}, pick{email, 1}, pick{insta, 8}, nothing},
+		{"every route and Instagram", []Route{opMail, mx, noMX, opForm, form, opLI, li, opIG, ig}, pick{email, 3}, pick{formCh, 5}, pick{formCh, 5}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -197,8 +211,9 @@ func TestPickChannel(t *testing.T) {
 				{"", nothing}, // no such policy: a checked file cannot hold one
 				{"fax", nothing},
 				{linkedin, nothing}, // a lead's channel, never a policy
+				{insta, nothing},    // a lead's channel, never a policy
 			} {
-				ch, id := PickChannel(p.policy, tc.routes)
+				ch, id := PickChannelWith(p.policy, tc.routes, PickOptions{AllowInstagram: true})
 				got := pick{ch, 0}
 				if id != nil {
 					got.route = *id
@@ -211,7 +226,48 @@ func TestPickChannel(t *testing.T) {
 	}
 }
 
-// TestPickChannelEveryMix holds the rules over every subset of the routes.
+// TestPickChannelInstagramOff: without AllowInstagram (every caller today) an Instagram route is
+// never picked, so a lead whose only route is Instagram stays none, and every pick equals the
+// pick with Instagram allowed over the same routes without their Instagram ones.
+func TestPickChannelInstagramOff(t *testing.T) {
+	ig, opIG := Route{ID: 8, Kind: RouteInstagram}, Route{ID: 9, Kind: RouteInstagram, Operator: true}
+	policies := []string{leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelNone}
+	for _, routes := range [][]Route{{ig}, {opIG}, {ig, opIG}} {
+		for _, policy := range policies {
+			if ch, id := PickChannel(policy, routes); ch != leadconfig.ChannelNone || id != nil {
+				t.Errorf("policy %s, Instagram only: %s %v, want none", policy, ch, id)
+			}
+			if ch, _ := PickChannelWith(policy, routes, PickOptions{}); ch != leadconfig.ChannelNone {
+				t.Errorf("policy %s, zero options: %s", policy, ch)
+			}
+			if ch, _ := PickChannelWith(policy, routes, PickOptions{AllowInstagram: true}); policy != leadconfig.ChannelNone && ch != leadconfig.ChannelInstagram {
+				t.Errorf("policy %s, allowed: %s", policy, ch)
+			}
+		}
+	}
+	all := []Route{{ID: 1, Kind: RouteEmail, MXOK: true}, {ID: 4, Kind: RouteForm}, {ID: 5, Kind: RouteForm, Operator: true},
+		{ID: 6, Kind: RouteLinkedIn}, {ID: 7, Kind: RouteLinkedIn, Operator: true}, ig, opIG}
+	for mask := range 1 << len(all) {
+		var routes, noIG []Route
+		for i, r := range all {
+			if mask&(1<<i) != 0 {
+				routes = append(routes, r)
+				if r.Kind != RouteInstagram {
+					noIG = append(noIG, r)
+				}
+			}
+		}
+		for _, policy := range policies {
+			ch, id := PickChannel(policy, routes)
+			wch, wid := PickChannelWith(policy, noIG, PickOptions{AllowInstagram: true})
+			if ch != wch || !leadEq(id, wid) {
+				t.Errorf("policy %s, routes %+v: %s %v, want %s %v", policy, routes, ch, id, wch, wid)
+			}
+		}
+	}
+}
+
+// TestPickChannelEveryMix holds the rules over every subset of the routes, Instagram allowed.
 func TestPickChannelEveryMix(t *testing.T) {
 	all := []Route{
 		{ID: 1, Kind: RouteEmail, Operator: true},
@@ -221,6 +277,8 @@ func TestPickChannelEveryMix(t *testing.T) {
 		{ID: 5, Kind: RouteForm},
 		{ID: 6, Kind: RouteLinkedIn, Operator: true},
 		{ID: 7, Kind: RouteLinkedIn},
+		{ID: 8, Kind: RouteInstagram, Operator: true},
+		{ID: 9, Kind: RouteInstagram},
 	}
 	for mask := range 1 << len(all) {
 		var routes []Route
@@ -238,12 +296,16 @@ func TestPickChannelEveryMix(t *testing.T) {
 			wantForm = leadconfig.ChannelForm
 		case has[6] || has[7]:
 			wantForm = leadconfig.ChannelLinkedIn
+		case has[8] || has[9]:
+			wantForm = leadconfig.ChannelInstagram
 		}
 		switch {
 		case has[4]:
 			wantNone = leadconfig.ChannelForm
 		case has[6]:
 			wantNone = leadconfig.ChannelLinkedIn
+		case has[8]:
+			wantNone = leadconfig.ChannelInstagram
 		}
 		if wantEmail == "" {
 			wantEmail = wantForm
@@ -254,7 +316,7 @@ func TestPickChannelEveryMix(t *testing.T) {
 			if want == "" {
 				want = leadconfig.ChannelNone
 			}
-			ch, id := PickChannel(policy, routes)
+			ch, id := PickChannelWith(policy, routes, PickOptions{AllowInstagram: true})
 			if ch != want {
 				t.Errorf("policy %s, routes %+v: channel %s, want %s", policy, routes, ch, want)
 			}

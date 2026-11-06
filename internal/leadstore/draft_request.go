@@ -78,7 +78,7 @@ type DraftRequest struct {
 const draftRequestCols = `id, lead_id, coalesce(channel, '') AS channel, status, coalesce(reason, '') AS reason,
 	batch_id, requested_at, started_at, finished_at`
 
-// RequestDraft queues a draft for lead leadID on channel (email, form or linkedin; "": the
+// RequestDraft queues a draft for lead leadID on channel (email, form, linkedin or instagram; "": the
 // lead's own channel) and returns its id. A lead with a queued or drafting row gets no second
 // one: a *DraftRequestOpenError says which and when it was asked for. A row of this lead
 // drafting longer than DraftRequestStaleAfter is first failed, because a refused request
@@ -87,7 +87,7 @@ const draftRequestCols = `id, lead_id, coalesce(channel, '') AS channel, status,
 // runs the row.
 func (q Queries) RequestDraft(ctx context.Context, leadID int64, channel string) (int64, error) {
 	wrap := func(err error) error { return fmt.Errorf("leadstore: request draft lead %d: %w", leadID, err) }
-	if channel != "" && channel != ChannelEmail && channel != ChannelForm && channel != "linkedin" {
+	if channel != "" && channel != ChannelEmail && !manualChannel(channel) {
 		return 0, wrap(fmt.Errorf("%w: channel %q", ErrBadDraftRequest, channel))
 	}
 	var exists bool

@@ -15,9 +15,9 @@ import (
 var (
 	// ErrMessageNotFound is returned when no outreach_message row has that id.
 	ErrMessageNotFound = errors.New("leadstore: message not found")
-	// ErrNotManual is returned by MarkDone for an email message: only a contact-form or
-	// LinkedIn item is used by hand.
-	ErrNotManual = errors.New("leadstore: message is not a contact-form or LinkedIn item")
+	// ErrNotManual is returned by MarkDone for an email message: only a contact-form, LinkedIn
+	// or Instagram item is used by hand.
+	ErrNotManual = errors.New("leadstore: message is not a contact-form, LinkedIn or Instagram item")
 )
 
 // BuildOrg is one org with what Classify reads: its site's last probe, when it has one,
@@ -177,7 +177,7 @@ type Done struct {
 	LeadState string // the lead's state afterwards
 }
 
-// MarkDone records that the operator used approved contact-form or LinkedIn message id by hand:
+// MarkDone records that the operator used approved contact-form, LinkedIn or Instagram message id by hand:
 // the message becomes done (sent_at now). In a live batch its lead moves from batched to
 // contacted with actor; a lead already past batched keeps its state, and a shadow batch
 // never touches the lead (RA1). An email message is ErrNotManual, a message that is not
@@ -202,7 +202,7 @@ func (q Queries) MarkDone(ctx context.Context, id int64, actor string) (Done, er
 		return Done{}, fmt.Errorf("leadstore: mark done: %w", err)
 	}
 	switch {
-	case channel != "form" && channel != "linkedin":
+	case !manualChannel(channel):
 		return Done{}, fmt.Errorf("leadstore: mark done: message %d (%s): %w", id, channel, ErrNotManual)
 	case state != MsgApproved:
 		return Done{}, fmt.Errorf("leadstore: mark done: message %d is %s: %w", id, state, ErrMessageState)

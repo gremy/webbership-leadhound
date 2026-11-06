@@ -44,6 +44,7 @@ type RowExtras struct {
 	Emails      []string `db:"emails"`
 	Forms       []string `db:"forms"`
 	LinkedIns   []string `db:"linkedins"`
+	Instagrams  []string `db:"instagrams"`
 	LastActor   string   `db:"-"` // who wrote the lead's latest event; "" with no event
 	LastReason  string   `db:"-"` // the latest event's reason
 }
@@ -70,7 +71,7 @@ func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]Row
 		   coalesce(pl.address, '') AS address, coalesce(pl.category, '') AS category,
 		   coalesce(fx.socials, '{}') AS socials, coalesce(fx.phones, '{}') AS phones,
 		   coalesce(rt.emails, '{}') AS emails, coalesce(rt.forms, '{}') AS forms,
-		   coalesce(rt.linkedins, '{}') AS linkedins
+		   coalesce(rt.linkedins, '{}') AS linkedins, coalesce(rt.instagrams, '{}') AS instagrams
 		 FROM lead l
 		 LEFT JOIN LATERAL (
 		   SELECT concat_ws(', ', nullif(x.freeform, ''), nullif(x.postcode, '')) AS address, x.category
@@ -86,7 +87,8 @@ func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]Row
 		 LEFT JOIN LATERAL (
 		   SELECT array_agg(r.value ORDER BY r.id) FILTER (WHERE r.kind = 'email') AS emails,
 		     array_agg(r.value ORDER BY r.id) FILTER (WHERE r.kind = 'form') AS forms,
-		     array_agg(r.value ORDER BY r.id) FILTER (WHERE r.kind = 'linkedin') AS linkedins
+		     array_agg(r.value ORDER BY r.id) FILTER (WHERE r.kind = 'linkedin') AS linkedins,
+		     array_agg(r.value ORDER BY r.id) FILTER (WHERE r.kind = 'instagram') AS instagrams
 		   FROM contact_route r WHERE r.org_id = l.org_id AND `+reachRouteLiveSQL+`
 		 ) rt ON true
 		 WHERE l.id = ANY($1::bigint[])`, leadIDs)

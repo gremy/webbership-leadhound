@@ -125,7 +125,7 @@ func telHref(dial string) string {
 // seqRow is one step of a lead's Sequence section, worded.
 type seqRow struct {
 	Step  int
-	Kind  string // "an email" | "a phone call" | a form or LinkedIn message's label
+	Kind  string // "an email" | "a phone call" | a form, LinkedIn or Instagram message's label
 	Words string
 	Card  string // the call card's path, for a call row; ""
 }
@@ -163,10 +163,13 @@ func (s *server) sequenceRows(steps []SequenceStep) []seqRow {
 	return out
 }
 
-// ManualLabel names a form or LinkedIn message of a batch; linkedIn counts the batch's LinkedIn
-// messages so far, this one included. Both the Drafts cards and the Sequence section say it.
+// ManualLabel names a form, LinkedIn or Instagram message of a batch; linkedIn counts the batch's
+// LinkedIn messages so far, this one included. Both the Drafts cards and the Sequence section say
+// it. An Instagram lead gets one step, the DM.
 func ManualLabel(channel string, linkedIn int) string {
 	switch {
+	case channel == ChannelInstagram:
+		return "Instagram DM"
 	case channel != ChannelLinkedIn:
 		return "Form message"
 	case linkedIn == 1:
@@ -175,7 +178,8 @@ func ManualLabel(channel string, linkedIn int) string {
 	return "After they accept"
 }
 
-// manualLabels is each step's ManualLabel, "" for a step that is not a form or LinkedIn message.
+// manualLabels is each step's ManualLabel, "" for a step that is not a form, LinkedIn or Instagram
+// message.
 func manualLabels(steps []SequenceStep) []string {
 	out := make([]string, len(steps))
 	linkedIn := 0
@@ -184,7 +188,7 @@ func manualLabels(steps []SequenceStep) []string {
 		case ChannelLinkedIn:
 			linkedIn++
 			out[i] = ManualLabel(st.Channel, linkedIn)
-		case ChannelForm:
+		case ChannelForm, ChannelInstagram:
 			out[i] = ManualLabel(st.Channel, linkedIn)
 		}
 	}
@@ -216,10 +220,19 @@ func manualStepWords(steps []SequenceStep, labels []string, i int, at string) st
 			return ready
 		}
 		if j := slices.IndexFunc(steps, func(x SequenceStep) bool { return x.Step == p.Step }); j >= 0 && labels[j] != "" {
-			return "waiting on the " + strings.ToLower(labels[j])
+			return "waiting on the " + labelInLine(labels[j])
 		}
 	}
 	return ""
+}
+
+// labelInLine is a ManualLabel inside a sentence: lower case, but Instagram keeps its capital
+// ("the connection note", "the Instagram DM").
+func labelInLine(label string) string {
+	if label == ManualLabel(ChannelInstagram, 0) {
+		return label
+	}
+	return strings.ToLower(label)
 }
 
 // stepWords words the state of steps[i]; at gives a time as words.

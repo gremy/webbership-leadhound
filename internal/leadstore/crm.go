@@ -324,7 +324,7 @@ const (
 	TimelineStage      = "stage"       // lead_stage_event: State (the stage), Detail (the lost reason)
 	TimelineDraft      = "draft"       // outreach_message made: State (the batch's origin), Detail (claude | template), Step, Channel, Shadow
 	TimelineEdit       = "edit"        // message_edit: Step, Channel, Shadow
-	TimelineDone       = "done"        // form or LinkedIn message marked sent: Step, Channel, Shadow
+	TimelineDone       = "done"        // form, LinkedIn or Instagram message marked sent: Step, Channel, Shadow
 	TimelineContact    = "contact"     // the operator's route, fact or person (State TimelineAdded) or a contact_mark (State claim | retire): Channel (the route or fact kind, or person), Detail (the value, "old → new" on a replace), Note
 	TimelineResearch   = "research"    // contact_research finished: State (found | nothing | capped | error), Detail (what it wanted)
 	TimelineProposal   = "proposal"    // lead_proposal (State TimelineAdded) or lead_proposal_status (State the status, Note): Detail (the title)
@@ -343,7 +343,7 @@ type TimelineItem struct {
 	State      string
 	Detail     string
 	Step       int        // the items on a message: the 0-based step
-	Channel    string     // the items on a message: email | form | linkedin; TimelineContact: email | form | linkedin | phone | person
+	Channel    string     // the items on a message: email | form | linkedin | instagram; TimelineContact: email | form | linkedin | instagram | phone | person
 	Shadow     bool       // the items on a message: from a shadow batch
 	MessageID  int64      // the items on a message: the message; TimelineMailbox: the one it matched (0: none)
 	CallBackOn *time.Time // TimelineCall: the call-back day; nil when none
@@ -363,7 +363,7 @@ const personLabelSQL = `concat_ws(' · ', nullif(p.name, ''), nullif(p.role, '')
 // it (kind, and a reply's snippet); every call outcome on its calls (outcome, note, call-back
 // day); every email check of its addresses (its email route's and the addresses its emails
 // went to) in its campaign's account; every stage change; every message made (a call step has
-// no text to write, so none for those) and every edit of one; every form or LinkedIn message
+// no text to write, so none for those) and every edit of one; every form, LinkedIn or Instagram message
 // marked sent; every proposal and proposal status. Contacts belong to the org, so these show
 // on each of its leads: every route, fact and person the operator added, every mark on any of
 // them (a retire naming its replacement shows the old value then the new), every finished
@@ -412,7 +412,7 @@ func (q Queries) LeadTimeline(ctx context.Context, leadID int64, limit int) ([]T
 		   UNION ALL
 		   SELECT 'done', m.id, m.sent_at, m.state, '', m.step, m.channel, b.shadow, m.id, NULL, ''
 		   FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
-		   WHERE m.lead_id = $1 AND m.channel IN ('form', 'linkedin') AND m.state = 'done' AND m.sent_at IS NOT NULL
+		   WHERE m.lead_id = $1 AND m.channel IN `+manualChannelsSQL+` AND m.state = 'done' AND m.sent_at IS NOT NULL
 		   UNION ALL
 		   SELECT 'contact', r.id, r.found_at, 'added', r.value, 0, r.kind, false, 0, NULL, ''
 		   FROM contact_route r WHERE r.org_id = `+orgOfLead+` AND r.derived_by = 'operator@1'

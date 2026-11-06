@@ -248,6 +248,26 @@ func richOutreachDetail(d LeadDetailPage, text string) LeadDetailPage {
 	return d
 }
 
+// richInstagramDetail is d as a café reached on Instagram alone: one Instagram DM drafted and due
+// now, its account the one contact. Every handle and name is invented.
+func richInstagramDetail(d LeadDetailPage, text string) LeadDetailPage {
+	at := statusNow.Add(-5 * time.Hour)
+	account := "https://www.instagram.com/brewlane.example/"
+	d.Reach, d.Channel = ReachManual, ChannelInstagram
+	d.HasEmail, d.HasForm, d.HasLinkedIn, d.HasPhone, d.HasInstagram = false, false, false, false, true
+	d.Drafts = []LeadDraft{
+		{MessageID: 15, Channel: ChannelInstagram, Step: 0, Label: ManualLabel(ChannelInstagram, 0), TargetURL: account,
+			Body: text, Editable: true, CanMarkSent: true, BatchID: 5, BatchHash: "cafe01234567",
+			Origin: OriginDraftIt, Writer: WriterClaude, State: "Draft", DueNow: true},
+	}
+	d.Contacts = []LeadContact{
+		{CID: "r20", Kind: ContactInstagram, Value: account, Provenance: ProvenanceEnrich, FoundAt: at, Chosen: true},
+	}
+	d.DraftRequest, d.DraftItBlock, d.DiscardBatchID = nil, "", 5
+	d.NoteMax, d.DMMax = 200, 500
+	return d
+}
+
 // richReachList is p with a next action on every row and a number on every tab.
 func richReachList(p LeadListPage) LeadListPage {
 	reaches := []string{ReachManual, ReachDead, ReachEmail, ReachContacted}

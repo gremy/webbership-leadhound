@@ -102,7 +102,7 @@ type GenerationRow struct {
 	Failures   []outreach.Failure // empty exactly when CheckOK
 	CostMicros *int64             // nil: unknown
 	Purpose    string
-	// Channel is what the draft is for: email, form or linkedin; "" is email. Manual drafts
+	// Channel is what the draft is for: email, form, linkedin or instagram; "" is email. Manual drafts
 	// stay out of the email gate, its reviews and its samples (00029).
 	Channel string
 }
@@ -145,7 +145,7 @@ func (q Queries) RecordGeneration(ctx context.Context, g GenerationRow) (int64, 
 		return 0, bad("cost %d", *g.CostMicros)
 	}
 	channel := cmp.Or(g.Channel, "email")
-	if channel != "email" && channel != "form" && channel != "linkedin" {
+	if channel != "email" && !manualChannel(channel) {
 		return 0, bad("channel %q", g.Channel)
 	}
 	var output []byte

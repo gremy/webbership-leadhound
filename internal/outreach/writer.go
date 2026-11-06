@@ -109,7 +109,7 @@ type WriteInput struct {
 // OperatorVersion is one text the operator edited and saved: voice and length for the writer to
 // match, never a source of facts.
 type OperatorVersion struct {
-	Subject string // "" for a form or LinkedIn text
+	Subject string // "" for a form, LinkedIn or Instagram text
 	Body    string
 }
 

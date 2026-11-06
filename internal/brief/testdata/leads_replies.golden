@@ -13,8 +13,8 @@ Apply
 Leads
 2. Read 2 replies in the outreach mailbox: alpha.example, beta.example
 3. Read 1 other message in the outreach mailbox (not matched to a lead)
-4. Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note): leadhound leads batch show 12
-5. Send 3 contact forms and LinkedIn notes by hand, then mark each: leadhound leads done <message>
+4. Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note, 1 Instagram DM): leadhound leads batch show 12
+5. Send 3 contact forms, LinkedIn notes and Instagram DMs by hand, then mark each: leadhound leads done <message>
 6. Check by hand whether 1 email went out (never resent)
 Leads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe checked 120 sites yesterday, 14 on Drupal (9 on 7, 4 on 10, 1 version unknown)
 Mailboxes: none yet — add one in the console (Mailboxes)
@@ -35,8 +35,8 @@ Mark a job with leadhound track N applied, leadhound track N skip --reason TEXT 
 <ol start="2">
 <li>Read 2 replies in the outreach mailbox: alpha.example, beta.example</li>
 <li>Read 1 other message in the outreach mailbox (not matched to a lead)</li>
-<li>Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note): leadhound leads batch show 12</li>
-<li>Send 3 contact forms and LinkedIn notes by hand, then mark each: leadhound leads done &lt;message&gt;</li>
+<li>Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note, 1 Instagram DM): leadhound leads batch show 12</li>
+<li>Send 3 contact forms, LinkedIn notes and Instagram DMs by hand, then mark each: leadhound leads done &lt;message&gt;</li>
 <li>Check by hand whether 1 email went out (never resent)</li>
 </ol>
 <p>Leads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe checked 120 sites yesterday, 14 on Drupal (9 on 7, 4 on 10, 1 version unknown)</p>

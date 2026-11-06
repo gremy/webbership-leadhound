@@ -190,8 +190,8 @@ func EncodeWireDraft(d WrittenDraft) ([]byte, error) {
 }
 
 // ManualSchema is the strict JSON schema of a manual answer for channel: a required note and
-// message on LinkedIn, a required message on a form. A part holds at least one paragraph of the
-// email schema's shape, and no subject.
+// message on LinkedIn, a required message (and nothing else) on a form or Instagram. A part
+// holds at least one paragraph of the email schema's shape, and no subject.
 func ManualSchema(channel string) map[string]any {
 	str := map[string]any{"type": "string"}
 	obj := func(props map[string]any, required []string) map[string]any {

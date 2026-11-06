@@ -131,17 +131,20 @@ func newFixture(t *testing.T) fixture {
 	f.msg(live, gamma, 0, "form", "", "approved", nil)
 	f.msg(live, delta, 0, "email", deltaTo, "sent", tp(at(11)))
 	f.msg(live, delta, 1, "form", "", "approved", nil)
+	f.msg(live, beta, 2, "instagram", "", "approved", nil) // an Instagram DM waits too
 	f.msg(live, self, 0, "email", selfTo, "sent", tp(at(11)))
 	// A shadow batch: one shadow send counts, the reserved one does not.
 	shadow := f.batch(true, true)
 	f.msg(shadow, beta, 0, "email", betaTo, "shadow_sent", tp(at(13)))
 	f.msg(shadow, delta, 0, "email", deltaTo, "shadow_sent", tp(at(13)))
 	f.msg(shadow, gamma, 0, "form", "", "approved", nil)
-	// Batch 3 awaits approval: one first email (its follow-up is not an item), one LinkedIn note.
+	// Batch 3 awaits approval: one first email (its follow-up is not an item), one LinkedIn note,
+	// one Instagram DM.
 	ready := f.batch(false, false)
 	f.msg(ready, gamma, 0, "email", gammaTo, "draft", nil)
 	f.msg(ready, gamma, 1, "email", gammaTo, "draft", nil)
 	f.msg(ready, alpha, 2, "linkedin", "", "draft", nil)
+	f.msg(ready, beta, 0, "instagram", "", "draft", nil)
 	f.msg(ready, delta, 2, "email", deltaTo, "draft", nil)
 	// A newer batch of fixture leads only is never the one to approve.
 	reservedOnly := f.batch(false, false)
@@ -184,8 +187,8 @@ func TestLoad(t *testing.T) {
 	}
 	want := leadbrief.Section{
 		Replies: []string{"beta.example", "alpha.example"}, Other: 1,
-		Batch:         &leadbrief.BatchReady{ID: 3, Emails: 1, LinkedIn: 1},
-		ManualWaiting: 1, Sent: 1, ShadowSent: 1, Bounced: 1, OptedOut: 1,
+		Batch:         &leadbrief.BatchReady{ID: 3, Emails: 1, LinkedIn: 1, Instagram: 1},
+		ManualWaiting: 2, Sent: 1, ShadowSent: 1, Bounced: 1, OptedOut: 1,
 		Paused: "dns: " + senderHost + " dmarc missing", CheckByHand: 2,
 		Probe:     &leadbrief.ProbeLine{Checked: 2, Drupal: 1, ByMajor: map[int]int{7: 1}},
 		Mailboxes: leadbrief.MailboxHealth{NeedsCheck: 1},

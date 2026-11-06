@@ -304,6 +304,8 @@ func TestListExtras(t *testing.T) {
 		{Kind: leadstore.RouteForm, Value: "https://full.example/contact"},
 		{Kind: leadstore.RouteForm, Value: "https://full.example/retired"},
 		{Kind: leadstore.RouteLinkedIn, Value: "https://www.linkedin.com/company/fictive-full"},
+		{Kind: leadstore.RouteInstagram, Value: "full_cafe.example"},
+		{Kind: leadstore.RouteInstagram, Value: "retired_cafe.example"},
 	} {
 		r.OrgID, r.FetchID, r.DerivedBy = org, page, "contacts@1"
 		if _, err := f.q.InsertRoute(ctx, r); err != nil {
@@ -315,7 +317,7 @@ func TestListExtras(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range routes {
-		if r.Value == "retired@full.example" || r.Value == "https://full.example/retired" {
+		if r.Value == "retired@full.example" || r.Value == "https://full.example/retired" || r.Value == "https://www.instagram.com/retired_cafe.example/" {
 			if err := f.q.MarkContact(ctx, leadstore.Mark{OrgID: org, RouteID: r.ID, Mark: leadstore.MarkRetire}); err != nil {
 				t.Fatalf("retire %s: %v", r.Value, err)
 			}
@@ -341,7 +343,8 @@ func TestListExtras(t *testing.T) {
 	want := leadstore.RowExtras{LeadID: full, Description: "A fictive café", Address: "5 High Street, EX1 1AA", Category: "coffee_shop",
 		Socials: []string{"https://social.example/full"}, Phones: []string{livePhone},
 		Emails: []string{"live@full.example"}, Forms: []string{"https://full.example/contact"},
-		LinkedIns: []string{"https://www.linkedin.com/company/fictive-full"}, LastActor: leadstore.ActorGremy, LastReason: "not a fit"}
+		LinkedIns:  []string{"https://www.linkedin.com/company/fictive-full"},
+		Instagrams: []string{"https://www.instagram.com/full_cafe.example/"}, LastActor: leadstore.ActorGremy, LastReason: "not a fit"}
 	if !reflect.DeepEqual(got[full], want) {
 		t.Errorf("full lead:\n got %+v\nwant %+v", got[full], want)
 	}
@@ -356,7 +359,7 @@ func TestListExtras(t *testing.T) {
 			t.Errorf("%s: place or description read: %+v", name, e)
 		}
 		if !reflect.DeepEqual(e.Socials, empty) || !reflect.DeepEqual(e.Phones, empty) || !reflect.DeepEqual(e.Forms, empty) ||
-			!reflect.DeepEqual(e.LinkedIns, empty) {
+			!reflect.DeepEqual(e.LinkedIns, empty) || !reflect.DeepEqual(e.Instagrams, empty) {
 			t.Errorf("%s: slices must be empty and not nil: %+v", name, e)
 		}
 	}

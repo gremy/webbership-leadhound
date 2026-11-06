@@ -101,7 +101,7 @@ var conditions = []string{ConditionAlways, ConditionHasCallablePhone, ConditionC
 type DraftRow struct {
 	LeadID    int64           `json:"lead_id"`
 	Step      int             `json:"step"`
-	Channel   string          `json:"channel"` // email | form | linkedin
+	Channel   string          `json:"channel"` // email | form | linkedin | instagram
 	To        string          `json:"to"`      // email channel only
 	Subject   string          `json:"subject"`
 	Body      string          `json:"body"`

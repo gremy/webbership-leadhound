@@ -16,7 +16,7 @@ import (
 )
 
 // Edits to a draft and Mark sent (00029). A batch's content hash covers every message, so there
-// are two roads. A form or LinkedIn edit never touches outreach_message: the latest message_edit
+// are two roads. A form, LinkedIn or Instagram edit never touches outreach_message: the latest message_edit
 // is the effective text and no batch hash moves, so an approved batch carrying live emails is
 // never called tampered. An email edit is allowed only while its batch is unapproved: it moves
 // the message and re-hashes the batch in one transaction, and the operator approves the hash he
@@ -136,7 +136,7 @@ func (q Queries) SaveMessageEdit(ctx context.Context, id int64, subject, body st
 	return q.SaveManualEdit(ctx, id, subject, body, check)
 }
 
-// SaveManualEdit saves a new text for form or LinkedIn message id as one message_edit row and
+// SaveManualEdit saves a new text for form, LinkedIn or Instagram message id as one message_edit row and
 // returns its id, 0 when the text is what it already was (nothing is written). The message row and
 // the batch hash stay as they are. The message must be draft or approved and its lead must not have
 // replied, bounced or opted out (ErrLeadAnswered); a state refused is ErrMessageState, an email or
@@ -149,7 +149,7 @@ func (q Queries) SaveManualEdit(ctx context.Context, id int64, subject, body str
 		return 0, wrap(err)
 	}
 	switch {
-	case t.channel != "form" && t.channel != "linkedin":
+	case !manualChannel(t.channel):
 		return 0, wrap(fmt.Errorf("message %d (%s): %w", id, t.channel, ErrNotManual))
 	case t.state != MsgDraft && t.state != MsgApproved:
 		return 0, wrap(fmt.Errorf("message %d is %s: %w", id, t.state, ErrMessageState))
@@ -254,7 +254,7 @@ type EffectiveDraft struct {
 	OriginalBody    string
 }
 
-// EffectiveText returns message id's text: for a form or LinkedIn message the latest edit, else the
+// EffectiveText returns message id's text: for a form, LinkedIn or Instagram message the latest edit, else the
 // row; for an email the row, which an edit moves. An edit blanked by erasure counts as no edit.
 // A missing message is ErrMessageNotFound.
 func (q Queries) EffectiveText(ctx context.Context, id int64) (EffectiveDraft, error) {
@@ -395,7 +395,7 @@ func replaceWords(text, word, with string) string {
 
 func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
-// MarkManualSent records that the operator used form or LinkedIn message id by hand: his approval
+// MarkManualSent records that the operator used form, LinkedIn or Instagram message id by hand: his approval
 // and his sending in one act. With the batch row locked: an unapproved manual batch is approved at
 // hashPrefix, the hash he was shown (a hash no longer the batch's, or rows no longer hashing to it,
 // is ErrDraftChanged); then MarkDone, the lead moving from batched to contacted, recorded as
@@ -413,7 +413,7 @@ func (q Queries) MarkManualSent(ctx context.Context, id int64, hashPrefix string
 		return Done{}, wrap(err)
 	}
 	switch {
-	case t.channel != "form" && t.channel != "linkedin":
+	case !manualChannel(t.channel):
 		return Done{}, wrap(fmt.Errorf("message %d (%s): %w", id, t.channel, ErrNotManual))
 	case t.shadow:
 		return Done{}, wrap(fmt.Errorf("message %d: %w", id, ErrShadowMarkSent))

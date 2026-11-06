@@ -125,7 +125,7 @@ type LeadsPage struct {
 	Day          time.Time
 	Sending      Sending
 	Batches      []WaitingBatch // every batch waiting for approval, newest first
-	Manual       []ManualItem   // approved contact forms and LinkedIn notes not yet used
+	Manual       []ManualItem   // approved contact forms, LinkedIn notes and Instagram DMs not yet used
 	CheckByHand  []CheckItem    // live emails that may have gone out
 	Replies      []string       // registrable domains of replies and opt-outs since yesterday
 	Other        int            // unmatched messages in the mailbox since yesterday
@@ -177,15 +177,16 @@ type SenderCheck struct {
 	SPF, DKIM, DMARC bool
 }
 
-// WaitingBatch is a batch waiting for approval.
+// WaitingBatch is a batch waiting for approval. Instagram counts its Instagram DMs, said only
+// when there are some.
 type WaitingBatch struct {
-	ID                             int64
-	Shadow                         bool
-	CreatedAt                      time.Time
-	Leads, Emails, Forms, LinkedIn int
+	ID                                        int64
+	Shadow                                    bool
+	CreatedAt                                 time.Time
+	Leads, Emails, Forms, LinkedIn, Instagram int
 }
 
-// ManualItem is an approved contact form or LinkedIn note to use by hand.
+// ManualItem is an approved contact form, LinkedIn note or Instagram DM to use by hand.
 type ManualItem struct {
 	MessageID, BatchID     int64
 	Domain, Channel, Route string // Route: the form page, for a contact form
@@ -541,7 +542,7 @@ func (s *server) resolveMessage(w http.ResponseWriter, r *http.Request) {
 	s.leadsAct(w, r, LeadAction{Do: LeadResolve, ID: id, Sent: sent == "sent"}, leadsOutPath, s.backToLeads)
 }
 
-// itemDone is POST /leads/items/{id}/done: a contact form or LinkedIn note was used.
+// itemDone is POST /leads/items/{id}/done: a contact form, LinkedIn note or Instagram DM was used.
 func (s *server) itemDone(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {

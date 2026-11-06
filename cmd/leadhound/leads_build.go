@@ -147,6 +147,12 @@ func runLeadsBuild(ctx context.Context, args []string) error {
 	return nil
 }
 
+// pickOptions is the channel pick for a lead of kind: Instagram is in the manual order for a café
+// lead only (Decision 8), so a Drupal lead whose website links an Instagram profile stays on none.
+func pickOptions(kind string) outreach.PickOptions {
+	return outreach.PickOptions{AllowInstagram: isCafeKind(kind)}
+}
+
 // channelRoute is route r as outreach.PickChannel reads it.
 func channelRoute(r leadstore.Route) outreach.Route {
 	return outreach.Route{ID: r.ID, Kind: r.Kind, Value: r.Value, MXOK: r.MXOK, Operator: r.Operator}
@@ -266,7 +272,7 @@ func printBuildSummary(w io.Writer, sum buildSummary) {
 			continue
 		}
 		var parts []string
-		for _, c := range []string{leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelLinkedIn, leadconfig.ChannelNone} {
+		for _, c := range []string{leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelLinkedIn, leadconfig.ChannelInstagram, leadconfig.ChannelNone} {
 			if ch[c] > 0 {
 				parts = append(parts, fmt.Sprintf("%s %d", c, ch[c]))
 			}

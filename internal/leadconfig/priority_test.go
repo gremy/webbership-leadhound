@@ -150,3 +150,15 @@ func TestPriorityLinkedInChannel(t *testing.T) {
 		t.Errorf("a linkedin channel: %v", problems)
 	}
 }
+
+// TestPriorityInstagramChannel: a lead on Instagram is offered to a batch too, and is the last
+// channel a profile may weigh.
+func TestPriorityInstagramChannel(t *testing.T) {
+	p := Profile{Channels: map[string]int{ChannelInstagram: 3}}
+	if problems := p.Problems(); len(problems) != 0 {
+		t.Errorf("an instagram channel: %v", problems)
+	}
+	if PriorityChannels[len(PriorityChannels)-1] != ChannelInstagram {
+		t.Errorf("PriorityChannels = %v", PriorityChannels)
+	}
+}

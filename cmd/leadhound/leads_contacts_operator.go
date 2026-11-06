@@ -21,7 +21,7 @@ import (
 // both run them. Each write and the channel it changes share one transaction, so a lead never
 // shows a contact it has not been re-picked for.
 
-const leadsContactsOperatorUsage = "usage: leadhound leads contacts add LEAD --kind email|phone|form|linkedin|person [--value V] [--name N] [--role R] [--note T] [--person ID] | " +
+const leadsContactsOperatorUsage = "usage: leadhound leads contacts add LEAD --kind email|phone|form|linkedin|instagram|person [--value V] [--name N] [--role R] [--note T] [--person ID] | " +
 	"edit LEAD CONTACT [--value V] [--name N] [--role R] [--note T] | retire LEAD CONTACT [--note T] | list LEAD"
 
 // operatorContactVerbs are the `leads contacts` words that are not the route search.
@@ -54,18 +54,22 @@ func contactTx(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig.Config, o
 }
 
 // repickOrgLeads gives every new lead of the org the channel a build would give it now: the
-// country's policy over the routes still in use. It reads the leads after the write, because
-// retiring a route can send a batched lead back to new.
+// country's policy over the routes still in use, Instagram for a café lead only (pickOptions). It
+// reads the leads after the write, because retiring a route can send a batched lead back to new.
 func repickOrgLeads(ctx context.Context, tx pgx.Tx, tq leadstore.Queries, cfg leadconfig.Config, orgID int64) error {
-	rows, err := tx.Query(ctx, `SELECT id FROM lead WHERE org_id = $1 AND state = 'new' ORDER BY id`, orgID)
+	type newLead struct {
+		ID   int64
+		Kind string
+	}
+	rows, err := tx.Query(ctx, `SELECT id, kind FROM lead WHERE org_id = $1 AND state = 'new' ORDER BY id`, orgID)
 	if err != nil {
 		return fmt.Errorf("leads: re-pick: %w", err)
 	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	leads, err := pgx.CollectRows(rows, pgx.RowToStructByPos[newLead])
 	if err != nil {
 		return fmt.Errorf("leads: re-pick: %w", err)
 	}
-	if len(ids) == 0 {
+	if len(leads) == 0 {
 		return nil
 	}
 	org, err := tq.OrgByID(ctx, orgID)
@@ -76,12 +80,12 @@ func repickOrgLeads(ctx context.Context, tx pgx.Tx, tq leadstore.Queries, cfg le
 	if err != nil {
 		return err
 	}
-	channel, route := outreach.PickChannel(cfg.Policy(org.Country).Channel, channelRoutes(routes))
-	for _, id := range ids {
+	for _, l := range leads {
+		channel, route := outreach.PickChannelWith(cfg.Policy(org.Country).Channel, channelRoutes(routes), pickOptions(l.Kind))
 		if route == nil {
-			_, err = tq.ClearNewLeadRoute(ctx, id)
+			_, err = tq.ClearNewLeadRoute(ctx, l.ID)
 		} else {
-			_, err = tq.SetNewLeadRoute(ctx, id, channel, *route)
+			_, err = tq.SetNewLeadRoute(ctx, l.ID, channel, *route)
 		}
 		if err != nil {
 			return err
@@ -101,7 +105,7 @@ func contactErr(err error) error {
 	case errors.Is(err, leadstore.ErrBadContact):
 		return storeRefusal(err, leadstore.ErrBadContact)
 	case errors.Is(err, leadstore.ErrUnknownRouteKind):
-		return refused("Choose email, phone, contact form, LinkedIn or person. Nothing was saved.")
+		return refused("Choose email, phone, contact form, LinkedIn, Instagram or person. Nothing was saved.")
 	}
 	return err
 }
@@ -291,7 +295,7 @@ func registerContactFlags(fs *flag.FlagSet) contactFlags {
 
 func runContactsAdd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads contacts add", flag.ContinueOnError)
-	kind := fs.String("kind", "", "email, phone, form, linkedin or person")
+	kind := fs.String("kind", "", "email, phone, form, linkedin, instagram or person")
 	person := fs.Int64("person", 0, "the person it belongs to")
 	f := registerContactFlags(fs)
 	pos, err := parseArgs(fs, args)

@@ -324,6 +324,33 @@ func TestLeadsEnrichKeepsOnlyUsefulBodies(t *testing.T) {
 	sweepFacts(t)
 }
 
+// TestLeadsEnrichWritesInstagramRoute: an Instagram profile read as a social fact is also an
+// instagram route in the one canonical form, citing the same page; a post link gives neither.
+func TestLeadsEnrichWritesInstagramRoute(t *testing.T) {
+	leadsDB(t)
+	orgs := enrichFixture(t, enrichSite{domain: "northwind.example", home: `<a href="https://instagram.com/Northwind_Cafe.example/?hl=en">Instagram</a>
+		<a href="https://www.instagram.com/p/abc123/">A post</a>`})
+	mustRun(t, "leads", "enrich", "--dry-run", "--fixtures", enrichFixtureDir)
+
+	routes, err := leadstoretest.Q(t).RoutesFor(context.Background(), orgs["northwind.example"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("routes %+v, want the profile only", routes)
+	}
+	r := routes[0]
+	const want = "https://www.instagram.com/northwind_cafe.example/"
+	if r.Kind != leadstore.RouteInstagram || r.Value != want || r.DerivedBy != "enrich@1" || r.Operator {
+		t.Errorf("route %+v, want instagram %s by enrich@1", r, want)
+	}
+	if n := sitesCount(t, `SELECT count(*) FROM org_fact x JOIN contact_route r ON r.org_id = x.org_id AND r.fetch_id = x.fetch_id
+		WHERE x.kind = 'social' AND r.kind = 'instagram'`); n != 1 {
+		t.Errorf("%d instagram routes beside their fact on the same fetch, want 1", n)
+	}
+	sweepFacts(t)
+}
+
 // TestLeadsEnrichWritesLinkedInRoute: a company page read as a social fact is also a linkedin
 // route in the canonical form, citing the same page; a person's profile gives neither.
 func TestLeadsEnrichWritesLinkedInRoute(t *testing.T) {

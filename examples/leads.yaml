@@ -18,6 +18,7 @@ sender:
   operator_addresses: [operator@sender.example]
   site_url: https://sender.example/
   linkedin_note_max: 200 # the longest LinkedIn invite note, in characters, 1 to 300; 200 when left out, the free account's limit; set 300 on Premium
+  instagram_dm_max: 500 # the longest first Instagram DM (café leads only), in characters, 1 to 1000; 500 when left out; it holds no link
   # privacy_url: https://sender.example.test/privacy # optional, https: your privacy notice; once set, every email's footer ends "How I handle your details: <url>" (campaigns check warns while a campaign with calls has none)
   opt_out_lines: # language -> the opt-out line; every language an email country uses needs one
     en: "Not the right time? Reply \"unsubscribe\" and I will not write to you again."

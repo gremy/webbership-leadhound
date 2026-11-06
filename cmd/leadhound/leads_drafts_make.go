@@ -29,7 +29,7 @@ import (
 // edit`, and the store's Mark sent as the CLI's `leads done` and the console call it.
 
 const (
-	draftsMakeUsage = "usage: leadhound leads drafts make LEAD [--channel email|form|linkedin] [--decider claude|fake] | make --from-request [--decider claude|fake]"
+	draftsMakeUsage = "usage: leadhound leads drafts make LEAD [--channel email|form|linkedin|instagram] [--decider claude|fake] | make --from-request [--decider claude|fake]"
 	draftsEditUsage = "usage: leadhound leads drafts edit MESSAGE [--subject S] --body-file F"
 
 	// commandLeadsDraftsMake is the run row of `leads drafts make`.
@@ -112,10 +112,10 @@ func draftRefusalWords(err error) string {
 
 func checkDraftChannel(channel string) error {
 	switch channel {
-	case "", leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelLinkedIn:
+	case "", leadconfig.ChannelEmail, leadconfig.ChannelForm, leadconfig.ChannelLinkedIn, leadconfig.ChannelInstagram:
 		return nil
 	}
-	return usageError("--channel %q is not email, form or linkedin", channel)
+	return usageError("--channel %q is not email, form, linkedin or instagram", channel)
 }
 
 // draftItClaude is what a Draft it batch writes with: the decider's caller, or none and why.
@@ -374,6 +374,10 @@ func draftItCandidate(ctx context.Context, lq leadstore.Queries, lead leadstore.
 	if c.Channel == leadconfig.ChannelNone {
 		return c, refused("It has no way to reach it yet. Add a contact, or press Look for a contact.")
 	}
+	if c.Channel == leadconfig.ChannelInstagram && !isCafeKind(lead.Kind) {
+		// The DM is written to a café's own account (Decision 8): no other campaign uses it.
+		return c, refused("An Instagram DM is for a café lead only. Choose email, contact form or LinkedIn.")
+	}
 	routes, err := lq.RoutesFor(ctx, org.ID)
 	if err != nil {
 		return c, err
@@ -445,8 +449,7 @@ func messageBatch(ctx context.Context, s *store.Store, id int64) (messageBatchRo
 // usesManualSent says `leads done` goes through Mark sent: a live manual text whose batch is a Draft
 // it batch or is approved.
 func (m messageBatchRow) usesManualSent() bool {
-	return (m.Channel == leadconfig.ChannelForm || m.Channel == leadconfig.ChannelLinkedIn) &&
-		!m.Shadow && (m.Approved || m.Origin == leadstore.BatchOriginDraftIt)
+	return manualDraftChannel(m.Channel) && !m.Shadow && (m.Approved || m.Origin == leadstore.BatchOriginDraftIt)
 }
 
 func (m messageBatchRow) hashPrefix() string {
@@ -600,7 +603,7 @@ func editRefusalWords(err error) string {
 
 // draftEditCheck is what a saved text of message id must pass: the checks its first draft passed,
 // the same rules for its lead, its text as it stands and as it began counting as the operator's own
-// wording, and a LinkedIn note's limit. It returns the text as it stands too. A lead with no finding
+// wording, a LinkedIn note's limit and an Instagram DM's. It returns the text as it stands too. A lead with no finding
 // on file has no slots to read, and is checked on what remains.
 func draftEditCheck(ctx context.Context, s *store.Store, setup leadsSetup, loc *time.Location, id int64) (leadstore.EditCheck, leadstore.EffectiveDraft, error) {
 	lq := leadstore.NewQueries(s.Pool())
@@ -653,8 +656,11 @@ func draftEditCheck(ctx context.Context, s *store.Store, setup leadsSetup, loc *
 		}
 	case leadconfig.ChannelLinkedIn:
 		base.Kind = outreach.DraftLinkedIn
+	case leadconfig.ChannelInstagram:
+		base.Kind = outreach.DraftInstagram
 	}
 	isNote := m.Channel == leadconfig.ChannelLinkedIn && linkedInNote(m, msgs)
+	isDM := m.Channel == leadconfig.ChannelInstagram
 	check := func(subject, body string) []string {
 		d := base
 		d.Subject, d.Body, d.BodyAboveFooter = subject, body, body
@@ -670,6 +676,14 @@ func draftEditCheck(ctx context.Context, s *store.Store, setup leadsSetup, loc *
 		}
 		if isNote {
 			for _, f := range outreach.CheckNote(body, setup.leads.Sender.LinkedInNoteMax) {
+				why = append(why, f.Msg+".")
+			}
+		}
+		if isDM && dmHoldsLink(body) {
+			why = append(why, capitalised(dmNoLinkWords)+".")
+		}
+		if isDM {
+			for _, f := range outreach.CheckDM(body, setup.leads.Sender.InstagramDMMax) {
 				why = append(why, f.Msg+".")
 			}
 		}
@@ -730,6 +744,8 @@ func channelContactWords(channel string) string {
 		return "contact form"
 	case leadconfig.ChannelLinkedIn:
 		return "LinkedIn"
+	case leadconfig.ChannelInstagram:
+		return "Instagram"
 	}
 	return channel
 }

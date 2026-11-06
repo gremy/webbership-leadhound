@@ -78,3 +78,17 @@ func InstagramURL(handle string) string {
 	}
 	return "https://www.instagram.com/" + h + "/"
 }
+
+// InstagramRoute is the instagram route value a fact gives, beside LinkedInRoute: a social fact
+// holding an Instagram profile gives the handle's canonical address (InstagramURL), and any other
+// fact none. A social fact's value is always a URL, so a fact holding a bare word is no route.
+func InstagramRoute(f Fact) (value string, ok bool) {
+	if f.Kind != KindSocial || !strings.Contains(f.Normalized, "/") {
+		return "", false
+	}
+	h, ok := InstagramHandle(f.Normalized)
+	if !ok {
+		return "", false
+	}
+	return InstagramURL(h), true
+}

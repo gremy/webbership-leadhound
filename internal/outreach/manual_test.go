@@ -1,6 +1,7 @@
 package outreach
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -137,6 +138,46 @@ func TestWriteManualLinkedIn(t *testing.T) {
 	}
 }
 
+// TestWriteManualInstagram: one DM at step 0, written by Claude, with nothing added when it renders
+// (no greeting, no name, no identity line, no subject, no footer), and the stored output reads back.
+func TestWriteManualInstagram(t *testing.T) {
+	fake := &claude.Fake{WriteAnswer: claude.WriteResult{JSON: manualAnswer(t, "m0_clean_instagram")}}
+	in := manualInput(t, "d7", leadconfig.ChannelInstagram)
+	res, err := (&Writer{Caller: fake}).WriteManual(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Fallback != "" || len(res.Attempts) != 1 || !res.Attempts[0].OK() || fake.Calls() != 1 || res.Written == nil || len(res.Drafts) != 1 {
+		t.Fatalf("result %+v, calls %d", res, fake.Calls())
+	}
+	d := res.Drafts[0]
+	if d.Step != 0 || d.Part != PartMessage || d.Writer != "claude" {
+		t.Fatalf("draft %+v", d)
+	}
+	if d.Draft.Kind != DraftInstagram || d.Draft.Subject != "" || d.Draft.Used != nil || d.Draft.Body != d.Draft.BodyAboveFooter {
+		t.Fatalf("draft %+v", d.Draft)
+	}
+	if len(d.Paragraphs) != 3 || len(d.Paragraphs[0].Cites) == 0 {
+		t.Fatalf("paragraphs %+v", d.Paragraphs)
+	}
+	want := joinParagraphs(manualFixtures(t)["m0_clean_instagram"].Draft.Message.Paragraphs) + "\n"
+	if d.Draft.Body != want {
+		t.Fatalf("body:\n%s\nwant:\n%s", d.Draft.Body, want)
+	}
+	for _, added := range []string{"Hello,", "Demo Sender", "Demo Ltd", in.Render.Slots.OptOutLine.Value} {
+		if strings.Contains(d.Draft.Body, added) {
+			t.Fatalf("an Instagram DM got %q:\n%s", added, d.Draft.Body)
+		}
+	}
+	if n := NoteRunes(d.Draft.Body); n > leadconfig.DefaultInstagramDMMax {
+		t.Fatalf("the clean DM is %d characters", n)
+	}
+	back, err := DecodeManual(res.Attempts[0].Output)
+	if err != nil || back.Note != nil || back.Message == nil {
+		t.Fatalf("stored output %s: %v", res.Attempts[0].Output, err)
+	}
+}
+
 func TestWriteManualFormAddsIdentity(t *testing.T) {
 	in := manualInput(t, "d7", leadconfig.ChannelForm)
 	res, err := (&Writer{Caller: &claude.Fake{WriteAnswer: claude.WriteResult{JSON: manualAnswer(t, "m0_clean_form")}}}).WriteManual(context.Background(), in)
@@ -220,6 +261,52 @@ func TestManualNoteLimit(t *testing.T) {
 		if err != nil || len(rfails) > 0 || NoteRunes(drafts[0].Draft.Body) != tc.runes {
 			t.Errorf("rendered length differs from the checked one: %v %v %d", rfails, err, NoteRunes(drafts[0].Draft.Body))
 		}
+	}
+}
+
+// TestManualDMLimit: the Instagram DM is held to sender.instagram_dm_max in runes (0: the default
+// 500), the failure names step 0 and the length, and the checked length is the rendered one.
+// copy.max_words never reaches the DM.
+func TestManualDMLimit(t *testing.T) {
+	dm := func(n int) ManualWritten {
+		text := "I'm Sam Carter, a Drupal developer."
+		text += strings.Repeat("é", n-len(text))
+		return ManualWritten{Message: &ManualPart{Paragraphs: []Paragraph{{Text: text, Cites: []string{"S1", "S2"}}}}}
+	}
+	for _, tc := range []struct {
+		dmMax, runes int
+		ok           bool
+	}{
+		{0, 500, true}, {0, 501, false},
+		{1000, 1000, true}, {1000, 1001, false},
+		{80, 80, true}, {80, 81, false},
+	} {
+		in := manualInput(t, "d7", leadconfig.ChannelInstagram)
+		in.DMMax = tc.dmMax
+		in.NoteMax = 50 // the LinkedIn note's limit never reaches a DM
+		in.Rules.MaxWords = map[int]int{0: 3}
+		m := dm(tc.runes)
+		fails := checkManual(m, in)
+		if tc.ok != (len(fails) == 0) {
+			t.Errorf("max %d, %d runes: %v", tc.dmMax, tc.runes, fails)
+			continue
+		}
+		if !tc.ok {
+			if len(fails) != 1 || fails[0].Code != CodeCopy || fails[0].Step != 0 || fails[0].Token != fmt.Sprint(tc.runes) || !strings.Contains(fails[0].Msg, "Instagram DM") {
+				t.Errorf("max %d, %d runes: %v", tc.dmMax, tc.runes, fails)
+			}
+			continue
+		}
+		drafts, rfails, err := renderManual(m, in)
+		if err != nil || len(rfails) > 0 || NoteRunes(drafts[0].Draft.Body) != tc.runes {
+			t.Errorf("rendered length differs from the checked one: %v %v", rfails, err)
+		}
+	}
+	if fails := CheckDM(strings.Repeat("a", 501), 0); len(fails) != 1 {
+		t.Errorf("CheckDM at the default: %v", fails)
+	}
+	if fails := CheckDM("  "+strings.Repeat("a", 500)+"\n", 0); len(fails) != 0 {
+		t.Errorf("outer white space counted: %v", fails)
 	}
 }
 
@@ -322,6 +409,7 @@ func TestWriteManualRefusesBadInput(t *testing.T) {
 	w := &Writer{Caller: fake}
 	for name, change := range map[string]func(*ManualInput){
 		"email channel":  func(in *ManualInput) { in.Channel = leadconfig.ChannelEmail },
+		"none channel":   func(in *ManualInput) { in.Channel = leadconfig.ChannelNone },
 		"email examples": func(in *ManualInput) { in.Examples = []WrittenDraft{{}} },
 		"three examples": func(in *ManualInput) { in.ManualExamples = make([]ManualWritten, MaxExamples+1) },
 		"three versions": func(in *ManualInput) { in.OperatorVersions = make([]OperatorVersion, MaxOperatorVersions+1) },
@@ -352,6 +440,13 @@ func TestManualSchema(t *testing.T) {
 	}
 	if _, ok := form["properties"].(map[string]any)[PartNote]; ok {
 		t.Fatal("a form answer offers a note")
+	}
+	ig := ManualSchema(leadconfig.ChannelInstagram)
+	if !slices.Equal(required(ig), []string{PartMessage}) || ig["additionalProperties"] != false {
+		t.Fatalf("instagram schema %v", ig)
+	}
+	if props := ig["properties"].(map[string]any); len(props) != 1 || props[PartNote] != nil {
+		t.Fatalf("an Instagram answer offers more than its one message: %v", props)
 	}
 	part := form["properties"].(map[string]any)[PartMessage].(map[string]any)
 	if !slices.Equal(required(part), []string{"paragraphs"}) {
@@ -422,4 +517,132 @@ func TestManualPromptWords(t *testing.T) {
 	if strings.Contains(form, "note (step") || !strings.Contains(form, "- message (step 0): at most 120 words.") {
 		t.Errorf("form user turn:\n%s", form)
 	}
+	ig := manualInput(t, "d7", leadconfig.ChannelInstagram)
+	if u := ManualUserTurn(ig); strings.Contains(u, "note (step") || strings.Contains(u, "words") ||
+		!strings.Contains(u, "Write a first direct message on Instagram to the café's own account, for this lead.") ||
+		!strings.Contains(u, "- message (step 0): at most 500 characters, no link.") {
+		t.Errorf("instagram user turn:\n%s", u)
+	}
+	ig.DMMax = 320
+	if u := ManualUserTurn(ig); !strings.Contains(u, "at most 320 characters") {
+		t.Errorf("DM limit not stated:\n%s", u)
+	}
+	// Instagram's words reach the Instagram prompt only; form and LinkedIn share one prompt.
+	igSys := ManualSystemPrompt(ig)
+	for _, want := range []string{
+		"# Instagram\n",
+		"a first direct message on Instagram to the café's own account",
+		"An Instagram message holds no link and no web address",
+	} {
+		if !strings.Contains(igSys, want) {
+			t.Errorf("Instagram system prompt lacks %q", want)
+		}
+	}
+	formSys := ManualSystemPrompt(manualInput(t, "d7", leadconfig.ChannelForm))
+	if formSys != sys || strings.Contains(sys, "Instagram") {
+		t.Error("the form and LinkedIn system prompts differ, or name Instagram")
+	}
+}
+
+// TestManualPromptsUnchangedForFormAndLinkedIn pins the form and LinkedIn prompts to their bytes
+// before the Instagram channel (headManualSystemPrompt and headManualUserTurn are that version's
+// functions, copied verbatim), over inputs that reach every branch: campaign name, examples,
+// operator versions, note limit and word limits.
+func TestManualPromptsUnchangedForFormAndLinkedIn(t *testing.T) {
+	fx := manualFixtures(t)
+	for _, channel := range []string{leadconfig.ChannelForm, leadconfig.ChannelLinkedIn} {
+		for name, change := range map[string]func(*ManualInput){
+			"plain":    func(*ManualInput) {},
+			"campaign": func(in *ManualInput) { in.Campaign = "Demo campaign" },
+			"examples": func(in *ManualInput) {
+				in.ManualExamples = []ManualWritten{fx["m0_clean_linkedin"].Draft, fx["m0_clean_form"].Draft}
+			},
+			"versions":  func(in *ManualInput) { in.OperatorVersions = []OperatorVersion{{Body: "Hello <org>, <name> here."}} },
+			"note max":  func(in *ManualInput) { in.NoteMax = 300; in.DMMax = 900 },
+			"no limits": func(in *ManualInput) { in.Rules.MaxWords = nil },
+		} {
+			in := manualInput(t, "d7", channel)
+			change(&in)
+			if got, want := ManualSystemPrompt(in), headManualSystemPrompt(in); got != want {
+				t.Errorf("%s %s: system prompt changed:\n%s\nwant:\n%s", channel, name, got, want)
+			}
+			if got, want := ManualUserTurn(in), headManualUserTurn(in); got != want {
+				t.Errorf("%s %s: user turn changed:\n%s\nwant:\n%s", channel, name, got, want)
+			}
+		}
+	}
+}
+
+// headManualSystemPrompt is ManualSystemPrompt as it was before the Instagram channel, verbatim.
+func headManualSystemPrompt(in ManualInput) string {
+	r := in.Rules
+	var b strings.Builder
+	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+
+	line("You write short texts one sender sends by hand: a LinkedIn note, the LinkedIn message after they accept, or a message for a contact form. You write as the sender, in the first person, to one organisation at a time.")
+	if in.Campaign != "" {
+		line("The campaign: %s.", in.Campaign)
+	}
+	line("")
+	writeFactRules(line, r)
+	line("")
+	writeVoiceRules(line, r, "a LinkedIn note or a contact-form message",
+		"- Only a contact-form message may hold a link, and only one a fact it cites holds. A LinkedIn note or message holds no link and no web address.")
+	line("")
+	line("# Structure")
+	line("The user turn lists the parts to write for this lead, each with its limit.")
+	line("- A LinkedIn note is read in a notification: one short sentence on who you are and why you write, no pitch, no link.")
+	line("- The message after they accept is %d-%d words: who you are in a few words, one or two pains the reader sees, each with its pain_id, and the free report from the offer facts, which is theirs to keep.", ManualMessageMinWords, ManualMessageMaxWords)
+	line("- A contact-form message: (1) who you are and why you write, citing sender facts only; (2) up to three pains the reader sees, one paragraph each, each with its pain_id; (3) one proof line, if it fits, verbatim; (4) the free report from the offer facts, which is theirs to keep; (5) the call to action, word for word.")
+	line("- Every part has at least one paragraph with text, and every paragraph cites at least one fact. Write every part the user turn lists, and only those.")
+	line("- These texts have no subject. Write no greeting, no sign-off, no name under the text and no identity line: the code adds what a contact form needs, and a LinkedIn text needs none of them.")
+	line("")
+	line("# Output")
+	line("Answer with JSON only, in the schema given: each part the user turn asks for under its name (\"note\", \"message\"), with its paragraphs; each paragraph with its text, cites and pain_id.")
+	line("")
+	line("# Examples")
+	if len(in.ManualExamples) == 0 {
+		line("No approved examples yet.")
+	} else {
+		line("Approved texts for other leads. Copy their voice and shape, never their facts: their cites point at another lead's sheet.")
+		for i, ex := range in.ManualExamples {
+			line("")
+			line("## Example %d", i+1)
+			writeManualExample(&b, ex)
+		}
+	}
+	writeOperatorVersions(&b, in.OperatorVersions)
+	return b.String()
+}
+
+// headManualUserTurn is ManualUserTurn as it was before the Instagram channel, verbatim.
+func headManualUserTurn(in ManualInput) string {
+	var b strings.Builder
+	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	linkedIn := in.Channel == leadconfig.ChannelLinkedIn
+	if linkedIn {
+		line("Write the LinkedIn note and the message after they accept, for this lead.")
+	} else {
+		line("Write the contact-form message for this lead.")
+	}
+	line("Language: %s", cmp.Or(in.Lang, LangEnglish))
+	line("")
+	writeLeadContext(&b, in.WriteInput)
+	line("")
+	line("The parts:")
+	if linkedIn {
+		line("- note (step 0): at most %d characters.", cmp.Or(in.NoteMax, leadconfig.DefaultLinkedInNoteMax))
+		line("- message (step 1): %d-%d words.", ManualMessageMinWords, ManualMessageMaxWords)
+		line("")
+		line("Write both parts. Each needs at least one paragraph.")
+		return b.String()
+	}
+	if most, ok := manualRules(in).MaxWords[0]; ok {
+		line("- message (step 0): at most %d words.", most)
+	} else {
+		line("- message (step 0).")
+	}
+	line("")
+	line("Write the message. It needs at least one paragraph.")
+	return b.String()
 }

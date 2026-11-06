@@ -41,10 +41,11 @@ const (
 
 // The channels a list can be filtered by (ListFilter.Channels).
 const (
-	ListChannelEmail    = "email"
-	ListChannelForm     = "form"
-	ListChannelPhone    = "phone"
-	ListChannelLinkedIn = "linkedin"
+	ListChannelEmail     = "email"
+	ListChannelForm      = "form"
+	ListChannelPhone     = "phone"
+	ListChannelLinkedIn  = "linkedin"
+	ListChannelInstagram = "instagram"
 )
 
 // The page sizes of a list (ListFilter.PerPage), and the highest page LeadList reads: a
@@ -81,7 +82,7 @@ type FindingSubject struct {
 
 // ListFilter is one page of the list the operator asked for.
 type ListFilter struct {
-	Kinds, Countries, Channels []string // channels: email | form | linkedin | phone
+	Kinds, Countries, Channels []string // channels: email | form | linkedin | instagram | phone
 	Starred                    *bool
 	HasPhone                   bool
 	MinRelevance               int    // 0..100
@@ -127,9 +128,9 @@ type ListRow struct {
 	Domain, Name                string // Name: site_name, else org.name, else domain
 	Country, Kind, State        string
 	RType                       string // the lead's rating type (TypeOf its kind)
-	Channel                     string // the lead's channel (email, form, linkedin or none)
+	Channel                     string // the lead's channel (email, form, linkedin, instagram or none)
 	HasEmail, HasForm, HasPhone bool
-	HasLinkedIn                 bool
+	HasLinkedIn, HasInstagram   bool
 	Relevance                   *int
 	Band                        string
 	RatedAt                     *time.Time
@@ -274,6 +275,7 @@ type listRow struct {
 	HasForm         bool       `db:"has_form"`
 	HasPhone        bool       `db:"has_phone"`
 	HasLinkedIn     bool       `db:"has_linkedin"`
+	HasInstagram    bool       `db:"has_instagram"`
 	Relevance       *int       `db:"relevance"`
 	Band            string     `db:"band"`
 	RatedAt         *time.Time `db:"rated_at"`
@@ -309,7 +311,7 @@ func (r listRow) row() ListRow {
 		CampaignID: r.CampaignID, CampaignSlug: r.CampaignSlug, CampaignName: r.CampaignName,
 		Country: r.Country, Kind: r.Kind, RType: r.RType, State: r.State, Channel: r.Channel,
 		HasEmail: r.HasEmail, HasForm: r.HasForm, HasPhone: r.HasPhone, HasLinkedIn: r.HasLinkedIn,
-		Relevance: r.Relevance, Band: r.Band, RatedAt: r.RatedAt, Points: r.Points,
+		HasInstagram: r.HasInstagram, Relevance: r.Relevance, Band: r.Band, RatedAt: r.RatedAt, Points: r.Points,
 		Starred: r.Starred, Position: r.Position, SmallSite: r.SmallSite,
 		Finding: FindingSubject{
 			Kind: r.FindingKind, Detector: r.Detector, Major: r.Major, ExactVersion: r.ExactVersion,
@@ -339,6 +341,7 @@ var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS c
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'email' AND ` + reachRouteLiveSQL + `) AS has_email,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'form' AND ` + reachRouteLiveSQL + `) AS has_form,
 	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'linkedin' AND ` + reachRouteLiveSQL + `) AS has_linkedin,
+	   EXISTS (SELECT 1 FROM contact_route r WHERE r.org_id = l.org_id AND r.kind = 'instagram' AND ` + reachRouteLiveSQL + `) AS has_instagram,
 	   EXISTS (SELECT 1 FROM org_fact x WHERE x.org_id = l.org_id AND x.kind = 'phone' AND ` + reachFactLiveSQL + `) AS has_phone,
 	   rv.score AS relevance, coalesce(rv.band, '') AS band, rv.created_at AS rated_at,
 	   sc.score AS points,
@@ -397,6 +400,8 @@ func listConds(f ListFilter, arg func(any) string) ([]string, error) {
 				ors = append(ors, "m.has_form")
 			case ListChannelLinkedIn:
 				ors = append(ors, "m.has_linkedin")
+			case ListChannelInstagram:
+				ors = append(ors, "m.has_instagram")
 			case ListChannelPhone:
 				ors = append(ors, "m.has_phone")
 			default:
@@ -470,7 +475,7 @@ func listWhere(conds []string) string {
 
 // LeadList returns page f.Page of the leads f asks for, weighed by c, and how many leads
 // match in all. Filters combine with AND; Kinds, Countries and Channels each match any of
-// their values (a lead with an email, form or LinkedIn route or a phone fact for its
+// their values (a lead with an email, form, LinkedIn or Instagram route or a phone fact for its
 // channels). MinRelevance leaves out the leads never rated. The sorts:
 //   - relevance, c.TrustedTypes set: the leads of a trusted type by relevance (unrated
 //     last), every other lead after them, then points, then list rank (unranked last), then

@@ -78,7 +78,7 @@
       <li class="list-item">
         <span class="list-main">
           <span class="list-title"><a href="/leads/batches/{{.ID}}">Batch {{.ID}}</a>{{if .Shadow}} <span class="badge">shadow</span>{{end}}</span>
-          <span class="list-meta">{{plural .Leads "lead" "leads"}} · {{plural .Emails "email" "emails"}} · {{plural .Forms "contact form" "contact forms"}} · {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}} · made {{when .CreatedAt}}</span>
+          <span class="list-meta">{{plural .Leads "lead" "leads"}} · {{plural .Emails "email" "emails"}} · {{plural .Forms "contact form" "contact forms"}} · {{plural .LinkedIn "LinkedIn note" "LinkedIn notes"}}{{with .Instagram}} · {{plural . "Instagram DM" "Instagram DMs"}}{{end}} · made {{when .CreatedAt}}</span>
         </span>
       </li>
       {{end}}
@@ -153,13 +153,13 @@
 </div>
 
 <section class="card mt-2" aria-labelledby="manual-h">
-  <div class="card-head"><h2 id="manual-h">Contact forms and LinkedIn notes to use</h2></div>
+  <div class="card-head"><h2 id="manual-h">Contact forms, LinkedIn notes and Instagram DMs to use</h2></div>
   {{if $p.Manual}}
   <ul class="list">
     {{range $p.Manual}}
     <li class="list-item">
       <span class="list-main">
-        <span class="list-title">{{.Domain}} · {{if eq .Channel "form"}}contact form{{else}}LinkedIn note{{end}}</span>
+        <span class="list-title">{{.Domain}} · {{if eq .Channel "form"}}contact form{{else if eq .Channel "linkedin"}}LinkedIn note{{else if eq .Channel "instagram"}}Instagram DM{{else}}{{channelWords .Channel}}{{end}}</span>
         <span class="list-meta">message {{.MessageID}} in <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Route}} · {{.}}{{end}}</span>
       </span>
       <form method="post" action="/leads/items/{{.MessageID}}/done" class="list-end"><button type="submit" class="btn btn-secondary btn-sm">Done</button></form>

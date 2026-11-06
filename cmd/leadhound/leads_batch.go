@@ -224,8 +224,8 @@ func callsLine(out NewBatchOutcome) string {
 	return line + "."
 }
 
-// batchCounts says "8 emails, 2 contact forms, 1 LinkedIn note": email leads, form texts
-// and LinkedIn notes.
+// batchCounts says "8 emails, 2 contact forms, 1 LinkedIn note" (and ", 1 Instagram DM" when it holds
+// one): email leads, form texts, LinkedIn notes and Instagram DMs.
 func batchCounts(drafts []leadstore.DraftRow) string { return countDrafts(drafts).String() }
 
 func plural(n int, one, many string) string {
@@ -401,6 +401,8 @@ func cmpOr(a, b string) string {
 // for after they accept at step 1, the kind's form text being the only longer text a template
 // set holds. Each comes from the campaign folder's form.txt and linkedin.txt when it holds them,
 // else from leads.yaml's templates, and each row's recipient is the target URL (the lead's route).
+// An Instagram lead gets its one DM at step 0 from the campaign folder's instagram.txt, else
+// leads.yaml's (neither is required), held to sender.instagram_dm_max and to no link.
 // A form lead's LinkedIn steps are batchDrafter.manualRows's: only it reads the org's routes.
 // The footer is plan.footerFor's: the campaign country's own, else leads.yaml's. Any render or Check problem drops the lead.
 func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence, cfg leadconfig.Config,
@@ -416,6 +418,7 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		step    int
 		when    string
 		note    bool // a LinkedIn note, held to the note limit
+		dm      bool // an Instagram DM, held to the DM limit and to no link
 	}
 	var texts []text
 	switch c.Channel {
@@ -487,6 +490,19 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 			texts = append(texts, text{tmpl: outreach.LinkedInTemplate(set.LinkedIn), channel: "linkedin", note: true},
 				text{tmpl: outreach.LinkedInTemplate(set.Form), channel: "linkedin", step: 1})
 		}
+	case leadconfig.ChannelInstagram:
+		// The campaign folder's own instagram.txt when it holds one, else leads.yaml's; neither is
+		// required, so a lead with no Instagram template has only Claude's DM.
+		set, ok := plan.templates.Set(c.Kind, policy.Lang)
+		if !ok || set.Instagram == nil {
+			if own, found := cfg.Templates.Set(c.Kind, policy.Lang); found && own.Instagram != nil {
+				set, ok = own, true
+			}
+		}
+		if !ok || set.Instagram == nil {
+			return nil, fmt.Errorf("no Instagram template (%s) for %s in language %q", leadconfig.InstagramFile, c.Kind, policy.Lang)
+		}
+		texts = append(texts, text{tmpl: outreach.InstagramTemplate(set.Instagram), channel: leadconfig.ChannelInstagram, dm: true})
 	default:
 		return nil, fmt.Errorf("channel %q has no drafts", c.Channel)
 	}
@@ -513,6 +529,14 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 				msgs[i] = x.String()
 			}
 			return nil, fmt.Errorf("%s step %d: %s", label, t.step, strings.Join(msgs, "; "))
+		}
+		if t.dm {
+			if dmHoldsLink(d.Body) {
+				return nil, fmt.Errorf("%s step %d: %s", label, t.step, dmNoLinkWords)
+			}
+			if f := outreach.CheckDM(d.Body, cfg.Sender.InstagramDMMax); len(f) > 0 {
+				return nil, fmt.Errorf("%s step %d: %s", label, t.step, f[0].Msg)
+			}
 		}
 		if t.note {
 			if f := outreach.CheckNote(d.Body, cfg.Sender.LinkedInNoteMax); len(f) > 0 {
@@ -547,6 +571,16 @@ func draftSequence(plan batchPlan, c leadstore.Candidate, ev leadstore.Evidence,
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// dmNoLinkWords is why an Instagram DM holding a link is refused.
+const dmNoLinkWords = "an Instagram DM may hold no link"
+
+// dmHoldsLink says an Instagram DM's text holds a link (a URL or a bare www. name): a first DM
+// holds none (Decision 8), as Claude's is held to by outreach.WriteManual.
+func dmHoldsLink(text string) bool {
+	l := strings.ToLower(text)
+	return strings.Contains(l, "://") || strings.Contains(l, "www.")
 }
 
 // emailRecipient is the address an email step drafted with condition when (a
@@ -724,6 +758,8 @@ func printBatch(w io.Writer, v BatchView, only int) {
 				p("   To: %s\n", m.ToAddress)
 			case m.Channel == "form" && it.Route != "":
 				p("   Form page (the lead's current route): %s\n", it.Route)
+			case m.Channel == leadconfig.ChannelInstagram && it.Route != "":
+				p("   Instagram account (the lead's current route): %s\n", it.Route)
 			}
 			if m.Subject != "" {
 				p("   Subject: %s\n\n", m.Subject)
@@ -772,6 +808,8 @@ func messageLabel(m leadstore.Message, n int) string {
 		label = fmt.Sprintf("contact form text · message %d · when used: leadhound leads done %d", m.ID, m.ID)
 	case "linkedin":
 		label = fmt.Sprintf("LinkedIn note · message %d · when used: leadhound leads done %d", m.ID, m.ID)
+	case leadconfig.ChannelInstagram:
+		label = fmt.Sprintf("Instagram DM · message %d · when sent: leadhound leads done %d", m.ID, m.ID)
 	case leadstore.ChannelPhone:
 		label = fmt.Sprintf("step %d of %d · call · message %d · after the call: leadhound leads calls outcome %d <what happened>", m.Step+1, n, m.ID, m.ID)
 	}
@@ -893,7 +931,7 @@ func runBatchApprove(ctx context.Context, args []string) error {
 		for i, m := range out.Manual {
 			ids[i] = strconv.FormatInt(m, 10)
 		}
-		_, _ = fmt.Fprintf(stdout, "Contact forms and LinkedIn notes wait for you (messages %s): after using one, run leadhound leads done <message>.\n", strings.Join(ids, ", "))
+		_, _ = fmt.Fprintf(stdout, "Contact forms, LinkedIn notes and Instagram DMs wait for you (messages %s): after using one, run leadhound leads done <message>.\n", strings.Join(ids, ", "))
 	}
 	if out.Shadow {
 		_, _ = fmt.Fprintln(stdout, "Shadow batch: send writes these to the outbox only, and the leads stay new.")
@@ -940,7 +978,7 @@ func runBatchDiscard(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runLeadsDone is `leads done K`: the operator used contact-form or LinkedIn message K. A Draft it
+// runLeadsDone is `leads done K`: the operator used contact-form, LinkedIn or Instagram message K. A Draft it
 // batch has no approve step, so this is his approval too (markManualSent); so is any approved live
 // batch's message, which also keeps the refusals of a lead that has answered. A shadow batch and an
 // unapproved batch of any other origin go the old way, which says what it says of them.
@@ -983,7 +1021,7 @@ func runLeadsDone(ctx context.Context, args []string) error {
 		case RefuseNotManual:
 			return usageError("message %d is an email; send handles emails", id)
 		case RefuseMessageState:
-			return usageError("message %d is not an approved contact-form or LinkedIn item; approve its batch first", id)
+			return usageError("message %d is not an approved contact-form, LinkedIn or Instagram item; approve its batch first", id)
 		}
 	}
 	if err != nil {

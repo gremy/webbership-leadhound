@@ -19,9 +19,10 @@ const (
 
 // Route kinds (contact_route.kind).
 const (
-	RouteEmail    = "email"
-	RouteForm     = "form"
-	RouteLinkedIn = "linkedin"
+	RouteEmail     = "email"
+	RouteForm      = "form"
+	RouteLinkedIn  = "linkedin"
+	RouteInstagram = "instagram" // a business's own profile, https://www.instagram.com/<handle>/
 )
 
 // Lead states (lead.state).
@@ -74,7 +75,7 @@ type AgencyFinding struct {
 // operator claimed counts as usable without it, because the Reoon check is its gate.
 type Route struct {
 	ID       int64
-	Kind     string // email, form or linkedin
+	Kind     string // email, form, linkedin or instagram
 	Value    string
 	MXOK     bool
 	Operator bool // the latest mark is a claim: the operator's own (leadstore.Route.Operator)
@@ -91,7 +92,7 @@ type Route struct {
 type Lead struct {
 	OrgID           int64
 	Kind            string // unsupported, d10 or agency_partner
-	Channel         string // email, form, linkedin or none
+	Channel         string // email, form, linkedin, instagram or none
 	ProbeID         *int64
 	AgencyFindingID *int64
 	RouteID         *int64
@@ -160,13 +161,29 @@ func leadSiteKind(p *Probe) (kind, reason string) {
 // PickChannel picks the channel and route for a country policy's channel, taking the first
 // fitting route of a kind in the order given (leadstore.RoutesFor: the operator's first, no
 // retired route). An email policy takes the first email route with an MX record or claimed
-// by the operator (the Reoon check is that address's gate), else the first form route, else
-// the first LinkedIn route, else none. A form policy takes the first form route, else the
-// first LinkedIn route, else none; it never upgrades to email. A none policy (a country
-// missing from the file has one) is none, except that an operator-claimed form route, else
-// an operator-claimed LinkedIn route, picks that manual channel: his own contact, his own
-// hand. Email stays policy-driven because the machine sends it. Any other policy is none.
+// by the operator (the Reoon check is that address's gate), else the manual order: the first
+// form route, else the first LinkedIn route, else none. A form policy takes the manual order; it
+// never upgrades to email. A none policy (a country missing from the file has one) is none,
+// except that an operator-claimed form route, else an operator-claimed LinkedIn route, picks that
+// manual channel: his own contact, his own hand. Email stays policy-driven because the machine
+// sends it. Any other policy is none. PickChannel never picks Instagram: it is
+// PickChannelWith(policy, routes, PickOptions{}).
 func PickChannel(policy string, routes []Route) (string, *int64) {
+	return PickChannelWith(policy, routes, PickOptions{})
+}
+
+// PickOptions widens PickChannel's manual order. The zero value is PickChannel's.
+type PickOptions struct {
+	// AllowInstagram puts Instagram last in the manual order (form, LinkedIn, Instagram; under a
+	// none policy, the operator's Instagram route only). Instagram is a channel for café campaigns
+	// only, so the caller sets it for those and leaves it false for every other campaign: a Drupal
+	// lead whose website links an Instagram profile stays channel none.
+	AllowInstagram bool
+}
+
+// PickChannelWith is PickChannel with opt: with opt.AllowInstagram, the first Instagram route
+// (fitting as the policy asks) comes after form and LinkedIn.
+func PickChannelWith(policy string, routes []Route, opt PickOptions) (string, *int64) {
 	first := func(kind string, fits func(Route) bool) *int64 {
 		for i := range routes {
 			if routes[i].Kind == kind && fits(routes[i]) {
@@ -182,6 +199,9 @@ func PickChannel(policy string, routes []Route) (string, *int64) {
 		}
 		if id := first(RouteLinkedIn, fits); id != nil {
 			return leadconfig.ChannelLinkedIn, id
+		}
+		if id := first(RouteInstagram, fits); opt.AllowInstagram && id != nil {
+			return leadconfig.ChannelInstagram, id
 		}
 		return leadconfig.ChannelNone, nil
 	}

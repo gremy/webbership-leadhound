@@ -91,7 +91,7 @@ func (b *backend) SaveDraft(ctx context.Context, e console.DraftEdit) (string, e
 	return "", nil
 }
 
-// MarkSent records a form or LinkedIn message sent by hand (markManualSent, as `leads done`).
+// MarkSent records a form, LinkedIn or Instagram message sent by hand (markManualSent, as `leads done`).
 func (b *backend) MarkSent(ctx context.Context, m console.MarkSentRequest) (string, error) {
 	if _, err := b.leadsSetup(ctx, leadsForProbe); err != nil {
 		return "", err
@@ -110,7 +110,7 @@ func (b *backend) MarkSent(ctx context.Context, m console.MarkSentRequest) (stri
 	case r != nil && r.Kind == RefuseMessageNotFound:
 		return "", console.ErrNotFound
 	case r != nil && r.Kind == RefuseNotManual:
-		return "", refused("Only a contact form or LinkedIn message can be marked sent.")
+		return "", refused("Only a contact form, LinkedIn or Instagram message can be marked sent.")
 	case errors.Is(err, leadstore.ErrHashTooShort):
 		return "", refused("This draft changed; reload.")
 	}
@@ -343,6 +343,7 @@ func (b *backend) fillOutreach(ctx context.Context, w leadsWeighing, d leadstore
 	p.SectorWords = leadview.SectorWords(p.Sector)
 	p.SectorOptions = sectorOptions()
 	p.NoteMax = cmp.Or(w.cfg.Sender.LinkedInNoteMax, leadconfig.DefaultLinkedInNoteMax)
+	p.DMMax = cmp.Or(w.cfg.Sender.InstagramDMMax, leadconfig.DefaultInstagramDMMax)
 	return nil
 }
 

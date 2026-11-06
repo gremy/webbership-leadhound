@@ -535,7 +535,7 @@ func newBatchDrafter(ctx context.Context, lq leadstore.Queries, bs batchSetup, p
 // except a usage-store failure, which stops the batch (stopBatchError).
 func (d *batchDrafter) draft(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate,
 	ev leadstore.Evidence, cfg leadconfig.Config, phone *leadstore.Fact, idDomain string, rnd io.Reader) ([]leadstore.DraftRow, error) {
-	if d != nil && (c.Channel == leadconfig.ChannelForm || c.Channel == leadconfig.ChannelLinkedIn) {
+	if d != nil && manualDraftChannel(c.Channel) {
 		return d.manualRows(ctx, lq, plan, c, ev, cfg, rnd)
 	}
 	if d != nil {
@@ -646,10 +646,17 @@ func (d *batchDrafter) reuse(ctx context.Context, lq leadstore.Queries, leadID i
 
 // --- a manual lead ---
 
-// manualRows are a form or LinkedIn lead's rows (Decision 10): a form lead's message at step 0, and
-// its LinkedIn note and message at steps 1 and 2 only when it has a LinkedIn route that is not
-// retired; a LinkedIn lead's note at step 0 and message at step 1. Each channel's text is Claude's
-// or falls back to the templates on its own. Only the lead's own channel failing drops the lead.
+// manualDraftChannel says channel is drafted as a manual text (manualRows): a contact form, a LinkedIn
+// note and message, or an Instagram DM.
+func manualDraftChannel(channel string) bool {
+	return channel == leadconfig.ChannelForm || channel == leadconfig.ChannelLinkedIn || channel == leadconfig.ChannelInstagram
+}
+
+// manualRows are a form, LinkedIn or Instagram lead's rows (Decision 10): a form lead's message at step 0,
+// and its LinkedIn note and message at steps 1 and 2 only when it has a LinkedIn route that is not
+// retired; a LinkedIn lead's note at step 0 and message at step 1; an Instagram lead's one DM at step 0.
+// Each channel's text is Claude's or falls back to the templates on its own. Only the lead's own
+// channel failing drops the lead.
 func (d *batchDrafter) manualRows(ctx context.Context, lq leadstore.Queries, plan batchPlan, c leadstore.Candidate,
 	ev leadstore.Evidence, cfg leadconfig.Config, rnd io.Reader) ([]leadstore.DraftRow, error) {
 	var err error
@@ -822,7 +829,8 @@ func (d *batchDrafter) manualInput(ctx context.Context, lq leadstore.Queries, pl
 	if err != nil {
 		return outreach.ManualInput{}, err
 	}
-	return outreach.ManualInput{WriteInput: in, Channel: c.Channel, NoteMax: d.dc.cfg.Sender.LinkedInNoteMax, ManualExamples: learn.examples}, nil
+	return outreach.ManualInput{WriteInput: in, Channel: c.Channel, NoteMax: d.dc.cfg.Sender.LinkedInNoteMax,
+		DMMax: d.dc.cfg.Sender.InstagramDMMax, ManualExamples: learn.examples}, nil
 }
 
 // reuseManual is reuse for a manual text: a generation on the same channel and fact sheet that was
@@ -1062,6 +1070,8 @@ func (draftFake) Write(_ context.Context, r claude.WriteRequest) (claude.WriteRe
 		b, err = json.Marshal(fakeLinkedIn(sheet, pains))
 	case strings.HasPrefix(r.Prompt, "Write the contact-form message"):
 		b, err = json.Marshal(outreach.ManualWritten{Message: fakePart(sheet, pains)})
+	case strings.HasPrefix(r.Prompt, "Write a first direct message on Instagram"):
+		b, err = json.Marshal(fakeInstagram(sheet, pains))
 	default:
 		b, err = outreach.EncodeWireDraft(fakeDraft(sheet, pains, steps, call))
 	}
@@ -1212,6 +1222,14 @@ func fakePart(sheet outreach.FactSheet, pains []outreach.Pain) *outreach.ManualP
 func fakeLinkedIn(sheet outreach.FactSheet, pains []outreach.Pain) outreach.ManualWritten {
 	msg := fakePart(sheet, pains[:min(1, len(pains))])
 	return outreach.ManualWritten{Note: &outreach.ManualPart{Paragraphs: msg.Paragraphs[:1]}, Message: msg}
+}
+
+// fakeInstagram is the one DM: fakePart with one pain, so it stays in the DM's length, and without a
+// paragraph holding a link (an Instagram DM holds none).
+func fakeInstagram(sheet outreach.FactSheet, pains []outreach.Pain) outreach.ManualWritten {
+	msg := fakePart(sheet, pains[:min(1, len(pains))])
+	msg.Paragraphs = slices.DeleteFunc(msg.Paragraphs, func(p outreach.Paragraph) bool { return dmHoldsLink(p.Text) })
+	return outreach.ManualWritten{Message: msg}
 }
 
 // batchClaude is what `leads batch new` drafts campaign c with. For writer: claude: the capped

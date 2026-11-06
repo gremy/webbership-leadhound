@@ -68,7 +68,10 @@ func runLeadsForget(ctx context.Context, args []string) error {
 		"marks", f.ContactMarks, "lead_routes", f.LeadRoutes, "person_pages", f.PersonPages, "email_checks", f.EmailChecks,
 		"person_emails", f.PersonEmails, "person_routes", f.PersonRoutes, "people", f.People, "edits", f.EditsBlanked,
 		"edited_emails", f.EditedEmails, "profile_targets", f.ProfileTargets, "proposals", f.Proposals,
-		"proposal_notes", f.ProposalNotes, "sectors", f.Sectors, "draft_requests", f.DraftRequests, "batches_rehashed", f.BatchesRehashed)
+		"proposal_notes", f.ProposalNotes, "sectors", f.Sectors, "draft_requests", f.DraftRequests, "batches_rehashed", f.BatchesRehashed,
+		"ig_lead_routes", f.IGLeadRoutes, "ig_targets", f.IGTargets, "ig_routes", f.IGRoutes, "ig_judgments", f.IGJudgments,
+		"ig_hints", f.IGHints, "ig_matches", f.IGMatches, "ig_reviews", f.IGReviews, "ig_profiles", f.IGProfiles, "ig_follows", f.IGFollows,
+		"ig_lead_hints", f.IGLeadHints)
 	_, _ = fmt.Fprintln(stdout, forgetWords(id, f, p))
 	return nil
 }
@@ -122,6 +125,16 @@ func forgetWords(id int64, f leadstore.Forgotten, p leadstore.ForgottenPages) st
 		{f.EditsBlanked, "draft edit emptied", "draft edits emptied"},
 		{f.EditedEmails, "edited email emptied", "edited emails emptied"},
 		{f.ProfileTargets, "form or LinkedIn target emptied", "form or LinkedIn targets emptied"},
+		{f.IGLeadRoutes, "lead moved off an Instagram account", "leads moved off an Instagram account"},
+		{f.IGTargets, "Instagram DM target emptied", "Instagram DM targets emptied"},
+		{f.IGRoutes, "Instagram account deleted", "Instagram accounts deleted"},
+		{f.IGProfiles, "Instagram profile reading deleted", "Instagram profile readings deleted"},
+		{f.IGJudgments, "Instagram judgment deleted", "Instagram judgments deleted"},
+		{f.IGMatches, "Instagram match deleted", "Instagram matches deleted"},
+		{f.IGReviews, "Instagram review row deleted", "Instagram review rows deleted"},
+		{f.IGHints, "Instagram hint deleted", "Instagram hints deleted"},
+		{f.IGFollows, "Instagram following row deleted", "Instagram following rows deleted"},
+		{f.IGLeadHints, "Instagram reading's lead hint cleared", "Instagram readings' lead hints cleared"},
 		{f.Proposals, "proposal erased", "proposals erased"},
 		{f.ProposalNotes, "proposal note blanked", "proposal notes blanked"},
 		{f.Sectors, "sector deleted", "sectors deleted"},

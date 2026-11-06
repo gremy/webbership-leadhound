@@ -521,8 +521,12 @@ func (g *grounder) readerClaim(it groundItem) string {
 			slices.ContainsFunc(senderNames, func(n string) bool { return strings.HasPrefix(s, n) }) {
 			continue
 		}
-		if len(offers) > 0 && (objectOnly ||
-			slices.ContainsFunc(offers, func(v string) bool { return strings.Contains(fold(s), fold(v)) })) {
+		// The sentence lost its closing mark to sentenceEndRe, so an offer value ending in one
+		// ("Worth 10 minutes to see it on your phone?") is compared without it.
+		if len(offers) > 0 && (objectOnly || slices.ContainsFunc(offers, func(v string) bool {
+			v = strings.TrimRight(strings.TrimSpace(v), ".!?")
+			return v != "" && strings.Contains(fold(s), fold(v))
+		})) {
 			continue
 		}
 		return s

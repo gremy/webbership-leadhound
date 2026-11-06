@@ -164,8 +164,8 @@ func (g *emailGate) verdict(addr string) verify.Verdict {
 // lead whose route is not an email goes as it is. A sendable address goes. An address with no
 // answer yet waits (need names it, a check being due now). A blocked
 // address makes the lead fall to its next route, as a missing email does at build time
-// (outreach.PickChannel over its routes without the blocked addresses): another email route,
-// judged the same way, or a form or LinkedIn page; with none it is skipped with the first blocked status. An
+// (outreach.PickChannelWith over its routes without the blocked addresses): another email route,
+// judged the same way, or a form or LinkedIn page, or a café's Instagram account; with none it is skipped with the first blocked status. An
 // email route the lead falls to must be on its org's own domain or its first address's, and
 // not suppressed, so the queue's suppression and reached-domain rules (CandidateLeads) still
 // hold for it.
@@ -201,7 +201,7 @@ func (g *emailGate) route(ctx context.Context, lq leadstore.Queries, policy stri
 		left := slices.DeleteFunc(slices.Clone(routes), func(r outreach.Route) bool {
 			return r.Kind == outreach.RouteEmail && blocked[strings.ToLower(strings.TrimSpace(r.Value))]
 		})
-		ch, id := outreach.PickChannel(policy, left)
+		ch, id := outreach.PickChannelWith(policy, left, pickOptions(c.Kind))
 		if id == nil {
 			return c, gateResult{kind: gateSkip, status: first}, nil
 		}
@@ -214,8 +214,8 @@ func (g *emailGate) route(ctx context.Context, lq leadstore.Queries, policy stri
 	}
 }
 
-// fallbackRoutes are org c.OrgID's routes a blocked lead may fall to: every form and LinkedIn
-// route, and every email route on the org's domain or on the domain of c's own address that no
+// fallbackRoutes are org c.OrgID's routes a blocked lead may fall to: every form, LinkedIn and
+// Instagram route, and every email route on the org's domain or on the domain of c's own address that no
 // suppression covers.
 func (g *emailGate) fallbackRoutes(ctx context.Context, lq leadstore.Queries, c leadstore.Candidate) ([]outreach.Route, error) {
 	stored, err := lq.RoutesFor(ctx, c.OrgID)

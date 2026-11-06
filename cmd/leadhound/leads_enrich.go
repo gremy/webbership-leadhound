@@ -48,7 +48,8 @@ const leadsEnrichUsage = "usage: leadhound leads enrich [--max N (at least 1)] [
 // social links from the org's kept pages, and, when none of them is a contact page, from at
 // most two contact links of its homepage, fetched under the contact search's rules. A dry
 // run reads fixtures and touches only orgs on reserved TLDs. A LinkedIn company page read as a
-// social fact is also written as a linkedin route, citing the same page.
+// social fact is also written as a linkedin route, and an Instagram profile as an instagram route
+// (enrich.InstagramRoute), each citing the same page.
 func runLeadsEnrich(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads enrich", flag.ContinueOnError)
 	var ff fetchFlags
@@ -296,9 +297,17 @@ func (es enrichRun) enrich(ctx context.Context, o leadstore.Org, sum *enrichSumm
 			return err
 		}
 		routed := false
-		if value, ok := enrich.LinkedInRoute(f.Fact); ok {
+		// A company page is a LinkedIn route and an Instagram profile an instagram one (the
+		// business's own account, in its one canonical form), each from the page it was seen on.
+		kind := leadstore.RouteLinkedIn
+		value, ok := enrich.LinkedInRoute(f.Fact)
+		if !ok {
+			kind = leadstore.RouteInstagram
+			value, ok = enrich.InstagramRoute(f.Fact)
+		}
+		if ok {
 			routed, err = lq.InsertRoute(wctx, leadstore.RouteRow{
-				OrgID: o.ID, Kind: leadstore.RouteLinkedIn, Value: value, FetchID: f.fetchID, DerivedBy: enrich.DerivedBy,
+				OrgID: o.ID, Kind: kind, Value: value, FetchID: f.fetchID, DerivedBy: enrich.DerivedBy,
 			})
 			if err != nil {
 				return err

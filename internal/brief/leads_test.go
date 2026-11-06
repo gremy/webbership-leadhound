@@ -24,7 +24,7 @@ func leadsCases() map[string]Input {
 			in.Apply = applyJobs()[:1]
 			in.Leads = &leadbrief.Section{
 				Replies: []string{"alpha.example", "beta.example"}, Other: 1,
-				Batch:         &leadbrief.BatchReady{ID: 12, Emails: 8, Forms: 2, LinkedIn: 1},
+				Batch:         &leadbrief.BatchReady{ID: 12, Emails: 8, Forms: 2, LinkedIn: 1, Instagram: 1},
 				ManualWaiting: 3, Sent: 5, ShadowSent: 2, Bounced: 1, OptedOut: 1, CheckByHand: 1,
 				Probe: &leadbrief.ProbeLine{Checked: 120, Drupal: 14, ByMajor: map[int]int{10: 4, 7: 9, 0: 1}},
 			}
@@ -91,8 +91,8 @@ func TestLeadsBlockShape(t *testing.T) {
 	_, text, html := Compose(leadsCases()["leads_replies"])
 	order := []string{"\n1. Senior Go Engineer", "\nLeads\n2. Read 2 replies in the outreach mailbox: alpha.example, beta.example",
 		"\n3. Read 1 other message in the outreach mailbox (not matched to a lead)",
-		"\n4. Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note): leadhound leads batch show 12",
-		"\n5. Send 3 contact forms and LinkedIn notes by hand", "\n6. Check by hand whether 1 email went out",
+		"\n4. Approve batch 12 (8 emails, 2 forms, 1 LinkedIn note, 1 Instagram DM): leadhound leads batch show 12",
+		"\n5. Send 3 contact forms, LinkedIn notes and Instagram DMs by hand", "\n6. Check by hand whether 1 email went out",
 		"\nLeads health: 5 sent, 2 shadow, 1 bounced, 1 opted out yesterday · probe", "\nHealth: LinkedIn ok"}
 	at := 0
 	for _, w := range order {

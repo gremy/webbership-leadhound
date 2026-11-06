@@ -83,3 +83,45 @@ func TestInstagramURL(t *testing.T) {
 		t.Errorf("round trip = %q, %v", h, ok)
 	}
 }
+
+// TestInstagramRoute: a social fact holding a profile gives the one canonical route value; a post,
+// another network, a bare word and any other kind of fact give none.
+func TestInstagramRoute(t *testing.T) {
+	links := `<a href="https://www.instagram.com/Cafe.Exemplu/?hl=ro">a</a>` +
+		`<a href="https://www.instagram.com/p/AbC123/">b</a>` +
+		`<a href="https://www.facebook.com/cafe.exemplu">c</a>` +
+		`<a href="https://uk.linkedin.com/company/cafe-exemplu">d</a>`
+	var routes []string
+	for _, f := range Extract([]byte(links), "https://cafe.example/", "cafe.example", false) {
+		if v, ok := InstagramRoute(f); ok {
+			routes = append(routes, v)
+		}
+		if _, ok := LinkedInRoute(f); ok {
+			if _, also := InstagramRoute(f); also {
+				t.Errorf("fact %q is both a LinkedIn and an Instagram route", f.Normalized)
+			}
+		}
+	}
+	if len(routes) != 1 || routes[0] != "https://www.instagram.com/cafe.exemplu/" {
+		t.Errorf("routes = %q, want the one canonical profile address", routes)
+	}
+	for _, f := range []Fact{
+		{Kind: KindSocial, Value: "x", Normalized: "https://instagram.com/cafe_example"},
+		{Kind: KindSocial, Value: "x", Normalized: "https://www.instagram.com/cafe_example/"},
+	} {
+		if v, ok := InstagramRoute(f); !ok || v != "https://www.instagram.com/cafe_example/" {
+			t.Errorf("%q: route %q, %v", f.Normalized, v, ok)
+		}
+	}
+	for _, f := range []Fact{
+		{Kind: KindDescription, Value: "x", Normalized: "https://instagram.com/cafe_example"},
+		{Kind: KindSocial, Value: "x", Normalized: "cafe_example"},
+		{Kind: KindSocial, Value: "x", Normalized: "https://instagram.com/reel/AbC123"},
+		{Kind: KindSocial, Value: "x", Normalized: "https://instagram.com"},
+		{Kind: KindSocial, Value: "x", Normalized: "https://facebook.com/cafe_example"},
+	} {
+		if v, ok := InstagramRoute(f); ok {
+			t.Errorf("%+v gave route %q", f, v)
+		}
+	}
+}

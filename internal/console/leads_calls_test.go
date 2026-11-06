@@ -114,7 +114,7 @@ func TestTodayPage(t *testing.T) {
 	body := w.Body.String()
 	last := -1
 	for _, section := range []string{"Calls to make now", "Calls overdue", "Replies waiting", "Emails due today",
-		"Forms and LinkedIn notes to send by hand"} {
+		"Forms, LinkedIn notes and Instagram DMs to send by hand"} {
 		i := strings.Index(body, section)
 		if i < 0 || i < last {
 			t.Errorf("%s missing or out of order", section)
@@ -146,7 +146,7 @@ func TestTodayEmpty(t *testing.T) {
 	h := newHarness(t, b, false)
 	body := h.do(get("/leads/today", h.session(t))).Body.String()
 	for _, want := range []string{"No calls to make right now.", "Nothing overdue.", "No replies waiting.",
-		"No emails due today. The send job sends them on its own", "No forms or LinkedIn notes due."} {
+		"No emails due today. The send job sends them on its own", "No forms, LinkedIn notes or Instagram DMs due."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("empty Today lacks %q", want)
 		}
@@ -433,6 +433,18 @@ func TestSequenceManualWords(t *testing.T) {
 		"form": {[]SequenceStep{{Type: "email", Channel: ChannelForm, MessageID: 3, State: SeqWaiting}}, []string{"Form message"}, []string{"ready to send"}},
 		"discarded": {[]SequenceStep{{Type: "email", Channel: ChannelForm, MessageID: 3, State: SeqCancelled, Reason: "batch discarded"}},
 			[]string{"Form message"}, []string{"cancelled: the batch was discarded"}},
+		"instagram planned": {[]SequenceStep{{Type: "email", Channel: ChannelInstagram, State: SeqPlanned}}, []string{"Instagram DM"}, []string{"not drafted yet"}},
+		"instagram drafted": {[]SequenceStep{{Type: "email", Channel: ChannelInstagram, MessageID: 4, State: SeqDraft}},
+			[]string{"Instagram DM"}, []string{"drafted, not sent yet"}},
+		"instagram due": {[]SequenceStep{{Type: "email", Channel: ChannelInstagram, MessageID: 4, State: SeqDue, At: &at}},
+			[]string{"Instagram DM"}, []string{"due Sat 24 Oct 04:50"}},
+		"instagram approved, no due time": {[]SequenceStep{{Type: "email", Channel: ChannelInstagram, MessageID: 4, State: SeqWaiting}},
+			[]string{"Instagram DM"}, []string{"ready to send"}},
+		"instagram marked sent": {[]SequenceStep{{Type: "email", Channel: ChannelInstagram, MessageID: 4, State: SeqDone, At: &at}},
+			[]string{"Instagram DM"}, []string{"marked sent Sat 24 Oct 04:50"}},
+		"a form after an instagram DM waits on it by name": {two(SequenceStep{Type: "email", Channel: ChannelInstagram, MessageID: 4, State: SeqDue, At: &at},
+			SequenceStep{Type: "email", Channel: ChannelForm, MessageID: 5, State: SeqWaiting}),
+			[]string{"Instagram DM", "Form message"}, []string{"due Sat 24 Oct 04:50", "waiting on the Instagram DM"}},
 	} {
 		s := &server{opt: Options{Location: testSent.Location()}}
 		rows := s.sequenceRows(c.steps)
@@ -441,6 +453,27 @@ func TestSequenceManualWords(t *testing.T) {
 				t.Errorf("%s step %d: %q %q, want %q %q", name, i, r.Kind, r.Words, c.kinds[i], c.words[i])
 			}
 		}
+	}
+}
+
+// TestManualLabel: each manual channel names its own message; a form and LinkedIn keep their old
+// words.
+func TestManualLabel(t *testing.T) {
+	for _, c := range []struct {
+		channel  string
+		linkedIn int
+		want     string
+	}{
+		{ChannelForm, 0, "Form message"}, {ChannelForm, 1, "Form message"},
+		{ChannelLinkedIn, 1, "Connection note"}, {ChannelLinkedIn, 2, "After they accept"},
+		{ChannelInstagram, 0, "Instagram DM"}, {ChannelInstagram, 1, "Instagram DM"},
+	} {
+		if got := ManualLabel(c.channel, c.linkedIn); got != c.want {
+			t.Errorf("ManualLabel(%q, %d) = %q, want %q", c.channel, c.linkedIn, got, c.want)
+		}
+	}
+	if ChannelWords(ChannelInstagram) != "Instagram" || ContactKindWords(ContactInstagram) != "Instagram" {
+		t.Error("Instagram is not worded")
 	}
 }
 
@@ -711,21 +744,21 @@ func TestTodayDueTimeKeptTogether(t *testing.T) {
 	}
 }
 
-// TestTodayShadowManual: with no form or LinkedIn note listed but some in shadow batches, the
+// TestTodayShadowManual: with no form, LinkedIn note or Instagram DM listed but some in shadow batches, the
 // empty state says they are practice instead of that none exist.
 func TestTodayShadowManual(t *testing.T) {
 	b := richBackend("x")
 	b.today = TodayView{ShadowManual: 54}
 	h := newHarness(t, b, false)
 	body := h.do(get("/leads/today", h.session(t))).Body.String()
-	if !strings.Contains(body, "54 forms and LinkedIn notes are in shadow batches and not listed here: shadow batches are practice.") {
+	if !strings.Contains(body, "54 forms, LinkedIn notes and Instagram DMs are in shadow batches and not listed here: shadow batches are practice.") {
 		t.Error("the shadow empty state is missing")
 	}
-	if strings.Contains(body, "No forms or LinkedIn notes due.") {
+	if strings.Contains(body, "No forms, LinkedIn notes or Instagram DMs due.") {
 		t.Error("says none are due while shadow batches hold some")
 	}
 	b.today = TodayView{ShadowManual: 1}
-	if body := h.do(get("/leads/today", h.session(t))).Body.String(); !strings.Contains(body, "1 form or LinkedIn note is in shadow batches") {
+	if body := h.do(get("/leads/today", h.session(t))).Body.String(); !strings.Contains(body, "1 form, LinkedIn note or Instagram DM is in shadow batches") {
 		t.Error("the singular shadow line is missing")
 	}
 }

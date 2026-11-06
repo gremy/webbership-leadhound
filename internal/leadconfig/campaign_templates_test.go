@@ -68,3 +68,44 @@ func TestLoadCampaignFormTemplates(t *testing.T) {
 		})
 	}
 }
+
+// A campaign's instagram.txt is optional for every kind, a café kind included, and loads into
+// the Set when present.
+func TestLoadCampaignInstagramTemplate(t *testing.T) {
+	const cafe = "cafe_no_website"
+	form := map[string]string{cafe + "/en/" + FormFile: "Hello {{.OrgName}}.\n", cafe + "/en/" + LinkedInFile: "Hello.\n"}
+	withDM := map[string]string{cafe + "/en/" + InstagramFile: "Hello {{.OrgName}}, {{.SenderName}} here.\n"}
+	for rel, text := range form {
+		withDM[rel] = text
+	}
+	for _, c := range []struct {
+		name  string
+		kind  string
+		files map[string]string
+		want  string
+		dm    bool
+	}{
+		{"café without", cafe, form, "", false},
+		{"café with", cafe, withDM, "", true},
+		{"d10 with only the DM", KindD10, map[string]string{"d10/en/" + InstagramFile: "Hi.\n"}, "", true},
+		{"unparsable", KindD10, map[string]string{"d10/en/" + InstagramFile: "{{.Nope}}\n"}, "instagram.txt does not render", false},
+		{"empty", KindD10, map[string]string{"d10/en/" + InstagramFile: " \n"}, "instagram.txt is empty", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := campaignTemplatesDir(t, []string{c.kind}, c.files)
+			tm, err := LoadCampaignTemplates(dir, CampaignTemplates{Kinds: []string{c.kind}, Langs: []string{"en"}, EmailSteps: []int{0}})
+			if c.want != "" {
+				if err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("err %v, want %q", err, c.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if set, _ := tm.Set(c.kind, "en"); (set.Instagram != nil) != c.dm {
+				t.Errorf("Instagram loaded = %v, want %v", set.Instagram != nil, c.dm)
+			}
+		})
+	}
+}

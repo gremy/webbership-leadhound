@@ -434,6 +434,9 @@ func templateNames(t leadconfig.Templates, kinds []leadKind) []string {
 		if set.LinkedIn != nil {
 			parts = append(parts, "LinkedIn note")
 		}
+		if set.Instagram != nil {
+			parts = append(parts, "Instagram DM")
+		}
 		out = append(out, fmt.Sprintf("%s in %s: %s", kindLabel(kinds, k.Kind), languageName(k.Lang), strings.Join(parts, ", ")))
 	}
 	for _, f := range slices.Sorted(maps.Keys(t.Footers)) {

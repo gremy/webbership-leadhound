@@ -1622,3 +1622,42 @@ func TestBatchPageNamesHeldLeads(t *testing.T) {
 		}
 	}
 }
+
+// TestManualItemsNameTheirChannel: the Outreach tab names each message to send by hand by its own
+// channel, a waiting batch counts its Instagram DMs only when it has some, and a form and a
+// LinkedIn note keep their old words.
+func TestManualItemsNameTheirChannel(t *testing.T) {
+	b := richBackend("x")
+	b.leads.Manual = []ManualItem{
+		{MessageID: 9, BatchID: 2, Domain: "harbourlane.example", Channel: ChannelForm},
+		{MessageID: 10, BatchID: 2, Domain: "northwind.example", Channel: ChannelLinkedIn},
+		{MessageID: 11, BatchID: 2, Domain: "brewlane.example", Channel: ChannelInstagram},
+		{MessageID: 12, BatchID: 2, Domain: "fabrikam.example", Channel: ChannelEmail},
+	}
+	b.leads.Batches = []WaitingBatch{{ID: 3, CreatedAt: testSent, Leads: 4, Emails: 3, Forms: 1},
+		{ID: 4, CreatedAt: testSent, Leads: 2, Instagram: 2}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/outreach", h.session(t))).Body.String()
+	for _, want := range []string{
+		"Contact forms, LinkedIn notes and Instagram DMs to use",
+		"harbourlane.example · contact form<", "northwind.example · LinkedIn note<",
+		"brewlane.example · Instagram DM<", "fabrikam.example · Email<",
+		"4 leads · 3 emails · 1 contact form · 0 LinkedIn notes · made",
+		"2 leads · 0 emails · 0 contact forms · 0 LinkedIn notes · 2 Instagram DMs · made",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Outreach lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "harbourlane.example · LinkedIn note") || strings.Contains(body, "fabrikam.example · LinkedIn note") {
+		t.Error("a channel that is not LinkedIn is called a LinkedIn note")
+	}
+	b.dash.Leads = &LeadsSummary{Batch: &WaitingBatch{ID: 4, Emails: 1, Forms: 1, LinkedIn: 1, Instagram: 1}}
+	if body := h.do(get("/leads/home", h.session(t))).Body.String(); !strings.Contains(body, "1 email, 1 contact form, 1 LinkedIn note, 1 Instagram DM.</p>") {
+		t.Error("the dashboard's waiting batch does not count its Instagram DM")
+	}
+	b.dash.Leads = &LeadsSummary{Batch: &WaitingBatch{ID: 4, Emails: 1, Forms: 1, LinkedIn: 1}}
+	if body := h.do(get("/leads/home", h.session(t))).Body.String(); !strings.Contains(body, "1 email, 1 contact form, 1 LinkedIn note.</p>") {
+		t.Error("a batch with no Instagram DM lost its old words")
+	}
+}

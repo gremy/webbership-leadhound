@@ -358,7 +358,7 @@ type PriorJob struct {
 // with empty ones dropped. The backend reads them, ignores what it does not know and clamps
 // the numbers; the console never judges them.
 type LeadListQuery struct {
-	Kinds, Countries, Channels []string // kind=, country=, channel= (email | form | phone), each repeatable
+	Kinds, Countries, Channels []string // kind=, country=, channel= (email | form | linkedin | instagram | phone), each repeatable
 	Starred                    string   // "" any | "yes" | "no"
 	HasPhone                   string   // "" any | "1" only leads with a phone number
 	MinRelevance               string   // a whole number, 0 to 100
@@ -473,9 +473,10 @@ type LeadListRow struct {
 	// Reach is the lead's next action (a Reach* bucket) and ReachReason why it is a dead end (a
 	// Reach* reason, "" for any other bucket). ReachWords and ReachReasonWords say them.
 	Reach, ReachReason string
-	// Channel is the lead's channel (ChannelEmail, ChannelForm, ChannelLinkedIn, or "none").
-	Channel     string
-	HasLinkedIn bool
+	// Channel is the lead's channel (ChannelEmail, ChannelForm, ChannelLinkedIn,
+	// ChannelInstagram, or "none").
+	Channel                   string
+	HasLinkedIn, HasInstagram bool
 	// Town is a café lead's town and PlaceType its place type (cafe or roastery), both "" for
 	// any other lead, which shows no chip. PlaceTypeSource is who decided the place type
 	// (operator, jev or name), "" when nobody spoke and café is the default.
@@ -579,6 +580,8 @@ type LeadDetailPage struct {
 	SectorOptions       []FilterOption // the closed list, each a stored name and its words
 	// NoteMax is the longest LinkedIn connection note in characters (sender.linkedin_note_max).
 	NoteMax int
+	// DMMax is the longest Instagram DM in characters (sender.instagram_dm_max); 0 shows no count.
+	DMMax int
 	// Posted is a refused form to show again. The console sets it; the backend leaves it zero.
 	Posted OutreachPosted
 }
@@ -1010,9 +1013,9 @@ type TodayView struct {
 	// EmailsDue is how many emails the send job sends today; Emails the first few of them.
 	EmailsDue int
 	Emails    []TodayItem
-	// Manual are the contact forms and LinkedIn notes due, to use by hand.
+	// Manual are the contact forms, LinkedIn notes and Instagram DMs due, to use by hand.
 	Manual []TodayItem
-	// ShadowManual counts the approved contact forms and LinkedIn notes of shadow batches
+	// ShadowManual counts the approved contact forms, LinkedIn notes and Instagram DMs of shadow batches
 	// that are not listed under Manual: shadow batches are practice, so the empty state says
 	// so rather than that none exist.
 	ShadowManual int
@@ -2001,9 +2004,10 @@ func ReachReasonWords(reason string) string {
 
 // The channels a draft is written for (LeadDraft.Channel).
 const (
-	ChannelEmail    = "email"
-	ChannelForm     = "form"
-	ChannelLinkedIn = "linkedin"
+	ChannelEmail     = "email"
+	ChannelForm      = "form"
+	ChannelLinkedIn  = "linkedin"
+	ChannelInstagram = "instagram"
 )
 
 // ChannelWords is a draft's channel as the page says it.
@@ -2015,6 +2019,8 @@ func ChannelWords(channel string) string {
 		return "Contact form"
 	case ChannelLinkedIn:
 		return "LinkedIn"
+	case ChannelInstagram:
+		return "Instagram"
 	}
 	return channel
 }
@@ -2036,13 +2042,13 @@ const (
 // message already sent stays on the page with neither Editable nor CanMarkSent.
 type LeadDraft struct {
 	MessageID int64
-	Channel   string // ChannelEmail, ChannelForm or ChannelLinkedIn
+	Channel   string // ChannelEmail, ChannelForm, ChannelLinkedIn or ChannelInstagram
 	Step      int    // its place in the sequence, from 0
 	Label     string // the step in words: "Connection note", "After they accept", "Follow-up 1"
 	// Note is true for a LinkedIn connection note: the card counts it against
 	// LeadDetailPage.NoteMax with NoteLength.
 	Note bool
-	// To is an email's address and TargetURL a form's or LinkedIn page, which the card links;
+	// To is an email's address and TargetURL a form's, LinkedIn or Instagram page, which the card links;
 	// the other is "".
 	To, TargetURL string
 	// Subject and Body are the text as it stands: the operator's latest version when Edited.
@@ -2081,18 +2087,19 @@ type LeadDraft struct {
 func (d LeadDraft) NoteLength() int { return utf8.RuneCountInString(d.Body) }
 
 // The kinds of a contact (LeadContact.Kind, NewContact.Kind), in the order the Add form offers
-// them (ContactKinds). The first three and LinkedIn are ways to reach the org; a person is who
-// is there.
+// them (ContactKinds). The first three, LinkedIn and Instagram are ways to reach the org; a
+// person is who is there. An Instagram contact is the business's own account, never a person's.
 const (
-	ContactEmail    = "email"
-	ContactPhone    = "phone"
-	ContactForm     = "form"
-	ContactLinkedIn = "linkedin"
-	ContactPerson   = "person"
+	ContactEmail     = "email"
+	ContactPhone     = "phone"
+	ContactForm      = "form"
+	ContactLinkedIn  = "linkedin"
+	ContactInstagram = "instagram"
+	ContactPerson    = "person"
 )
 
 // ContactKinds lists the kinds of contact the Add form offers.
-var ContactKinds = []string{ContactEmail, ContactPhone, ContactForm, ContactLinkedIn, ContactPerson}
+var ContactKinds = []string{ContactEmail, ContactPhone, ContactForm, ContactLinkedIn, ContactInstagram, ContactPerson}
 
 // ContactKindWords is a contact's kind as the page says it.
 func ContactKindWords(kind string) string {
@@ -2105,6 +2112,8 @@ func ContactKindWords(kind string) string {
 		return "Contact form"
 	case ContactLinkedIn:
 		return "LinkedIn"
+	case ContactInstagram:
+		return "Instagram"
 	case ContactPerson:
 		return "Person"
 	}

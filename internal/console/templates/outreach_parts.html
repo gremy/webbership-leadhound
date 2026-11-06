@@ -11,7 +11,7 @@
 
 {{define "outreach_refusal"}}<div class="alert alert-stop" role="alert">{{template "adm_alert_icon"}}<div><p class="alert-text mb-0">{{.}}</p></div></div>{{end}}
 
-{{/* lead_next_step is the bucket in plain words, its reason, and the one primary action. A form or LinkedIn message that can be marked sent wins over everything else; the one due now first. */}}
+{{/* lead_next_step is the bucket in plain words, its reason, and the one primary action. A form, LinkedIn or Instagram message that can be marked sent wins over everything else; the one due now first. An Instagram DM says where it is sent. */}}
 {{define "lead_next_step"}}{{$v := .}}{{$d := .Data}}{{$r := $d.Research}}
 {{$mark := 0}}{{range $d.Drafts}}{{if and .CanMarkSent .DueNow (not $mark)}}{{$mark = .MessageID}}{{end}}{{end}}{{range $d.Drafts}}{{if and .CanMarkSent (not $mark)}}{{$mark = .MessageID}}{{end}}{{end}}
 {{$look := and $r.CanAsk (not $r.Open) (not $r.NextAt)}}
@@ -32,7 +32,7 @@
       {{end}}
     {{else if eq $d.Reach "manual"}}
       {{if $mark}}
-      <p>Copy the text, send it by hand, then mark it sent.</p>
+      <p>{{if eq $d.Channel "instagram"}}Copy the text, send it as a direct message on Instagram, then mark it sent.{{else}}Copy the text, send it by hand, then mark it sent.{{end}}</p>
       <div class="btn-row"><a class="btn btn-primary" href="#draft-{{$mark}}">Copy &amp; mark sent</a></div>
       {{else if eq $d.Channel "none"}}
       <p>They have a phone number and nowhere to write to.</p>
@@ -89,14 +89,14 @@
     <div class="card-head"><h2 id="draft-title-{{.MessageID}}">{{channelWords .Channel}}: {{.Label}}</h2>{{with .State}}<span class="badge">{{.}}</span>{{end}}</div>
     <div class="card-body stack-sm">
       {{if $on}}{{template "outreach_refusal" $p.Refusal}}{{end}}
-      {{with .TargetURL}}<p class="small">Send it on {{template "lead_link" .}}</p>{{end}}
+      {{$dm := eq .Channel "instagram"}}{{with .TargetURL}}<p class="small">{{if $dm}}Send it as a direct message to {{template "lead_link" .}}{{else}}Send it on {{template "lead_link" .}}{{end}}</p>{{end}}
       {{with .To}}<p class="small">To {{.}}</p>{{end}}
       <p class="message-head">In <a href="/leads/batches/{{.BatchID}}">batch {{.BatchID}}</a>{{with .Due}} · due {{when .}}{{end}}{{with .Sent}} · sent {{when .}}{{end}}{{if eq .Origin "draft_it"}} · from Draft it{{end}}</p>
       <p class="hint">{{if .Fallback}}Written from the template, because {{.Fallback}}.{{else if eq .Writer "claude"}}Written by Claude.{{else}}Written from the template.{{end}}{{if .Shadow}} A shadow batch: nothing is really sent or marked sent.{{end}}</p>
       {{with .Subject}}<p class="message-head">Subject: {{.}}</p>{{end}}
       <label class="visually-hidden" for="draft-text-{{.MessageID}}">The text of {{.Label}}</label>
       <textarea class="input textarea" id="draft-text-{{.MessageID}}" rows="8" readonly>{{.Body}}</textarea>
-      {{if .Note}}<p class="hint">{{.NoteLength}} of {{$d.NoteMax}} characters</p>{{end}}
+      {{if .Note}}<p class="hint">{{.NoteLength}} of {{$d.NoteMax}} characters</p>{{else if and $dm $d.DMMax}}<p class="hint">{{.NoteLength}} of {{$d.DMMax}} characters</p>{{end}}
       <div class="btn-row">
         <button type="button" class="btn btn-secondary" data-copy="draft-text-{{.MessageID}}">Copy</button>
         {{if .CanMarkSent}}<form method="post" action="/leads/{{$d.LeadID}}/drafts/{{.MessageID}}/sent">

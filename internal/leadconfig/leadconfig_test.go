@@ -289,6 +289,10 @@ func TestConfigProblems(t *testing.T) {
 		{"note max negative", "linkedin_note_max: 200", "linkedin_note_max: -1", "sender.linkedin_note_max", false},
 		{"note max over the limit", "linkedin_note_max: 200", "linkedin_note_max: 301", "sender.linkedin_note_max", false},
 		{"linkedin is no country policy", "channel: form", "channel: linkedin", `"linkedin"`, true},
+		{"dm max zero", exampleDMMaxLine, "  instagram_dm_max: 0\n", "sender.instagram_dm_max", false},
+		{"dm max negative", exampleDMMaxLine, "  instagram_dm_max: -1\n", "sender.instagram_dm_max", false},
+		{"dm max over the limit", exampleDMMaxLine, "  instagram_dm_max: 1001\n", "sender.instagram_dm_max", false},
+		{"instagram is no country policy", "channel: form", "channel: instagram", `"instagram"`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -363,6 +367,76 @@ func TestLinkedInNoteMax(t *testing.T) {
 		})
 	}
 }
+
+// TestInstagramDMMax: sender.instagram_dm_max takes 1 to 1000 and is the default 500 when the
+// file leaves it out or blank (the example file documents it at the default).
+func TestInstagramDMMax(t *testing.T) {
+	cfg, err := Load(demoDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sender.InstagramDMMax != DefaultInstagramDMMax || DefaultInstagramDMMax != 500 {
+		t.Errorf("the example's DM max = %d, want the default 500", cfg.Sender.InstagramDMMax)
+	}
+	for _, n := range []string{"1", "320", "1000"} {
+		dir := demoDir(t)
+		replaceIn(t, dir, FileName, exampleDMMaxLine, "  instagram_dm_max: "+n+"\n")
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("DM max %s is allowed: %v", n, err)
+		}
+		if got := strconv.Itoa(cfg.Sender.InstagramDMMax); got != n {
+			t.Errorf("DM max = %s, want %s", got, n)
+		}
+	}
+	for name, line := range map[string]string{"absent": "", "blank": "  instagram_dm_max:\n"} {
+		dir := demoDir(t)
+		replaceIn(t, dir, FileName, exampleDMMaxLine, line)
+		if cfg, err := Load(dir); err != nil || cfg.Sender.InstagramDMMax != DefaultInstagramDMMax {
+			t.Errorf("%s DM max = %d, %v; want the default", name, cfg.Sender.InstagramDMMax, err)
+		}
+	}
+}
+
+// TestInstagramTemplateOptional: leads.yaml's instagram.txt is never required; present, it loads
+// into the Set and is held to the same parse and render rules as form.txt.
+func TestInstagramTemplateOptional(t *testing.T) {
+	cfg, err := Load(demoDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range cfg.KindsPriority {
+		if set, _ := cfg.Templates.Set(kind, "en"); set.Instagram != nil {
+			t.Errorf("%s/en: an Instagram text with no file", kind)
+		}
+	}
+	dir := demoDir(t)
+	writeFile(t, dir, "leads-templates/d10/en/"+InstagramFile, "Hello {{.OrgName}}, {{.SenderName}} here.\n")
+	cfg2, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set, _ := cfg2.Templates.Set(KindD10, "en"); set.Instagram == nil {
+		t.Error("d10/en/instagram.txt did not load")
+	}
+	if set, _ := cfg2.Templates.Set(KindUnsupported, "en"); set.Instagram != nil {
+		t.Error("another kind got d10's Instagram text")
+	}
+	if cfg2.Templates.SHA256 == cfg.Templates.SHA256 {
+		t.Error("the templates digest does not cover instagram.txt")
+	}
+	for name, text := range map[string]string{"empty": "  \n", "unparsable": "{{.Nope}}\n"} {
+		t.Run(name, func(t *testing.T) {
+			dir := demoDir(t)
+			writeFile(t, dir, "leads-templates/d10/en/"+InstagramFile, text)
+			_, err := Load(dir)
+			wantProblem(t, err, "d10/en/instagram.txt")
+		})
+	}
+}
+
+// exampleDMMaxLine is the example file's whole sender.instagram_dm_max line.
+const exampleDMMaxLine = "  instagram_dm_max: 500 # the longest first Instagram DM (café leads only), in characters, 1 to 1000; 500 when left out; it holds no link\n"
 
 // exampleNoteMaxLine is the example file's whole sender.linkedin_note_max line.
 const exampleNoteMaxLine = "  linkedin_note_max: 200 # the longest LinkedIn invite note, in characters, 1 to 300; 200 when left out, the free account's limit; set 300 on Premium\n"

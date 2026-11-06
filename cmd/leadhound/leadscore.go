@@ -318,13 +318,21 @@ type NewBatchRequest struct {
 	Manual bool
 }
 
-// BatchCounts are a batch's first emails, contact forms and LinkedIn notes.
-type BatchCounts struct{ Emails, Forms, LinkedIn int }
+// BatchCounts are a batch's first emails, contact forms, LinkedIn notes and Instagram DMs.
+type BatchCounts struct{ Emails, Forms, LinkedIn, Instagram int }
 
+// String names the Instagram DMs only when there are some, so a batch without any reads as before.
 func (c BatchCounts) String() string {
-	return fmt.Sprintf("%s, %s, %s", plural(c.Emails, "email", "emails"),
+	s := fmt.Sprintf("%s, %s, %s", plural(c.Emails, "email", "emails"),
 		plural(c.Forms, "contact form", "contact forms"), plural(c.LinkedIn, "LinkedIn note", "LinkedIn notes"))
+	if c.Instagram > 0 {
+		s += ", " + plural(c.Instagram, "Instagram DM", "Instagram DMs")
+	}
+	return s
 }
+
+// Total is every counted item.
+func (c BatchCounts) Total() int { return c.Emails + c.Forms + c.LinkedIn + c.Instagram }
 
 // DroppedLead is a candidate whose drafts failed the checks. LeadID is set where the lead is
 // known (0 for a skip found by domain only).
@@ -861,8 +869,13 @@ func starredLine(s leadstore.StarredState) string {
 	if date != "" {
 		out += ", " + date
 	}
-	if s.Channel == leadconfig.ChannelLinkedIn && (s.Reason == leadstore.StarredReady || s.Reason == leadstore.StarredRankedOut) {
-		out += " (no email yet, LinkedIn only)"
+	if s.Reason == leadstore.StarredReady || s.Reason == leadstore.StarredRankedOut {
+		switch s.Channel {
+		case leadconfig.ChannelLinkedIn:
+			out += " (no email yet, LinkedIn only)"
+		case leadconfig.ChannelInstagram:
+			out += " (no email yet, Instagram only)"
+		}
 	}
 	return out
 }
@@ -1012,7 +1025,7 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 		out, err = newBatch(ctx, tq, bs, now, req)
 		return err
 	})
-	note := fmt.Sprintf("batch %d, %d messages, %d dropped", out.BatchID, out.Counts.Emails+out.Counts.Forms+out.Counts.LinkedIn, len(out.Dropped))
+	note := fmt.Sprintf("batch %d, %d messages, %d dropped", out.BatchID, out.Counts.Total(), len(out.Dropped))
 	if line := fallbackLine(out.Fallbacks); line != "" {
 		note += "; " + line
 	}
@@ -1037,8 +1050,8 @@ func makeBatch(ctx context.Context, s *store.Store, bs batchSetup, now time.Time
 	return out, runErr
 }
 
-// countDrafts counts first emails, contact-form texts and LinkedIn notes (a lead's first LinkedIn
-// row: the row after it is the message for after they accept).
+// countDrafts counts first emails, contact-form texts, LinkedIn notes (a lead's first LinkedIn
+// row: the row after it is the message for after they accept) and Instagram DMs.
 func countDrafts(drafts []leadstore.DraftRow) BatchCounts {
 	var c BatchCounts
 	seen := map[int64]bool{}
@@ -1054,6 +1067,8 @@ func countDrafts(drafts []leadstore.DraftRow) BatchCounts {
 			c.Forms++
 		case d.Channel == "linkedin":
 			c.LinkedIn++
+		case d.Channel == leadconfig.ChannelInstagram:
+			c.Instagram++
 		}
 	}
 	return c
@@ -1162,7 +1177,7 @@ type ApproveOutcome struct {
 	Items    int
 	Approval leadstore.Approval
 	FirstDue time.Time // the earliest first email's due time; zero when none
-	Manual   []int64   // the approved contact forms and LinkedIn notes, to use by hand
+	Manual   []int64   // the approved contact forms, LinkedIn notes and Instagram DMs, to use by hand
 }
 
 // approveBatch approves what the operator read (the hash binds it, RA2): each first email is
@@ -1330,7 +1345,7 @@ func resolveMaybeSent(ctx context.Context, s *store.Store, setup leadsSetup, loc
 	return out, err
 }
 
-// markDone records that the operator used approved contact-form or LinkedIn message id.
+// markDone records that the operator used approved contact-form, LinkedIn or Instagram message id.
 func markDone(ctx context.Context, s *store.Store, id int64) (leadstore.Done, error) {
 	var d leadstore.Done
 	err := leadsInTx(ctx, s.Pool(), func(lq leadstore.Queries) error {

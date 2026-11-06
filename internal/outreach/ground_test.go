@@ -490,6 +490,40 @@ func TestGroundReaderClaims(t *testing.T) {
 	}
 }
 
+// TestGroundReaderClaimOfferQuestion: an offer fact that ends in a question mark and speaks to the
+// reader (a café campaign's call to action) passes as the offer when quoted word for word; the
+// sentence split drops its closing mark, so the comparison does too. Reworded, it is refused.
+func TestGroundReaderClaimOfferQuestion(t *testing.T) {
+	in := groundInput("d10")
+	in.Offer.CallToAction = "Worth 10 minutes to see it on your phone?"
+	sheet, rules := BuildFactSheet(in), groundRules("d10")
+	cta := ""
+	for _, f := range sheet.Facts {
+		if f.Label == LabelCallToAction {
+			cta = f.ID
+		}
+	}
+	if cta == "" {
+		t.Fatal("no call-to-action fact on the sheet")
+	}
+	for text, refused := range map[string]bool{
+		"Worth 10 minutes to see it on your phone?":  false,
+		"Worth 10 minutes to see it on your laptop?": true,
+	} {
+		d := groundDraft(t, "clean_d10")
+		d.Steps[0].Paragraphs[2] = Paragraph{Text: text, Cites: []string{cta}}
+		var g5b []Failure
+		for _, f := range Ground(d, sheet, rules) {
+			if f.Code == CodePains {
+				g5b = append(g5b, f)
+			}
+		}
+		if got := len(g5b) > 0; got != refused {
+			t.Errorf("%q: refused=%v, want %v (%v)", text, got, refused, g5b)
+		}
+	}
+}
+
 // TestGroundSpelledNumbers: spelled-out cardinals and ordinals are claim tokens, compared as
 // numbers; "one", "first", "second", "dozens" and the Romanian articles un/o are not.
 func TestGroundSpelledNumbers(t *testing.T) {

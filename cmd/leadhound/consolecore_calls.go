@@ -57,7 +57,7 @@ func (b *backend) LeadsToday(ctx context.Context, slug string) (console.TodayVie
 	return v, nil
 }
 
-// shadowManualCount is how many contact forms and LinkedIn notes of approved shadow batches
+// shadowManualCount is how many contact forms, LinkedIn notes and Instagram DMs of approved shadow batches
 // of campaign campaignID (0: every campaign) are approved and not yet done: shadow batches
 // are practice, so Today does not list them and its empty state says they exist.
 func shadowManualCount(ctx context.Context, db store.DBTX, campaignID int64) (int, error) {
@@ -66,7 +66,7 @@ func shadowManualCount(ctx context.Context, db store.DBTX, campaignID int64) (in
 		`SELECT count(*) FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
 		 WHERE b.shadow AND b.approved_at IS NOT NULL AND b.account_id = $1
 		   AND ($2::bigint = 0 OR b.campaign_id = $2::bigint)
-		   AND m.state = 'approved' AND m.channel IN ('form', 'linkedin')`,
+		   AND m.state = 'approved' AND m.channel IN ('form', 'linkedin', 'instagram')`,
 		leadstore.DefaultAccountID, campaignID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("console: today: shadow forms and notes: %w", err)
@@ -180,6 +180,8 @@ func todayFromStore(t leadstore.Today, loc *time.Location, v console.TodayView, 
 			line = "Contact form text · use it by hand, then mark it done"
 		case "linkedin":
 			line = "LinkedIn note · use it by hand, then mark it done"
+		case leadconfig.ChannelInstagram:
+			line = "Instagram DM · send it by hand, then mark it done"
 		default:
 			line = channelWords(it.Channel)
 		}
@@ -408,14 +410,16 @@ func (b *backend) LeadSequence(ctx context.Context, leadID int64) ([]console.Seq
 	return out, nil
 }
 
-// plannedManualSteps is what Draft it would write for a new form or LinkedIn lead with nothing
-// drafted (the manual sequence: a form message, then a note and a message when the form lead also
-// has a LinkedIn route); none for any other channel.
+// plannedManualSteps is what Draft it would write for a new form, LinkedIn or Instagram lead with
+// nothing drafted (the manual sequence: a form message, then a note and a message when the form lead
+// also has a LinkedIn route; an Instagram lead's one DM); none for any other channel.
 func plannedManualSteps(ctx context.Context, lq leadstore.Queries, lead leadstore.Lead) ([]console.SequenceStep, error) {
 	var channels []string
 	switch lead.Channel {
 	case leadconfig.ChannelLinkedIn:
 		channels = []string{leadconfig.ChannelLinkedIn, leadconfig.ChannelLinkedIn}
+	case leadconfig.ChannelInstagram:
+		channels = []string{leadconfig.ChannelInstagram}
 	case leadconfig.ChannelForm:
 		channels = []string{leadconfig.ChannelForm}
 		routes, err := lq.RoutesFor(ctx, lead.OrgID)

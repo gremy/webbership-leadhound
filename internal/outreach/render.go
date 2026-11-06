@@ -238,19 +238,20 @@ func AgencyEvidenceLine(findingURL, lang string) (string, error) {
 	return fmt.Sprintf(format, host), nil
 }
 
-// DraftKind says which text a draft is: an email step, a contact-form message or a
-// LinkedIn note.
+// DraftKind says which text a draft is: an email step, a contact-form message, a LinkedIn
+// note or message, or an Instagram direct message.
 type DraftKind int
 
-// The draft kinds.
+// The draft kinds. New kinds go last: the values are stable.
 const (
 	DraftEmail DraftKind = iota
 	DraftForm
 	DraftLinkedIn
+	DraftInstagram
 )
 
-// Template is one text to render. An email has a subject, a body and a footer; a form or
-// LinkedIn text has a body only, and may not use the Footer slot.
+// Template is one text to render. An email has a subject, a body and a footer; a form,
+// LinkedIn or Instagram text has a body only, and may not use the Footer slot.
 type Template struct {
 	Kind    DraftKind
 	Subject *template.Template
@@ -271,13 +272,18 @@ func LinkedInTemplate(t *template.Template) Template {
 	return Template{Kind: DraftLinkedIn, Body: t}
 }
 
+// InstagramTemplate is an Instagram direct message (leadconfig.InstagramFile).
+func InstagramTemplate(t *template.Template) Template {
+	return Template{Kind: DraftInstagram, Body: t}
+}
+
 // Draft is one rendered text.
 type Draft struct {
 	Kind    DraftKind
-	Subject string // empty for a form or LinkedIn text
+	Subject string // empty for a form, LinkedIn or Instagram text
 	Body    string // the whole text, footer included
 	// BodyAboveFooter is the copy the word bounds count: the body up to the footer. For a
-	// form or LinkedIn text it equals Body.
+	// form, LinkedIn or Instagram text it equals Body.
 	BodyAboveFooter string
 	// Slots are the values rendered, Footer filled with the rendered footer.
 	Slots Slots

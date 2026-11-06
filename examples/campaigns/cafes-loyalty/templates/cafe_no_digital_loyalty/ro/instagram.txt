@@ -1,0 +1,1 @@
+Bună, sunt {{.SenderName}}. Am construit Demo Loyalty și îl folosesc la cafeneaua mea. E un card de ștampile în Apple Wallet sau Google Wallet, cu numele cafenelei {{.OrgName}}, iar clienții tăi nu au nevoie de nicio aplicație. Răspunde-mi aici și îți trimit cardul demo.

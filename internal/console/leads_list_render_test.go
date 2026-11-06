@@ -161,3 +161,21 @@ func TestLeadListTriagePlaceFilter(t *testing.T) {
 		t.Error("Both is marked as one place type")
 	}
 }
+
+// TestLeadListInstagramChannel: a row reached on Instagram says so beside its other channels, a
+// row with none says what it said before, and an Instagram filter option is offered by its label.
+func TestLeadListInstagramChannel(t *testing.T) {
+	b := richBackend("x")
+	b.list = triageList()
+	b.list.Rows[1].HasEmail, b.list.Rows[1].HasInstagram = true, true
+	b.list.Rows[2].HasLinkedIn = true
+	b.list.Options.Channels = append(b.list.Options.Channels, FilterOption{"instagram", "Instagram account"})
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads?channel=instagram", h.session(t))).Body.String()
+	for _, want := range []string{"email · Instagram", ">LinkedIn<", "no way to reach yet",
+		`name="channel" value="instagram" checked> Instagram account</label>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the list lacks %q", want)
+		}
+	}
+}

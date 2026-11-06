@@ -849,6 +849,7 @@ func TestGenerationChannelKeepsManualOutOfTheGate(t *testing.T) {
 	email := record("", leadstore.PurposeSample)
 	form := record("form", leadstore.PurposeSample)
 	linkedin := record("linkedin", leadstore.PurposeBatch)
+	instagram := record("instagram", leadstore.PurposeBatch)
 
 	if g, err := f.q.GenerationByID(ctx, email); err != nil || g.Channel != "email" {
 		t.Errorf("empty channel stored as %q: %v", g.Channel, err)
@@ -856,7 +857,7 @@ func TestGenerationChannelKeepsManualOutOfTheGate(t *testing.T) {
 	if g, err := f.q.GenerationByID(ctx, form); err != nil || g.Channel != "form" {
 		t.Errorf("form stored as %q: %v", g.Channel, err)
 	}
-	for channel, want := range map[string]int64{"email": email, "form": form, "linkedin": linkedin} {
+	for channel, want := range map[string]int64{"email": email, "form": form, "linkedin": linkedin, "instagram": instagram} {
 		gens, err := f.q.GenerationsForLead(ctx, lead, 1, channel)
 		if err != nil || len(gens) != 1 || gens[0].ID != want {
 			t.Errorf("generations on %s: %+v %v, want %d", channel, gens, err, want)

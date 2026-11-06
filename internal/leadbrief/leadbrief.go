@@ -32,8 +32,8 @@ type Section struct {
 	Other int
 	// Batch is the newest batch awaiting approval, nil when there is none.
 	Batch *BatchReady
-	// ManualWaiting counts the approved contact forms and LinkedIn notes of live batches not
-	// yet marked done; a shadow batch's are never real outreach.
+	// ManualWaiting counts the approved contact forms, LinkedIn notes and Instagram DMs of live
+	// batches not yet marked done; a shadow batch's are never real outreach.
 	ManualWaiting int
 	// Sent and ShadowSent count yesterday's live and shadow emails; Bounced and OptedOut
 	// yesterday's bounces and opt-outs. Yesterday is read in the brief's location.
@@ -117,11 +117,11 @@ func pausedWhy(scope, reason string) string {
 }
 
 // BatchReady is a batch waiting for approval, counted by item channel: first emails (a
-// follow-up is not an item), contact forms and LinkedIn notes.
+// follow-up is not an item), contact forms, LinkedIn notes and Instagram DMs.
 type BatchReady struct {
-	ID                      int64
-	Shadow                  bool // a shadow batch: nothing it holds is ever sent
-	Emails, Forms, LinkedIn int
+	ID                                 int64
+	Shadow                             bool // a shadow batch: nothing it holds is ever sent
+	Emails, Forms, LinkedIn, Instagram int
 }
 
 // ProbeLine is one day's probe numbers: sites checked, those on Drupal, and those by
@@ -238,13 +238,14 @@ func (s *Section) loadBatch(ctx context.Context, q store.DBTX, re string) error 
 		`SELECT b.id, b.shadow,
 		   count(*) FILTER (WHERE m.channel = 'email' AND m.step = 0),
 		   count(*) FILTER (WHERE m.channel = 'form'),
-		   count(*) FILTER (WHERE m.channel = 'linkedin')
+		   count(*) FILTER (WHERE m.channel = 'linkedin'),
+		   count(*) FILTER (WHERE m.channel = 'instagram')
 		 FROM outreach_batch b JOIN outreach_message m ON m.batch_id = b.id
 		 JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 		 WHERE b.approved_at IS NULL AND m.state = 'draft' AND `+keptLead+`
 		 GROUP BY b.id, b.shadow
-		 HAVING count(*) FILTER (WHERE m.channel IN ('form', 'linkedin') OR m.step = 0) > 0
-		 ORDER BY b.id DESC LIMIT 1`, re).Scan(&b.ID, &b.Shadow, &b.Emails, &b.Forms, &b.LinkedIn)
+		 HAVING count(*) FILTER (WHERE m.channel IN ('form', 'linkedin', 'instagram') OR m.step = 0) > 0
+		 ORDER BY b.id DESC LIMIT 1`, re).Scan(&b.ID, &b.Shadow, &b.Emails, &b.Forms, &b.LinkedIn, &b.Instagram)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil
@@ -260,7 +261,7 @@ func (s *Section) loadBatch(ctx context.Context, q store.DBTX, re string) error 
 func (s *Section) loadOutreach(ctx context.Context, q store.DBTX, re string, from, to time.Time) error {
 	if err := q.QueryRow(ctx,
 		`SELECT
-		   count(*) FILTER (WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.state = 'approved' AND m.channel IN ('form', 'linkedin')),
+		   count(*) FILTER (WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.state = 'approved' AND m.channel IN ('form', 'linkedin', 'instagram')),
 		   count(*) FILTER (WHERE NOT b.shadow AND m.state = 'sent' AND m.sent_at >= $2 AND m.sent_at < $3),
 		   count(*) FILTER (WHERE b.shadow AND m.state = 'shadow_sent' AND m.sent_at >= $2 AND m.sent_at < $3),
 		   count(*) FILTER (WHERE NOT b.shadow AND m.state IN ('maybe_sent', 'sending'))

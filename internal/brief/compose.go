@@ -417,7 +417,8 @@ func leadsItems(s leadbrief.Section, day time.Time) (items []string, first strin
 		for _, c := range []struct {
 			n         int
 			one, many string
-		}{{b.Emails, "email", "emails"}, {b.Forms, "form", "forms"}, {b.LinkedIn, "LinkedIn note", "LinkedIn notes"}} {
+		}{{b.Emails, "email", "emails"}, {b.Forms, "form", "forms"}, {b.LinkedIn, "LinkedIn note", "LinkedIn notes"},
+			{b.Instagram, "Instagram DM", "Instagram DMs"}} {
 			if c.n > 0 {
 				parts = append(parts, plural(c.n, c.one, c.many))
 			}
@@ -430,7 +431,7 @@ func leadsItems(s leadbrief.Section, day time.Time) (items []string, first strin
 	}
 	if s.ManualWaiting > 0 {
 		add(fmt.Sprintf("Send %s by hand, then mark each: leadhound leads done <message>",
-			plural(s.ManualWaiting, "contact form or LinkedIn note", "contact forms and LinkedIn notes")),
+			plural(s.ManualWaiting, "contact form, LinkedIn note or Instagram DM", "contact forms, LinkedIn notes and Instagram DMs")),
 			plural(s.ManualWaiting, "manual item", "manual items")+" to send")
 	}
 	if s.CheckByHand > 0 {

@@ -455,6 +455,59 @@ func (q Queries) markWrongNumber(ctx context.Context, messageID, factID, outcome
 // LinkedIn person profile that names none (erasure takes the safe side).
 const personRouteSQL = `(person_id IS NOT NULL OR (kind = 'linkedin' AND value LIKE '%/in/%'))`
 
+// igHandlesOfOrg is every Instagram handle whose rows erasing org orgID removes (Decision 9),
+// sorted, once each, read while its routes still exist: each handle whose latest match names
+// one of its leads (the lead, or a tied candidate), and each handle of its instagram routes
+// unless that handle's latest match names only leads of other orgs (its rows are then theirs)
+// or it is a loyalty or ordering vendor's own account (a café linking its vendor does not hold
+// it: vendorIGHandles, as IGLeadKeys reads them).
+func (q Queries) igHandlesOfOrg(ctx context.Context, orgID int64) ([]string, error) {
+	values, err := collect(ctx, q.db, pgx.RowTo[string],
+		`SELECT value FROM contact_route WHERE org_id = $1 AND kind = 'instagram' ORDER BY id`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	vendors := vendorIGHandles()
+	routeHs := []string{}
+	for _, h := range igHandles(values) {
+		if !vendors[h] {
+			routeHs = append(routeHs, h)
+		}
+	}
+	type latest struct {
+		Handle       string
+		Ours, Others bool
+	}
+	rows, err := collect(ctx, q.db, pgx.RowToStructByPos[latest],
+		`WITH ls AS (SELECT coalesce(array_agg(id), '{}') AS ids FROM lead WHERE org_id = $1),
+		 named AS (SELECT DISTINCT x.handle FROM ig_match x, ls WHERE x.lead_id = ANY(ls.ids) OR x.candidate_ids && ls.ids)
+		 SELECT DISTINCT ON (m.handle) m.handle,
+		   coalesce(m.lead_id = ANY(ls.ids), false) OR m.candidate_ids && ls.ids AS ours,
+		   EXISTS (SELECT 1 FROM unnest(array_append(m.candidate_ids, m.lead_id)) AS c(id)
+		           WHERE c.id IS NOT NULL AND NOT c.id = ANY(ls.ids)) AS others
+		 FROM ig_match m CROSS JOIN ls
+		 WHERE m.handle IN (SELECT handle FROM named) OR m.handle = ANY($2)
+		 ORDER BY m.handle, m.id DESC`, orgID, routeHs)
+	if err != nil {
+		return nil, err
+	}
+	byHandle := make(map[string]latest, len(rows))
+	out := []string{}
+	for _, r := range rows {
+		byHandle[r.Handle] = r
+		if r.Ours {
+			out = append(out, r.Handle)
+		}
+	}
+	for _, h := range routeHs {
+		if r, ok := byHandle[h]; !ok || (!r.Ours && !r.Others) {
+			out = append(out, h)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
 // intactBatchesOf locks every batch holding a message of org orgID (the lock approveBatch takes,
 // so no approval reads a batch half erased) and returns those whose rows still match their
 // stored hash, and whose approved hash, if any, still equals it. A batch that fails either is
@@ -539,6 +592,16 @@ type Forgotten struct {
 	EditsBlanked    int64 // message_edit rows emptied, before and after (the rows stay)
 	EditedEmails    int64 // edited emails whose subject and body were emptied: an email edit moves the message itself
 	ProfileTargets  int64 // form and LinkedIn messages whose target was a person's profile, target emptied
+	IGLeadRoutes    int64 // its leads moved off an Instagram route (route_id NULL, channel none)
+	IGTargets       int64 // its Instagram messages whose target (the profile address) was emptied (the rows stay)
+	IGRoutes        int64 // its instagram contact_route rows deleted
+	IGJudgments     int64 // ig_judgment rows on the profiles below deleted
+	IGHints         int64 // ig_signal_hint rows of its handles deleted
+	IGMatches       int64 // ig_match rows of its handles, and any naming one of its leads, deleted
+	IGReviews       int64 // ig_review_status rows of its handles deleted
+	IGProfiles      int64 // ig_profile rows of its handles (and of accounts read from their following lists) deleted
+	IGFollows       int64 // ig_follow rows of its handles (followed, or the list's owner) deleted
+	IGLeadHints     int64 // other ig_profile rows whose capture named one of its leads, the lead hint cleared (the rows stay)
 	Proposals       int64 // lead_proposal rows whose title became "(erased)" and whose link went (the value stays)
 	ProposalNotes   int64 // lead_proposal_status notes blanked (the rows stay)
 	Sectors         int64 // org_sector rows deleted
@@ -572,11 +635,20 @@ type Forgotten struct {
 // edited email, a form or LinkedIn message's person-profile target, its proposals' titles and
 // links and its status notes, its sectors and its draft requests.
 //
+// Instagram (00031; Decision 9: its routes are the business's own handle, never a person's, so
+// they are not person routes): its leads off its Instagram routes (lead.route_id has no
+// CASCADE), the target of its Instagram messages, its Instagram routes; then, for its handles
+// (igHandlesOfOrg, read before the routes go), every ig_judgment, ig_signal_hint, ig_match,
+// ig_review_status, ig_profile and ig_follow row, and any other ig_match row naming one of its
+// leads and any other capture's lead hint naming one. The domain suppression above keeps the
+// org out of IGLeadKeys, so a later import of a capture still on disk attaches nothing to it.
+//
 // reason says why (at most MaxForgetReason characters, no line break, no @: never a
 // person's address). It returns counts only, and is idempotent: run again (after a backup
 // restore, say), it finds nothing left and counts zero. A missing org is ErrOrgNotFound.
-// The org's other facts (descriptions, social profiles), its routes without a person and its
-// other fetched pages in http_fetch are not touched, nor is the text of an email nobody edited.
+// The org's other facts (descriptions, social profiles: ForgetOrgPages deletes those), its
+// routes without a person but for Instagram's, and its other fetched pages in http_fetch are not
+// touched, nor is the text of an email or a direct message nobody edited.
 func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (Forgotten, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" || utf8.RuneCountInString(reason) > MaxForgetReason || strings.ContainsAny(reason, "\r\n@") {
@@ -647,6 +719,10 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 			}
 			add(s)
 		}
+		igHs, err := tq.igHandlesOfOrg(ctx, orgID)
+		if err != nil {
+			return err
+		}
 		if err := tq.db.QueryRow(ctx, `SELECT count(*) FROM phone_status WHERE fact_id = ANY($1)`, factIDs).
 			Scan(&res.PhoneStatuses); err != nil {
 			return err
@@ -674,6 +750,23 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 			   (SELECT lower(value) FROM contact_route WHERE org_id = $1 AND kind = 'email' AND person_id IS NOT NULL)`, []any{orgID}},
 			{&res.PersonRoutes, `DELETE FROM contact_route WHERE org_id = $1 AND ` + personRouteSQL, []any{orgID}},
 			{&res.People, `DELETE FROM org_person WHERE org_id = $1`, []any{orgID}},
+			// Instagram, in this order: no lead may point at a route about to go, and a
+			// judgment goes before the profile it is on.
+			{&res.IGLeadRoutes, `UPDATE lead SET route_id = NULL, channel = 'none' WHERE org_id = $1 AND route_id IN
+			   (SELECT id FROM contact_route WHERE org_id = $1 AND kind = 'instagram')`, []any{orgID}},
+			{&res.IGTargets, `UPDATE outreach_message SET to_address = ''
+			   WHERE channel = 'instagram' AND to_address <> '' AND lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
+			{&res.IGRoutes, `DELETE FROM contact_route WHERE org_id = $1 AND kind = 'instagram'`, []any{orgID}},
+			{&res.IGJudgments, `DELETE FROM ig_judgment WHERE profile_id IN
+			   (SELECT id FROM ig_profile WHERE handle = ANY($1) OR source_of = ANY($1))`, []any{igHs}},
+			{&res.IGHints, `DELETE FROM ig_signal_hint WHERE handle = ANY($1)`, []any{igHs}},
+			{&res.IGMatches, `DELETE FROM ig_match WHERE handle = ANY($2) OR lead_id IN (SELECT id FROM lead WHERE org_id = $1)
+			   OR candidate_ids && ARRAY(SELECT id FROM lead WHERE org_id = $1)`, []any{orgID, igHs}},
+			{&res.IGReviews, `DELETE FROM ig_review_status WHERE handle = ANY($1)`, []any{igHs}},
+			{&res.IGProfiles, `DELETE FROM ig_profile WHERE handle = ANY($1) OR source_of = ANY($1)`, []any{igHs}},
+			{&res.IGFollows, `DELETE FROM ig_follow WHERE handle = ANY($1) OR list_owner = ANY($1)`, []any{igHs}},
+			{&res.IGLeadHints, `UPDATE ig_profile SET source_lead_id = NULL
+			   WHERE source_lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
 			{&res.EditsBlanked, `UPDATE message_edit SET subject_before = '', body_before = '', subject_after = '', body_after = ''
 			   WHERE (subject_before <> '' OR body_before <> '' OR subject_after <> '' OR body_after <> '') AND message_id IN
 			   (SELECT m.id FROM outreach_message m JOIN lead l ON l.id = m.lead_id WHERE l.org_id = $1)`, []any{orgID}},

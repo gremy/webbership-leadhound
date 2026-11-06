@@ -126,6 +126,14 @@ func TestOutreachSavedGoesToItsCard(t *testing.T) {
 			func(b *fakeBackend) bool { return b.lastAsked == "" && b.n("RequestDraft") == 1 }},
 		{"draft it on LinkedIn", "/leads/5/draft-it", vals("channel", "linkedin"), "/leads/5#drafts",
 			func(b *fakeBackend) bool { return b.lastAsked == ChannelLinkedIn }},
+		{"draft it on Instagram", "/leads/5/draft-it", vals("channel", "instagram"), "/leads/5#drafts",
+			func(b *fakeBackend) bool { return b.lastAsked == ChannelInstagram }},
+		{"add an Instagram account, never tied to a person", "/leads/5/contacts",
+			vals("kind", "instagram", "value", " https://www.instagram.com/brewlane.example/ ", "person_id", "3"), "/leads/5#contacts",
+			func(b *fakeBackend) bool {
+				c := b.lastContact
+				return c.Kind == ContactInstagram && c.Value == "https://www.instagram.com/brewlane.example/" && c.PersonID == 0 && c.Name == ""
+			}},
 		{"discard", "/leads/5/draft-discard", vals("batch_id", "3"), "/leads/5#drafts",
 			func(b *fakeBackend) bool { return b.lastDiscard == 3 }},
 		{"sector", "/leads/5/sector", vals("sector", "education"), "/leads/5#sector",
@@ -171,6 +179,75 @@ func TestOutreachShowsTheLine(t *testing.T) {
 	o.mux.ServeHTTP(page, get("/leads/5", c))
 	if !strings.Contains(page.Body.String(), "Already there; now marked as yours.") {
 		t.Errorf("the backend's line is not on the page")
+	}
+}
+
+// leadPage renders the lead page of o's backend.
+func (o *outreachSite) leadPage(t *testing.T) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	o.mux.ServeHTTP(w, get("/leads/5"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("lead page: %d", w.Code)
+	}
+	return w.Body.String()
+}
+
+// TestOutreachInstagramLead: an Instagram lead's page names its DM, says where to send it, counts
+// it against the DM limit, offers Copy & mark sent, and Mark sent posts the hash it was shown.
+func TestOutreachInstagramLead(t *testing.T) {
+	o := newOutreachSite(t)
+	o.b.detail = richInstagramDetail(o.b.detail, "x")
+	body := o.leadPage(t)
+	for _, want := range []string{
+		"<p>Copy the text, send it as a direct message on Instagram, then mark it sent.</p>",
+		`<a class="btn btn-primary" href="#draft-15">Copy &amp; mark sent</a>`,
+		`<h2 id="draft-title-15">Instagram: Instagram DM</h2>`,
+		`Send it as a direct message to <a href="https://www.instagram.com/brewlane.example/" rel="noopener noreferrer nofollow" target="_blank">`,
+		`<p class="hint">1 of 500 characters</p>`,
+		`data-copy="draft-text-15">Copy</button>`,
+		`action="/leads/5/drafts/15/sent"`, `name="hash" value="cafe01234567"`,
+		`Instagram: <a href="https://www.instagram.com/brewlane.example/"`,
+		`<option value="instagram">Instagram</option>`,
+		"<dt>Reach by</dt><dd>Instagram</dd>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Instagram lead's page lacks %q", want)
+		}
+	}
+	for _, not := range []string{"Send it on", "send it by hand", "of 200 characters", "Connection note", "LinkedIn note"} {
+		if strings.Contains(body, not) {
+			t.Errorf("the Instagram lead's page says %q", not)
+		}
+	}
+	wantSaved(t, o.post("/leads/5/drafts/15/sent", vals("hash", "cafe01234567")), "/leads/5#draft-15")
+	if *o.b.lastSent != (MarkSentRequest{LeadID: 5, MessageID: 15, Hash: "cafe01234567"}) {
+		t.Errorf("mark sent asked %+v", *o.b.lastSent)
+	}
+}
+
+// TestOutreachFormAndLinkedInWordsKept: a LinkedIn lead with a form message keeps exactly its old
+// words, and a DM limit never counts a LinkedIn or form text.
+func TestOutreachFormAndLinkedInWordsKept(t *testing.T) {
+	o := newOutreachSite(t)
+	o.b.detail.DMMax = 500
+	body := o.leadPage(t)
+	for _, want := range []string{
+		"<p>Copy the text, send it by hand, then mark it sent.</p>",
+		`<h2 id="draft-title-9">LinkedIn: Connection note</h2>`, `<h2 id="draft-title-10">LinkedIn: After they accept</h2>`,
+		`<h2 id="draft-title-11">Contact form: Form message</h2>`,
+		`<p class="small">Send it on <a href="https://linkedin.com/company/harbourlane"`,
+		`<p class="small">Send it on <a href="https://harbourlane.example/contact"`,
+		`<p class="hint">1 of 200 characters</p>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the LinkedIn lead's page lacks %q", want)
+		}
+	}
+	for _, not := range []string{"direct message", "of 500 characters", "Instagram DM"} {
+		if strings.Contains(body, not) {
+			t.Errorf("the LinkedIn lead's page says %q", not)
+		}
 	}
 }
 

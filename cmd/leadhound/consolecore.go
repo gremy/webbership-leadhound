@@ -266,7 +266,8 @@ func (b *backend) leadsSummary(ctx context.Context, now time.Time) *console.Lead
 	sum := &console.LeadsSummary{Paused: sec.OperatorPaused, Stopped: sec.Paused, Replies: len(sec.Replies), ManualWaiting: sec.ManualWaiting,
 		CheckByHand: sec.CheckByHand, SentYesterday: sec.Sent, Bounced: sec.Bounced, OptedOut: sec.OptedOut}
 	if bt := sec.Batch; bt != nil {
-		sum.Batch = &console.WaitingBatch{ID: bt.ID, Shadow: bt.Shadow, Emails: bt.Emails, Forms: bt.Forms, LinkedIn: bt.LinkedIn}
+		sum.Batch = &console.WaitingBatch{ID: bt.ID, Shadow: bt.Shadow, Emails: bt.Emails, Forms: bt.Forms, LinkedIn: bt.LinkedIn,
+			Instagram: bt.Instagram}
 	}
 	b.leadsToday(ctx, setup, now, sum)
 	return sum
@@ -592,7 +593,8 @@ func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch,
 		`SELECT b.id, b.shadow, b.created_at, count(DISTINCT m.lead_id)::int,
 		   count(*) FILTER (WHERE m.channel = 'email' AND m.step = 0)::int,
 		   count(*) FILTER (WHERE m.channel = 'form')::int,
-		   count(*) FILTER (WHERE m.channel = 'linkedin')::int
+		   count(*) FILTER (WHERE m.channel = 'linkedin')::int,
+		   count(*) FILTER (WHERE m.channel = 'instagram')::int
 		 FROM outreach_batch b JOIN outreach_message m ON m.batch_id = b.id
 		 WHERE b.approved_at IS NULL AND b.discarded_at IS NULL AND b.account_id = $1
 		 GROUP BY b.id, b.shadow, b.created_at ORDER BY b.id DESC`, leadstore.DefaultAccountID)
@@ -601,7 +603,7 @@ func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch,
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (console.WaitingBatch, error) {
 		var w console.WaitingBatch
-		err := r.Scan(&w.ID, &w.Shadow, &w.CreatedAt, &w.Leads, &w.Emails, &w.Forms, &w.LinkedIn)
+		err := r.Scan(&w.ID, &w.Shadow, &w.CreatedAt, &w.Leads, &w.Emails, &w.Forms, &w.LinkedIn, &w.Instagram)
 		return w, err
 	})
 	if err != nil {
@@ -610,16 +612,16 @@ func waitingBatches(ctx context.Context, db store.DBTX) ([]console.WaitingBatch,
 	return out, nil
 }
 
-// manualItems is the approved contact forms and LinkedIn notes of live batches not yet
-// marked done, oldest first, with the form page for a contact form; one written to a route
-// retired since is left out.
+// manualItems is the approved contact forms, LinkedIn notes and Instagram DMs of live batches not
+// yet marked done, oldest first, with the form page for a contact form and the account for an
+// Instagram DM; one written to a route retired since is left out.
 func manualItems(ctx context.Context, db store.DBTX) ([]console.ManualItem, error) {
 	rows, err := db.Query(ctx,
-		`SELECT m.id, m.batch_id, o.domain, m.channel, CASE WHEN m.channel = 'form' THEN coalesce(r.value, '') ELSE '' END
+		`SELECT m.id, m.batch_id, o.domain, m.channel, CASE WHEN m.channel IN ('form', 'instagram') THEN coalesce(r.value, '') ELSE '' END
 		 FROM outreach_message m JOIN outreach_batch b ON b.id = m.batch_id
 		 JOIN lead l ON l.id = m.lead_id JOIN org o ON o.id = l.org_id
 		 LEFT JOIN contact_route r ON r.id = l.route_id
-		 WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.state = 'approved' AND m.channel IN ('form', 'linkedin')
+		 WHERE NOT b.shadow AND b.approved_at IS NOT NULL AND m.state = 'approved' AND m.channel IN ('form', 'linkedin', 'instagram')
 		   AND NOT `+leadstore.MessageTargetRetiredSQL("m", "o.id")+`
 		 ORDER BY m.id LIMIT $1`, consoleListCap)
 	if err != nil {
@@ -758,6 +760,8 @@ func consoleMessageLabel(m leadstore.Message, n int) string {
 		return fmt.Sprintf("Contact form text · message %d", m.ID)
 	case "linkedin":
 		return fmt.Sprintf("LinkedIn note · message %d", m.ID)
+	case leadconfig.ChannelInstagram:
+		return fmt.Sprintf("Instagram DM · message %d", m.ID)
 	case leadstore.ChannelPhone:
 		return fmt.Sprintf("Step %d of %d · call · message %d", m.Step+1, n, m.ID)
 	}
@@ -1009,7 +1013,7 @@ func (b *backend) approve(ctx context.Context, setup leadsSetup, a console.LeadA
 		msg += fmt.Sprintf(" First emails go from %s, each in its recipient's business hours.", out.FirstDue.In(b.loc).Format("Mon 2 Jan 15:04"))
 	}
 	if len(out.Manual) > 0 {
-		msg += " Its contact forms and LinkedIn notes wait for you on the leads page."
+		msg += " Its contact forms, LinkedIn notes and Instagram DMs wait for you on the leads page."
 	}
 	if out.Shadow {
 		msg += " A shadow batch: nothing is sent, and its leads stay new."
@@ -1128,7 +1132,7 @@ func (b *backend) done(ctx context.Context, id int64) (console.LeadOutcome, erro
 		case RefuseNotManual:
 			return console.LeadOutcome{}, refused("Message %d is an email; sending handles emails.", id)
 		case RefuseMessageState:
-			return console.LeadOutcome{}, refused("Message %d is not an approved contact form or LinkedIn note.", id)
+			return console.LeadOutcome{}, refused("Message %d is not an approved contact form, LinkedIn note or Instagram DM.", id)
 		}
 	}
 	if err != nil {
