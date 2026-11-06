@@ -354,6 +354,12 @@ type CandidateOptions struct {
 	// leads with no route (channel none) whose org has a phone fact: a call-first plan calls
 	// them and emails only the address they give on the call. nil offers none of them.
 	PhoneOnlyCountries []string
+	// HoldIntent leaves out the café leads their loyalty intent holds from sends now
+	// (intentHeldSQL: a Just chose inside its hold, an Out). Only the daily batch's queue
+	// (batchCandidateOptions) and the console's (NextUp) set it; the operator's own acts
+	// (Send now on chosen leads, the draft samples) leave it off. A lead with no intent row
+	// and no call is never held, so it is a no-op for every Drupal lead.
+	HoldIntent bool
 }
 
 // CandidateLeads returns the leads a new batch may draft, of campaign o.CampaignID (0: every
@@ -364,8 +370,9 @@ type CandidateOptions struct {
 // latest (else it waits for RefreshLead), not deferred through o.Today, not in a country
 // the profile excludes, not on a reserved TLD unless o.IncludeReserved (ReservedTLDs;
 // RA25), not of a kind in o.KindsOff, not a site lead left out by o.SkipRankOver, not a
-// roastery held out of café outreach (roasteryHeldSQL), and, with o.StarredOnly, starred. They come starred first, by the operator's position (then id),
-// then the unstarred: those of a type in o.TrustedTypes by relevance (unrated last, every
+// roastery held out of café outreach (roasteryHeldSQL), with o.HoldIntent not held by its loyalty intent (intentHeldSQL), and, with o.StarredOnly, starred. They come starred first, by the operator's position (then id),
+// then the unstarred: by their loyalty intent (intentOrderSQL: rank, then score; every lead
+// with no intent row reads cold, so a Drupal queue's order is unchanged), then those of a type in o.TrustedTypes by relevance (unrated last, every
 // other lead after them), then by their
 // score under the profile (EffectiveProfile over o.Profile, computed in SQL so the limit
 // stays in the database), then by their site's list rank (unranked last), then by id. A
@@ -419,6 +426,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     coalesce(st.action <> 'unstar', false) AS starred,
 		     CASE WHEN st.action <> 'unstar' THEN st.position END AS position,
 		     rv.score AS relevance, `+typeSQL()+` AS rtype,
+		     `+intentRankSQL("it")+` AS intent_rank, it.intent_score,
 		     lower(a.addr) AS laddr, lower(o.domain) AS ldom, lower(split_part(a.addr, '@', 2)) AS sdom, ad.adom
 		   FROM lead l
 		   CROSS JOIN (SELECT $2::jsonb AS pf) pf
@@ -449,6 +457,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     SELECT nullif(lower(split_part(a.addr, '@', 2)), '') AS adom
 		   ) ad
 		   CROSS JOIN LATERAL (SELECT `+scoreSQL+` AS score) sc
+		   CROSS JOIN LATERAL (`+intentJoinSQL+`) it
 		   WHERE l.state = 'new'
 		     AND (l.channel <> 'none' OR (upper(o.country) = ANY($13::text[])
 		       AND EXISTS (SELECT 1 FROM org_fact pfx WHERE pfx.org_id = l.org_id AND pfx.kind = 'phone'
@@ -465,6 +474,7 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		     AND ($11::bigint = 0 OR l.campaign_id = $11::bigint)
 		     AND ($12::text[] IS NULL OR upper(o.country) = ANY($12::text[]))
 		     AND NOT `+roasteryHeldSQL("$10")+`
+		     AND NOT ($14::bool AND `+intentHeldExprSQL("it", "now()")+`)
 		 ), acct AS MATERIALIZED (
 		   SELECT id FROM campaign WHERE account_id = $10
 		 ), reached AS MATERIALIZED (
@@ -501,11 +511,11 @@ func (q Queries) CandidateLeads(ctx context.Context, o CandidateOptions) ([]Cand
 		 FROM c
 		 WHERE lead_id NOT IN (SELECT lead_id FROM blocked)
 		 ORDER BY starred DESC, position, CASE WHEN starred THEN lead_id END,
-		   CASE WHEN rtype = ANY($9::text[]) THEN relevance END DESC NULLS LAST,
+		   `+intentOrderSQL+`CASE WHEN rtype = ANY($9::text[]) THEN relevance END DESC NULLS LAST,
 		   score DESC, list_rank NULLS LAST, lead_id
 		 LIMIT $1`, lim, pf, reservedDomainRE(), o.IncludeReserved, today,
 		kindsOff, o.SkipRankOver, o.StarredOnly, o.TrustedTypes,
-		orAccount(o.AccountID), o.CampaignID, o.Countries, o.PhoneOnlyCountries)
+		orAccount(o.AccountID), o.CampaignID, o.Countries, o.PhoneOnlyCountries, o.HoldIntent)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: candidate leads: %w", err)
 	}

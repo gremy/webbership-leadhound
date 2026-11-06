@@ -696,7 +696,7 @@ func manualQueue(ctx context.Context, lq leadstore.Queries, bs batchSetup, plan 
 	if err != nil {
 		return nil, nil, err
 	}
-	opts.StarredOnly = false
+	opts.StarredOnly, opts.HoldIntent = false, false // the operator chose them: no intent hold
 	opts.CampaignID, opts.AccountID, opts.Countries = campaignID, leadstore.DefaultAccountID, plan.candidateCountries()
 	opts.PhoneOnlyCountries = plan.phoneOnlyCountries()
 	all, err := lq.CandidateLeads(ctx, opts)

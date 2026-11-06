@@ -319,7 +319,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
   The batch, contact research and Draft it units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00032: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch, 00031 Instagram signals and the Instagram channel, 00032 Instagram as a source of the place type).
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00033: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch, 00031 Instagram signals and the Instagram channel, 00032 Instagram as a source of the place type, 00033 loyalty intent: vendor followers, comments and tags, and each café lead's intent class).
   The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches, campaign mailbox assignments, contact marks, people, draft edits, sectors, proof and proposals: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 
@@ -383,14 +383,18 @@ A café's Instagram often says what its website does not: whether there is seati
 LeadHound never reads Instagram itself: no `leads ig` command fetches anything from it.
 The profiles are read in the operator's own logged-in Chrome by a local skill that lives outside this repository, read-only and paced like a person, into a capture file that `leads ig import` reads.
 
-- **The capture file**: JSON lines in the `ig-capture@1` shape: one `profile` record per profile read (name, category, bio, external link, counts, whether it is private, at most 12 captions) and one `following` record per following list read.
-  A following list keeps only the accounts whose handle or name carries a coffee word (`coffee-words@1`, the `instagram.coffee_words` list in `internal/cafe/signals.yaml`).
+- **The capture file**: JSON lines in the `ig-capture@2` shape (an `ig-capture@1` file of profiles and following lists still imports): one `profile` record per profile read (name, category, bio, external link, counts, whether it is private, at most 12 captions) and one `following` record per following list read.
+  Three more reads are of a loyalty vendor's own account: `followers` (the coffee accounts that follow it, at most 5,000), `comments` (its latest 12 posts, each with at most 50 comments by coffee accounts, their text cut to 300 characters, and at most 20 accounts the post tags or @-names) and `tagged` (the coffee accounts whose own posts tag it).
+  A list, its comments and its tags keep only the accounts whose handle or name carries a coffee word (`coffee-words@1`, the `instagram.coffee_words` list in `internal/cafe/signals.yaml`); a comment by any other account is dropped in the page, so its text never leaves the browser.
+  The local reader hands each list read to its own helper as a one-use file in the Downloads folder, which the helper checks, appends to the capture file and deletes.
   Keep capture files in the data dir (`data/instagram/` locally, which git ignores): they hold other businesses' public text and never belong in the repository.
   A record carrying `wall` is where the reader stopped (a login form, a rate limit): the import counts it and stores nothing of it.
   A malformed line is named by its number, never its text, and importing the same file again stores nothing twice.
 - **Import**: `leads ig import FILE [--campaign SLUG] [--decider jev|fake] [--max-calls N] [--dry-run]` stores every profile and following list, matches each to the campaign's café leads (`cafes-loyalty` by default), asks Jev about each profile and fills the review list.
   `--decider` is the fake unless `LEADHOUND_LIVE=1`, and `--decider jev` without it is refused, so an unattended run never reaches Jev; `--dry-run` writes nothing and calls nobody.
-  It prints counts only, never a handle or a name.
+  It prints counts only, never a handle or a name, with one line for the vendor reads: `followers lists n (partial m), touches n (comment a, tag b, mention c, tagged d)`.
+  A followers row is stored with its direction, and each comment, tag, mention or tagged post is a dated touch, stored whatever its account matches, so a later match picks it up by handle.
+  A comment's text is kept only when its account matches a café lead strongly at that import; otherwise the touch keeps only the handle and the date, and a later match does not bring the text back.
 - **Matching**: a profile attaches to a lead only by its handle or by its website, the two strong tiers.
   The handle tier is a handle the lead already holds: its Instagram route, a social link on its site, its homepage probe or its map listing.
   The website tier is a profile whose external link has the lead's own domain; link-in-bio pages, social and messaging hosts, shared platforms and every vendor host in `signals.yaml` are no website.
@@ -436,3 +440,42 @@ The profiles are read in the operator's own logged-in Chrome by a local skill th
   It is picked last, after a form and LinkedIn, and for café campaigns only, so a Drupal lead with an Instagram route never moves to a DM.
   A kind's `<lang>/instagram.txt` template is optional.
   The details are in "Instagram channel" in `deploy/README.md`, and erasure in "Erasure".
+
+#### Loyalty intent
+
+A loyalty vendor's own Instagram says which cafés are shopping for a scheme right now: the ones that follow two vendors, that ask one a price under a post, or that one has just tagged as a new customer.
+LeadHound reads those signals into one class per café lead, under the rules `intent@1`, deterministically, with no model call.
+Only the handles whose latest match is strong or yours count, every one of them a lead holds, and a vendor counts once however many of its handles show it.
+
+- **The seven classes**, in the order a café batch takes them:
+  `shopping` (comparing vendors or asking one), `paper` (runs a paper card or an unnamed scheme), `switch` (already runs a named vendor), `curious` (one vendor followed, a prepaid offer, or a comment that does not ask), `cold` (no signal; a lead with no class reads as cold), `just_chose` (a vendor tagged it in the last 60 days) and `out`.
+- **The rules**, first one that fires wins:
+  1. Your call (`leads intent set`) decides, and its score is the derived one.
+  2. Your own loyalty product seen anywhere (by rule on its profile, on its website, or a touch from your product's account) makes it `out`: already a customer.
+  3. Jev reading its matched profile as not a coffee place makes it `out`.
+  4. A roastery is `out`, ranked last.
+  5. A comment that asks within 90 days makes it `shopping`; a comment asks when it holds a `?` or a whole word from `instagram.question_cues` in `internal/cafe/signals.yaml`.
+  6. A vendor's post tagging or @-naming it, or its own post tagging a vendor, within 60 days makes it `just_chose` until 60 days after that post; past 60 days the same tag makes it `switch` at the next sync.
+     A dated choice outranks the follow-based `shopping` of rule 7, because a café that has just chosen still follows the vendors it compared.
+  7. Following two or more loyalty vendors makes it `shopping`.
+  8. A paper card or an unnamed app or QR code in Jev's read, a scheme with no vendor named, or a website that mentions loyalty with no vendor makes it `paper`.
+  9. A named vendor, from Jev's read, from a link, @-tag or vendor word in its profile, from its website, or from a tag 61 to 365 days old, makes it `switch`; a comment is never use, so it never makes `switch`.
+  10. One vendor followed, a prepaid offer in its bio or captions (`instagram.prepaid_words`), or a comment that does not ask, or one 91 to 365 days old, makes it `curious`.
+  11. Anything else is `cold`.
+- **Freshness and order**: a dated signal older than 365 days is ignored, and one 30 days old or newer weighs double in the score that orders leads inside a class; follows are undated and count as current.
+  The overlap a lead shows is the number of loyalty vendors it follows; ordering vendors and your own product never count.
+  A vendor word (`ig_words`, such as `PICK` for Pick Coupons) counts only as a whole, case-sensitive word beside a loyalty cue (`instagram.loyalty_cues`) in the same bio or caption.
+- **What is held**: a `just_chose` lead until its date passes, and an `out` from your call or from rules 2 and 3 are kept out of café batches and the call queue, and a pending unsent message to a lead that becomes held is cancelled at send, the lead going back to new.
+  A starred lead that is held says why.
+  Your own acts are not held: Send now on leads you chose, and sample drafts, go out whatever the class.
+  A roastery's `out` is not held by intent: the roastery hold and its Controls switch decide whether it is sent.
+- **Where it shows**: the café batch and the Leads list order by class and score after the star keys, so starred leads stay first and Drupal leads, which have no class, keep their order.
+  A café batch build syncs the classes first, so a `just_chose` past its 60 days is released; a sync error stops the build.
+  A café lead's page shows its class, its reason and date (and "your call" when it is yours), and its vendor overlap when there is one; the Leads list marks Shopping, Paper, Just chose, Switch and Out.
+- **When it syncs**: after every `leads ig import` that ends without an interrupt or error (it prints `intent: shopping n, paper n, … (changed n)`, or `run leads intent sync` when it could not), after `leads ig match|unmatch` and the console's It's this lead, after `leads intent set|clear`, before a café batch build, and on the verb.
+  It runs after the place-type sync, because rule 4 reads the place type, and writes a row only where a lead's class changed.
+- **The verbs**:
+  `leads intent report [--campaign SLUG]` counts the campaign's café leads per class, then lists each class in order, one line per lead: `lead <id> · <name> · <town> · @<handle> · overlap <n> · <reason> · <date>`; it writes nothing, so `make remote` runs it free.
+  `leads intent sync [--campaign SLUG] [--dry-run]` writes the derived classes where they changed; a rerun writes nothing, and on `make remote` it needs `CONFIRM=1`, the dry run too.
+  `leads intent set LEAD_ID CLASS [--note TEXT]` is your call on a lead (a `just_chose` call holds it for 60 days), and `leads intent clear LEAD_ID` takes your call back; each then syncs the lead's campaign and needs `CONFIRM=1` on `make remote`.
+  They refuse an unknown class, an unknown lead and a lead that is not a café lead.

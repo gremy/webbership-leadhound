@@ -444,6 +444,9 @@ type sendRun struct {
 	// held is the run's leads held out of café outreach (a roastery while roasteries are off),
 	// read once with the run's rows; nil until then, and sendOne sends nothing while it is nil.
 	held map[int64]bool
+	// intentHeld is the run's messages whose lead its loyalty intent holds now (never a manual
+	// batch's: leadstore.IntentHeldMessages), read with held.
+	intentHeld map[int64]bool
 }
 
 // assignedTo reports whether mailbox mailboxID is assigned to campaign campaignID, as read
@@ -844,6 +847,15 @@ func (r *sendRun) runOrder(ctx context.Context) error {
 		leadIDs = append(leadIDs, row.LeadID)
 	}
 	if r.held, err = r.lq.HeldLeads(ctx, leadIDs); err != nil {
+		return err
+	}
+	// The loyalty intent hold, read the same way: a lead its intent holds now (your Out, a
+	// Just chose) after it was batched goes back to new, its messages cancelled.
+	msgIDs := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		msgIDs = append(msgIDs, row.ID)
+	}
+	if r.intentHeld, err = r.lq.IntentHeldMessages(ctx, msgIDs, now); err != nil {
 		return err
 	}
 	var items, plan []outreach.PlanItem
@@ -1455,6 +1467,9 @@ func (r *sendRun) sendOne(ctx context.Context, id int64, mb *sendMailbox) (attem
 	if r.held[row.LeadID] {
 		return false, r.cancelHeld(ctx, row, label)
 	}
+	if r.intentHeld[row.ID] {
+		return false, r.cancelIntentHeld(ctx, row, label)
+	}
 	// A manual send checks the address once more (amendment 6).
 	if ok, err := r.emailCheck(ctx, row, to, label); err != nil || !ok {
 		return false, err
@@ -1723,6 +1738,36 @@ func (r *sendRun) cancelHeld(ctx context.Context, row leadstore.SendRow, label s
 	}
 	r.printf("Not sent: %s (%s, %s). Switch roasteries on in Controls, or mark it a coffee shop on its row.%s\n",
 		label, row.OrgDomain, leadstore.SkipRoasteryHeld, back)
+	return nil
+}
+
+// cancelIntentHeld holds row's lead by its loyalty intent (leadstore.CancelIntentHeldLead),
+// as cancelHeld holds a roastery: its unsent messages are cancelled with
+// leadstore.SkipIntentHeld, in one transaction with moving a lead with nothing sent back to
+// new, and the run says so.
+func (r *sendRun) cancelIntentHeld(ctx context.Context, row leadstore.SendRow, label string) error {
+	var out leadstore.HeldLeadOutcome
+	hold := func(tq leadstore.Queries) error {
+		var err error
+		out, err = tq.CancelIntentHeldLead(ctx, row.LeadID)
+		return err
+	}
+	var err error
+	if r.s != nil {
+		err = leadsInTx(ctx, r.s.Pool(), hold)
+	} else {
+		err = hold(r.lq)
+	}
+	if err != nil {
+		return err
+	}
+	r.rep.cancelled += out.Cancelled
+	back := ""
+	if out.BackToNew {
+		back = " It is back to new, kept for later."
+	}
+	r.printf("Not sent: %s (%s, %s). Its loyalty intent holds it: leads intent report says why.%s\n",
+		label, row.OrgDomain, leadstore.SkipIntentHeld, back)
 	return nil
 }
 

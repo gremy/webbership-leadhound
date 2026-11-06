@@ -167,7 +167,7 @@
       <div class="lead-card-head">
         <input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick>
         {{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}
-        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{template "roastery_badge" .}}{{with .Reach}} <span class="{{reachBadge .}}">{{reachWords .}}</span>{{end}}</span>
+        <span class="item-head"><a class="cell-main" href="/leads/{{.LeadID}}">{{.Name}}</a>{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{template "roastery_badge" .}}{{template "intent_badge" .}}{{with .Reach}} <span class="{{reachBadge .}}">{{reachWords .}}</span>{{end}}</span>
       </div>
       {{with .Summary}}<p class="lead-summary">{{.}}</p>{{end}}
       <span class="item-meta">{{with siteDomain .Domain}}{{.}} · {{end}}{{with .Country}}{{.}} · {{end}}{{.Kind}}{{with .State}} · {{.}}{{end}}</span>
@@ -208,7 +208,7 @@
     <tr id="lead-w-{{.LeadID}}">
       <td class="col-check"><input class="check" type="checkbox" name="lead" value="{{.LeadID}}" form="send-now-form" aria-label="Choose {{$name}} to send now" data-send-pick></td>
       <td class="star-cell col-star">{{template "lead_star" (leadAct .LeadID (or (and .Starred "unstar") "star") "" $back $name)}}</td>
-      <td class="lead-cell"><a class="cell-main" href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a>{{with siteDomain .Domain}}<span class="cell-sub" title="{{.}}">{{.}}</span>{{end}}{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{template "roastery_badge" .}}{{with .Summary}}<p class="lead-summary" title="{{.}}">{{.}}</p>{{end}}</td>
+      <td class="lead-cell"><a class="cell-main" href="/leads/{{.LeadID}}" title="{{.Name}}">{{.Name}}</a>{{with siteDomain .Domain}}<span class="cell-sub" title="{{.}}">{{.}}</span>{{end}}{{if .SmallSite}} <span class="badge">small site</span>{{end}}{{template "roastery_badge" .}}{{template "intent_badge" .}}{{with .Summary}}<p class="lead-summary" title="{{.}}">{{.}}</p>{{end}}</td>
       <td>{{.Country}}</td>
       <td class="kind-cell">{{.Kind}}{{if not $oneCampaign}}{{with .Campaign}}<span class="cell-sub">{{.}}</span>{{end}}{{end}}</td>
       <td class="finding-cell">{{.Finding}}</td>
@@ -287,3 +287,6 @@
 
 {{/* roastery_badge marks a lead tagged a roastery or online store (a row). */}}
 {{define "roastery_badge"}}{{if eq .PlaceType "roastery"}} <span class="badge badge-warn roastery-badge">roastery</span>{{end}}{{end}}
+
+{{/* intent_badge marks a café lead's loyalty intent for shopping, paper, just chose, switch and out (a row); curious, cold and every other lead show nothing. */}}
+{{define "intent_badge"}}{{with .IntentChip}} <span class="badge{{with $.IntentChipClass}} {{.}}{{end}} intent-badge">{{.}}</span>{{end}}{{end}}

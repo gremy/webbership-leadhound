@@ -257,11 +257,12 @@ func (q Queries) steer(ctx context.Context, leadID int64, action string, until *
 }
 
 // NextUp is the console's queue: CandidateLeads in the order a batch drafts from, at most
-// limit leads (NextUpPage when limit <= 0).
+// limit leads (NextUpPage when limit <= 0), the loyalty intent hold on (HoldIntent), as the
+// batch holds them.
 func (q Queries) NextUp(ctx context.Context, o CandidateOptions, limit int) ([]Candidate, error) {
 	if limit <= 0 {
 		limit = NextUpPage
 	}
-	o.Limit = limit
+	o.Limit, o.HoldIntent = limit, true
 	return q.CandidateLeads(ctx, o)
 }

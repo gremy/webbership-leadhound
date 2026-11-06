@@ -202,6 +202,10 @@ func TestLeadsBatchFollowsStarOrder(t *testing.T) {
 	if got := batchDomains(t, h, cookie, 2); !slices.Equal(got, want) {
 		t.Errorf("batch 2 lists %v, want %v", got, want)
 	}
+	// A Drupal batch never touches loyalty intent: no sync, no row, the order above unchanged.
+	if n := batchCount(t, `SELECT (SELECT count(*) FROM lead_intent) + (SELECT count(*) FROM lead_intent_call)`); n != 0 {
+		t.Errorf("a Drupal batch wrote %d intent rows", n)
+	}
 }
 
 // TestLeadsBatchRefusesIgnoredSettings: while the saved settings fail leads.yaml's checks

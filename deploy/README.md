@@ -1187,7 +1187,7 @@ It adds Instagram signals on café leads and Instagram as a manual channel (READ
 
 | Adds | For |
 | --- | --- |
-| `ig_profile`, `ig_follow` | each imported capture of a profile (a handle no longer there is stored as `missing`), and each coffee account kept from a following list, whose name is kept only when it is matched or on the review list |
+| `ig_profile`, `ig_follow` | each imported capture of a profile (a handle no longer there is stored as `missing`), and each coffee account kept from a following list (and, since migration 00033, from a vendor's followers list, by its `direction`), whose name is kept only when it is matched or on the review list |
 | `ig_match` | what each handle matches: by handle or website (strong), by name (weak), your own call, or nothing; tied leads are kept as its candidates |
 | `ig_judgment` | Jev's and the rules' answers on each profile, with Jev's own choice, its confidence and the input hash |
 | `ig_signal_hint` | weak hints; today only "followed by a loyalty vendor's own account" |
@@ -1231,6 +1231,32 @@ After the deploy, on your yes as for the deploy itself, because it changes which
 
 It makes no Jev call and reads no capture file, so it needs neither `LEADHOUND_LIVE=1` nor the Jev key, and a second run writes nothing.
 From then on every `leads ig import`, `leads ig match` and `unmatch`, and the console's It's this lead keep it current.
+
+## Leads migration 00033
+
+`make deploy` applies it with the new binary, as the owner role, before the binary is put in place.
+It adds loyalty intent on café leads (README "Loyalty intent"):
+
+| Adds | For |
+| --- | --- |
+| `ig_follow.direction` | `following` (the list owner follows the account; every row before 00033) or `followers` (the account follows the list owner); the capture key takes the direction |
+| `ig_vendor_touch` | one dated contact between a vendor's account and another account: a comment on the vendor's post, a tag or @-name in it, or the account's own post tagging the vendor; a comment's text (at most 300 characters) is kept only for an account matched strongly at its import, a name only for a matched or reviewed one |
+| `lead_intent` | each café lead's derived class under `intent@1`, with its overlap, score, reason, signal date and, for `just_chose`, the date it is held until; a row only when the class changes |
+| `lead_intent_call` | your own call on a lead's class (`leads intent set` and `clear`), which wins over the derived one |
+
+All three new tables are append-only for the app role (`leadhound migrate` and `deploy/sql/grants.sql` revoke `UPDATE`, `DELETE` and `TRUNCATE` again after every migrate); only `leads forget`, as the owner, deletes from them.
+The ALTERs on `ig_follow` wait at most 5 seconds for their lock, because every import reads it; deploy again once it is quiet.
+Its Down refuses while any `lead_intent_call`, `ig_vendor_touch` or `followers` row of `ig_follow` exists, because your calls and the vendor reads would be lost; with none, it drops the three tables, restores the old capture key and drops the column.
+
+The deploy itself writes no class, so every café lead reads `cold` until the first sync.
+After the deploy, on your yes as for the deploy itself, because it changes which leads are held and the café batch order:
+
+1. `make remote HOST=… CONFIRM=1 ARGS='leads intent sync'` writes each café lead's class and prints the count per class and how many changed (`--dry-run` says the same and writes nothing; it needs `CONFIRM=1` too).
+2. `make remote HOST=… ARGS='leads intent report'` lists the leads per class; it writes nothing, so it needs no `CONFIRM=1`.
+
+The sync makes no Jev call and reads no capture file, so it needs neither `LEADHOUND_LIVE=1` nor the Jev key, and a second run writes nothing.
+From then on every `leads ig import`, `leads ig match` and `unmatch`, the console's It's this lead, `leads intent set|clear` and each café batch build keep it current.
+Vendor reads come in as `ig-capture@2` capture files, imported as in "Leads migration 00031"; a new vendor in `signals.yaml` changes Jev's `ig_vendor` options, so the next import asks Jev again about every profile with text, within `--max-calls`.
 
 ## LinkedIn and your own contacts
 
@@ -1295,6 +1321,7 @@ Then its proposal titles become `(erased)`, its proposal notes are blanked, and 
 The counts line names each.
 It also erases Instagram (migration 00031), in this order: any lead's use of the organisation's Instagram routes (the lead goes to channel `none`, because `lead.route_id` has no cascade); the target of its Instagram messages (the rows stay); its `instagram` routes.
 Then, for every handle matched to one of its leads and every handle of its routes (a vendor's own account and a handle that names only other organisations' leads excepted), it deletes the `ig_judgment`, `ig_signal_hint`, `ig_match`, `ig_review_status`, `ig_profile` and `ig_follow` rows, the accounts read from that handle's following list included, and any other match naming one of its leads; another capture's lead hint naming one of its leads is cleared.
+Since migration 00033 it also deletes every `ig_vendor_touch` row of those handles (as the touching account or as the vendor's own), and its leads' `lead_intent` and `lead_intent_call` rows.
 The domain suppression keeps the organisation out of every later import's matching, so importing a capture file again attaches nothing to it and writes no route.
 **Capture files are out of the database's reach**: a file under `data/instagram/` on the operator's machine, or one copied to the server for an import, still holds the profile as it was read; delete it by hand, or keep it out of any later import.
 Last it re-hashes each batch those changes reach, because a batch's hash covers every row: `content_sha256` is recomputed, and on an approved batch `approved_hash` moves with it, since the two are one value at approval and the Send now checks refuse a difference.

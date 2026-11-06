@@ -8,7 +8,7 @@ import (
 // HeldLeadOutcome is what CancelHeldLead did to one held lead.
 type HeldLeadOutcome struct {
 	// Cancelled is how many of the lead's unsent messages (draft or approved, follow-ups and
-	// calls included) were cancelled with SkipRoasteryHeld.
+	// calls included) were cancelled with SkipRoasteryHeld (SkipIntentHeld for an intent hold).
 	Cancelled int64
 	// BackToNew is set when the lead was batched with nothing of it ever reached, and moved
 	// back to new so it is kept for later.
@@ -22,8 +22,14 @@ type HeldLeadOutcome struct {
 // unsent follow-ups and calls are cancelled. Run it in one transaction with the caller's read
 // of the hold, so the cancel and the state move land together.
 func (q Queries) CancelHeldLead(ctx context.Context, leadID int64) (HeldLeadOutcome, error) {
+	return q.cancelHeldLead(ctx, leadID, SkipRoasteryHeld)
+}
+
+// cancelHeldLead is CancelHeldLead with the hold's reason: the cancel reason and the
+// lead_event's (CancelIntentHeldLead holds by loyalty intent the same way).
+func (q Queries) cancelHeldLead(ctx context.Context, leadID int64, reason string) (HeldLeadOutcome, error) {
 	var out HeldLeadOutcome
-	n, err := q.CancelPending(ctx, CancelTarget{LeadID: leadID}, SkipRoasteryHeld)
+	n, err := q.CancelPending(ctx, CancelTarget{LeadID: leadID}, reason)
 	if err != nil {
 		return out, fmt.Errorf("leadstore: cancel held lead %d: %w", leadID, err)
 	}
@@ -37,7 +43,7 @@ func (q Queries) CancelHeldLead(ctx context.Context, leadID int64) (HeldLeadOutc
 	if reached {
 		return out, nil
 	}
-	moved, err := q.setLeadStateFrom(ctx, leadID, []string{LeadBatched}, LeadNew, SkipRoasteryHeld, ActorSystem)
+	moved, err := q.setLeadStateFrom(ctx, leadID, []string{LeadBatched}, LeadNew, reason, ActorSystem)
 	if err != nil {
 		return out, fmt.Errorf("leadstore: cancel held lead %d: %w", leadID, err)
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/gremy/webbership-leadhound/internal/intent"
 	"github.com/gremy/webbership-leadhound/internal/leadconfig"
 )
 
@@ -457,6 +458,7 @@ const (
 	StarredRankedOut    = "ranked_out"    // offered, but past the batch's limit or skip_rank_over
 	StarredNotNew       = "not_new"       // already batched, contacted, skipped, ... (Detail: the state)
 	StarredOther        = "other"         // left out for another reason (Detail says which)
+	StarredIntentHeld   = "intent_held"   // held by its loyalty intent (Detail: which; Date: until when)
 )
 
 // StarredStatusOptions shapes StarredStatus: the batch's own CandidateOptions (the account,
@@ -510,6 +512,12 @@ type starredFacts struct {
 	ResearchStatus *string    `db:"research_status"`
 	ResearchAt     *time.Time `db:"research_at"`
 	Held           bool       `db:"held"` // a roastery held out of café outreach (roasteryHeldSQL)
+	// The lead's loyalty intent (intentJoinSQL) and whether it holds the lead now.
+	IntentHeld      bool       `db:"intent_held"`
+	IntentClass     string     `db:"intent_class"`
+	IntentYours     bool       `db:"intent_yours"`
+	IntentReason    string     `db:"intent_reason"`
+	IntentHeldUntil *time.Time `db:"intent_held_until"`
 }
 
 // StarredStatus returns every starred lead of o's account (and campaign, when set) in the
@@ -520,7 +528,8 @@ type starredFacts struct {
 // new, reached, deferred, the country rule (the profile's exclude_countries, then o.Countries),
 // another exclusion (kind not drafted or turned off, a stale probe, a selftest or reserved
 // domain), skip_rank_over, a roastery held out of café outreach (StarredRoasteryWords; its
-// research stays allowed, as a star is the operator's own act), then for a lead with no usable route its research (looking,
+// research stays allowed, as a star is the operator's own act), with o.HoldIntent a lead its
+// loyalty intent holds (StarredIntentHeld: a hold is a filter, so a starred lead is held too), then for a lead with no usable route its research (looking,
 // found nothing) or no email yet. A lead offered past o.Limit is ranked out. Cross-campaign
 // skips (cmd's OpenElsewhere) are not judged here.
 func (q Queries) StarredStatus(ctx context.Context, o StarredStatusOptions) ([]StarredState, error) {
@@ -564,7 +573,9 @@ func (q Queries) StarredStatus(ctx context.Context, o StarredStatusOptions) ([]S
 		         OR nullif(lower(split_part(r2.value, '@', 2)), '') IN (o.domain, nullif(lower(split_part(CASE WHEN r.kind = 'email' THEN r.value END, '@', 2)), '')))
 		   ) AS reached,
 		   rs.status AS research_status, coalesce(rs.finished_at, rs.requested_at) AS research_at,
-		   `+roasteryHeldSQL("$1")+` AS held
+		   `+roasteryHeldSQL("$1")+` AS held,
+		   `+intentHeldExprSQL("it", "now()")+` AS intent_held, it.intent_class, it.intent_yours,
+		   it.intent_reason, it.intent_held_until
 		 FROM lead l
 		 JOIN LATERAL (
 		   SELECT x.action, x.position FROM lead_star x WHERE x.lead_id = l.id ORDER BY x.id DESC LIMIT 1
@@ -582,6 +593,7 @@ func (q Queries) StarredStatus(ctx context.Context, o StarredStatusOptions) ([]S
 		   SELECT cr.status, cr.finished_at, cr.requested_at FROM contact_research cr
 		   WHERE cr.org_id = l.org_id ORDER BY cr.id DESC LIMIT 1
 		 ) rs ON true
+		 CROSS JOIN LATERAL (`+intentJoinSQL+`) it
 		 WHERE ($2::bigint = 0 OR l.campaign_id = $2::bigint)
 		 ORDER BY st.position, l.id`,
 		orAccount(o.AccountID), o.CampaignID, reservedDomainRE(), today)
@@ -596,6 +608,18 @@ func (q Queries) StarredStatus(ctx context.Context, o StarredStatusOptions) ([]S
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// starredIntentHeld is the reason of starred lead f held by its loyalty intent: a Just chose
+// with the day its hold ends, your Out, or a derived Out with its reason.
+func starredIntentHeld(f starredFacts) (string, string, *time.Time) {
+	switch {
+	case f.IntentClass == intent.JustChose:
+		return StarredIntentHeld, "just chose a vendor", f.IntentHeldUntil
+	case f.IntentYours:
+		return StarredIntentHeld, "you marked it Out", nil
+	}
+	return StarredIntentHeld, "Out: " + f.IntentReason, nil
 }
 
 // starredReason names starred lead f's reason (StarredStatus's order).
@@ -646,6 +670,8 @@ func starredReason(f starredFacts, offered map[int64]int, o StarredStatusOptions
 		return StarredRankedOut, fmt.Sprintf("skip_rank_over is %d", o.SkipRankOver), nil
 	case f.Held:
 		return StarredOther, StarredRoasteryWords, nil
+	case o.HoldIntent && f.IntentHeld:
+		return starredIntentHeld(f)
 	case f.Channel != ChannelNone:
 		return StarredOther, "the batch does not offer it", nil // a predicate this list does not name
 	}

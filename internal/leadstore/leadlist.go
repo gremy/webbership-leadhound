@@ -144,6 +144,10 @@ type ListRow struct {
 	ReachReason                 string // why a dead end; LeadDetail leaves ReachCountry to ReachOf
 	Town                        string // a café lead's latest place's locality; "" for every other lead
 	PlaceType                   string // a café lead's effective place type; "" for every other lead
+	// IntentClass is the lead's effective loyalty intent class (intentJoinSQL: the operator's
+	// call, else the latest derived class); cold for a lead with neither, every Drupal lead
+	// included.
+	IntentClass string
 }
 
 // Detail is one lead in full: its list row and everything behind it.
@@ -302,6 +306,9 @@ type listRow struct {
 	ReachReason     string     `db:"reach_reason"`
 	Town            string     `db:"town"`
 	PlaceType       string     `db:"place_type"`
+	IntentClass     string     `db:"intent_class"`
+	IntentRank      int        `db:"intent_rank"`
+	IntentScore     int        `db:"intent_score"`
 	Total           int        `db:"total"`
 }
 
@@ -319,7 +326,7 @@ func (r listRow) row() ListRow {
 			Reason: r.Reason, Language: r.Language, LanguageVia: r.LanguageVia,
 		},
 		CreatedAt: r.CreatedAt, Reach: r.Reach, ReachReason: r.ReachReason,
-		Town: r.Town, PlaceType: r.PlaceType,
+		Town: r.Town, PlaceType: r.PlaceType, IntentClass: r.IntentClass,
 	}
 }
 
@@ -330,7 +337,7 @@ func (r listRow) row() ListRow {
 // latest is listed with its own finding. A site lead is one with a probe. Its relevance is
 // the latest rating under its own type's question (rtype, typeQuestionSQL): a rating under
 // another type's question is not its number. A retired route or phone counts for nothing. No
-// message body is read. Town and place_type are scalar sub-selects in the select list rather
+// message body is read. Town, place_type and the loyalty intent (intentJoinSQL) are scalar sub-selects in the select list rather
 // than joins: this query is pulled up into its caller, so a count that names neither drops
 // them, and a page reads them only for the rows its LIMIT keeps.
 var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS campaign_slug,
@@ -360,7 +367,10 @@ var listRowsSQL = `SELECT l.id AS lead_id, l.org_id, l.campaign_id, cg.slug AS c
 	   coalesce(p.major, 0) AS probe_major, coalesce(p.exact_version, '') AS probe_exact,
 	   rc.reach, ` + reachReasonSQL + ` AS reach_reason,
 	   ` + leadTownSQL + ` AS town,
-	   ` + effectivePlaceTypeSQL + ` AS place_type
+	   ` + effectivePlaceTypeSQL + ` AS place_type,
+	   (SELECT it.intent_class FROM (` + intentJoinSQL + `) it) AS intent_class,
+	   (SELECT ` + intentRankSQL("it") + ` FROM (` + intentJoinSQL + `) it) AS intent_rank,
+	   (SELECT it.intent_score FROM (` + intentJoinSQL + `) it) AS intent_score
 	 FROM lead l
 	 CROSS JOIN (SELECT $1::jsonb AS pf) pf
 	 JOIN org o ON o.id = l.org_id
@@ -477,10 +487,10 @@ func listWhere(conds []string) string {
 // match in all. Filters combine with AND; Kinds, Countries and Channels each match any of
 // their values (a lead with an email, form, LinkedIn or Instagram route or a phone fact for its
 // channels). MinRelevance leaves out the leads never rated. The sorts:
-//   - relevance, c.TrustedTypes set: the leads of a trusted type by relevance (unrated
-//     last), every other lead after them, then points, then list rank (unranked last), then
-//     id;
-//   - relevance, no type trusted: points, then list rank, then id;
+//   - relevance, c.TrustedTypes set: by loyalty intent (intentOrderSQL, as the batch), then
+//     the leads of a trusted type by relevance (unrated last), every other lead after them,
+//     then points, then list rank (unranked last), then id;
+//   - relevance, no type trusted: by loyalty intent, then points, then list rank, then id;
 //   - newest: created, newest first, then id, highest first;
 //   - order: the starred leads only, by position, then id.
 //
@@ -508,6 +518,7 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 		if len(c.TrustedTypes) > 0 {
 			order = trustedOrderSQL(arg(c.TrustedTypes)) + order
 		}
+		order = intentOrderSQL + order // the batch's own place for it: before relevance
 	}
 	where := listWhere(conds)
 	per := f.PerPage
@@ -542,6 +553,15 @@ func (q Queries) LeadList(ctx context.Context, f ListFilter, c ListContext) ([]L
 	}
 	return out, total, nil
 }
+
+// intentOrderSQL is the ORDER BY term that puts leads by their loyalty intent: the class's
+// rank (intentRankSQL: shopping, paper, switch, curious, cold, just chose, out), then the
+// score inside it, higher first, over a row with intent_rank and intent_score. CandidateLeads
+// and the Leads list's default order both place it after the star keys and before the
+// relevance key, so the list reads in the batch's order (leadscore.go's promise). Every lead
+// with no intent row reads cold, 0, so a Drupal order is unchanged. It ends with ", " so the
+// rest of the order follows.
+const intentOrderSQL = "intent_rank, intent_score DESC, "
 
 // trustedOrderSQL is the ORDER BY term that puts the leads of the trusted rating types
 // (the text[] placeholder p) by relevance, unrated ones and every other type's after them,

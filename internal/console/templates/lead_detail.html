@@ -155,6 +155,7 @@
     <div class="card-head"><h2>The place</h2></div>
     <div class="card-body">
     {{template "lead_place_type" $v}}
+    {{template "lead_intent" $d.Intent}}
     {{if not $d.Place}}<p class="muted">No map listing on file.</p>{{end}}
     <dl class="kv">
       {{with $d.Place}}
@@ -229,6 +230,12 @@
         <form method="post" action="/leads/{{$d.LeadID}}/cafe"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm{{if and (not $roast) $mine}} is-current{{end}}"{{if and (not $roast) $mine}} aria-current="true"{{end}}>It's a coffee shop</button></form>
       </div>
     </div>
+{{end}}{{end}}
+
+{{/* lead_intent is a café lead's loyalty intent line (a *LeadIntentView), with its vendor overlap when above 0; nil shows nothing. */}}
+{{define "lead_intent"}}{{with .}}
+    <p class="lead-intent">Loyalty intent: {{.Label}}{{with .Reason}} · {{.}}{{end}}{{with .Date}} · {{.}}{{end}}{{if .Yours}} · your call{{end}}</p>
+    {{if gt .Overlap 0}}<p class="lead-intent-overlap muted small">Vendor overlap: {{.Overlap}}</p>{{end}}
 {{end}}{{end}}
 
 {{/* lead_link shows a URL: a link only when it is http or https, else plain text. */}}

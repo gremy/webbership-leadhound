@@ -307,6 +307,17 @@ func rowExtras(row *console.LeadListRow, state string, x leadstore.RowExtras) {
 	}
 }
 
+// leadIntentView words a café lead's intent row for its page: the date is the signal's,
+// else the sync's ("6 Nov" in loc), "" when it was never synced.
+func leadIntentView(in leadstore.IntentRow, loc *time.Location) *console.LeadIntentView {
+	v := &console.LeadIntentView{Class: in.Class, Label: cmp.Or(console.IntentLabel(in.Class), in.Class),
+		Reason: in.Reason, Overlap: in.Overlap, Yours: in.Yours}
+	if at := cmp.Or(in.SignalAt, in.SyncedAt); at != nil {
+		v.Date = at.In(loc).Format("2 Jan")
+	}
+	return v
+}
+
 // rowSummary is a row's description line: the lead's first description on one line, else its
 // town, category and address and the finding's reason, joined by " · "; "" when it has none.
 // The town is left out when the address already names it (compared without case), so the line
@@ -797,6 +808,9 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 		Reach:    r.Reach, ReachReason: r.ReachReason, Channel: r.Channel,
 		Town: r.Town, PlaceType: r.PlaceType, FindingReason: r.Finding.Reason,
 	}
+	if r.PlaceType != "" { // a café lead; every other lead reads cold and shows no chip
+		row.IntentClass = r.IntentClass
+	}
 	if strings.HasPrefix(row.Name, leadstore.PlaceOrgPrefix) {
 		row.Name = "Lead " + strconv.FormatInt(r.LeadID, 10) // a place's stand-in domain is no name
 	}
@@ -887,6 +901,13 @@ func (b *backend) LeadDetail(ctx context.Context, id int64) (console.LeadDetailP
 		}
 		if p.Instagram, err = b.leadInstagram(ctx, w.cfg, id, p.PlaceType); err != nil {
 			return console.LeadDetailPage{}, err
+		}
+		intents, err := b.lq().LatestIntents(ctx, []int64{id})
+		if err != nil {
+			return console.LeadDetailPage{}, err
+		}
+		if in, ok := intents[id]; ok {
+			p.Intent = leadIntentView(in, b.loc)
 		}
 	}
 	// Every purpose together; 0 (no Claude call on this lead yet) shows nothing.

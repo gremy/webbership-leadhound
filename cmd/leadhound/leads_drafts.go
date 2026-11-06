@@ -231,7 +231,7 @@ func sampleJobs(ctx context.Context, env draftsEnv, n int) ([]draftJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts.StarredOnly = false
+	opts.StarredOnly, opts.HoldIntent = false, false // samples are the operator's own act: no intent hold
 	opts.CampaignID, opts.AccountID, opts.Countries = env.camp.ID, leadstore.DefaultAccountID, env.plan.candidateCountries()
 	cands, err := env.lq.CandidateLeads(ctx, opts)
 	if err != nil {

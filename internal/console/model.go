@@ -481,6 +481,9 @@ type LeadListRow struct {
 	// any other lead, which shows no chip. PlaceTypeSource is who decided the place type
 	// (operator, jev or name), "" when nobody spoke and café is the default.
 	Town, PlaceType, PlaceTypeSource string
+	// IntentClass is a café lead's effective loyalty intent class (an intent class; the
+	// operator's call wins), "" for any other lead. IntentChip words it for the list.
+	IntentClass string
 	// Summary is the row's description line: the lead's first description, or with none its
 	// town, category and address and the finding's reason, joined by " · ". The list fills it.
 	Summary string
@@ -550,7 +553,9 @@ type LeadDetailPage struct {
 	Cafe             *LeadCafeView   // the café finding in words; nil for a lead that is not a café
 	// Instagram is what the café's matched Instagram profile shows; nil for a lead with no
 	// strong or operator match (a weak match never shows its signals) and for every non-café.
-	Instagram   *LeadInstagramView
+	Instagram *LeadInstagramView
+	// Intent is a café lead's loyalty intent line; nil for every other lead.
+	Intent      *LeadIntentView
 	OriginWords string // where the lead was found, in words ("a map listing (Overture)")
 	ReachTitle  string // the heading of what was read about it ("From their site")
 	// SendNowBlock is why Send now cannot send this lead, known from the lead alone (its
@@ -2389,4 +2394,44 @@ type NewProof struct {
 	Title, Line, URL string
 	Sectors          []string
 	Public           bool
+}
+
+// LeadIntentView is a café lead's loyalty intent on its page: the class and its label, the
+// derived reason, the date ("6 Nov": the signal's, else the sync's; "" when never synced), the
+// vendor overlap, and whether the class is the operator's own call.
+type LeadIntentView struct {
+	Class, Label, Reason, Date string
+	Overlap                    int
+	Yours                      bool
+}
+
+// intentLabels words each intent class (intent@1's seven).
+var intentLabels = map[string]string{
+	"shopping": "Shopping", "paper": "Paper card", "just_chose": "Just chose", "switch": "Switch",
+	"curious": "Curious", "cold": "Cold", "out": "Out",
+}
+
+// IntentLabel words an intent class; "" for one it does not know.
+func IntentLabel(class string) string { return intentLabels[class] }
+
+// IntentChip is the list's intent chip: the label for shopping, paper, just chose, switch and
+// out; "" for curious, cold and any other lead, so the list stays calm.
+func (r LeadListRow) IntentChip() string {
+	switch r.IntentClass {
+	case "curious", "cold":
+		return ""
+	}
+	return IntentLabel(r.IntentClass)
+}
+
+// IntentChipClass is the chip's badge modifier, from the existing badge tokens: good for
+// shopping, accent for paper and switch, plain for just chose and out (held from batches).
+func (r LeadListRow) IntentChipClass() string {
+	switch r.IntentClass {
+	case "shopping":
+		return "badge-good"
+	case "paper", "switch":
+		return "badge-accent"
+	}
+	return ""
 }

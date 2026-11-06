@@ -457,6 +457,17 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	if manual {
 		cands, skipped, err = manualQueue(ctx, lq, bs, plan, campaignID, now, req.LeadIDs)
 	} else {
+		// A café batch orders by today's loyalty intent: the sync first, so a Just chose past
+		// its hold is released; a sync that fails stops the batch rather than build on a stale order.
+		if cafePlan(plan) {
+			icfg, err := intentConfigFor(bs.leads)
+			if err != nil {
+				return out, fmt.Errorf("leads batch: intent sync: %w", err)
+			}
+			if _, err := lq.SyncIntent(ctx, icfg, campaignID, now, false); err != nil {
+				return out, fmt.Errorf("leads batch: intent sync: %w", err)
+			}
+		}
 		cands, opts, skipped, elsewhere, err = batchQueue(ctx, lq, bs, plan, campaignID, now)
 	}
 	if err != nil {
@@ -672,6 +683,12 @@ func newBatch(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time
 	return out, nil
 }
 
+// cafePlan reports whether plan drafts café leads: its campaign lists a café kind
+// (leadstore.TypeOf), so its batch syncs, orders and holds by loyalty intent first.
+func cafePlan(plan batchPlan) bool {
+	return slices.ContainsFunc(plan.spec.Kinds, func(k string) bool { return leadstore.TypeOf(k) == leadstore.TypeCafe })
+}
+
 // batchQueue is the queue a batch of campaignID drafts from, with plan: the candidates in
 // the batch's order (batchCandidateOptions with the campaign's own batches_from, countries
 // and phone-only countries) without the leads whose business is in a conversation in another
@@ -733,7 +750,8 @@ func crossCampaignSkips(ctx context.Context, lq leadstore.Queries, campaignID in
 // unless batches_from is starred_then_rest (a campaign spec's own batches_from wins for its
 // batches: newBatch and starredOut set StarredOnly from batchPlan.batchesFrom), without the kinds turned off or the site leads
 // skip_rank_over leaves out, and the unstarred of each rating type by relevance only once that type's relevance
-// passed its trust gate (D9), as the Leads list sorts them. bs.leads is the effective config (leadsOpen
+// passed its trust gate (D9), as the Leads list sorts them, with the loyalty intent hold on
+// (HoldIntent; manualQueue and sampleJobs turn it off, as the operator's own acts). bs.leads is the effective config (leadsOpen
 // and backend.leadsSetup apply the console's saved settings), so batches_from, kinds_off,
 // kinds_priority and skip_rank_over are the values in force, not the file's alone.
 func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSetup, now time.Time) (leadstore.CandidateOptions, error) {
@@ -746,7 +764,7 @@ func batchCandidateOptions(ctx context.Context, lq leadstore.Queries, bs batchSe
 		IncludeReserved: bs.shadow || leadsMail.allowReserved,
 		StarredOnly:     bs.leads.BatchesFrom() == leadconfig.BatchesStarred,
 		KindsOff:        bs.leads.KindsOff, SkipRankOver: bs.leads.SkipRankOver,
-		TrustedTypes: trusted,
+		TrustedTypes: trusted, HoldIntent: true,
 	}, nil
 }
 
@@ -851,6 +869,8 @@ func starredLine(s leadstore.StarredState) string {
 		reason = "ranked out"
 	case leadstore.StarredNotNew:
 		reason = "no longer new"
+	case leadstore.StarredIntentHeld:
+		reason = "held"
 	case starredOpenElsewhere:
 		reason = "open in another campaign"
 	default:
@@ -858,7 +878,7 @@ func starredLine(s leadstore.StarredState) string {
 	}
 	if s.Date != nil {
 		date = plainDate(*s.Date)
-		if s.Reason == leadstore.StarredDeferred {
+		if s.Reason == leadstore.StarredDeferred || s.Reason == leadstore.StarredIntentHeld {
 			date = "until " + date
 		}
 	}
