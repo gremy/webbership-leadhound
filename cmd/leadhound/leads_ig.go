@@ -264,7 +264,7 @@ func igImportCmd(ctx context.Context, args []string) error {
 			im.sum.Records, im.sum.ProfilesNew, im.sum.Unchanged, im.sum.Due, im.sum.Queued, im.sum.RoutesAdded)}
 	switch {
 	case runErr != nil:
-		result.Note += "; " + runErr.Error()
+		result.Note += "; " + runErr.Error() + "; place types not synced"
 	case ctx.Err() != nil:
 		result.Note += "; interrupted; place types not synced"
 	case synced:
@@ -274,6 +274,9 @@ func igImportCmd(ctx context.Context, args []string) error {
 		return errors.Join(runErr, err)
 	}
 	if runErr != nil {
+		// What the run wrote before it stopped stands, so a roastery read it stored may not hold
+		// its lead yet: say how to catch up (an interrupt during a Jev call lands here too).
+		_, _ = fmt.Fprintln(stdout, "  place types from Instagram: not synced; run leads ig place-types")
 		return runErr
 	}
 	printIGImport(stdout, runID, c.Slug, kind, im.maxCalls, setup.jevLeadsDailyCap(), im.sum, lineErrs)
@@ -299,7 +302,7 @@ func igPlaceTypesCmd(ctx context.Context, args []string) error {
 	if len(pos) != 0 {
 		return usageError("%s", igUsage)
 	}
-	lq, _, done, err := igOpen(ctx)
+	lq, done, err := igOpen(ctx)
 	if err != nil {
 		return err
 	}
@@ -1536,7 +1539,7 @@ func igReviewCmd(ctx context.Context, args []string) error {
 	if len(pos) != 0 || (*status != "all" && !slices.Contains(statuses, *status)) {
 		return usageError("%s", igUsage)
 	}
-	lq, _, done, err := igOpen(ctx)
+	lq, done, err := igOpen(ctx)
 	if err != nil {
 		return err
 	}
@@ -1573,16 +1576,16 @@ func igReviewCmd(ctx context.Context, args []string) error {
 }
 
 // igOpen opens the database for the review list and the operator's calls.
-func igOpen(ctx context.Context) (leadstore.Queries, store.DBTX, func(), error) {
+func igOpen(ctx context.Context) (leadstore.Queries, func(), error) {
 	cfg, err := loadConfig("LEADHOUND_DATABASE_URL")
 	if err != nil {
-		return leadstore.Queries{}, nil, nil, err
+		return leadstore.Queries{}, nil, err
 	}
 	s, err := store.Open(ctx, cfg.DatabaseURL.Reveal(), appName())
 	if err != nil {
-		return leadstore.Queries{}, nil, nil, err
+		return leadstore.Queries{}, nil, err
 	}
-	return leadstore.NewQueries(s.Pool()), s.Pool(), s.Close, nil
+	return leadstore.NewQueries(s.Pool()), s.Close, nil
 }
 
 // igKnown reports whether handle has been seen in a capture: a profile or a following list.
@@ -1748,7 +1751,7 @@ func igOperatorMatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 		}
 	}
 	if sync, err = lq.SyncIGPlaceTypes(ctx, false); err != nil {
-		return "", false, sync, err
+		return "", false, sync, fmt.Errorf("@%s is matched to lead %d, but its place type is not synced yet (run leads ig place-types): %w", handle, leadID, err)
 	}
 	return handle, routeAdded, sync, nil
 }
@@ -1809,7 +1812,7 @@ func igOperatorUnmatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Po
 		back = true
 	}
 	if sync, err = lq.SyncIGPlaceTypes(ctx, false); err != nil {
-		return "", false, sync, err
+		return "", false, sync, fmt.Errorf("@%s is unmatched, but place types are not synced yet (run leads ig place-types): %w", handle, err)
 	}
 	return handle, back, sync, nil
 }
