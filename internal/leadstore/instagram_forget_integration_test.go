@@ -72,13 +72,34 @@ func TestForgetOrgInstagram(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.q.InsertIGFollows(ctx, "stampino.app", at, igSHA(0xf1), []leadstore.IGFollowRow{
+	if _, err := f.q.InsertIGFollows(ctx, "stampino.app", leadstore.IGFollowing, at, igSHA(0xf1), []leadstore.IGFollowRow{
 		{Handle: "gone_cafe.example", FullName: "Cafe Gone Exemplu"}, {Handle: "keep_cafe.example"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.q.InsertIGFollows(ctx, "gone_cafe.example", at, igSHA(0xf2), []leadstore.IGFollowRow{{Handle: "gone_friend.example"}}); err != nil {
+	if _, err := f.q.InsertIGFollows(ctx, "gone_cafe.example", leadstore.IGFollowing, at, igSHA(0xf2), []leadstore.IGFollowRow{{Handle: "gone_friend.example"}}); err != nil {
 		t.Fatal(err)
 	}
+	// 00033: the erased café on the vendor's followers list; its comment on the vendor's post;
+	// a touch where it is the vendor (its own post tagging another account); the kept café's
+	// comment, which stays; a class and a call of yours on each lead.
+	if _, err := f.q.InsertIGFollows(ctx, "stampino.app", leadstore.IGFollowers, at, igSHA(0xf3), []leadstore.IGFollowRow{
+		{Handle: "gone_cafe.example"}, {Handle: "keep_cafe.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.q.InsertIGTouches(ctx, "stampino.app", at, igSHA(0xf4), []leadstore.IGTouch{
+		{Handle: "gone_cafe.example", Kind: leadstore.IGTouchComment, Ref: "c100", PostCode: "PostGone", At: at, Text: "Cat costa?"},
+		{Handle: "keep_cafe.example", Kind: leadstore.IGTouchComment, Ref: "c101", PostCode: "PostGone", At: at}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.q.InsertIGTouches(ctx, "gone_cafe.example", at, igSHA(0xf5), []leadstore.IGTouch{
+		{Handle: "gone_tagfan.example", Kind: leadstore.IGTouchUsertag, Ref: "OwnGone", PostCode: "OwnGone", At: at}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []int64{gone, keep} {
+		f.ownerRun(t, `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'curious', 1, 1, 'commented on a vendor post')`, l)
+		f.ownerRun(t, `INSERT INTO lead_intent_call (lead_id, class, actor) VALUES ($1, 'paper', 'gremy')`, l)
+	}
+
 	match := func(m leadstore.IGMatch) {
 		t.Helper()
 		if m.Actor == "" {
@@ -103,7 +124,7 @@ func TestForgetOrgInstagram(t *testing.T) {
 	}
 
 	erased := []string{"gone_cafe.example", "gone_route.example", "gone_tie.example", "gone_name.example", "gone_friend.example",
-		"hinted.example"}
+		"hinted.example", "gone_tagfan.example"}
 	before := dumpLeadTables(t, f.owner)
 	for _, h := range erased {
 		if !strings.Contains(before, h) {
@@ -123,9 +144,34 @@ func TestForgetOrgInstagram(t *testing.T) {
 		got.IGMatches, got.IGReviews, got.IGProfiles, got.IGFollows, got.IGLeadHints}
 	// Routes: gone_cafe, gone_route and the vendor's. Matches: gone_cafe, the tie, gone_name and
 	// gone_old's old row. Profiles: the four erased handles', friend's and hinted's. Follows: the
-	// vendor's row of gone_cafe and gone_cafe's own list. Lead hints: hinted_other's.
-	if want := [10]int64{1, 1, 3, 2, 1, 4, 2, 6, 2, 1}; ig != want {
+	// vendor's following row and its followers row of gone_cafe, and gone_cafe's own list. Lead
+	// hints: hinted_other's.
+	if want := [10]int64{1, 1, 3, 2, 1, 4, 2, 6, 3, 1}; ig != want {
 		t.Errorf("instagram counts = %v, want %v (%+v)", ig, want, got)
+	}
+	// Touches: gone_cafe's comment, and its own post's tag of gone_tagfan. One class, one call.
+	if in := [3]int64{got.IGTouches, got.Intents, got.IntentCalls}; in != [3]int64{2, 1, 1} {
+		t.Errorf("touch and intent counts = %v, want [2 1 1]", in)
+	}
+	// The sweep over the four 00033 tables: none names the erased org's handles or leads.
+	for _, c := range []struct {
+		what string
+		sql  string
+	}{
+		{"ig_follow rows (either direction)", `SELECT count(*) FROM ig_follow WHERE handle = ANY($1) OR list_owner = ANY($1)`},
+		{"ig_vendor_touch rows", `SELECT count(*) FROM ig_vendor_touch WHERE handle = ANY($1) OR vendor_handle = ANY($1)`},
+	} {
+		if n := ownerInt(t, f.owner, c.sql, erased); n != 0 {
+			t.Errorf("%s naming the erased handles: %d, want 0", c.what, n)
+		}
+	}
+	for _, tb := range []string{"lead_intent", "lead_intent_call"} {
+		if n := ownerInt(t, f.owner, `SELECT count(*) FROM `+tb+` WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, goneOrg); n != 0 {
+			t.Errorf("%s rows of the erased org's leads: %d, want 0", tb, n)
+		}
+		if n := ownerInt(t, f.owner, `SELECT count(*) FROM `+tb+` WHERE lead_id = $1`, keep); n != 1 {
+			t.Errorf("%s rows of the kept lead: %d, want 1", tb, n)
+		}
 	}
 
 	after := dumpLeadTables(t, f.owner)
@@ -170,7 +216,8 @@ func TestForgetOrgInstagram(t *testing.T) {
 	}{
 		{"kept and vendor profiles", `SELECT count(*) FROM ig_profile WHERE handle IN ('keep_cafe.example', 'stampino.app', 'hinted_other.example', 'gone_old.example')`, 4},
 		{"kept matches", `SELECT count(*) FROM ig_match WHERE handle IN ('keep_cafe.example', 'gone_old.example', 'hinted_other.example')`, 3},
-		{"kept follow", `SELECT count(*) FROM ig_follow WHERE list_owner = 'stampino.app' AND handle = 'keep_cafe.example'`, 1},
+		{"kept follows", `SELECT count(*) FROM ig_follow WHERE list_owner = 'stampino.app' AND handle = 'keep_cafe.example'`, 2},
+		{"kept touch", `SELECT count(*) FROM ig_vendor_touch WHERE vendor_handle = 'stampino.app' AND handle = 'keep_cafe.example'`, 1},
 		{"kept judgment", `SELECT count(*) FROM ig_judgment j JOIN ig_profile p ON p.id = j.profile_id WHERE p.handle = 'keep_cafe.example'`, 1},
 		{"kept hint", `SELECT count(*) FROM ig_signal_hint WHERE handle = 'keep_cafe.example'`, 1},
 		{"kept review", `SELECT count(*) FROM ig_review_status WHERE handle = 'gone_old.example'`, 1},
@@ -209,5 +256,8 @@ func TestForgetOrgInstagram(t *testing.T) {
 	if ig := [10]int64{again.IGLeadRoutes, again.IGTargets, again.IGRoutes, again.IGJudgments, again.IGHints,
 		again.IGMatches, again.IGReviews, again.IGProfiles, again.IGFollows, again.IGLeadHints}; ig != [10]int64{} {
 		t.Errorf("a second run counts %v, want zero", ig)
+	}
+	if in := [3]int64{again.IGTouches, again.Intents, again.IntentCalls}; in != [3]int64{} {
+		t.Errorf("a second run counts touches and intents %v, want zero", in)
 	}
 }

@@ -18,8 +18,20 @@
 #   with every accent mark dropped. The /ig-signals skill's snippets carry the same list under a
 #   contract test, so change both together. "barista" is left out: it names people (a barista's
 #   own account), and a kept account's name is stored.
+# vendors[].ig_words: words that name a loyalty vendor on Instagram with no @-tag or link (Toto
+#   Café's "PICK"). A word counts only as a whole word, case-sensitive, and only when the same
+#   bio or caption also holds a word starting with one of instagram.loyalty_cues ("via word").
+# instagram.loyalty_cues: lower-case ASCII word starts, matched against the bio or caption with
+#   accents dropped and lower case (so "recompens" catches "recompensă", "reward" "rewards").
+# instagram.prepaid_words: a prepaid offer (a coffee subscription or bundle) in the bio or a
+#   caption; whole words, accents dropped, lower case.
+# instagram.question_cues: a comment that asks (price, info, a demo); whole words, accents
+#   dropped, lower case. A "?" in a comment counts too (the intent rules apply that).
 instagram:
   coffee_words: [cafe, caffe, coffee, cafea, cafenea, kafe, kaffee, espresso, roast, prajit, brew, specialty, speciality]
+  loyalty_cues: [partener, partner, puncte, points, recompens, reward, fidelitate, loyalty, card, aplicati, app, cupon, coupon]
+  prepaid_words: [abonament, subscription, prepaid, preplatit, bundle]
+  question_cues: [cat, pret, pretul, price, cost, costa, info, detalii, details, dm, cum, how, demo, oferta]
 
 place_words:
   roastery:
@@ -37,9 +49,10 @@ vendors:
   - {id: stampino, name: Stampino, kind: loyalty, match: [stampino.ro, instagram.com/stampino.app]}
   - {id: loyalzoo, name: Loyalzoo, kind: loyalty, match: [loyalzoo.com, mylty.co]}
   - {id: rewardly, name: Rewardly, kind: loyalty, match: [rewardly.me, rewardly.app]}
-  - {id: cardora, name: Cardora, kind: loyalty, match: [cardora.ro]}
+  - {id: cardora, name: Cardora, kind: loyalty, match: [cardora.ro, instagram.com/cardora.ro]}
   - {id: tap2, name: Tap2, kind: loyalty, match: [tap2.ai, tap2.ch, tap2.es, tap2pay.ai]}
-  - {id: pick-coupons, name: Pick Coupons, kind: loyalty, match: [pick.coupons, instagram.com/pick.coupons]}
+  - {id: pick-coupons, name: Pick Coupons, kind: loyalty, match: [pick.coupons, instagram.com/pick.coupons], ig_words: [PICK]}
+  - {id: tuanis, name: Tuanis, kind: loyalty, match: [tuanis.eu, instagram.com/tuanis.eu]}
   - {id: loopy, name: Loopy Loyalty, kind: loyalty, match: [loopyloyalty.com]}
   - {id: boomerangme, name: Boomerangme, kind: loyalty, match: [boomerangme.cards, boomerangme.com]}
   - {id: passkit, name: PassKit, kind: loyalty, match: [passkit.com, passkit.io, pskt.io]}

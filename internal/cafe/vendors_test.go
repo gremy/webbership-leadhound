@@ -45,3 +45,46 @@ func TestDetectStampinoInstagram(t *testing.T) {
 		t.Fatalf("look-alike account: %+v", r)
 	}
 }
+
+// TestInstagramListsDecided pins D7's Instagram lists and vendor words as decided.
+func TestInstagramListsDecided(t *testing.T) {
+	ig := DefaultConfig().Instagram
+	for _, c := range []struct {
+		key       string
+		got, want []string
+	}{
+		{"loyalty_cues", ig.LoyaltyCues, []string{"partener", "partner", "puncte", "points", "recompens", "reward", "fidelitate", "loyalty", "card", "aplicati", "app", "cupon", "coupon"}},
+		{"prepaid_words", ig.PrepaidWords, []string{"abonament", "subscription", "prepaid", "preplatit", "bundle"}},
+		{"question_cues", ig.QuestionCues, []string{"cat", "pret", "pretul", "price", "cost", "costa", "info", "detalii", "details", "dm", "cum", "how", "demo", "oferta"}},
+		{"pick-coupons ig_words", DefaultConfig().Vendor("pick-coupons").IGWords, []string{"PICK"}},
+	} {
+		if !slices.Equal(c.got, c.want) {
+			t.Errorf("%s = %q, want %q", c.key, c.got, c.want)
+		}
+	}
+	if v := DefaultConfig().Vendor("tuanis"); v == nil || v.Name != "Tuanis" || v.Kind != SigLoyalty ||
+		!slices.Equal(v.Match, []string{"tuanis.eu", "instagram.com/tuanis.eu"}) {
+		t.Errorf("tuanis: %+v", v)
+	}
+	if !slices.Contains(DefaultConfig().Vendor("cardora").Match, "instagram.com/cardora.ro") {
+		t.Error("cardora: no instagram.com/cardora.ro")
+	}
+}
+
+// TestParseConfigRefusesInstagramWords: a cue that is not one lower-case ASCII word, a
+// repeat, or an ig_words entry that is not one word, or sits on a non-loyalty vendor.
+func TestParseConfigRefusesInstagramWords(t *testing.T) {
+	for _, y := range []string{
+		"instagram: {loyalty_cues: [Card]}",
+		"instagram: {prepaid_words: [bundle, bundle]}",
+		"instagram: {question_cues: [preț]}",
+		"instagram: {question_cues: [how much]}",
+		"vendors: [{id: a, kind: loyalty, match: [a.example], ig_words: [PI CK]}]",
+		"vendors: [{id: a, kind: loyalty, match: [a.example], ig_words: [PICK, PICK]}]",
+		"vendors: [{id: a, kind: ordering, match: [a.example], ig_words: [PICK]}]",
+	} {
+		if _, err := ParseConfig([]byte(y)); err == nil {
+			t.Errorf("%q: accepted", y)
+		}
+	}
+}

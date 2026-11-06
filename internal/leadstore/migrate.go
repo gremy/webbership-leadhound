@@ -109,7 +109,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // content_sha256 for an email edit before approval, and the new outreach_batch.origin,
 // contact_route.person_id and draft_generation.channel columns are fixed at insert (00029);
 // lead_place_type and roastery_outreach_switch are append-only (00030), and so are ig_profile,
-// ig_follow, ig_match, ig_judgment, ig_signal_hint and ig_review_status (00031). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// ig_follow, ig_match, ig_judgment, ig_signal_hint and ig_review_status (00031), and so
+// are ig_vendor_touch, lead_intent and lead_intent_call, and the new ig_follow.direction column is
+// fixed at insert (00033). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -345,6 +347,15 @@ BEGIN
   END IF;
   IF to_regclass('public.ig_review_status') IS NOT NULL THEN
     REVOKE UPDATE ON public.ig_review_status FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.ig_vendor_touch') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_vendor_touch FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_intent') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_intent FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_intent_call') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_intent_call FROM leadhound_app;
   END IF;
 END
 $$`

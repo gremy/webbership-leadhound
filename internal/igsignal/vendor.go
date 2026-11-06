@@ -2,7 +2,9 @@ package igsignal
 
 import (
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/enrich"
@@ -13,6 +15,7 @@ const (
 	VendorViaLink = "link" // the profile's external link
 	VendorViaBio  = "bio"  // a web address written in the bio
 	VendorViaTag  = "tag"  // an @-tag in the bio or a caption
+	VendorViaWord = "word" // a vendor's ig_words beside a loyalty cue in the bio or a caption
 )
 
 var (
@@ -26,7 +29,8 @@ var (
 // Vendor is the loyalty vendor a profile shows by rule, from signals.yaml's loyalty vendors
 // in cfg (nil: cafe.DefaultConfig; pass the copy WithOwnVendor made to see the operator's own
 // product): its external link, then each web address in its bio, then each @-tag in its bio
-// and captions, each tested against every vendor's hosts and Instagram account. The first
+// and captions, each tested against every vendor's hosts and Instagram account, then each
+// vendor's ig_words in a bio or caption that also holds a loyalty cue (wordVendors). The first
 // vendor seen is the answer, except that the own vendor anywhere wins (the café is a
 // customer). ok is false when none is seen. A rule vendor outranks Jev's ig_vendor answer.
 func Vendor(p Profile, cfg *cafe.Config) (id, via string, ok bool) {
@@ -62,6 +66,12 @@ func Vendor(p Profile, cfg *cafe.Config) (id, via string, ok bool) {
 			}
 		}
 	}
+	for _, text := range append([]string{p.Bio}, p.Captions...) {
+		for _, id := range wordVendors(text, cfg) {
+			v := cfg.Vendor(id)
+			hits = append(hits, hit{v.ID, VendorViaWord, v.Own})
+		}
+	}
 	for _, h := range hits {
 		if h.own {
 			return h.id, h.via, true // nothing outranks the own vendor
@@ -81,4 +91,72 @@ func webAddress(s string) string {
 		s = "https://" + s
 	}
 	return s
+}
+
+// wordVendors are the loyalty vendors one text names by their ig_words: a word counts only
+// as a whole word, case-sensitive ("PICK", never "pick up"), and only when the same text also
+// holds a word that starts with one of instagram.loyalty_cues (folded: "Partener", "recompensă").
+func wordVendors(text string, cfg *cafe.Config) []string {
+	raw := words(text)
+	if len(raw) == 0 || !hasCue(text, cfg.Instagram.LoyaltyCues) {
+		return nil
+	}
+	var ids []string
+	for _, v := range cfg.Vendors {
+		if v.Kind != cafe.SigLoyalty {
+			continue
+		}
+		for _, w := range v.IGWords {
+			if slices.Contains(raw, w) {
+				ids = append(ids, v.ID)
+				break
+			}
+		}
+	}
+	return ids
+}
+
+// hasCue reports whether a word of the folded text starts with one of cues.
+func hasCue(text string, cues []string) bool {
+	for _, w := range words(fold(text)) {
+		for _, c := range cues {
+			if strings.HasPrefix(w, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Prepaid reports whether a profile shows a prepaid offer: a whole word of
+// instagram.prepaid_words in its bio or a caption, accents dropped and lower case
+// (cfg nil: cafe.DefaultConfig).
+func Prepaid(p Profile, cfg *cafe.Config) bool {
+	if cfg == nil {
+		cfg = cafe.DefaultConfig()
+	}
+	for _, text := range append([]string{p.Bio}, p.Captions...) {
+		if HasWord(text, cfg.Instagram.PrepaidWords) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasWord reports whether text holds one of list as a whole word, both sides read with every
+// accent mark dropped and lower case ("Cât costă?" holds "cat" and "costa"). Words are runs of
+// letters and digits. The list's words are expected folded already (signals.yaml's
+// instagram lists are lower-case ASCII).
+func HasWord(text string, list []string) bool {
+	for _, w := range words(fold(text)) {
+		if slices.Contains(list, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// words are text's runs of letters and digits, as written.
+func words(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 }

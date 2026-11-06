@@ -32,7 +32,7 @@ import (
 
 func init() { leadsCommands["ig"] = runLeadsIG }
 
-const igUsage = "usage: leadhound leads ig import FILE [--campaign SLUG] [--decider jev|fake] [--max-calls N] [--dry-run]" +
+const igUsage = "usage: leadhound leads ig import FILE (ig-capture@1|@2) [--campaign SLUG] [--decider jev|fake] [--max-calls N] [--dry-run]" +
 	" | report [--campaign SLUG] | lookups [--campaign SLUG] [--place-type roastery|unclear|any] [--name-word]" +
 	" | review [--status new|dismissed|matched|wanted|all] | match HANDLE LEAD_ID | unmatch HANDLE | dismiss HANDLE | want HANDLE" +
 	" | place-types [--dry-run]"
@@ -132,7 +132,10 @@ type igSummary struct {
 	StopReason                             string
 	Queued, MarkedMatched, RoutesAdded     int
 	RuleVendors                            int
-	ProfilesWithText, WouldAsk, Unreadable int // dry run only
+	FollowerLists, FollowerListsPartial    int
+	FollowersNew, TouchesNew               int
+	Touches                                map[string]int // touches read, by kind (leadstore.IGTouch*)
+	ProfilesWithText, WouldAsk, Unreadable int            // dry run only
 }
 
 // igPending is a profile's match waiting for its review decision, made once every profile of
@@ -166,8 +169,8 @@ type igImporter struct {
 	inARow    int
 }
 
-// igImportCmd is `leads ig import FILE`: it reads a capture file (ig-capture@1), stores every
-// profile and following list in it, matches each to the campaign's café leads, asks Jev about
+// igImportCmd is `leads ig import FILE`: it reads a capture file (ig-capture@1 or @2), stores
+// every profile, following and followers list, comment and tag in it (D9), matches each to the campaign's café leads, asks Jev about
 // each profile with text (one call, three questions, skipped when the input is unchanged),
 // writes an instagram route on a strong match the lead's org lacks, and queues the review
 // list. A record with a wall is counted and nothing of it is stored. Then it syncs each café
@@ -405,7 +408,7 @@ func newIGImporter(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, 
 		return nil, err
 	}
 	im := &igImporter{lq: lq, db: db, leads: leads, cfg: cfg, matcher: igsignal.NewMatcher(cfg, keys), keys: map[int64]leadstore.IGLeadKey{},
-		status: map[string]string{}, notCoffee: map[string]string{}, pending: map[string]igPending{}, sum: igSummary{ByTier: map[string]int{}}}
+		status: map[string]string{}, notCoffee: map[string]string{}, pending: map[string]igPending{}, sum: igSummary{ByTier: map[string]int{}, Touches: map[string]int{}}}
 	for _, k := range keys {
 		im.keys[k.LeadID] = k
 	}
@@ -417,6 +420,23 @@ func newIGImporter(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, 
 		case r.Following != nil:
 			handles = append(handles, r.Following.Of)
 			for _, k := range r.Following.Kept {
+				handles = append(handles, k.Handle)
+			}
+		case r.Followers != nil:
+			for _, k := range r.Followers.Kept {
+				handles = append(handles, k.Handle)
+			}
+		case r.Comments != nil:
+			for _, p := range r.Comments.Posts {
+				for _, c := range p.Comments {
+					handles = append(handles, c.Handle)
+				}
+				for _, tg := range p.Tags {
+					handles = append(handles, tg.Handle)
+				}
+			}
+		case r.Tagged != nil:
+			for _, k := range r.Tagged.Kept {
 				handles = append(handles, k.Handle)
 			}
 		}
@@ -437,9 +457,10 @@ func newIGImporter(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, 
 // run is one import: the profiles first (stored and judged), then matched once every one is
 // judged (a strong match attaches only on the place call this import leaves standing), their
 // review decisions, then the following lists, whose accounts a profile read (now or before)
-// leaves to that profile.
+// leaves to that profile, then the vendors' followers lists, comments and tagged posts (D9),
+// whose accounts are matched the same way.
 func (im *igImporter) run(ctx context.Context, recs []igsignal.Record) error {
-	var lists, read []igsignal.Record
+	var lists, vendorReads, read []igsignal.Record
 	for _, r := range recs {
 		im.sum.Records++
 		if r.Wall() != "" {
@@ -448,6 +469,10 @@ func (im *igImporter) run(ctx context.Context, recs []igsignal.Record) error {
 		}
 		if r.Following != nil {
 			lists = append(lists, r)
+			continue
+		}
+		if r.Profile == nil {
+			vendorReads = append(vendorReads, r)
 			continue
 		}
 		if err := im.profile(ctx, r); err != nil {
@@ -468,6 +493,20 @@ func (im *igImporter) run(ctx context.Context, recs []igsignal.Record) error {
 	}
 	for _, r := range lists {
 		if err := im.following(ctx, r); err != nil {
+			return err
+		}
+	}
+	for _, r := range vendorReads {
+		var err error
+		switch {
+		case r.Followers != nil:
+			err = im.followers(ctx, r)
+		case r.Comments != nil:
+			err = im.comments(ctx, r)
+		case r.Tagged != nil:
+			err = im.tagged(ctx, r)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -984,34 +1023,147 @@ func (im *igImporter) following(ctx context.Context, rec igsignal.Record) error 
 		im.sum.ListsPartial++
 	}
 	im.sum.Kept += len(f.Kept)
-	handles := make([]string, len(f.Kept))
-	for i, k := range f.Kept {
+	vendorOwner := im.matcher.MatchFollow(igsignal.Follow{Handle: f.Of}).VendorAccount
+	rows, err := im.followRows(ctx, f.Kept, vendorOwner, f.CapturedAt)
+	if err != nil {
+		return err
+	}
+	n, err := im.lq.InsertIGFollows(wctx, f.Of, leadstore.IGFollowing, f.CapturedAt, rec.SHA256, rows)
+	im.sum.FollowsNew += int(n)
+	return err
+}
+
+// followRows matches and reviews every account of a list (followAccount) and returns its rows,
+// each name kept only when followAccount keeps it. A non-empty hintVendor (a loyalty vendor's
+// own account owns a following list) hints every account.
+func (im *igImporter) followRows(ctx context.Context, kept []igsignal.Follow, hintVendor string, at time.Time) ([]leadstore.IGFollowRow, error) {
+	wctx := context.WithoutCancel(ctx)
+	handles := make([]string, len(kept))
+	for i, k := range kept {
 		handles[i] = k.Handle
 	}
 	read, err := igReadHandles(ctx, im.db, handles)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	vendorOwner := im.matcher.MatchFollow(igsignal.Follow{Handle: f.Of}).VendorAccount
-	rows := make([]leadstore.IGFollowRow, 0, len(f.Kept))
-	for _, k := range f.Kept {
+	rows := make([]leadstore.IGFollowRow, 0, len(kept))
+	for _, k := range kept {
 		keepName, err := im.followAccount(wctx, k, read[k.Handle])
 		if err != nil {
-			return err
+			return nil, err
 		}
 		row := leadstore.IGFollowRow{Handle: k.Handle}
 		if keepName {
 			row.FullName = k.FullName
 		}
 		rows = append(rows, row)
-		if vendorOwner != "" {
-			if err := im.hint(wctx, k.Handle, vendorOwner, f.CapturedAt); err != nil {
-				return err
+		if hintVendor != "" {
+			if err := im.hint(wctx, k.Handle, hintVendor, at); err != nil {
+				return nil, err
 			}
 		}
 	}
-	n, err := im.lq.InsertIGFollows(wctx, f.Of, f.CapturedAt, rec.SHA256, rows)
-	im.sum.FollowsNew += int(n)
+	return rows, nil
+}
+
+// followers stores one followers list of a vendor's account (D9): its accounts are matched
+// and reviewed as a following list's are, with no followed_by_vendor hint (the direction is
+// the other way; the follow row itself is the signal).
+func (im *igImporter) followers(ctx context.Context, rec igsignal.Record) error {
+	f := rec.Followers
+	im.sum.FollowerLists++
+	if !f.Complete {
+		im.sum.FollowerListsPartial++
+	}
+	rows, err := im.followRows(ctx, f.Kept, "", f.CapturedAt)
+	if err != nil {
+		return err
+	}
+	n, err := im.lq.InsertIGFollows(context.WithoutCancel(ctx), f.Of, leadstore.IGFollowers, f.CapturedAt, rec.SHA256, rows)
+	im.sum.FollowersNew += int(n)
+	return err
+}
+
+// igTouchIn is one touch as read, before followAccount decides what of it is kept: the
+// account's name and a comment's text.
+type igTouchIn struct {
+	touch      leadstore.IGTouch
+	name, text string
+}
+
+// igCommentTouches is a comments record's touches: a comment touch per comment (ref its id, at
+// its created_at) and a usertag or mention touch per tag (ref the post code, at its taken_at).
+func igCommentTouches(c *igsignal.Comments) []igTouchIn {
+	var out []igTouchIn
+	for _, p := range c.Posts {
+		for _, cm := range p.Comments {
+			out = append(out, igTouchIn{touch: leadstore.IGTouch{Handle: cm.Handle, Kind: leadstore.IGTouchComment, Ref: cm.ID,
+				PostCode: p.Code, At: cm.CreatedAt}, name: cm.FullName, text: cm.Text})
+		}
+		for _, tg := range p.Tags {
+			kind := leadstore.IGTouchUsertag
+			if tg.Via == igsignal.ViaMention {
+				kind = leadstore.IGTouchMention
+			}
+			out = append(out, igTouchIn{touch: leadstore.IGTouch{Handle: tg.Handle, Kind: kind, Ref: p.Code, PostCode: p.Code,
+				At: p.TakenAt}, name: tg.FullName})
+		}
+	}
+	return out
+}
+
+// igTaggedTouches is a tagged record's touches: a tagged touch per kept post (ref and post code
+// its code, at its taken_at).
+func igTaggedTouches(tg *igsignal.Tagged) []igTouchIn {
+	out := make([]igTouchIn, 0, len(tg.Kept))
+	for _, k := range tg.Kept {
+		out = append(out, igTouchIn{touch: leadstore.IGTouch{Handle: k.Handle, Kind: leadstore.IGTouchTagged, Ref: k.Code,
+			PostCode: k.Code, At: k.TakenAt}, name: k.FullName})
+	}
+	return out
+}
+
+func (im *igImporter) comments(ctx context.Context, rec igsignal.Record) error {
+	return im.touches(ctx, rec, rec.Comments.Of, rec.Comments.CapturedAt, igCommentTouches(rec.Comments))
+}
+
+func (im *igImporter) tagged(ctx context.Context, rec igsignal.Record) error {
+	return im.touches(ctx, rec, rec.Tagged.Of, rec.Tagged.CapturedAt, igTaggedTouches(rec.Tagged))
+}
+
+// touches stores one record's touches of vendor's account. Every touch account is matched and
+// reviewed as a follow account is (followAccount), and the touch is stored whatever the match,
+// so a later match finds it by handle. Its name is kept only when followAccount keeps it; a
+// comment's text only when its account's match is strong at this import (D9 privacy: coffee
+// words do not mean "not a person"), else the touch keeps the handle and the date alone.
+func (im *igImporter) touches(ctx context.Context, rec igsignal.Record, vendor string, at time.Time, ins []igTouchIn) error {
+	wctx := context.WithoutCancel(ctx)
+	handles := make([]string, len(ins))
+	for i, in := range ins {
+		handles[i] = in.touch.Handle
+	}
+	read, err := igReadHandles(ctx, im.db, handles)
+	if err != nil {
+		return err
+	}
+	rows := make([]leadstore.IGTouch, 0, len(ins))
+	for _, in := range ins {
+		t := in.touch
+		keepName, err := im.followAccount(wctx, igsignal.Follow{Handle: t.Handle, FullName: in.name}, read[t.Handle])
+		if err != nil {
+			return err
+		}
+		if keepName {
+			t.FullName = in.name
+		}
+		if t.Kind == leadstore.IGTouchComment && im.matches[t.Handle].Strong() {
+			t.Text = in.text
+		}
+		im.sum.Touches[t.Kind]++
+		rows = append(rows, t)
+	}
+	n, err := im.lq.InsertIGTouches(wctx, vendor, at, rec.SHA256, rows)
+	im.sum.TouchesNew += int(n)
 	return err
 }
 
@@ -1078,6 +1230,26 @@ func (im *igImporter) dryRun(ctx context.Context, recs []igsignal.Record) error 
 			for _, k := range r.Following.Kept {
 				im.sum.ByTier[tierWord(im.siteCheck(im.matcher.MatchFollow(k), k.Handle, k.FullName, ""))]++
 			}
+		case r.Followers != nil:
+			im.sum.FollowerLists++
+			if !r.Followers.Complete {
+				im.sum.FollowerListsPartial++
+			}
+			for _, k := range r.Followers.Kept {
+				im.sum.ByTier[tierWord(im.siteCheck(im.matcher.MatchFollow(k), k.Handle, k.FullName, ""))]++
+			}
+		case r.Comments != nil, r.Tagged != nil:
+			var ins []igTouchIn
+			if r.Comments != nil {
+				ins = igCommentTouches(r.Comments)
+			} else {
+				ins = igTaggedTouches(r.Tagged)
+			}
+			for _, in := range ins {
+				im.sum.Touches[in.touch.Kind]++
+				h := in.touch.Handle
+				im.sum.ByTier[tierWord(im.siteCheck(im.matcher.MatchFollow(igsignal.Follow{Handle: h, FullName: in.name}), h, in.name, ""))]++
+			}
 		}
 	}
 	return nil
@@ -1125,6 +1297,7 @@ func printIGImport(w io.Writer, runID int64, slug, decider string, maxCalls, dai
 		s.ProfilesNew, s.ProfilesKnown, s.Missing, s.Private)
 	_, _ = fmt.Fprintf(w, "  following lists: %d (%d cut short) · %d accounts kept · %d rows new · %d hints new\n",
 		s.Lists, s.ListsPartial, s.Kept, s.FollowsNew, s.Hints)
+	_, _ = fmt.Fprintf(w, "  %s · %d follower rows new · %d touch rows new\n", igVendorReadsLine(s), s.FollowersNew, s.TouchesNew)
 	_, _ = fmt.Fprintf(w, "  matches: handle %d · domain %d · name %d · tie %d · none %d · the operator's call kept %d · %d rows written"+
 		" · not attached: not coffee %d, no place call yet %d · a site's handle under another name %d\n",
 		s.ByTier[leadstore.IGTierHandle], s.ByTier[leadstore.IGTierDomain], s.ByTier[leadstore.IGTierName], s.ByTier["tie"],
@@ -1147,6 +1320,15 @@ func printIGImport(w io.Writer, runID int64, slug, decider string, maxCalls, dai
 	_, _ = fmt.Fprintf(w, "  routes: %d added · %d taken back\n", s.RoutesAdded, s.RoutesTaken)
 }
 
+// igVendorReadsLine counts the vendors' followers lists and touches read (D9).
+func igVendorReadsLine(s igSummary) string {
+	t := s.Touches
+	return fmt.Sprintf("followers lists %d (partial %d), touches %d (comment %d, tag %d, mention %d, tagged %d)",
+		s.FollowerLists, s.FollowerListsPartial,
+		t[leadstore.IGTouchComment]+t[leadstore.IGTouchUsertag]+t[leadstore.IGTouchMention]+t[leadstore.IGTouchTagged],
+		t[leadstore.IGTouchComment], t[leadstore.IGTouchUsertag], t[leadstore.IGTouchMention], t[leadstore.IGTouchTagged])
+}
+
 // printIGDryRun prints what a dry run counted.
 func printIGDryRun(w io.Writer, slug string, s igSummary, lineErrs []igsignal.LineError) {
 	_, _ = fmt.Fprintf(w, "leads ig import --dry-run: campaign %s · %s · %s · %s refused · nothing written, nobody called\n",
@@ -1155,6 +1337,7 @@ func printIGDryRun(w io.Writer, slug string, s igSummary, lineErrs []igsignal.Li
 	_, _ = fmt.Fprintf(w, "  profiles: %d with text · %d Jev would be asked about (fake) · %d missing · %d private · vendor by rule %d\n",
 		s.ProfilesWithText, s.WouldAsk, s.Missing, s.Private, s.RuleVendors)
 	_, _ = fmt.Fprintf(w, "  following lists: %d · %d accounts kept\n", s.Lists, s.Kept)
+	_, _ = fmt.Fprintf(w, "  %s\n", igVendorReadsLine(s))
 	_, _ = fmt.Fprintf(w, "  would match: handle %d · domain %d · name %d · tie %d · none %d\n",
 		s.ByTier[leadstore.IGTierHandle], s.ByTier[leadstore.IGTierDomain], s.ByTier[leadstore.IGTierName], s.ByTier["tie"], s.ByTier[leadstore.IGTierNone])
 }

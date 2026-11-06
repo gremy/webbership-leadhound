@@ -117,7 +117,8 @@ var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_
 	"place_import", "place", "job_switch", "campaign_mailbox", "email_check", "send_override", "lead_stage_event",
 	"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire", "lead_proposal", "lead_proposal_status",
 	"lead_place_type", "roastery_outreach_switch",
-	"ig_profile", "ig_follow", "ig_match", "ig_judgment", "ig_signal_hint", "ig_review_status"}
+	"ig_profile", "ig_follow", "ig_match", "ig_judgment", "ig_signal_hint", "ig_review_status",
+	"ig_vendor_touch", "lead_intent", "lead_intent_call"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -519,6 +520,13 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"TRUNCATE ig_judgment",
 		"TRUNCATE ig_signal_hint",
 		"TRUNCATE ig_review_status",
+		// 00033: the vendor touches, intent classes and intent calls are append-only.
+		"DELETE FROM ig_vendor_touch",
+		"DELETE FROM lead_intent",
+		"DELETE FROM lead_intent_call",
+		"TRUNCATE ig_vendor_touch",
+		"TRUNCATE lead_intent",
+		"TRUNCATE lead_intent_call",
 		"TRUNCATE contact_mark",
 		"TRUNCATE draft_request",
 		"DELETE FROM lead_kind",
@@ -559,6 +567,11 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE ig_judgment SET choice = 'unclear'",
 		"UPDATE ig_signal_hint SET value = 'x'",
 		"UPDATE ig_review_status SET status = 'new'",
+		// 00033: a touch, a class and a call are fixed at insert; the latest row decides.
+		"UPDATE ig_follow SET direction = 'followers'",
+		"UPDATE ig_vendor_touch SET text = NULL",
+		"UPDATE lead_intent SET class = 'cold'",
+		"UPDATE lead_intent_call SET class = NULL",
 		"UPDATE suppression SET reason = 'manual'",
 		"UPDATE suppression_lift SET reason = 'rewritten'",
 		// An auto-updatable view would write suppression with the owner's rights.
@@ -1393,6 +1406,133 @@ func TestMigration00031Checks(t *testing.T) {
 		{"review status", "23514", `INSERT INTO ig_review_status (handle, status, actor) VALUES ('cafe.exemplu', 'maybe', 'gremy')`, nil},
 		{"review note long", "23514", `INSERT INTO ig_review_status (handle, status, note, actor) VALUES ('cafe.exemplu', 'new', repeat('n', 201), 'gremy')`, nil},
 		{"review actor", "23514", `INSERT INTO ig_review_status (handle, status, actor) VALUES ('cafe.exemplu', 'new', 'operator')`, nil},
+	} {
+		if _, err := tx.Exec(ctx, "SAVEPOINT s"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := tx.Exec(ctx, c.sql, c.args...)
+		if got := sqlState(err); got != c.want || (c.want == "" && err != nil) {
+			t.Errorf("%s: %v (SQLSTATE %q), want %q", c.name, err, got, c.want)
+		}
+		if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT s"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+const loyaltyIntentVersion = 33 // 00033_loyalty_intent.sql
+
+// TestMigration00033DownUp: down refuses while a followers row, a vendor touch or an intent call
+// exists, and moves nothing; with none (a following row and a derived class only), down drops the
+// three tables, restores the old capture key and drops the direction column; up again brings them
+// back with the app role's grants.
+func TestMigration00033DownUp(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	owner := f.owner
+	lead := f.siteLead(t, "intent-down-up.example", nil, 7, "")
+	f.ownerRun(t, `INSERT INTO ig_follow (list_owner, handle, captured_at, capture_sha256) VALUES ('vendor.example', 'cafe.exemplu', now(), sha256('f'))`)
+	f.ownerRun(t, `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'curious', 1, 1, 'follows one vendor')`, lead)
+
+	p := leadsProvider(t)
+	t.Cleanup(func() { migrateAll(t) })
+
+	for _, row := range []struct{ insert, table, erase string }{
+		{`INSERT INTO ig_follow (list_owner, direction, handle, captured_at, capture_sha256)
+			VALUES ('vendor.example', 'followers', 'cafe.exemplu', now(), sha256('f'))`, "ig_follow followers",
+			`DELETE FROM ig_follow WHERE direction = 'followers'`},
+		{`INSERT INTO ig_vendor_touch (vendor_handle, handle, kind, ref, post_code, at, capture_sha256, captured_at)
+			VALUES ('vendor.example', 'cafe.exemplu', 'tagged', 'Cabc123', 'Cabc123', now(), sha256('t'), now())`, "ig_vendor_touch",
+			`DELETE FROM ig_vendor_touch`},
+		{`INSERT INTO lead_intent_call (lead_id, class, actor) VALUES (` + strconv.FormatInt(lead, 10) + `, 'out', 'gremy')`, "lead_intent_call",
+			`DELETE FROM lead_intent_call`},
+	} {
+		f.ownerRun(t, row.insert)
+		_, err := p.DownTo(ctx, loyaltyIntentVersion-1)
+		if err == nil || !strings.Contains(err.Error(), "erase or move them first") {
+			t.Fatalf("down with a %s row: %v, want refused", row.table, err)
+		}
+		if n := ownerInt(t, owner, `SELECT count(*) FROM goose_db_version_leads WHERE version_id = $1`, loyaltyIntentVersion); n != 1 {
+			t.Fatalf("a refused down moved the version (%d rows at %d)", n, loyaltyIntentVersion)
+		}
+		if n := ownerInt(t, owner, `SELECT count(*) FROM lead_intent`); n != 1 {
+			t.Fatal("a refused down moved the derived class")
+		}
+		f.ownerRun(t, row.erase)
+	}
+
+	if _, err := p.DownTo(ctx, loyaltyIntentVersion-1); err != nil {
+		t.Fatalf("down to %d: %v", loyaltyIntentVersion-1, err)
+	}
+	for _, table := range []string{"ig_vendor_touch", "lead_intent", "lead_intent_call"} {
+		var reg *string
+		if err := owner.QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&reg); err != nil || reg != nil {
+			t.Errorf("%s after down: %v %v, want gone", table, reg, err)
+		}
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'ig_follow' AND column_name = 'direction'`); n != 0 {
+		t.Error("ig_follow.direction left after down")
+	}
+	if def := ownerString(t, owner, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ig_follow_capture_key'"); def != "UNIQUE (list_owner, handle, capture_sha256)" {
+		t.Errorf("ig_follow_capture_key after down = %s, want the 00031 key", def)
+	}
+	if n := ownerInt(t, owner, `SELECT count(*) FROM ig_follow`); n != 1 {
+		t.Errorf("ig_follow rows after down = %d, want the following row kept", n)
+	}
+
+	migrateAll(t)
+	assertLeadPrivileges(t, owner, "after 00033 down and up")
+	if n := ownerInt(t, owner, `SELECT count(*) FROM ig_follow WHERE direction = 'following'`); n != 1 {
+		t.Errorf("following rows after up = %d, want 1 (the default)", n)
+	}
+	// The same account on both lists of one owner in one capture is two rows under the new key.
+	f.ownerRun(t, `INSERT INTO ig_follow (list_owner, direction, handle, captured_at, capture_sha256)
+		VALUES ('vendor.example', 'followers', 'cafe.exemplu', now(), sha256('f'))`)
+	if _, err := owner.Exec(ctx, `INSERT INTO ig_follow (list_owner, direction, handle, captured_at, capture_sha256)
+		VALUES ('vendor.example', 'followers', 'cafe.exemplu', now(), sha256('f'))`); sqlState(err) != "23505" {
+		t.Errorf("a second followers row of the same capture: %v, want 23505", err)
+	}
+	f.ownerRun(t, `DELETE FROM ig_follow WHERE direction = 'followers'`)
+}
+
+// TestMigration00033Checks: each new CHECK takes the edge that is allowed and refuses a bad row.
+func TestMigration00033Checks(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	lead := f.siteLead(t, "intent-checks.example", nil, 7, "")
+	tx, err := f.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	touch := `INSERT INTO ig_vendor_touch (vendor_handle, handle, kind, ref, post_code, at, text, capture_sha256, captured_at)
+		VALUES ($1, $2, $3, $4, 'Cabc123', now(), $5, $6, now())`
+	sha := make([]byte, 32)
+	long := strings.Repeat("a", 301)
+	for _, c := range []struct {
+		name, want, sql string
+		args            []any
+	}{
+		{"follow direction", "23514", `INSERT INTO ig_follow (list_owner, direction, handle, captured_at, capture_sha256) VALUES ('vendor.example', 'both', 'cafe.exemplu', now(), $1)`, []any{sha}},
+		{"touch comment", "", touch, []any{"vendor.example", "cafe.exemplu", "comment", "17900000000000001", strings.Repeat("a", 300), sha}},
+		{"touch tagged", "", touch, []any{"vendor.example", "cafe.exemplu", "tagged", "Cabc123", nil, sha}},
+		{"touch kind", "23514", touch, []any{"vendor.example", "cafe.exemplu", "like", "Cabc123", nil, sha}},
+		{"touch handle", "23514", touch, []any{"vendor.example", "Cafe.Exemplu", "tagged", "Cabc123", nil, sha}},
+		{"touch vendor handle", "23514", touch, []any{"@vendor.example", "cafe.exemplu", "tagged", "Cabc123", nil, sha}},
+		{"touch ref", "23514", touch, []any{"vendor.example", "cafe.exemplu", "tagged", "abc/123", nil, sha}},
+		{"touch text on a tag", "23514", touch, []any{"vendor.example", "cafe.exemplu", "usertag", "Cabc123", "hi", sha}},
+		{"touch text length", "23514", touch, []any{"vendor.example", "cafe.exemplu", "comment", "17900000000000002", long, sha}},
+		{"touch sha", "23514", touch, []any{"vendor.example", "cafe.exemplu", "tagged", "Cabc124", nil, sha[:31]}},
+		{"intent ok", "", `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'just_chose', 0, 0, 'tagged by a vendor')`, []any{lead}},
+		{"intent class", "23514", `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'warm', 0, 0, 'x')`, []any{lead}},
+		{"intent overlap", "23514", `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'cold', -1, 0, 'x')`, []any{lead}},
+		{"intent reason newline", "23514", `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'cold', 0, 0, E'a\nb')`, []any{lead}},
+		{"intent reason length", "23514", `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'cold', 0, 0, $2)`, []any{lead, long}},
+		{"intent rules", "23514", `INSERT INTO lead_intent (lead_id, class, overlap, score, reason, rules) VALUES ($1, 'cold', 0, 0, 'x', 'intent1')`, []any{lead}},
+		{"call clear", "", `INSERT INTO lead_intent_call (lead_id, class, actor) VALUES ($1, NULL, 'gremy')`, []any{lead}},
+		{"call class", "23514", `INSERT INTO lead_intent_call (lead_id, class, actor) VALUES ($1, 'warm', 'gremy')`, []any{lead}},
+		{"call actor", "23514", `INSERT INTO lead_intent_call (lead_id, class, actor) VALUES ($1, 'out', 'system')`, []any{lead}},
+		{"call note", "23514", `INSERT INTO lead_intent_call (lead_id, class, note, actor) VALUES ($1, 'out', E'a\nb', 'gremy')`, []any{lead}},
 	} {
 		if _, err := tx.Exec(ctx, "SAVEPOINT s"); err != nil {
 			t.Fatal(err)

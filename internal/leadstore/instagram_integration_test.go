@@ -85,14 +85,14 @@ func TestIGFollowsStoredOnce(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now()
 	rows := []leadstore.IGFollowRow{{Handle: "cafe.exemplu", FullName: "Cafe Exemplu"}, {Handle: "@Bean.Example"}, {Handle: "bean.example"}}
-	n, err := f.q.InsertIGFollows(ctx, "Vendor.Example", at, igSHA(1), rows)
+	n, err := f.q.InsertIGFollows(ctx, "Vendor.Example", leadstore.IGFollowing, at, igSHA(1), rows)
 	if err != nil || n != 2 {
 		t.Fatalf("first list: %d %v, want 2 (a handle twice is one row)", n, err)
 	}
-	if n, err := f.q.InsertIGFollows(ctx, "vendor.example", at, igSHA(1), rows); err != nil || n != 0 {
+	if n, err := f.q.InsertIGFollows(ctx, "vendor.example", leadstore.IGFollowing, at, igSHA(1), rows); err != nil || n != 0 {
 		t.Fatalf("the same list again: %d %v, want 0", n, err)
 	}
-	if _, err := f.q.InsertIGFollows(ctx, "vendor.example", at, igSHA(2), []leadstore.IGFollowRow{{Handle: "ok.example"}, {Handle: "not one"}}); !errors.Is(err, leadstore.ErrBadIG) {
+	if _, err := f.q.InsertIGFollows(ctx, "vendor.example", leadstore.IGFollowing, at, igSHA(2), []leadstore.IGFollowRow{{Handle: "ok.example"}, {Handle: "not one"}}); !errors.Is(err, leadstore.ErrBadIG) {
 		t.Fatalf("a bad handle: %v, want ErrBadIG", err)
 	}
 	if got := ownerInt(t, f.owner, `SELECT count(*) FROM ig_follow`); got != 2 {
@@ -352,7 +352,7 @@ func TestIGReviewStatusGrid(t *testing.T) {
 	if _, err := f.q.SetIGMatch(ctx, leadstore.IGMatch{Handle: "new.example", Tier: leadstore.IGTierName, Candidates: []int64{a, b}, Actor: leadstore.ActorSystem}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.q.InsertIGFollows(ctx, "vendor.example", time.Now(), igSHA(2), []leadstore.IGFollowRow{{Handle: "wanted.example", FullName: "Wanted Example"}}); err != nil {
+	if _, err := f.q.InsertIGFollows(ctx, "vendor.example", leadstore.IGFollowing, time.Now(), igSHA(2), []leadstore.IGFollowRow{{Handle: "wanted.example", FullName: "Wanted Example"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.q.SetIGMatch(ctx, leadstore.IGMatch{Handle: "wanted.example", LeadID: a, Tier: leadstore.IGTierName, Actor: leadstore.ActorSystem}); err != nil {

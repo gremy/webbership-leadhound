@@ -854,3 +854,240 @@ func TestLeadsIGStrongMatchWaitsForPlaceCall(t *testing.T) {
 		t.Errorf("A after the place call: %s", got)
 	}
 }
+
+// igV2Fixture is the parser's ig-capture@2 testdata: a v1 and a v2 profile and following
+// list, a vendor's followers list, two comments records (comments and tags), a tagged record
+// and a walled followers list.
+const igV2Fixture = "../../internal/igsignal/testdata/capture-v2-valid.jsonl"
+
+func igV2Lines(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(igV2Fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+}
+
+// igCommentsLine is one comments record of owner with a single post (code) holding comments
+// (id, handle, name, text) and tags (handle, name, via); wall non-empty makes it a wall.
+func igCommentsLine(owner, code, wall string, comments [][4]string, tags [][3]string) string {
+	nul := func(s string) any {
+		if s == "" {
+			return nil
+		}
+		return s
+	}
+	cs, ts := []map[string]any{}, []map[string]any{}
+	for _, c := range comments {
+		cs = append(cs, map[string]any{"id": c[0], "handle": c[1], "full_name": nul(c[2]), "text": c[3], "created_at": "2026-11-01T10:00:00Z"})
+	}
+	for _, tg := range tags {
+		ts = append(ts, map[string]any{"handle": tg[0], "full_name": nul(tg[1]), "via": tg[2]})
+	}
+	b, err := json.Marshal(map[string]any{"v": 2, "kind": "comments", "of": owner, "captured_at": "2026-11-06T11:00:00Z",
+		"filter": igsignal.CoffeeWordsVersion, "complete": wall == "", "wall": nul(wall),
+		"posts": []map[string]any{{"code": code, "taken_at": "2026-10-29T09:00:00Z", "comment_count": len(cs), "comments_seen": len(cs),
+			"comments": cs, "tags": ts}}})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// igTouchTables is igTables with the vendor touches.
+func igTouchTables(t *testing.T) string {
+	t.Helper()
+	return igTables(t) + fmt.Sprintf(", ig_vendor_touch %d", dbCount(t, `SELECT count(*) FROM ig_vendor_touch`))
+}
+
+// igV2Sweep is the D9 invariant sweep over what is stored: every account kept is coffee-named
+// (on its handle or a name stored for it), comment text sits only on comments and only for a
+// handle strongly matched, and a name only on an account matched strongly or on the review
+// list.
+func igV2Sweep(t *testing.T) {
+	t.Helper()
+	rows, err := storetest.OwnerConn(t).Query(context.Background(), `
+		WITH h AS (SELECT handle FROM ig_follow UNION SELECT handle FROM ig_vendor_touch UNION SELECT handle FROM ig_review_status),
+		     n AS (SELECT handle, full_name FROM ig_profile WHERE full_name IS NOT NULL
+		           UNION SELECT handle, full_name FROM ig_follow WHERE full_name IS NOT NULL
+		           UNION SELECT handle, full_name FROM ig_vendor_touch WHERE full_name IS NOT NULL)
+		SELECT h.handle, coalesce(string_agg(n.full_name, ' '), '') FROM h LEFT JOIN n USING (handle) GROUP BY h.handle`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var h, names string
+		if err := rows.Scan(&h, &names); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		if !igsignal.CoffeeName(h, names) {
+			t.Errorf("%s is stored and fails %s", h, igsignal.CoffeeWordsVersion)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen == 0 {
+		t.Error("the sweep saw no account: it proves nothing")
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE text IS NOT NULL AND kind <> 'comment'`); n != 0 {
+		t.Errorf("%d touches other than a comment carry text", n)
+	}
+	const strong = `SELECT DISTINCT ON (handle) handle, lead_id, tier FROM ig_match ORDER BY handle, id DESC`
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch v WHERE text IS NOT NULL AND NOT EXISTS (SELECT 1 FROM (`+strong+`) m
+		WHERE m.handle = v.handle AND m.lead_id IS NOT NULL AND m.tier IN ('handle', 'domain', 'operator'))`); n != 0 {
+		t.Errorf("%d comment texts on an account with no strong match", n)
+	}
+	for _, tbl := range []string{"ig_follow", "ig_vendor_touch"} {
+		if n := dbCount(t, `SELECT count(*) FROM `+tbl+` x WHERE full_name IS NOT NULL
+			AND NOT EXISTS (SELECT 1 FROM ig_review_status r WHERE r.handle = x.handle)
+			AND NOT EXISTS (SELECT 1 FROM (`+strong+`) m WHERE m.handle = x.handle AND m.lead_id IS NOT NULL
+				AND m.tier IN ('handle', 'domain', 'operator'))`); n != 0 {
+			t.Errorf("%s: %d names on accounts neither matched nor reviewed", tbl, n)
+		}
+	}
+}
+
+// TestLeadsIGV2Import: on a database the v1 scene already filled, an ig-capture@2 import stores
+// the vendor's followers (no hint), a touch per comment, tag and tagged post, queues every
+// unmatched coffee account, keeps a comment's text only for the strongly matched café (A) and
+// no name for an account read as no coffee place and never queued. The walled followers list
+// stores nothing; an identical re-import stores nothing; the invariant sweep holds.
+func TestLeadsIGV2Import(t *testing.T) {
+	newIGScene(t)
+	igSceneFake(t)
+	igImport(t, igSceneLines(""))
+	hints := dbCount(t, `SELECT count(*) FROM ig_signal_hint`)
+
+	lines := append(igV2Lines(t), igCommentsLine("vendor_example", "Cjkl4", "",
+		[][4]string{{"2001", "harbour_lane.example", "Harbour Lane Coffee", "Cum merge cardul de fidelitate?"},
+			{"2002", "notcoffee.example", "Shoe Coffee Example", "Avem si pantofi"}},
+		[][3]string{{"notcoffee.example", "Shoe Coffee Example", "mention"}}))
+	out := igImport(t, lines)
+	wantLines(t, "v2 import", out, "· 10 records · 1 wall · 0 lines refused",
+		"  followers lists 1 (partial 0), touches 10 (comment 5, tag 2, mention 2, tagged 1) · 2 follower rows new · 10 touch rows new")
+	for _, h := range []string{"cafe.example", "harbour_lane.example", "notcoffee.example", "espresso_exemplu"} {
+		if strings.Contains(out, h) {
+			t.Errorf("the import printed the handle %s", h)
+		}
+	}
+
+	// Follows by direction: the followers list is its own direction, with no hint.
+	if n := dbCount(t, `SELECT count(*) FROM ig_follow WHERE list_owner = 'vendor_example' AND direction = 'followers'`); n != 2 {
+		t.Errorf("%d followers rows, want 2", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_follow WHERE list_owner = 'vendor_example' AND direction = 'following'
+		AND handle IN ('cafe.exemplu', 'bean_example')`); n < 2 {
+		t.Errorf("%d following rows of the vendor, want both accounts", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_signal_hint WHERE handle IN ('cafe.example', 'coffee_exemplu')`); n != 0 {
+		t.Errorf("a followers list wrote %d followed_by_vendor hints", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_signal_hint`); n != hints {
+		t.Errorf("hints %d after the v2 import, %d before (the fixture's vendor is no loyalty vendor's own account)", n, hints)
+	}
+	// Touches by kind, with their refs and dates.
+	for kind, want := range map[string]int{"comment": 5, "usertag": 2, "mention": 2, "tagged": 1} {
+		if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE vendor_handle = 'vendor_example' AND kind = '`+kind+`'`); n != want {
+			t.Errorf("%d %s touches, want %d", n, kind, want)
+		}
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE kind = 'comment' AND handle = 'espresso_exemplu' AND ref = '1790'
+		AND post_code = 'Cabc_1' AND at = '2026-10-31T10:00:00Z'`); n != 1 {
+		t.Errorf("espresso_exemplu's comment touch as stored: %d rows", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE kind = 'usertag' AND handle = 'roastery_example' AND ref = 'Cabc_1'
+		AND post_code = 'Cabc_1' AND at = '2026-10-30T09:00:00Z'`); n != 1 {
+		t.Errorf("roastery_example's usertag touch as stored: %d rows", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE kind = 'tagged' AND handle = 'roast.example' AND ref = 'Cxyz'
+		AND post_code = 'Cxyz' AND at = '2026-09-01T00:00:00Z'`); n != 1 {
+		t.Errorf("roast.example's tagged touch as stored: %d rows", n)
+	}
+	// Text only for the strongly matched café; the unmatched comments keep the handle and date.
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE text = 'Cum merge cardul de fidelitate?' AND handle = 'harbour_lane.example'`); n != 1 {
+		t.Errorf("A's comment text stored %d times, want 1", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE text IS NOT NULL`); n != 1 {
+		t.Errorf("%d touches carry text, want only A's", n)
+	}
+	// Review rows for every unmatched coffee account the touches and followers met.
+	for _, h := range []string{"cafe.example", "coffee_exemplu", "espresso_exemplu", "kafe.example", "roastery_example", "brew.exemplu",
+		"cafenea.exemplu", "roast.example"} {
+		if got := igStatus(t, h); got != "new" {
+			t.Errorf("%s review status %q, want new", h, got)
+		}
+	}
+	// Names: kept for the reviewed accounts, never for the read shop nobody queued.
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE handle = 'espresso_exemplu' AND full_name = 'Espresso Exemplu'`); n != 1 {
+		t.Errorf("the reviewed commenter's name stored %d times, want 1", n)
+	}
+	if got := igStatus(t, "notcoffee.example"); got != "" {
+		t.Errorf("the read shop was queued: %q", got)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE handle = 'notcoffee.example' AND (full_name IS NOT NULL OR text IS NOT NULL)`); n != 0 {
+		t.Errorf("the unmatched, unqueued account has %d touches with a name or text", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE handle = 'notcoffee.example'`); n != 2 {
+		t.Errorf("the shop's touches: %d, want its comment and mention, stored whatever the match", n)
+	}
+	// The walled followers list stores nothing of its account.
+	for _, tbl := range []string{"ig_follow", "ig_vendor_touch", "ig_review_status", "ig_match"} {
+		if n := dbCount(t, `SELECT count(*) FROM `+tbl+` WHERE handle = 'specialty.example'`); n != 0 {
+			t.Errorf("the wall's account is in %s (%d rows)", tbl, n)
+		}
+	}
+	igV2Sweep(t)
+
+	before := igTouchTables(t)
+	out = igImport(t, lines)
+	wantLines(t, "identical v2 re-import", out, "· 0 follower rows new · 0 touch rows new", "  review: 0 added", "  routes: 0 added")
+	if got := igTouchTables(t); got != before {
+		t.Errorf("the re-import stored %s (was %s)", got, before)
+	}
+}
+
+// TestLeadsIGV2ColdStart: the v2 fixture alone on a scene with no Instagram rows yet: the dry
+// run counts the new kinds and writes nothing, the first import stores them, a re-run stores
+// nothing, and the sweep holds.
+func TestLeadsIGV2ColdStart(t *testing.T) {
+	newIGScene(t)
+	lines := igV2Lines(t)
+	empty := igTouchTables(t)
+	out := igImport(t, lines, "--dry-run")
+	wantLines(t, "dry run", out, "· 9 records · 1 wall · 0 lines refused · nothing written",
+		"  followers lists 1 (partial 0), touches 7 (comment 3, tag 2, mention 1, tagged 1)")
+	if got := igTouchTables(t); got != empty {
+		t.Errorf("the dry run wrote: %s, was %s", got, empty)
+	}
+	out = igImport(t, lines)
+	wantLines(t, "first v2 import", out, "· 9 records · 1 wall",
+		"  followers lists 1 (partial 0), touches 7 (comment 3, tag 2, mention 1, tagged 1) · 2 follower rows new · 7 touch rows new")
+	if n := dbCount(t, `SELECT count(*) FROM ig_vendor_touch WHERE text IS NOT NULL`); n != 0 {
+		t.Errorf("%d comment texts stored with no café matched", n)
+	}
+	igV2Sweep(t)
+	before := igTouchTables(t)
+	wantLines(t, "v2 re-run", igImport(t, lines), "· 0 follower rows new · 0 touch rows new", "  review: 0 added")
+	if got := igTouchTables(t); got != before {
+		t.Errorf("the re-run stored %s (was %s)", got, before)
+	}
+}
+
+// TestLeadsIGV2WallStoresNothing: a walled comments record (its comment and tag in hand) is
+// counted as a wall and stores nothing at all.
+func TestLeadsIGV2WallStoresNothing(t *testing.T) {
+	newIGScene(t)
+	before := igTouchTables(t)
+	out := igImport(t, []string{igCommentsLine("vendor_example", "Cwall5", "http 429",
+		[][4]string{{"3001", "wallcafe.example", "Wall Cafe Example", "cât costă?"}}, [][3]string{{"coffeewall.example", "", "usertag"}})})
+	wantLines(t, "walled import", out, "· 1 record · 1 wall · 0 lines refused",
+		"  followers lists 0 (partial 0), touches 0 (comment 0, tag 0, mention 0, tagged 0) · 0 follower rows new · 0 touch rows new")
+	if got := igTouchTables(t); got != before {
+		t.Errorf("the wall stored %s (was %s)", got, before)
+	}
+}

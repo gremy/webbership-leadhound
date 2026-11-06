@@ -71,6 +71,9 @@ type Vendor struct {
 	Kind  string   `yaml:"kind"`
 	Own   bool     `yaml:"own"`   // Webbership itself: the café is already a customer
 	Match []string `yaml:"match"` // "host" or "host/path-prefix"
+	// IGWords are words naming the vendor on Instagram with no tag or link: whole words,
+	// case-sensitive, counted only beside an instagram.loyalty_cues word (igsignal.Vendor).
+	IGWords []string `yaml:"ig_words"`
 }
 
 // Words are phrases of one kind, matched in the visible text.
@@ -85,6 +88,13 @@ type Instagram struct {
 	// CoffeeWords is coffee-words@1, the following-list prefilter: lower-case ASCII words, any
 	// of which inside an account's folded handle or name keeps it.
 	CoffeeWords []string `yaml:"coffee_words"`
+	// LoyaltyCues are lower-case ASCII word starts that make a vendor's ig_words count: one
+	// must start a word of the same folded bio or caption.
+	LoyaltyCues []string `yaml:"loyalty_cues"`
+	// PrepaidWords are lower-case ASCII whole words (folded) that show a prepaid offer.
+	PrepaidWords []string `yaml:"prepaid_words"`
+	// QuestionCues are lower-case ASCII whole words (folded) that make a comment ask.
+	QuestionCues []string `yaml:"question_cues"`
 }
 
 // Config is the signal list.
@@ -134,6 +144,9 @@ func validKind(k string) bool { return k == SigLoyalty || k == SigOrdering || k 
 // coffeeWordRe is what one coffee word is: the skill's helper refuses anything else.
 var coffeeWordRe = regexp.MustCompile(`^[a-z]+$`)
 
+// igWordRe is what one vendor ig_words entry is: one word, letters and digits, any case.
+var igWordRe = regexp.MustCompile(`^[\p{L}\p{N}]+$`)
+
 // CoffeeWords is the instagram.coffee_words list (coffee-words@1), in file order; empty for a
 // list that has none. The slice is a copy.
 func (c *Config) CoffeeWords() []string { return slices.Clone(c.Instagram.CoffeeWords) }
@@ -163,13 +176,33 @@ func (c *Config) compile() error {
 			}
 			c.matchers = append(c.matchers, matcher{vendor: v, host: host, path: path, needle: host + path})
 		}
-	}
-	words := map[string]bool{}
-	for _, w := range c.Instagram.CoffeeWords {
-		if !coffeeWordRe.MatchString(w) || words[w] {
-			return fmt.Errorf("cafe signals: instagram.coffee_words: %q is not one lower-case word, or is repeated", w)
+		if len(v.IGWords) > 0 && v.Kind != SigLoyalty {
+			return fmt.Errorf("cafe signals: vendor %q: ig_words is for loyalty vendors only", v.ID)
 		}
-		words[w] = true
+		igWords := map[string]bool{}
+		for _, w := range v.IGWords {
+			if !igWordRe.MatchString(w) || igWords[w] {
+				return fmt.Errorf("cafe signals: vendor %q: ig_words: %q is not one word of letters and digits, or is repeated", v.ID, w)
+			}
+			igWords[w] = true
+		}
+	}
+	for _, l := range []struct {
+		key   string
+		words []string
+	}{
+		{"coffee_words", c.Instagram.CoffeeWords},
+		{"loyalty_cues", c.Instagram.LoyaltyCues},
+		{"prepaid_words", c.Instagram.PrepaidWords},
+		{"question_cues", c.Instagram.QuestionCues},
+	} {
+		words := map[string]bool{}
+		for _, w := range l.words {
+			if !coffeeWordRe.MatchString(w) || words[w] {
+				return fmt.Errorf("cafe signals: instagram.%s: %q is not one lower-case word, or is repeated", l.key, w)
+			}
+			words[w] = true
+		}
 	}
 	for _, w := range c.Words {
 		if !validKind(w.Kind) || w.ID == "" || len(w.Phrases) == 0 {

@@ -314,5 +314,15 @@ BEGIN
   IF to_regclass('public.ig_review_status') IS NOT NULL THEN
     REVOKE UPDATE ON public.ig_review_status FROM leadhound_app;
   END IF;
+  -- The vendor touches, derived intent classes and your intent calls (leads 00033) are append-only.
+  IF to_regclass('public.ig_vendor_touch') IS NOT NULL THEN
+    REVOKE UPDATE ON public.ig_vendor_touch FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_intent') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_intent FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_intent_call') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_intent_call FROM leadhound_app;
+  END IF;
 END
 $$;

@@ -212,23 +212,33 @@ func (q Queries) InsertIGProfile(ctx context.Context, p IGProfile) (id int64, is
 	return id, isNew, nil
 }
 
-// IGFollowRow is one account kept from a following list. FullName is written only for an
+// The directions of a follow list (ig_follow_direction_check, 00033): IGFollowing is the
+// list owner following each handle (every row before 00033), IGFollowers each handle following
+// the list owner.
+const (
+	IGFollowing = "following"
+	IGFollowers = "followers"
+)
+
+// IGFollowRow is one account kept from a following or followers list. FullName is written only for an
 // account that is matched or lands in the review list (Decision 9); leave it empty otherwise.
 type IGFollowRow struct {
 	Handle   string
 	FullName string
 }
 
-// InsertIGFollows stores the accounts listOwner follows, from one capture (sha, capturedAt),
-// and returns how many rows were new: a re-import of the same capture stores nothing twice.
-// A row whose handle is not a handle fails the whole call with ErrBadIG.
-func (q Queries) InsertIGFollows(ctx context.Context, listOwner string, capturedAt time.Time, sha []byte, rows []IGFollowRow) (int64, error) {
+// InsertIGFollows stores one capture (sha, capturedAt) of listOwner's list in direction
+// (IGFollowing: the accounts listOwner follows; IGFollowers: the accounts following it), and
+// returns how many rows were new: a re-import of the same capture stores nothing twice, and
+// one account on both of an owner's lists is a row in each. A row whose handle is not a
+// handle, or a direction outside the two, fails the whole call with ErrBadIG.
+func (q Queries) InsertIGFollows(ctx context.Context, listOwner, direction string, capturedAt time.Time, sha []byte, rows []IGFollowRow) (int64, error) {
 	owner, err := igHandle(listOwner)
 	if err != nil {
 		return 0, fmt.Errorf("leadstore: insert ig follows: %w", err)
 	}
-	if len(sha) != 32 || capturedAt.IsZero() {
-		return 0, fmt.Errorf("leadstore: insert ig follows of %s: %w: %d-byte hash", owner, ErrBadIG, len(sha))
+	if len(sha) != 32 || capturedAt.IsZero() || (direction != IGFollowing && direction != IGFollowers) {
+		return 0, fmt.Errorf("leadstore: insert ig follows of %s: %w: %d-byte hash, direction %q", owner, ErrBadIG, len(sha), direction)
 	}
 	handles := make([]string, len(rows))
 	names := make([]string, len(rows))
@@ -239,10 +249,10 @@ func (q Queries) InsertIGFollows(ctx context.Context, listOwner string, captured
 		names[i] = r.FullName
 	}
 	tag, err := q.db.Exec(ctx,
-		`INSERT INTO ig_follow (list_owner, handle, full_name, captured_at, capture_sha256)
-		 SELECT $1, u.h, nullif(u.n, ''), $2, $3 FROM unnest($4::text[], $5::text[]) AS u(h, n)
-		 ON CONFLICT (list_owner, handle, capture_sha256) DO NOTHING`,
-		owner, capturedAt, sha, handles, names)
+		`INSERT INTO ig_follow (list_owner, direction, handle, full_name, captured_at, capture_sha256)
+		 SELECT $1, $6, u.h, nullif(u.n, ''), $2, $3 FROM unnest($4::text[], $5::text[]) AS u(h, n)
+		 ON CONFLICT (list_owner, direction, handle, capture_sha256) DO NOTHING`,
+		owner, capturedAt, sha, handles, names, direction)
 	if err != nil {
 		return 0, fmt.Errorf("leadstore: insert ig follows of %s: %w", owner, err)
 	}

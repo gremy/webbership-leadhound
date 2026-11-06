@@ -173,7 +173,7 @@ var instagramHosts = map[string]bool{"instagram.com": true, "www.instagram.com":
 
 // instagramVendors are the loyalty vendors' own accounts listed in internal/cafe/signals.yaml:
 // businesses, not people, and the detector's data. A test keeps this list equal to the file's.
-var instagramVendors = map[string]bool{"stampino.app": true, "pick.coupons": true}
+var instagramVendors = map[string]bool{"stampino.app": true, "pick.coupons": true, "cardora.ro": true, "tuanis.eu": true}
 
 // instagramFixtures are the invented handles test data uses beside any handle naming example
 // or exemplu: a sample company, a one-letter account and a vendor look-alike.
