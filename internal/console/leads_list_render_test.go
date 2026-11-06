@@ -179,3 +179,16 @@ func TestLeadListInstagramChannel(t *testing.T) {
 		}
 	}
 }
+
+// TestSourceWords names who decided a row's place type, Instagram included, and passes an
+// unknown source through as itself.
+func TestSourceWords(t *testing.T) {
+	for src, want := range map[string]string{
+		"operator": "your tag", "jev": "Jev", "name": "its name", "instagram": "Instagram",
+		"": "", "other": "other",
+	} {
+		if got := (triageView{Row: LeadListRow{PlaceTypeSource: src}}).SourceWords(); got != want {
+			t.Errorf("SourceWords(%q) = %q, want %q", src, got, want)
+		}
+	}
+}

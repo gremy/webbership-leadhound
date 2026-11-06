@@ -92,10 +92,14 @@ func TestLeadDetailPlaceType(t *testing.T) {
 		}
 	}
 
-	// Jev's read is named as such, and the default names no source at all.
+	// Jev's and Instagram's reads are named as such, and the default names no source at all.
 	b.detail.PlaceTypeSource = "jev"
 	if body = h.do(get("/leads/5", c)).Body.String(); !strings.Contains(body, `<span class="muted small">Jev's read</span>`) {
 		t.Error("Jev's read is not named")
+	}
+	b.detail.PlaceTypeSource = "instagram"
+	if body = h.do(get("/leads/5", c)).Body.String(); !strings.Contains(body, `<span class="muted small">Instagram's read</span>`) {
+		t.Error("Instagram's read is not named")
 	}
 	b.detail.PlaceTypeSource = ""
 	if body = h.do(get("/leads/5", c)).Body.String(); strings.Contains(body, "place-type stack-sm") &&

@@ -56,7 +56,8 @@ func placeNameDue(l leadstore.CafeLeadName) (string, bool) {
 // tagPlaceNames writes the name row each of leads is due and returns how many it wrote. It is
 // the one writer of name rows, for apply and for the café build. A name word only ever says
 // roastery, so a name with no word writes nothing, and the row never changes the lead's state
-// or call. An operator's or Jev's answer still outranks the row (placeTypeWinnerSQL).
+// or call. An operator's call, Instagram's read or Jev's answer still outranks the row
+// (placeTypeWinnerSQL).
 func tagPlaceNames(ctx context.Context, lq leadstore.Queries, leads []leadstore.CafeLeadName) (int, error) {
 	written := 0
 	for _, l := range leads {
@@ -115,7 +116,7 @@ func placeTypesReport(ctx context.Context, args []string) error {
 		return err
 	}
 	defer done()
-	var cafes, roasteries, fromName, due int
+	var cafes, roasteries, fromName, fromIG, due int
 	var matched []string
 	for _, l := range leads {
 		switch l.PlaceType {
@@ -123,8 +124,11 @@ func placeTypesReport(ctx context.Context, args []string) error {
 			cafes++
 		case leadstore.PlaceRoastery:
 			roasteries++
-			if l.Source == leadstore.PlaceFromName {
+			switch l.Source {
+			case leadstore.PlaceFromName:
 				fromName++
+			case leadstore.PlaceFromInstagram:
+				fromIG++
 			}
 		}
 		if _, ok := placeNameDue(l); ok {
@@ -136,7 +140,7 @@ func placeTypesReport(ctx context.Context, args []string) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "leads place-types report: %s, %s, in any state\n", label, plural(len(leads), "café lead", "café leads"))
 	_, _ = fmt.Fprintf(stdout, "  coffee shops: %d\n", cafes)
-	_, _ = fmt.Fprintf(stdout, "  roasteries: %d, of them %d from a name match\n", roasteries, fromName)
+	_, _ = fmt.Fprintf(stdout, "  roasteries: %d, of them %d from a name match, %d from Instagram\n", roasteries, fromName, fromIG)
 	_, _ = fmt.Fprintf(stdout, "  names with a roastery word and no name row yet: %d (apply would write these)\n", due)
 	_, _ = fmt.Fprintf(stdout, "  names with a roastery word: %d\n", len(matched))
 	for _, line := range matched[:min(*sample, len(matched))] {

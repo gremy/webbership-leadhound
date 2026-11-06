@@ -1161,7 +1161,7 @@ It adds the List's triage:
 
 | Adds | For |
 | --- | --- |
-| `lead_place_type` | a café lead's place type (`cafe` or `roastery`, or Jev's `unclear`), from its name, Jev or you, with the matched word or question and, for Jev, the input hash |
+| `lead_place_type` | a café lead's place type (`cafe` or `roastery`, or `unclear` from Jev or Instagram), from its name, Jev's website read, Instagram's read (since migration 00032) or you, with the matched word or question and, for Jev, the input hash |
 | `roastery_outreach_switch` | Roasteries in café outreach on Controls; no row means off |
 | `lead_event.skip_label_id` | the "no" call a skip from the List wrote, so Undo clears only that call |
 
@@ -1206,6 +1206,31 @@ On the server: copy the file to a path the `leadhound` user can read, as for `bo
 The judgment hashes live in each database, so a production import asks Jev again for every profile with text, within `--max-calls` and the leads daily cap; it needs `LEADHOUND_LIVE=1` and the Jev key, as every rating does.
 `leads ig report|lookups|review` are free on `make remote`: they write nothing, so `make remote HOST=… ARGS='leads ig report'` (or `lookups`, `review`) needs no `CONFIRM=1`.
 `lookups --place-type unclear` lists the café leads Jev's place question left unclear, with the handles each already holds.
+
+## Leads migration 00032
+
+`make deploy` applies it with the new binary, as the owner role, before the binary is put in place.
+It makes Instagram a fourth source of a café lead's place type (README "Instagram signals"):
+
+| Changes | For |
+| --- | --- |
+| `lead_place_type_source_check` | allows `instagram` beside `name`, `jev` and `operator` |
+| `lead_place_type_unclear_check` | allows `unclear` from `instagram` as well as `jev`: the row that says Instagram is silent now |
+
+No table or grant is added, and the input-hash check is unchanged: an Instagram row carries no hash.
+The ranking is your call, then Instagram's read, then Jev's website read, then the name.
+Each ALTER waits at most 5 seconds for its lock, because every queue read uses this table, so a busy moment fails the migrate instead of stalling the queue; deploy again once it is quiet.
+Its Down refuses while any `instagram` row exists, because erasing Instagram's place types is a decision, not a side effect of a rollback; with none, it restores both old checks.
+
+The deploy itself writes no place type, so a lead already matched on Instagram keeps its old type until the first sync.
+After the deploy, on your yes as for the deploy itself, because it changes which leads are held:
+
+1. `make remote HOST=… CONFIRM=1 ARGS='leads ig place-types --dry-run'` prints what it would write (roastery, café and silent counts, then the leads Instagram would release and hold).
+   It makes the same writes and rolls them back, so nothing stays, but `place-types` is not on `make remote`'s free list, so even the dry run needs `CONFIRM=1`.
+2. `make remote HOST=… CONFIRM=1 ARGS='leads ig place-types'` writes them.
+
+It makes no Jev call and reads no capture file, so it needs neither `LEADHOUND_LIVE=1` nor the Jev key, and a second run writes nothing.
+From then on every `leads ig import`, `leads ig match` and `unmatch`, and the console's It's this lead keep it current.
 
 ## LinkedIn and your own contacts
 

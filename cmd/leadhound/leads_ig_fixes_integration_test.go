@@ -306,3 +306,275 @@ func TestLeadsIGConsoleReviewLoyalty(t *testing.T) {
 		t.Errorf("rows %+v", p.Rows)
 	}
 }
+
+// igRoasterName gives lead a roastery row from its name, as `leads place-types apply` writes one.
+func igRoasterName(t *testing.T, lead int64) {
+	t.Helper()
+	if err := leadstoretest.Q(t).SetPlaceType(context.Background(), lead, leadstore.PlaceRoastery, leadstore.PlaceFromName, "roasters",
+		nil, leadstore.ActorSystem); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// igHeld is which of leads are held out of café outreach.
+func igHeld(t *testing.T, leads ...int64) map[int64]bool {
+	t.Helper()
+	held, err := leadstoretest.Q(t).HeldLeads(context.Background(), leads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return held
+}
+
+// igPlaceOf is lead's effective place type and its source, as "roastery/instagram".
+func igPlaceOf(t *testing.T, lead int64) string {
+	t.Helper()
+	pts, err := leadstoretest.Q(t).PlaceTypes(context.Background(), []int64{lead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pts[lead].Type + "/" + pts[lead].Source
+}
+
+// igPlaceRows counts the instagram place type rows.
+func igPlaceRows(t *testing.T) int {
+	t.Helper()
+	return dbCount(t, `SELECT count(*) FROM lead_place_type WHERE source = 'instagram'`)
+}
+
+// wantInOrder fails unless every one of lines is in out, each after the one before it.
+func wantInOrder(t *testing.T, what, out string, lines ...string) {
+	t.Helper()
+	at := 0
+	for _, l := range lines {
+		i := strings.Index(out[at:], l)
+		if i < 0 {
+			t.Errorf("%s lacks %q after byte %d:\n%s", what, l, at, out)
+			return
+		}
+		at += i + len(l)
+	}
+}
+
+// TestLeadsIGPlaceTypeFromInstagram: on real Jev's answers an import types the leads it matches
+// strongly. A roastery profile (B, a domain match) is held at once; a café with seating on a
+// roastery-named lead (A) is a café again and listed as released, before the held one. The run's
+// note carries the counts. A re-import and a dry run write no place row. The report lists A as
+// released by Instagram with the read it overrode, B as set by Instagram (marked when Jev's
+// website read says otherwise), and to correct only where Instagram disagrees with the
+// operator's own call, which stands.
+func TestLeadsIGPlaceTypeFromInstagram(t *testing.T) {
+	s := newIGScene(t)
+	igStubJev(t, igSceneFake(t))
+	igRoasterName(t, s.A)
+	lines := []string{igProfileLine(igA), igProfileLine(igB)}
+
+	out := igImport(t, lines)
+	wantInOrder(t, "import", out, "· decider jev ·",
+		"  routes: 1 added",
+		"  place types from Instagram: roastery 1 · café 1 · silent 0\n",
+		fmt.Sprintf("    released: lead %d: café from Instagram, was a roastery from its name\n", s.A),
+		fmt.Sprintf("    held: lead %d: roastery from Instagram, was a café by default\n", s.B))
+	if got := igPlaceOf(t, s.A) + " " + igPlaceOf(t, s.B); got != "cafe/instagram roastery/instagram" {
+		t.Errorf("place types after the import: %s", got)
+	}
+	if held := igHeld(t, s.A, s.B); held[s.A] || !held[s.B] {
+		t.Errorf("held after the import: %v, want only B", held)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM run WHERE command = 'leads-ig-import'
+		AND note LIKE '%; place types from Instagram: roastery 1, café 1, silent 0'`); n != 1 {
+		t.Errorf("%d runs noting the place types, want 1", n)
+	}
+	if n := dbCount(t, `SELECT count(*) FROM lead_place_type WHERE source = 'instagram' AND actor = 'system' AND input_sha256 IS NULL
+		AND detail IN ('@harbour_lane.example: cafe_seating', '@bean_house.example: roastery_or_online')`); n != 2 || igPlaceRows(t) != 2 {
+		t.Errorf("instagram rows as written: %d of %d", n, igPlaceRows(t))
+	}
+
+	rows := igPlaceRows(t)
+	again := igImport(t, lines)
+	wantLines(t, "re-import", again, "  place types from Instagram: roastery 0 · café 0 · silent 0")
+	if strings.Contains(again, "released:") || strings.Contains(again, "held:") || igPlaceRows(t) != rows {
+		t.Errorf("the re-import wrote place rows (%d, was %d):\n%s", igPlaceRows(t), rows, again)
+	}
+	dry := mustRun(t, "leads", "ig", "import", "--dry-run", igFile(t, lines...))
+	wantLines(t, "dry run", dry, "  place types from Instagram: would write roastery 0 · café 0 · silent 0 (from what is stored now, before this file)")
+	if igPlaceRows(t) != rows {
+		t.Errorf("the dry run wrote %d place rows", igPlaceRows(t)-rows)
+	}
+	if out := mustRun(t, "leads", "ig", "lookups", "--place-type", "roastery"); !strings.HasPrefix(out, fmt.Sprintf("%d\t", s.B)) || strings.Count(out, "\n") != 1 {
+		t.Errorf("lookups --place-type roastery: %q, want B alone", out)
+	}
+
+	// Jev's website read says café on B: Instagram still decides, and the report marks it.
+	if err := leadstoretest.Q(t).SetPlaceType(context.Background(), s.B, leadstore.PlaceCafe, leadstore.PlaceFromJev,
+		leadrate.PlaceTypeQuestion, make([]byte, 32), leadstore.ActorSystem); err != nil {
+		t.Fatal(err)
+	}
+	tables := igTables(t)
+	report := mustRun(t, "leads", "ig", "report", "--campaign", "cafes-loyalty")
+	t.Logf("leads ig report:\n%s", report)
+	wantInOrder(t, "report", report,
+		fmt.Sprintf("  lead %d · Harbour Lane Coffee · Exampleton · @harbour_lane.example · now cafe (instagram) · IG place cafe_seating", s.A),
+		fmt.Sprintf("  lead %d · Bean Example House · Springfield · @bean_house.example · now roastery (instagram) · IG place roastery_or_online", s.B),
+		"  released by Instagram: 1 (its café read overrides a roastery read: these get café outreach)\n",
+		fmt.Sprintf("    lead %d · Harbour Lane Coffee · Exampleton · @harbour_lane.example · café from Instagram, overriding a roastery from its name\n", s.A),
+		"  set by Instagram: 1 (wrong? \"It's a coffee shop\" / \"It's a roastery\" on the lead's page)\n",
+		fmt.Sprintf("    lead %d · Bean Example House · Springfield · @bean_house.example · roastery · Jev's website read says café\n", s.B),
+		"  to correct: 0 (Instagram disagrees with your call; nothing was changed)\n",
+		"  not applied: 0 (",
+		"  switch pitch: 1")
+
+	// The operator's call wins: B is a coffee shop by his word, a sync writes nothing over it,
+	// and the report lists B to correct, no longer as set by Instagram.
+	if err := leadstoretest.Q(t).SetPlaceType(context.Background(), s.B, leadstore.PlaceCafe, leadstore.PlaceFromOperator, "", nil,
+		leadstore.ActorGremy); err != nil {
+		t.Fatal(err)
+	}
+	wantLines(t, "sync after the operator's call", mustRun(t, "leads", "ig", "place-types"), "  place types from Instagram: roastery 0 · café 0 · silent 0")
+	if got := igPlaceOf(t, s.B); got != "cafe/operator" {
+		t.Errorf("B after the operator's call: %s", got)
+	}
+	report = mustRun(t, "leads", "ig", "report")
+	wantInOrder(t, "report after the operator's call", report,
+		"  released by Instagram: 1 (",
+		"  set by Instagram: 0 (",
+		"  to correct: 1 (Instagram disagrees with your call; nothing was changed)\n",
+		fmt.Sprintf("    lead %d · Bean Example House · Springfield · @bean_house.example · Instagram reads a roastery or online shop; you called it a coffee shop\n", s.B),
+		"  not applied: 0 (")
+	if got := igTables(t); got != tables {
+		t.Errorf("the report wrote: %s, was %s", got, tables)
+	}
+}
+
+// TestLeadsIGPlaceTypeFollowsOperatorCalls: the type moves with the handle. The operator's
+// unmatch of a roastery read releases its lead ("a café again"), his match of it to a lead holds
+// that lead ("now a roastery, from Instagram's read"), his match of it to another lead moves the
+// hold there and releases the first, and the console's Match says the same. An unmatch on a
+// roastery-named lead Instagram read as a café gives it back to its name.
+func TestLeadsIGPlaceTypeFollowsOperatorCalls(t *testing.T) {
+	s := newIGScene(t)
+	igStubJev(t, igSceneFake(t))
+	igRoasterName(t, s.A)
+	igImport(t, []string{igProfileLine(igA), igProfileLine(igB)})
+	if held := igHeld(t, s.A, s.B); held[s.A] || !held[s.B] {
+		t.Fatalf("held after the import: %v, want only B", held)
+	}
+	ops := func(args ...string) string { return mustRun(t, append([]string{"leads", "ig"}, args...)...) }
+	b, d := strconv.FormatInt(s.B, 10), strconv.FormatInt(s.D, 10)
+
+	out := ops("unmatch", "bean_house.example")
+	wantInOrder(t, "unmatch", out, "leads ig unmatch: @bean_house.example matches no lead", fmt.Sprintf("\n  lead %d is a café again\n", s.B))
+	if held := igHeld(t, s.B); held[s.B] || igPlaceOf(t, s.B) != "cafe/" {
+		t.Errorf("B after the unmatch: %s, held %v", igPlaceOf(t, s.B), held)
+	}
+	if n := dbCount(t, fmt.Sprintf(`SELECT count(*) FROM lead_place_type WHERE lead_id = %d AND source = 'instagram'
+		AND place_type = 'unclear' AND detail = 'no strong match'`, s.B)); n != 1 {
+		t.Errorf("B's silent rows after the unmatch: %d, want 1", n)
+	}
+	wantLines(t, "unmatch again", ops("unmatch", "bean_house.example"), "matches no lead")
+	if strings.Contains(ops("unmatch", "bean_house.example"), "café again") {
+		t.Error("a repeated unmatch says the type moved again")
+	}
+
+	out = ops("match", "bean_house.example", b)
+	wantInOrder(t, "match", out, fmt.Sprintf("leads ig match: @bean_house.example is lead %d now", s.B),
+		fmt.Sprintf("\n  lead %d is now a roastery, from Instagram's read\n", s.B))
+	if !igHeld(t, s.B)[s.B] {
+		t.Error("B is not held after the operator's match of a roastery read")
+	}
+
+	// A re-match to D: B is released (listed first), D held.
+	wantInOrder(t, "re-match", ops("match", "bean_house.example", d),
+		fmt.Sprintf("\n  lead %d is a café again\n", s.B), fmt.Sprintf("  lead %d is now a roastery, from Instagram's read\n", s.D))
+	if held := igHeld(t, s.B, s.D); held[s.B] || !held[s.D] {
+		t.Errorf("held after the re-match: %v, want D alone", held)
+	}
+
+	// The console's Match names the move in its message.
+	ops("unmatch", "bean_house.example")
+	msg, err := leadsBackend(t).InstagramAct(context.Background(), console.IGAction{Do: console.IGMatch, Handle: "bean_house.example", LeadID: s.B})
+	if want := fmt.Sprintf(" Lead %d is now a roastery, from Instagram's read.", s.B); err != nil ||
+		!strings.HasPrefix(msg, fmt.Sprintf("@bean_house.example is lead %d now; ", s.B)) || !strings.HasSuffix(msg, want) {
+		t.Errorf("the console's match: %q, %v; want it to end %q", msg, err, want)
+	}
+	if !igHeld(t, s.B)[s.B] {
+		t.Error("B is not held after the console's match")
+	}
+
+	// A, roastery-named, a café by Instagram's read: the unmatch gives it back to its name.
+	wantLines(t, "unmatch A", ops("unmatch", igA.handle), fmt.Sprintf("  lead %d is a roastery again, from its name", s.A))
+	if got := igPlaceOf(t, s.A); got != "roastery/name" || !igHeld(t, s.A)[s.A] {
+		t.Errorf("A after the unmatch: %s", got)
+	}
+}
+
+// TestLeadsIGPlaceTypesVerb: `leads ig place-types` is the backfill. On a store whose matches
+// and real answers predate the sync (the fake decider's import, which writes no instagram place
+// row, then real Jev's answers), its dry run and the import's dry run say what would be written
+// and write nothing; the run writes it, with the release listed first; a rerun writes nothing.
+// It reads no capture and calls no model.
+func TestLeadsIGPlaceTypesVerb(t *testing.T) {
+	s := newIGScene(t)
+	fake := igSceneFake(t)
+	igRoasterName(t, s.A)
+	lines := []string{igProfileLine(igA), igProfileLine(igB)}
+	wantLines(t, "fake import", igImport(t, lines), "· decider fake ·", "  place types from Instagram: roastery 0 · café 0 · silent 0")
+	if n := igPlaceRows(t); n != 0 {
+		t.Fatalf("the fake decider's import wrote %d instagram place rows", n)
+	}
+	if got := igPlaceOf(t, s.B); got != "cafe/" {
+		t.Errorf("B after the fake's roastery read: %s, want the café default", got)
+	}
+
+	// Real Jev's answers on the newest captures, as an earlier engine stored them.
+	conf := 0.9
+	for h, choice := range map[string]string{igA.handle: leadrate.IGCafeSeating, igB.handle: leadrate.IGRoasteryOrOnline} {
+		id := int64(dbCount(t, `SELECT max(id) FROM ig_profile WHERE handle = '`+h+`'`))
+		if _, err := leadstoretest.Q(t).AddIGJudgment(context.Background(), leadstore.IGJudgment{ProfileID: id, Question: leadstore.IGPlace,
+			Choice: choice, RawChoice: choice, Confidence: &conf, Source: leadstore.IGFromJev, Model: "jev-test-1",
+			InputSHA: bytes.Repeat([]byte{0x1e}, 32)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := fake.Calls()
+
+	dry := mustRun(t, "leads", "ig", "place-types", "--dry-run")
+	wantInOrder(t, "dry run", dry, "leads ig place-types --dry-run: nothing written; no model called, no capture read\n",
+		"  place types from Instagram: would write roastery 1 · café 1 · silent 0\n",
+		fmt.Sprintf("    would release: lead %d: café from Instagram, was a roastery from its name\n", s.A),
+		fmt.Sprintf("    would hold: lead %d: roastery from Instagram, was a café by default\n", s.B))
+	if n := igPlaceRows(t); n != 0 {
+		t.Errorf("the dry run wrote %d rows", n)
+	}
+	wantLines(t, "import dry run", mustRun(t, "leads", "ig", "import", "--dry-run", igFile(t, lines...)),
+		"  place types from Instagram: would write roastery 1 · café 1 · silent 0 (from what is stored now, before this file)",
+		fmt.Sprintf("    would hold: lead %d: roastery from Instagram, was a café by default", s.B))
+	if n := igPlaceRows(t); n != 0 {
+		t.Errorf("the import's dry run wrote %d rows", n)
+	}
+
+	out := mustRun(t, "leads", "ig", "place-types")
+	t.Logf("leads ig place-types:\n%s", out)
+	wantInOrder(t, "cold run", out, "leads ig place-types: synced from what is stored; no model called, no capture read\n",
+		"  place types from Instagram: roastery 1 · café 1 · silent 0\n",
+		fmt.Sprintf("    released: lead %d: café from Instagram, was a roastery from its name\n", s.A),
+		fmt.Sprintf("    held: lead %d: roastery from Instagram, was a café by default\n", s.B))
+	if n := igPlaceRows(t); n != 2 {
+		t.Errorf("the run wrote %d rows, want 2", n)
+	}
+	if held := igHeld(t, s.A, s.B); held[s.A] || !held[s.B] {
+		t.Errorf("held after the run: %v, want only B", held)
+	}
+	rerun := mustRun(t, "leads", "ig", "place-types")
+	wantLines(t, "rerun", rerun, "  place types from Instagram: roastery 0 · café 0 · silent 0")
+	if strings.Contains(rerun, "released:") || strings.Contains(rerun, "held:") || igPlaceRows(t) != 2 {
+		t.Errorf("the rerun wrote (%d rows):\n%s", igPlaceRows(t), rerun)
+	}
+	if fake.Calls() != calls {
+		t.Errorf("place-types called the decider %d times", fake.Calls()-calls)
+	}
+	wantLines(t, "place-types report", mustRun(t, "leads", "place-types", "report"), "  roasteries: 1, of them 0 from a name match, 1 from Instagram")
+	if code, _, errOut := leadsRun(t, "leads", "ig", "place-types", "extra"); code != 2 || !strings.Contains(errOut, "place-types [--dry-run]") {
+		t.Errorf("place-types with an argument: exit %d, %q", code, errOut)
+	}
+}

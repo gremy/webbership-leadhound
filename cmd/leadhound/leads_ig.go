@@ -34,7 +34,8 @@ func init() { leadsCommands["ig"] = runLeadsIG }
 
 const igUsage = "usage: leadhound leads ig import FILE [--campaign SLUG] [--decider jev|fake] [--max-calls N] [--dry-run]" +
 	" | report [--campaign SLUG] | lookups [--campaign SLUG] [--place-type roastery|unclear|any] [--name-word]" +
-	" | review [--status new|dismissed|matched|wanted|all] | match HANDLE LEAD_ID | unmatch HANDLE | dismiss HANDLE | want HANDLE"
+	" | review [--status new|dismissed|matched|wanted|all] | match HANDLE LEAD_ID | unmatch HANDLE | dismiss HANDLE | want HANDLE" +
+	" | place-types [--dry-run]"
 
 const (
 	// commandLeadsIGImport is the run row of an import; its source is the decider (jev or fake).
@@ -52,7 +53,10 @@ const (
 // runLeadsIG is `leads ig <verb>`: Instagram signals on café leads. import writes (and may
 // call Jev); report, lookups and review only read, so make remote runs them free (its list
 // matches a command's first three words); match, unmatch, dismiss and want are the
-// operator's own calls. Nothing here changes a lead, an org or a place type.
+// operator's own calls; place-types writes Instagram's place read as each lead's instagram
+// place type row, and import, match and unmatch end with the same sync. Nothing here changes
+// a lead or an org; the place type changes only through those instagram rows, which the
+// operator's own call always outranks.
 func runLeadsIG(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usageError("%s", igUsage)
@@ -69,6 +73,8 @@ func runLeadsIG(ctx context.Context, args []string) error {
 		return igReviewCmd(ctx, rest)
 	case "match", "unmatch", "dismiss", "want":
 		return igOperatorCmd(ctx, verb, rest)
+	case "place-types":
+		return igPlaceTypesCmd(ctx, rest)
 	}
 	return usageError("unknown ig verb %q; %s", verb, igUsage)
 }
@@ -164,10 +170,12 @@ type igImporter struct {
 // profile and following list in it, matches each to the campaign's café leads, asks Jev about
 // each profile with text (one call, three questions, skipped when the input is unchanged),
 // writes an instagram route on a strong match the lead's org lacks, and queues the review
-// list. A record with a wall is counted and nothing of it is stored. --dry-run reads the
-// file and the leads, writes nothing and calls nobody. A stop (--max-calls, the leads cap,
-// an unavailable provider, failures in a row) leaves the rest due for the next import of the
-// same file and exits 0.
+// list. A record with a wall is counted and nothing of it is stored. Then it syncs each café
+// lead's place type with Instagram's read (SyncIGPlaceTypes), even after a stop; an interrupt
+// skips the sync and says so. --dry-run reads the file and the leads, writes nothing and calls
+// nobody; it says what a sync of what is stored now would write. A stop (--max-calls, the leads
+// cap, an unavailable provider, failures in a row) leaves the rest due for the next import of
+// the same file and exits 0.
 func igImportCmd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads ig import", flag.ContinueOnError)
 	slug := fs.String("campaign", igDefaultCampaign, "the café campaign whose leads profiles are matched to")
@@ -226,7 +234,12 @@ func igImportCmd(ctx context.Context, args []string) error {
 		if err := im.dryRun(ctx, recs); err != nil {
 			return err
 		}
+		sync, err := lq.SyncIGPlaceTypes(ctx, true)
+		if err != nil {
+			return err
+		}
 		printIGDryRun(stdout, c.Slug, im.sum, lineErrs)
+		printIGPlaceSync(stdout, "  ", sync, true, " (from what is stored now, before this file)")
 		return nil
 	}
 	im.name = decider.Name()
@@ -237,6 +250,15 @@ func igImportCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	runErr := im.run(ctx, recs)
+	// The place types follow the matches and answers this import left, a stop included (what
+	// it wrote stands). An interrupt skips it: the operator asked to stop, and place-types or the
+	// next import syncs. The sync itself is never cut short, as the import's own writes are not.
+	var sync leadstore.IGPlaceSync
+	synced := false
+	if runErr == nil && ctx.Err() == nil {
+		sync, runErr = lq.SyncIGPlaceTypes(context.WithoutCancel(ctx), false)
+		synced = runErr == nil
+	}
 	result := store.RunResult{Requests: im.sum.Calls, Failures: im.sum.Failures, StopReason: im.sum.StopReason,
 		Note: fmt.Sprintf("%d records, %d new profiles, %d unchanged, %d still due, %d review rows, %d routes",
 			im.sum.Records, im.sum.ProfilesNew, im.sum.Unchanged, im.sum.Due, im.sum.Queued, im.sum.RoutesAdded)}
@@ -244,7 +266,9 @@ func igImportCmd(ctx context.Context, args []string) error {
 	case runErr != nil:
 		result.Note += "; " + runErr.Error()
 	case ctx.Err() != nil:
-		result.Note += "; interrupted"
+		result.Note += "; interrupted; place types not synced"
+	case synced:
+		result.Note += fmt.Sprintf("; place types from Instagram: roastery %d, café %d, silent %d", sync.Roastery, sync.Cafe, sync.Silent)
 	}
 	if err := q.FinishRun(context.WithoutCancel(ctx), runID, result); err != nil {
 		return errors.Join(runErr, err)
@@ -253,7 +277,120 @@ func igImportCmd(ctx context.Context, args []string) error {
 		return runErr
 	}
 	printIGImport(stdout, runID, c.Slug, kind, im.maxCalls, setup.jevLeadsDailyCap(), im.sum, lineErrs)
+	if synced {
+		printIGPlaceSync(stdout, "  ", sync, false, "")
+	} else {
+		_, _ = fmt.Fprintln(stdout, "  place types from Instagram: not synced (interrupted); run leads ig place-types")
+	}
 	return ctx.Err()
+}
+
+// igPlaceTypesCmd is `leads ig place-types`: it syncs every café lead's place type with
+// Instagram's read as stored (SyncIGPlaceTypes), as an import ends, and prints what changed.
+// It calls no model and reads no capture, so it is the backfill after a deploy; --dry-run says
+// what it would write and writes nothing. A rerun writes nothing.
+func igPlaceTypesCmd(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("leads ig place-types", flag.ContinueOnError)
+	dry := fs.Bool("dry-run", false, "say what would be written; write nothing")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usageError("%s", igUsage)
+	}
+	lq, _, done, err := igOpen(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	sync, err := lq.SyncIGPlaceTypes(ctx, *dry)
+	if err != nil {
+		return err
+	}
+	head := "leads ig place-types: synced from what is stored; no model called, no capture read"
+	if *dry {
+		head = "leads ig place-types --dry-run: nothing written; no model called, no capture read"
+	}
+	_, _ = fmt.Fprintln(stdout, head)
+	printIGPlaceSync(stdout, "  ", sync, *dry, "")
+	return nil
+}
+
+// printIGPlaceSync prints what one SyncIGPlaceTypes wrote (dry: would write), each line after
+// indent: the rows by type, then each lead released to café outreach (the one road a roastery
+// could be pitched, so never below the rest), then each lead held as a roastery. Lead ids
+// only, as the import prints: no handle, no name.
+func printIGPlaceSync(w io.Writer, indent string, s leadstore.IGPlaceSync, dry bool, tail string) {
+	wrote, release, hold := "", "released", "held"
+	if dry {
+		wrote, release, hold = "would write ", "would release", "would hold"
+	}
+	_, _ = fmt.Fprintf(w, "%splace types from Instagram: %sroastery %d · café %d · silent %d%s\n", indent, wrote, s.Roastery, s.Cafe, s.Silent, tail)
+	for _, c := range s.Released {
+		_, _ = fmt.Fprintf(w, "%s  %s: %s\n", indent, release, igPlaceChangeLine(c))
+	}
+	for _, c := range s.Held {
+		_, _ = fmt.Fprintf(w, "%s  %s: %s\n", indent, hold, igPlaceChangeLine(c))
+	}
+}
+
+// igPlaceChangeLine is one lead a sync moved, with what decided it after and before:
+// "lead 12: café from Instagram, was a roastery from its name". A lead Instagram fell silent
+// on (an unmatch, a call that no longer decides) says so.
+func igPlaceChangeLine(c leadstore.IGPlaceChange) string {
+	line := fmt.Sprintf("lead %d: %s %s, was a %s %s", c.LeadID, igPlaceTypeWord(c.After.Type), igPlaceSourceWords(c.After.Source),
+		igPlaceTypeWord(c.Before.Type), igPlaceSourceWords(c.Before.Source))
+	if c.After.Source != leadstore.PlaceFromInstagram {
+		line += " (Instagram is silent now)"
+	}
+	return line
+}
+
+// igPlaceChanges are a sync's moved leads, the released first.
+func igPlaceChanges(s leadstore.IGPlaceSync) []leadstore.IGPlaceChange {
+	return append(slices.Clone(s.Released), s.Held...)
+}
+
+// igPlaceChangeWords is one lead an operator's call moved, as a sentence without its full stop:
+// "lead 12 is now a roastery, from Instagram's read", or "lead 12 is a café again" when
+// Instagram fell silent and the next source (or the café default) speaks.
+func igPlaceChangeWords(c leadstore.IGPlaceChange) string {
+	fromIG := c.After.Source == leadstore.PlaceFromInstagram
+	switch {
+	case c.After.Type == leadstore.PlaceRoastery && fromIG:
+		return fmt.Sprintf("lead %d is now a roastery, from Instagram's read", c.LeadID)
+	case c.After.Type == leadstore.PlaceRoastery:
+		return fmt.Sprintf("lead %d is a roastery again, %s", c.LeadID, igPlaceSourceWords(c.After.Source))
+	case fromIG:
+		return fmt.Sprintf("lead %d is now a café, from Instagram's read", c.LeadID)
+	}
+	return fmt.Sprintf("lead %d is a café again", c.LeadID)
+}
+
+// igPlaceTypeWord is a place type as the sync's lines say it.
+func igPlaceTypeWord(placeType string) string {
+	if placeType == leadstore.PlaceCafe {
+		return "café"
+	}
+	return placeType
+}
+
+// igPlaceSourceWords is what decided a place type, in words: "by default" when no source spoke.
+func igPlaceSourceWords(source string) string {
+	switch source {
+	case leadstore.PlaceFromOperator:
+		return "from your call"
+	case leadstore.PlaceFromInstagram:
+		return "from Instagram"
+	case leadstore.PlaceFromJev:
+		return "from Jev's website read"
+	case leadstore.PlaceFromName:
+		return "from its name"
+	case "":
+		return "by default"
+	}
+	return "from " + source
 }
 
 // newIGImporter reads what an import compares against: the campaign's café leads (the
@@ -1084,22 +1221,29 @@ func (l igReportLine) switchPitch() bool {
 	return l.loyal == leadrate.IGRunsScheme || !slices.Contains([]string{"", leadrate.IGNoVendor, leadrate.IGUnclear}, l.vendor)
 }
 
-// igCorrection is what Instagram's place call says against the lead's effective place type,
-// or "" when they agree or Instagram cannot tell.
-func (l igReportLine) correction() string {
+// disagreement is what Instagram's place call says against the lead's effective place type,
+// with whose the type is (yours: the operator's call; otherwise "the lead is"), or "" when
+// they agree or Instagram cannot tell.
+func (l igReportLine) disagreement(yours bool) string {
+	is := "the lead is"
+	if yours {
+		is = "you called it"
+	}
 	switch igPlaceDisagrees(l.place, l.key.PlaceType) {
 	case leadstore.PlaceRoastery:
-		return "Instagram reads a roastery or online shop; the lead is a coffee shop"
+		return "Instagram reads a roastery or online shop; " + is + " a coffee shop"
 	case leadstore.PlaceCafe:
-		return "Instagram reads a café with seating; the lead is a roastery"
+		return "Instagram reads a café with seating; " + is + " a roastery"
 	}
 	return ""
 }
 
 // igPlaceDisagrees is the place type Instagram's place call igPlace points to when it
 // disagrees with a lead's effective place type placeType (leadstore.PlaceRoastery or
-// leadstore.PlaceCafe), or "" when they agree or Instagram cannot tell. The report's "to
-// correct" list and the lead page's Instagram card both read it; neither changes the lead.
+// leadstore.PlaceCafe), or "" when they agree or Instagram cannot tell. The report and the
+// lead page's Instagram card read it; neither writes. Once synced, Instagram's real read is
+// the lead's type unless the operator's call outranks it, so a disagreement is then his call
+// against Instagram's (or the fake decider's answer, which never sets a type).
 func igPlaceDisagrees(igPlace, placeType string) string {
 	switch {
 	case igPlace == leadrate.IGRoasteryOrOnline && placeType == leadstore.PlaceCafe:
@@ -1112,9 +1256,12 @@ func igPlaceDisagrees(igPlace, placeType string) string {
 
 // igReportCmd is `leads ig report`: it writes nothing. It counts every handle's latest match
 // by tier, the review list by status and the standing answers on the campaign's strongly
-// matched leads, prints one line per strong match, then the two lists the operator acts on:
-// the leads to correct (Instagram's place call disagrees with the lead's place type; nothing
-// is changed for him) and the switch pitches (a café already running a scheme).
+// matched leads, prints one line per strong match, then the lists the operator acts on: the
+// leads released by Instagram (its café read overrides a roastery read from Jev or the name:
+// the one road a roastery could be pitched, so first), every other lead whose type Instagram
+// set, the leads to correct (Instagram disagrees with his own call, which stands), the leads
+// whose read set no type (the fake decider's, or not synced yet) and the switch pitches (a
+// café already running a scheme). A lead where Instagram and Jev's website read disagree says so.
 func igReportCmd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads ig report", flag.ContinueOnError)
 	slug := fs.String("campaign", "", "only this campaign's leads (default: every café campaign)")
@@ -1162,6 +1309,18 @@ func igReportCmd(ctx context.Context, args []string) error {
 		lines = append(lines, igReportLine{key: k, ig: ig, handle: ig.Match.Handle, place: ig.Judgments[leadstore.IGPlace].Choice,
 			loyal: ig.Judgments[leadstore.IGLoyalty].Choice, vendor: ig.Judgments[leadstore.IGVendor].Choice})
 	}
+	ids := make([]int64, len(lines))
+	for i, l := range lines {
+		ids[i] = l.key.LeadID
+	}
+	types, err := lq.PlaceTypes(ctx, ids)
+	if err != nil {
+		return err
+	}
+	under, err := igUnderReads(ctx, db, ids)
+	if err != nil {
+		return err
+	}
 	judged := map[string]map[string]int{leadstore.IGPlace: {}, leadstore.IGLoyalty: {}, leadstore.IGVendor: {}}
 	for _, l := range lines {
 		for q, c := range map[string]string{leadstore.IGPlace: l.place, leadstore.IGLoyalty: l.loyal, leadstore.IGVendor: l.vendor} {
@@ -1180,27 +1339,88 @@ func igReportCmd(ctx context.Context, args []string) error {
 	_, _ = fmt.Fprintf(w, "  review: new %d · dismissed %d · matched %d · wanted %d\n", statuses[leadstore.IGReviewNew],
 		statuses[leadstore.IGReviewDismissed], statuses[leadstore.IGReviewMatched], statuses[leadstore.IGReviewWanted])
 	for _, l := range lines {
-		_, _ = fmt.Fprintf(w, "  %s · now %s · IG place %s · loyalty %s · vendor %s\n", l.head(), cmp.Or(l.key.PlaceType, "-"),
+		now := cmp.Or(l.key.PlaceType, "-")
+		if src := types[l.key.LeadID].Source; src != "" {
+			now += " (" + src + ")"
+		}
+		_, _ = fmt.Fprintf(w, "  %s · now %s · IG place %s · loyalty %s · vendor %s\n", l.head(), now,
 			cmp.Or(l.place, "-"), cmp.Or(l.loyal, "-"), cmp.Or(l.vendor, "-"))
 	}
-	var fix, pitch []string
+	var released, set, fix, unapplied, pitch []string
 	for _, l := range lines {
-		if c := l.correction(); c != "" {
-			fix = append(fix, fmt.Sprintf("    %s · %s", l.head(), c))
+		pt, below := types[l.key.LeadID], under[l.key.LeadID]
+		switch {
+		case pt.Source == leadstore.PlaceFromInstagram && pt.Type == leadstore.PlaceCafe && below.Type == leadstore.PlaceRoastery:
+			released = append(released, fmt.Sprintf("    %s · café from Instagram, overriding a roastery %s", l.head(), igPlaceSourceWords(below.Source)))
+		case pt.Source == leadstore.PlaceFromInstagram:
+			set = append(set, fmt.Sprintf("    %s · %s%s", l.head(), igPlaceTypeWord(pt.Type), igJevSays(l.key.JevPlaceType, pt.Type)))
+		case pt.Source == leadstore.PlaceFromOperator:
+			if d := l.disagreement(true); d != "" {
+				fix = append(fix, fmt.Sprintf("    %s · %s", l.head(), d))
+			}
+		default:
+			if d := l.disagreement(false); d != "" {
+				unapplied = append(unapplied, fmt.Sprintf("    %s · %s", l.head(), d))
+			}
 		}
 		if l.switchPitch() {
 			pitch = append(pitch, fmt.Sprintf("    %s · loyalty %s · vendor %s", l.head(), cmp.Or(l.loyal, "-"), cmp.Or(l.vendor, "-")))
 		}
 	}
-	_, _ = fmt.Fprintf(w, "  to correct: %d (nothing was changed: correct the place type on the lead's page)\n", len(fix))
-	for _, s := range fix {
-		_, _ = fmt.Fprintln(w, s)
-	}
-	_, _ = fmt.Fprintf(w, "  switch pitch: %d (already running a loyalty scheme)\n", len(pitch))
-	for _, s := range pitch {
-		_, _ = fmt.Fprintln(w, s)
+	for _, list := range []struct {
+		head  string
+		lines []string
+	}{
+		{fmt.Sprintf("released by Instagram: %d (its café read overrides a roastery read: these get café outreach)", len(released)), released},
+		{fmt.Sprintf(`set by Instagram: %d (wrong? "It's a coffee shop" / "It's a roastery" on the lead's page)`, len(set)), set},
+		{fmt.Sprintf("to correct: %d (Instagram disagrees with your call; nothing was changed)", len(fix)), fix},
+		{fmt.Sprintf("not applied: %d (Instagram's read sets no type: the fake decider's answer, or not synced yet: run leads ig place-types)",
+			len(unapplied)), unapplied},
+		{fmt.Sprintf("switch pitch: %d (already running a loyalty scheme)", len(pitch)), pitch},
+	} {
+		_, _ = fmt.Fprintf(w, "  %s\n", list.head)
+		for _, s := range list.lines {
+			_, _ = fmt.Fprintln(w, s)
+		}
 	}
 	return nil
+}
+
+// igJevSays marks a lead Instagram typed placeType where Jev's website read (jevType, its latest
+// row) says the other type: "" when Jev agrees, was never asked or could not tell.
+func igJevSays(jevType, placeType string) string {
+	if jevType == "" || jevType == leadstore.PlaceUnclear || jevType == placeType {
+		return ""
+	}
+	return " · Jev's website read says " + igPlaceTypeWord(jevType)
+}
+
+// igUnderReads is, for each of ids, the place type the sources under Instagram give: Jev's
+// website read when its latest row decides (it outranks the name), else the name's latest row,
+// as placeTypeWinnerSQL ranks them; a lead neither decides is not in the map. It is what
+// Instagram's read overrides, for the report's released list.
+func igUnderReads(ctx context.Context, db store.DBTX, ids []int64) (map[int64]leadstore.PlaceTypeRow, error) {
+	rows, err := db.Query(ctx,
+		`SELECT DISTINCT ON (w.lead_id) w.lead_id, w.place_type, w.source, w.detail FROM (
+		     SELECT DISTINCT ON (t.lead_id, t.source) t.lead_id, t.place_type, t.source, t.detail
+		     FROM lead_place_type t WHERE t.lead_id = ANY($1::bigint[]) AND t.source = ANY($2::text[])
+		     ORDER BY t.lead_id, t.source, t.id DESC
+		   ) w
+		 WHERE w.place_type <> $3
+		 ORDER BY w.lead_id, (w.source = $4) DESC`,
+		ids, []string{leadstore.PlaceFromJev, leadstore.PlaceFromName}, leadstore.PlaceUnclear, leadstore.PlaceFromJev)
+	if err != nil {
+		return nil, fmt.Errorf("leads ig report: place reads: %w", err)
+	}
+	reads, err := pgx.CollectRows(rows, pgx.RowToStructByName[leadstore.PlaceTypeRow])
+	if err != nil {
+		return nil, fmt.Errorf("leads ig report: place reads: %w", err)
+	}
+	out := make(map[int64]leadstore.PlaceTypeRow, len(reads))
+	for _, r := range reads {
+		out[r.LeadID] = r
+	}
+	return out, nil
 }
 
 // countWords is counts as "a 2 · b 1", by name; "none" when empty.
@@ -1417,7 +1637,7 @@ func igOperatorCmd(ctx context.Context, verb string, args []string) error {
 func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config, verb, raw string, leadID int64) error {
 	switch verb {
 	case "match":
-		handle, added, err := igOperatorMatch(ctx, lq, db, cfg, raw, leadID)
+		handle, added, sync, err := igOperatorMatch(ctx, lq, db, cfg, raw, leadID)
 		if err != nil {
 			return err
 		}
@@ -1426,9 +1646,10 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 			route = "Instagram route added"
 		}
 		_, _ = fmt.Fprintf(stdout, "leads ig match: @%s is lead %d now (%s)\n", handle, leadID, route)
+		printIGPlaceChanges(sync)
 		return nil
 	case "unmatch":
-		handle, back, err := igOperatorUnmatch(ctx, lq, db, cfg, raw)
+		handle, back, sync, err := igOperatorUnmatch(ctx, lq, db, cfg, raw)
 		if err != nil {
 			return err
 		}
@@ -1437,6 +1658,7 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 			tail = "; back on the review list"
 		}
 		_, _ = fmt.Fprintf(stdout, "leads ig unmatch: @%s matches no lead%s\n", handle, tail)
+		printIGPlaceChanges(sync)
 		return nil
 	}
 	status := leadstore.IGReviewDismissed
@@ -1453,6 +1675,14 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 	}
 	_, _ = fmt.Fprintf(stdout, "leads ig %s: @%s is %s\n", verb, handle, status)
 	return nil
+}
+
+// printIGPlaceChanges prints each lead an operator's call moved, one line each, the released
+// first.
+func printIGPlaceChanges(sync leadstore.IGPlaceSync) {
+	for _, c := range igPlaceChanges(sync) {
+		_, _ = fmt.Fprintf(stdout, "  %s\n", igPlaceChangeWords(c))
+	}
 }
 
 // igRefusal is an operator's call on a handle refused, in words the CLI prints as a usage error
@@ -1482,36 +1712,45 @@ func igOperatorHandle(ctx context.Context, db store.DBTX, raw string) (string, e
 // outranks every later import's match), the handle is marked matched, the lead's org gets the
 // handle as its instagram route when it holds none (a retired one of that handle is claimed back
 // as his), and a route an import wrote for the handle on another org (the lead it matched before)
-// is taken back. It is `leads ig match` and the console's button alike.
+// is taken back. Then the place types follow the handle (SyncIGPlaceTypes): the lead takes
+// Instagram's read of it, and the lead it leaves falls back to its next source; sync says which
+// moved. It is `leads ig match` and the console's button alike.
 func igOperatorMatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config, raw string,
-	leadID int64) (handle string, routeAdded bool, err error) {
+	leadID int64) (handle string, routeAdded bool, sync leadstore.IGPlaceSync, err error) {
 	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	keys, err := lq.IGLeadKeys(ctx, 0)
 	if err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	i := slices.IndexFunc(keys, func(k leadstore.IGLeadKey) bool { return k.LeadID == leadID })
 	if i < 0 {
-		return "", false, igRefusal(fmt.Sprintf("lead %d is not a café lead Instagram can be matched to", leadID))
+		return "", false, sync, igRefusal(fmt.Sprintf("lead %d is not a café lead Instagram can be matched to", leadID))
 	}
 	if _, err := lq.SetIGMatch(ctx, leadstore.IGMatch{Handle: handle, LeadID: leadID, Tier: leadstore.IGTierOperator,
 		Detail: "your call", Actor: leadstore.ActorGremy}); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	if _, err := lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewMatched, "", leadstore.ActorGremy); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	org := keys[i].OrgID
 	if _, err := igTakeBack(ctx, db, cfg, handle, org); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
-	if routeAdded, err = igEnsureRoute(ctx, lq, org, handle); err != nil || routeAdded {
-		return handle, routeAdded, err
+	if routeAdded, err = igEnsureRoute(ctx, lq, org, handle); err != nil {
+		return "", false, sync, err
 	}
-	routeAdded, err = igClaimRetiredRoute(ctx, db, cfg, org, handle)
-	return handle, routeAdded, err
+	if !routeAdded {
+		if routeAdded, err = igClaimRetiredRoute(ctx, db, cfg, org, handle); err != nil {
+			return "", false, sync, err
+		}
+	}
+	if sync, err = lq.SyncIGPlaceTypes(ctx, false); err != nil {
+		return "", false, sync, err
+	}
+	return handle, routeAdded, sync, nil
 }
 
 // igClaimRetiredRoute claims org orgID's retired instagram route of handle back as the
@@ -1544,27 +1783,35 @@ func igClaimRetiredRoute(ctx context.Context, pool *pgxpool.Pool, cfg leadconfig
 
 // igOperatorUnmatch is the operator's "it is no lead": an operator's match with no lead, so no
 // import attaches it again; every route an import wrote for the handle is taken back
-// (igTakeBack); a handle marked matched goes back on the review list (back).
-func igOperatorUnmatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config, raw string) (handle string, back bool, err error) {
+// (igTakeBack); a handle marked matched goes back on the review list (back). Then the place
+// types follow (SyncIGPlaceTypes): the lead the handle typed falls back to its next source,
+// and sync says which moved.
+func igOperatorUnmatch(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool, cfg leadconfig.Config,
+	raw string) (handle string, back bool, sync leadstore.IGPlaceSync, err error) {
 	if handle, err = igOperatorHandle(ctx, db, raw); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	if _, err := lq.SetIGMatch(ctx, leadstore.IGMatch{Handle: handle, Tier: leadstore.IGTierOperator,
 		Detail: "unmatched by you", Actor: leadstore.ActorGremy}); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	if _, err := igTakeBack(ctx, db, cfg, handle, 0); err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
 	items, err := lq.IGReview(ctx, leadstore.IGReviewMatched)
 	if err != nil {
-		return "", false, err
+		return "", false, sync, err
 	}
-	if !slices.ContainsFunc(items, func(it leadstore.IGReviewItem) bool { return it.Handle == handle }) {
-		return handle, false, nil
+	if slices.ContainsFunc(items, func(it leadstore.IGReviewItem) bool { return it.Handle == handle }) {
+		if _, err := lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewNew, "unmatched", leadstore.ActorGremy); err != nil {
+			return "", false, sync, err
+		}
+		back = true
 	}
-	_, err = lq.SetIGReviewStatus(ctx, handle, leadstore.IGReviewNew, "unmatched", leadstore.ActorGremy)
-	return handle, err == nil, err
+	if sync, err = lq.SyncIGPlaceTypes(ctx, false); err != nil {
+		return "", false, sync, err
+	}
+	return handle, back, sync, nil
 }
 
 // igSetStatus is the operator's dismiss (not a lead) or want (wanted as a lead) on raw: its

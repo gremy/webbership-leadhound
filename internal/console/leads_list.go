@@ -642,6 +642,8 @@ func (t triageView) SourceWords() string {
 		return "Jev"
 	case "name":
 		return "its name"
+	case "instagram":
+		return "Instagram"
 	}
 	return t.Row.PlaceTypeSource
 }

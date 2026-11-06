@@ -167,7 +167,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   Undo (on the toast, `u`, or the row under Status all) puts the lead back and clears that "no" only if it is still the lead's latest call, so a call you made since stays; a Drupal lead skips with no call written.
   A lead the system skipped, such as a duplicate of the same place, shows its reason and no Undo.
   Good saves the call "likely" (a `strong` call stays) and leaves the lead where it is, because an answer key of skips alone can never pass the trust gate.
-  The roastery correction is your own place type, which outranks the name and Jev's answer and writes no call; a café lead's page has the same two buttons.
+  The roastery correction is your own place type, which outranks the name, Jev's answer and Instagram's read and writes no call; a café lead's page has the same two buttons.
   While Roasteries in café outreach is off on Controls (the default), a roastery or online coffee store is kept for later and never contacted by a café campaign: it is left out of batches, Send now, the call queue and Draft it, and a pending message to one is cancelled at send.
   A lead's page (`/leads/{id}`) shows the finding with its evidence, the ways to reach them and the pages they came from, phone numbers, description and social links, the agency page, the site, its history, its place in the queue, its messages and one line per reason it ranks where it does.
   It also has a Next step card, its drafts, its contacts, its proposals and its sector.
@@ -319,7 +319,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
   The batch, contact research and Draft it units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00031: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch, 00031 Instagram signals and the Instagram channel).
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00032: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch, 00031 Instagram signals and the Instagram channel, 00032 Instagram as a source of the place type).
   The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches, campaign mailbox assignments, contact marks, people, draft edits, sectors, proof and proposals: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 
@@ -354,7 +354,8 @@ COPY (
   The timers build and batch `drupal-eol` only, so the café campaign's build and batch run by hand.
   A café whose homepage links your own loyalty product is a customer and gets no lead: list your product's hosts in `leads.yaml` as `probe.cafe_own_vendor_hosts` (private; never in the repository).
   The build skips a lead that is the same place as another (same normalised name, address and town) as the system, keeping one; a duplicate you called or starred stays.
-- **Place types**: a café lead is a coffee shop or a roastery (roasteries and online-only coffee stores), from its name (the `place_words.roastery` list in `internal/cafe/signals.yaml`), from Jev, or from your correction on the console; your correction wins, then Jev, then the name, and a lead with none is a coffee shop.
+- **Place types**: a café lead is a coffee shop or a roastery (roasteries and online-only coffee stores), from its name (the `place_words.roastery` list in `internal/cafe/signals.yaml`), from Jev's read of its website, from Instagram's read of its profile (see "Instagram signals"), or from your correction on the console.
+  Your call wins, then Instagram's read, then Jev's website read, then the name, and a lead with none is a coffee shop.
   `leads place-types report [--campaign SLUG] [--sample N]` counts the café leads whose names carry a roastery word and prints a sample of them; it writes nothing.
   `leads place-types apply [--campaign SLUG]` stores those name tags; the café build tags each new lead the same way, so apply is for leads built before it, or brought in by `leads transfer import`, whose files carry no place types.
   `leads rate --campaign cafes-loyalty` with the Jev decider also asks Jev, once per lead, whether the place is a café to sit in or a roastery or online store, after a clean relevance pass; an "unclear" answer leaves the name or the default standing.
@@ -406,9 +407,22 @@ The profiles are read in the operator's own logged-in Chrome by a local skill th
   An answer below confidence 0.6 is stored as unclear, with Jev's own choice beside it.
   A vendor seen in a link or an @-tag of the bio or captions is stored by rule and outranks Jev's vendor answer; a profile with no bio, captions or category is judged unclear by rule, with no call.
   An import stops cleanly at `--max-calls` (100 by default) or at the leads daily cap, and the next import of the same file asks the rest.
-- **Signals never move a lead**: no import changes a lead's state, place type or events, and none creates a lead or an organisation.
-  `leads ig report [--campaign SLUG]` counts the matches, the answers and the review list, prints one line per strongly matched lead, then the two lists you act on: **to correct** (Instagram's place call disagrees with the lead's place type) and **switch pitch** (the café already runs a scheme, with its vendor).
-  The correction stays yours, with the place-type buttons on the lead's page or `r` on the Leads list.
+- **Instagram's place read sets the place type**: on a lead with a strong match, or yours, Jev's `ig_place` answer is the lead's Instagram place type, which ranks under your call and over Jev's website read and the name.
+  A roastery or online shop makes the lead a roastery, so it is held from café outreach at once.
+  A café with seating makes it a coffee shop, even when its name or its website read says roastery, because a roastery with a café to sit in can use a loyalty card.
+  Any other answer, a fake decider's answer, or no strong match any more (an unmatch, or the handle matched to another lead) leaves Instagram silent, and the next source decides.
+  The place type follows every `leads ig import` (including one stopped at `--max-calls` or the cap; a dry run says what it would write), every `leads ig match` and `unmatch`, and the console's It's this lead, and each prints the leads whose type changed.
+  `leads ig place-types [--dry-run]` does only that sync: no Jev call, no capture file, and a second run writes nothing.
+  It is the backfill after a deploy, and safe to run any time.
+- **Other signals never move a lead**: the loyalty and vendor answers and the hints change no lead's state, place type or events, and no import creates a lead or an organisation.
+  `leads ig report [--campaign SLUG]` counts the matches, the answers and the review list and prints one line per strongly matched lead.
+  Then come the lists you act on, in this order.
+  **Released by Instagram** comes first: the leads Instagram reads as a café while Jev's website read or the name says roastery, each with the read it overrode, because this is the one road a roastery could be pitched.
+  **Set by Instagram** is every other lead whose place type Instagram decided, with its type and handle, marked where Jev's website read disagrees.
+  **To correct** is only the leads where Instagram's place call disagrees with your own call; nothing is changed.
+  **Not applied** is the leads whose Instagram place call sets no type yet: a fake decider's answer, or a read not synced (run `leads ig place-types`).
+  **Switch pitch** is the cafés that already run a scheme, with their vendor.
+  Overriding Instagram stays yours, with "It's a coffee shop" or "It's a roastery" on the lead's page or `r` on the Leads list; `leads ig report` writes nothing.
   A matched lead's page shows an Instagram card under The place: the handle, followers, when it was read, how it matched, Instagram's place, loyalty and vendor calls, and hints.
   "Followed by a loyalty vendor's own account" is such a hint, and it never counts as running a scheme.
 - **The review list**: the cafés Instagram showed that match no lead, or only by name, on the console's Instagram page under Leads (`/leads/instagram`), by status: new, dismissed, matched, wanted.

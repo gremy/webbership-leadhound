@@ -68,6 +68,10 @@ func TestLeadsIGConsoleCard(t *testing.T) {
 	if page.PlaceType == leadstore.PlaceCafe && bc.Disagree != leadstore.PlaceRoastery {
 		t.Errorf("a coffee shop Instagram reads as a roastery does not say so: %q", bc.Disagree)
 	}
+	// The fake decider's read sets no type: the chip is the café default, and the card disagrees.
+	if page.PlaceType != leadstore.PlaceCafe || page.PlaceTypeSource != "" {
+		t.Errorf("B's chip on the fake's read: %s from %q, want the café default", page.PlaceType, page.PlaceTypeSource)
+	}
 
 	if c := card(s.C); c != nil {
 		t.Errorf("a weak name match shows its signals: %+v", c)
@@ -77,6 +81,47 @@ func TestLeadsIGConsoleCard(t *testing.T) {
 	}
 	if after := igSnapshot(t); after != before {
 		t.Error("reading the lead page changed a lead, an org, a place type or an event")
+	}
+}
+
+// TestLeadsIGConsoleCardRealJev: on real Jev's answers the card and the place-type chip agree.
+// B, read as a roastery, is a roastery by Instagram's read with no disagreement line; A, a café
+// with seating, a coffee shop by the same; the operator's own call over B shows the card
+// disagreeing with his call, which stands.
+func TestLeadsIGConsoleCardRealJev(t *testing.T) {
+	s := newIGScene(t)
+	igStubJev(t, igSceneFake(t))
+	igImport(t, igSceneLines(""))
+	b := leadsBackend(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		lead              int64
+		placeType, source string
+		place             string
+	}{
+		{s.B, leadstore.PlaceRoastery, leadstore.PlaceFromInstagram, "a roastery or online shop"},
+		{s.A, leadstore.PlaceCafe, leadstore.PlaceFromInstagram, "a café with seating"},
+	} {
+		page, err := b.LeadDetail(ctx, tc.lead)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.PlaceType != tc.placeType || page.PlaceTypeSource != tc.source || page.Instagram == nil ||
+			page.Instagram.Place != tc.place || page.Instagram.Disagree != "" {
+			t.Errorf("lead %d: chip %s from %q, card %+v; want %s from %s, %q, no disagreement",
+				tc.lead, page.PlaceType, page.PlaceTypeSource, page.Instagram, tc.placeType, tc.source, tc.place)
+		}
+	}
+	if err := b.lq().SetPlaceType(ctx, s.B, leadstore.PlaceCafe, leadstore.PlaceFromOperator, "", nil, leadstore.ActorGremy); err != nil {
+		t.Fatal(err)
+	}
+	page, err := b.LeadDetail(ctx, s.B)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.PlaceType != leadstore.PlaceCafe || page.PlaceTypeSource != leadstore.PlaceFromOperator || page.Instagram == nil ||
+		page.Instagram.Disagree != leadstore.PlaceRoastery {
+		t.Errorf("B after the operator's call: chip %s from %q, card %+v", page.PlaceType, page.PlaceTypeSource, page.Instagram)
 	}
 }
 

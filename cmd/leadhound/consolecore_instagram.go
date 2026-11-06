@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/gremy/webbership-leadhound/internal/cafe"
 	"github.com/gremy/webbership-leadhound/internal/console"
@@ -20,7 +21,9 @@ import (
 // The console's Instagram: the card on a café lead's page and the review list. Both read what
 // `leads ig import` stored; the review list's calls run the same igOperator* functions as
 // `leads ig match`, `dismiss` and `want`, so the console and the CLI cannot disagree. Nothing
-// here changes a lead, its state or its place type.
+// here changes a lead or its state. The place type moves only through the match: like `leads
+// ig match`, it ends with SyncIGPlaceTypes, so the lead takes Instagram's read of the handle
+// (the operator's own place call still outranks it), and the message says which lead moved.
 
 // igPlaceWords is Instagram's place call in words; "" for no call.
 func igPlaceWords(choice string) string {
@@ -203,7 +206,7 @@ func (b *backend) InstagramAct(ctx context.Context, a console.IGAction) (string,
 	msg, err := func() (string, error) {
 		switch a.Do {
 		case console.IGMatch:
-			handle, added, err := igOperatorMatch(ctx, lq, db, setup.leads, a.Handle, a.LeadID)
+			handle, added, sync, err := igOperatorMatch(ctx, lq, db, setup.leads, a.Handle, a.LeadID)
 			if err != nil {
 				return "", err
 			}
@@ -211,7 +214,12 @@ func (b *backend) InstagramAct(ctx context.Context, a console.IGAction) (string,
 			if added {
 				route = "its Instagram route is added"
 			}
-			return fmt.Sprintf("@%s is lead %d now; %s.", handle, a.LeadID, route), nil
+			msg := fmt.Sprintf("@%s is lead %d now; %s.", handle, a.LeadID, route)
+			for _, c := range igPlaceChanges(sync) {
+				w := igPlaceChangeWords(c)
+				msg += " " + strings.ToUpper(w[:1]) + w[1:] + "."
+			}
+			return msg, nil
 		case console.IGDismiss, console.IGWant:
 			status, words := leadstore.IGReviewDismissed, "not a lead"
 			if a.Do == console.IGWant {

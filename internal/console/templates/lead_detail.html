@@ -223,7 +223,7 @@
 {{/* lead_place_type is a café lead's place type, who decided it, and the operator's correction; it shows nothing for any other lead. */}}
 {{define "lead_place_type"}}{{$d := .Data}}{{if $d.PlaceType}}{{$roast := eq $d.PlaceType "roastery"}}{{$mine := eq $d.PlaceTypeSource "operator"}}
     <div class="place-type stack-sm">
-      <p class="cluster"><span class="badge{{if $roast}} badge-accent{{end}}">{{if $roast}}Roastery or online store{{else}}Coffee shop{{end}}</span>{{with $d.PlaceTypeSource}} <span class="muted small">{{if eq . "name"}}from its name{{else if eq . "jev"}}Jev's read{{else if eq . "operator"}}your call{{end}}</span>{{end}}</p>
+      <p class="cluster"><span class="badge{{if $roast}} badge-accent{{end}}">{{if $roast}}Roastery or online store{{else}}Coffee shop{{end}}</span>{{with $d.PlaceTypeSource}} <span class="muted small">{{if eq . "name"}}from its name{{else if eq . "jev"}}Jev's read{{else if eq . "instagram"}}Instagram's read{{else if eq . "operator"}}your call{{end}}</span>{{end}}</p>
       <div class="btn-row" role="group" aria-label="Correct the place type">
         <form method="post" action="/leads/{{$d.LeadID}}/roastery"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm{{if and $roast $mine}} is-current{{end}}"{{if and $roast $mine}} aria-current="true"{{end}}>It's a roastery</button></form>
         <form method="post" action="/leads/{{$d.LeadID}}/cafe"><input type="hidden" name="back" value="{{.Back}}"><button type="submit" class="btn btn-secondary btn-sm{{if and (not $roast) $mine}} is-current{{end}}"{{if and (not $roast) $mine}} aria-current="true"{{end}}>It's a coffee shop</button></form>

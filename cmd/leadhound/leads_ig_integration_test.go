@@ -549,11 +549,28 @@ func TestLeadsIGStatusGrid(t *testing.T) {
 // igSnapshot is every row of lead, org, lead_place_type and lead_event, whole.
 func igSnapshot(t *testing.T) string {
 	t.Helper()
+	return igSnapshotWhere(t, "true")
+}
+
+// igSnapshotNotIG is igSnapshot without lead_place_type's instagram rows: what an import or an
+// operator's Instagram call must never change.
+func igSnapshotNotIG(t *testing.T) string {
+	t.Helper()
+	return igSnapshotWhere(t, "x.source <> '"+leadstore.PlaceFromInstagram+"'")
+}
+
+// igSnapshotWhere is igSnapshot with lead_place_type's rows filtered by where.
+func igSnapshotWhere(t *testing.T, where string) string {
+	t.Helper()
 	var parts []string
 	for _, tbl := range []string{"lead", "org", "lead_place_type", "lead_event"} {
+		filter := ""
+		if tbl == "lead_place_type" {
+			filter = " WHERE " + where
+		}
 		var s string
 		if err := storetest.OwnerConn(t).QueryRow(context.Background(),
-			`SELECT coalesce(md5(string_agg(row_to_json(x)::text, '|' ORDER BY x.id)), '') || ':' || count(*) FROM `+tbl+` x`).Scan(&s); err != nil {
+			`SELECT coalesce(md5(string_agg(row_to_json(x)::text, '|' ORDER BY x.id)), '') || ':' || count(*) FROM `+tbl+` x`+filter).Scan(&s); err != nil {
 			t.Fatal(err)
 		}
 		parts = append(parts, tbl+" "+s)
@@ -562,17 +579,22 @@ func igSnapshot(t *testing.T) string {
 }
 
 // TestLeadsIGNeverMovesALead: imports of every record shape (the parser's mixed testdata, the
-// scene, a recapture) and the operator's calls change no lead, org, place type or event; a
-// dry run writes nothing at all.
+// scene, a recapture), on real Jev's answers, and the operator's calls change no lead, org or
+// event, and the only place type rows they add are Instagram's own (system, no hash); a dry run
+// writes nothing at all.
 func TestLeadsIGNeverMovesALead(t *testing.T) {
 	s := newIGScene(t)
-	igSceneFake(t)
-	before := igSnapshot(t)
+	igStubJev(t, igSceneFake(t))
+	before := igSnapshotNotIG(t)
+	whole := igSnapshot(t)
 	tables := igTables(t)
 	out := mustRun(t, "leads", "ig", "import", "--dry-run", "../../internal/igsignal/testdata/mixed.jsonl")
 	wantLines(t, "dry run", out, "· 13 records · 2 walls · 0 lines refused · nothing written, nobody called")
 	if got := igTables(t); got != tables {
 		t.Errorf("the dry run wrote: %s, was %s", got, tables)
+	}
+	if got := igSnapshot(t); got != whole {
+		t.Errorf("the dry run moved a lead or wrote a place type:\n%s\nwas\n%s", got, whole)
 	}
 	if n := dbCount(t, `SELECT count(*) FROM run WHERE command = 'leads-ig-import'`); n != 0 {
 		t.Errorf("the dry run recorded %d runs", n)
@@ -586,13 +608,23 @@ func TestLeadsIGNeverMovesALead(t *testing.T) {
 	mustRun(t, "leads", "ig", "report")
 	mustRun(t, "leads", "ig", "lookups")
 	mustRun(t, "leads", "ig", "review", "--status", "all")
-	if got := igSnapshot(t); got != before {
+	mustRun(t, "leads", "ig", "place-types")
+	if got := igSnapshotNotIG(t); got != before {
 		t.Errorf("Instagram moved a lead:\n%s\nwas\n%s", got, before)
+	}
+	// The scene's real reads did type leads (B a roastery, A a café until its unmatch), so the
+	// rows above are Instagram's, each by the system with no hash.
+	if n := dbCount(t, `SELECT count(*) FROM lead_place_type WHERE source = 'instagram'`); n == 0 {
+		t.Error("no instagram place type rows: the check above proves nothing")
+	}
+	if n := dbCount(t, `SELECT count(*) FROM lead_place_type WHERE source = 'instagram' AND (actor <> 'system' OR input_sha256 IS NOT NULL)`); n != 0 {
+		t.Errorf("%d instagram place type rows not the system's, or with a hash", n)
 	}
 }
 
-// TestLeadsIGReadVerbs: report counts and lists the strong matches with the two sections the
-// operator acts on; lookups prints one tab-separated line per café lead, filtered; review
+// TestLeadsIGReadVerbs: report counts and lists the strong matches with the sections the
+// operator acts on (on the fake decider's answers, which set no type: see
+// TestLeadsIGPlaceTypeFromInstagram for Jev's); lookups prints one tab-separated line per café lead, filtered; review
 // lists the queue with its candidates. None of them writes.
 func TestLeadsIGReadVerbs(t *testing.T) {
 	s := newIGScene(t)
@@ -609,7 +641,12 @@ func TestLeadsIGReadVerbs(t *testing.T) {
 		"  review: new 3 · dismissed 0 · matched 0 · wanted 0",
 		fmt.Sprintf("  lead %d · Harbour Lane Coffee · Exampleton · @harbour_lane.example · now cafe · IG place cafe_seating · loyalty runs_scheme · vendor stampino", s.A),
 		fmt.Sprintf("  lead %d · Bean Example House · Springfield · @bean_house.example · now cafe · IG place roastery_or_online · loyalty none_seen · vendor none", s.B),
-		"  to correct: 1 (nothing was changed",
+		// The fake decider's answers never set a type: nothing is released, set or to correct, and
+		// B's roastery read is listed as not applied rather than lost.
+		"  released by Instagram: 0 (",
+		"  set by Instagram: 0 (",
+		"  to correct: 0 (Instagram disagrees with your call; nothing was changed)",
+		"  not applied: 1 (Instagram's read sets no type: the fake decider's answer, or not synced yet: run leads ig place-types)",
 		fmt.Sprintf("    lead %d · Bean Example House · Springfield · @bean_house.example · Instagram reads a roastery or online shop; the lead is a coffee shop", s.B),
 		"  switch pitch: 1 (already running a loyalty scheme)",
 		fmt.Sprintf("    lead %d · Harbour Lane Coffee · Exampleton · @harbour_lane.example · loyalty runs_scheme · vendor stampino", s.A))
