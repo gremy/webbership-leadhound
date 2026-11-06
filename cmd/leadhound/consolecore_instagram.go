@@ -169,8 +169,22 @@ func (b *backend) InstagramReview(ctx context.Context, status string) (console.I
 		}
 		row := console.IGReviewRow{Handle: it.Handle, URL: enrich.InstagramURL(it.Handle), Name: it.FollowName, Place: igPlaceWords(it.Place),
 			Loyalty: igReviewWords(it.Loyalty, igLoyaltyWords), Vendor: igReviewWords(it.Vendor, func(c string) string { return igVendorWords(ccfg, c) })}
-		if it.Profile != nil {
-			row.Name, row.Category = cmp.Or(it.Profile.FullName, row.Name), it.Profile.Category
+		if pr := it.Profile; pr != nil {
+			row.Name, row.Category = cmp.Or(pr.FullName, row.Name), pr.Category
+			row.Bio, row.Website = pr.Bio, pr.ExternalURL
+			if len(pr.Captions) > 0 {
+				row.LatestPost = pr.Captions[0]
+			}
+			if pr.Followers != nil && pr.Posts != nil {
+				row.Followers, row.Posts, row.Counted = *pr.Followers, *pr.Posts, true
+			}
+			row.Private = pr.IsPrivate != nil && *pr.IsPrivate
+			row.Missing = pr.Outcome == leadstore.IGOutcomeMissing
+			at := pr.CapturedAt
+			row.CapturedAt = &at
+			if pr.Source == leadstore.IGSourceFollowing {
+				row.FoundIn = pr.SourceOf
+			}
 		}
 		for _, id := range it.Candidates {
 			c := console.IGCandidate{LeadID: id, Name: "Lead " + strconv.FormatInt(id, 10)}

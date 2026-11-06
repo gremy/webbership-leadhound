@@ -4568,3 +4568,38 @@ kbd {
 .toast[hidden] {
   display: none;
 }
+
+/* The Instagram review row: the bio whole (its line breaks kept, up to four lines), the newest
+   post's caption on one line, so a call can be made without opening the profile. */
+.ig-bio {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+.ig-post {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ig-facts > * {
+  margin: 0;
+}
+.ig-facts > * + * {
+  margin-top: 4px;
+}
+.ig-facts > .ig-bio {
+  margin-block: 8px;
+}
+.ig-facts > .cluster {
+  display: flex;
+}

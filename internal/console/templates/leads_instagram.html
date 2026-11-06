@@ -17,11 +17,16 @@
 <div class="stack-sm mt-2">
   {{range $v.Rows}}{{$row := .}}
   <article class="card card-body stack-sm" id="ig-{{.Handle}}">
-    <div class="list-main">
+    <div class="list-main ig-facts">
       <h2 class="list-title"><a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">@{{.Handle}}</a></h2>
       {{if or .Name .Category}}<p class="list-meta">{{.Name}}{{if and .Name .Category}} · {{end}}{{.Category}}</p>{{end}}
+      {{if or .Counted .Private .Missing}}<p class="list-meta cluster">{{if .Counted}}<span>{{thousands .Followers}} followers · {{thousands .Posts}} posts</span>{{end}}{{if .Private}}<span class="badge">private</span>{{end}}{{if .Missing}}<span class="badge badge-warn">no longer there</span>{{end}}</p>{{end}}
+      {{with .Bio}}<p class="ig-bio">{{.}}</p>{{end}}
+      {{with .Website}}<p class="list-meta">Website: {{if webURL .}}<a href="{{.}}" rel="noopener noreferrer nofollow" target="_blank">{{.}}</a>{{else}}{{.}}{{end}}</p>{{end}}
+      {{with .LatestPost}}<p class="ig-post" title="{{.}}">Latest post: {{.}}</p>{{end}}
       <p class="list-meta">Instagram says {{or .Place "nothing yet: not read as a profile"}}</p>
       {{if or .Loyalty .Vendor}}<p class="list-meta">{{with .Loyalty}}Loyalty: {{.}}{{end}}{{if and .Loyalty .Vendor}} · {{end}}{{with .Vendor}}Vendor: {{.}}{{end}}</p>{{end}}
+      {{if or .FoundIn .CapturedAt}}<p class="list-meta">{{with .FoundIn}}Found in @{{.}}'s following{{end}}{{if and .FoundIn .CapturedAt}} · {{end}}{{with .CapturedAt}}read {{when .}}{{end}}</p>{{end}}
     </div>
     {{if .Candidates}}
     <ul class="item-list">
@@ -39,6 +44,7 @@
     </ul>
     {{else}}<p class="muted">No lead it may be.</p>{{end}}
     <div class="btn-row" role="group" aria-label="Your call on @{{.Handle}}">
+      <a class="btn btn-primary btn-sm" href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">Open on Instagram<span class="visually-hidden">: @{{.Handle}} (new tab)</span></a>
       {{if ne $v.Status "dismissed"}}<form method="post" action="/leads/instagram/dismiss">
         <input type="hidden" name="handle" value="{{.Handle}}">
         <input type="hidden" name="status" value="{{$v.Status}}">

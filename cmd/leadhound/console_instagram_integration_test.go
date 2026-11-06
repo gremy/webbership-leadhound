@@ -158,8 +158,17 @@ func TestLeadsIGConsoleReview(t *testing.T) {
 		c.Candidates[0].Name == "" || c.URL != "https://www.instagram.com/cafeneaua.exemplu/" || c.Place != "a café with seating" {
 		t.Fatalf("the weak match's row: %+v", c)
 	}
-	if row(p, "newcafe.example") == nil || row(p, "roast_follow.example") == nil {
-		t.Errorf("the unmatched café or the following account is missing: %+v", p.Rows)
+	e, f := row(p, "newcafe.example"), row(p, "roast_follow.example")
+	if e == nil || f == nil {
+		t.Fatalf("the unmatched café or the following account is missing: %+v", p.Rows)
+	}
+	// The read profile carries what its capture read; the account never read carries none of it.
+	if e.Bio != "Coffee and cake, come and sit" || !e.Counted || e.Followers != 100 || e.Posts != 10 || e.CapturedAt == nil ||
+		e.Website != "" || e.LatestPost != "" || e.Private || e.Missing || e.FoundIn != "" {
+		t.Errorf("the read café's row: %+v", e)
+	}
+	if f.Bio != "" || f.Counted || f.CapturedAt != nil || f.Private || f.Missing {
+		t.Errorf("the never-read account's row: %+v", f)
 	}
 	if p.Counts[console.IGReviewNew] != len(p.Rows) {
 		t.Errorf("new count %d for %d rows", p.Counts[console.IGReviewNew], len(p.Rows))

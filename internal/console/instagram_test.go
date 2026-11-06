@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // igFake is the Instagram part of fakeBackend: a review list it answers from, and the calls it
@@ -155,7 +156,7 @@ func TestInstagramReviewRowLayout(t *testing.T) {
 	for _, part := range strings.Split(body, `<article class="card card-body stack-sm" id="ig-`)[1:] {
 		handle, rest, _ := strings.Cut(part, `"`)
 		rows[handle], _, _ = strings.Cut(rest, "</article>")
-		if !strings.HasPrefix(rows[handle], ">\n    <div class=\"list-main\">\n      <h2 class=\"list-title\">") {
+		if !strings.HasPrefix(rows[handle], ">\n    <div class=\"list-main ig-facts\">\n      <h2 class=\"list-title\">") {
 			t.Errorf("@%s: the card body does not open on its head: %.120q", handle, rows[handle])
 		}
 	}
@@ -441,5 +442,53 @@ func TestLeadWithoutInstagramUnchanged(t *testing.T) {
 	srv.pages = srv.parseTemplates()
 	if strings.Contains(render(), `id="instagram"`) {
 		t.Error("a lead that is not a café shows the card")
+	}
+}
+
+// TestInstagramReviewRowAtAGlance: a read profile's row shows its counts, bio (escaped, its line
+// breaks kept), website as a link, newest post, the list it was found in and when it was read,
+// with an "Open on Instagram" button to its profile in a new tab; a website that is not an http
+// or https address is text, never a link; private and missing accounts say so; a row never
+// read shows none of it.
+func TestInstagramReviewRowAtAGlance(t *testing.T) {
+	b := richBackend("x")
+	at := time.Date(2026, 11, 6, 21, 0, 0, 0, time.UTC)
+	b.igRows[IGReviewNew] = []IGReviewRow{
+		{Handle: "read.example", URL: "https://www.instagram.com/read.example/", Bio: "Roasting since 2019\n<b>Shop online</b>",
+			Website: "https://read.example/shop", LatestPost: "New Ethiopia on the shelf", Followers: 12345, Posts: 678, Counted: true,
+			CapturedAt: &at, FoundIn: "stampino.app"},
+		{Handle: "odd.example", URL: "https://www.instagram.com/odd.example/", Website: "javascript:alert(1)", Private: true, CapturedAt: &at},
+		{Handle: "gone.example", URL: "https://www.instagram.com/gone.example/", Missing: true, CapturedAt: &at},
+		{Handle: "never.example", URL: "https://www.instagram.com/never.example/"},
+	}
+	h := newHarness(t, b, false)
+	body := igMarkup(t, h.do(get(leadsIGPath, h.session(t))).Body.String())
+	rows := map[string]string{}
+	for _, part := range strings.Split(body, `<article class="card card-body stack-sm" id="ig-`)[1:] {
+		handle, rest, _ := strings.Cut(part, `"`)
+		rows[handle], _, _ = strings.Cut(rest, "</article>")
+	}
+	for handle, wants := range map[string][]string{
+		"read.example": {"<span>12,345 followers · 678 posts</span>", `<p class="ig-bio">Roasting since 2019` + "\n" + `&lt;b&gt;Shop online&lt;/b&gt;</p>`,
+			`Website: <a href="https://read.example/shop" rel="noopener noreferrer nofollow" target="_blank">https://read.example/shop</a>`,
+			"Latest post: New Ethiopia on the shelf", "Found in @stampino.app's following · read Fri 6 Nov 21:00",
+			`<a class="btn btn-primary btn-sm" href="https://www.instagram.com/read.example/" rel="noopener noreferrer nofollow" target="_blank">Open on Instagram`},
+		"odd.example":   {"Website: javascript:alert(1)</p>", `<span class="badge">private</span>`, "read Fri 6 Nov 21:00", "Open on Instagram"},
+		"gone.example":  {`<span class="badge badge-warn">no longer there</span>`},
+		"never.example": {`href="https://www.instagram.com/never.example/" rel="noopener noreferrer nofollow" target="_blank">Open on Instagram`},
+	} {
+		for _, want := range wants {
+			if !strings.Contains(rows[handle], want) {
+				t.Errorf("@%s lacks %q", handle, want)
+			}
+		}
+	}
+	if strings.Contains(rows["odd.example"], `href="javascript`) || strings.Contains(rows["odd.example"], "followers") {
+		t.Errorf("@odd.example links a non-web address or counts it did not read: %q", rows["odd.example"])
+	}
+	for _, not := range []string{"followers", "ig-bio", "Website:", "Latest post:", "Found in", " Nov ", "badge"} {
+		if strings.Contains(rows["never.example"], not) {
+			t.Errorf("the never-read row shows %q", not)
+		}
 	}
 }

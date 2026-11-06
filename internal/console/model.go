@@ -687,7 +687,15 @@ type IGReviewRow struct {
 	// the name signals.yaml gives it; each "" when unclear, none or never judged, and the
 	// row's Loyalty line is left out when both are "".
 	Loyalty, Vendor string
-	Candidates      []IGCandidate
+	// What the latest capture read, so the call can be made without opening Instagram; each
+	// zero when there is no capture or it did not read that part.
+	Bio, Website, LatestPost string // the profile's bio and link, and its newest post's caption
+	Followers, Posts         int
+	Counted                  bool // the capture counted followers and posts
+	Private, Missing         bool // the account is private, or the capture found no such account
+	CapturedAt               *time.Time
+	FoundIn                  string // the handle whose following list held it; "" otherwise
+	Candidates               []IGCandidate
 }
 
 // IGCandidate is a lead a review row may be. Matchable is false for a lead Instagram cannot be
