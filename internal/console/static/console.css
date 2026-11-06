@@ -1389,20 +1389,90 @@ details.inline summary {
     width: 100%;
   }
 }
-/* Leads: the filter form folds behind "Filters" under 640 px and is always open above it. */
-.filter-fold[open] > summary {
-  margin-bottom: 0.75rem;
+/* Leads: the filter is one button at every width ("Filters · N on"), closed until asked for;
+   open, its groups sit side by side in one panel instead of stacking down the page. */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+.filter-fold {
+  min-width: 0;
+}
+.filter-fold[open] {
+  flex-basis: 100%;
+}
+.filter-fold > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 36px;
+  padding: 0 0.85rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+.filter-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.filter-fold > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+.filter-fold[open] > summary::after {
+  transform: translateY(2px) rotate(-135deg);
+}
+.filter-fold > summary:hover {
+  background: var(--surface-2);
+}
+.filter-fold[open] > .lead-filters {
+  margin-top: 0.5rem;
+  padding: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.filter-clear {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+/* Open, the panel has its own Clear; the one beside the button would drop under the panel. */
+.filter-fold[open] ~ .filter-clear {
+  display: none;
+}
+.filter-bar > .filter-note {
+  flex-basis: 100%;
+  margin: 0;
 }
 @media (min-width: 640px) {
-  .filter-fold > summary {
-    display: none;
+  .lead-filters {
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
   }
-  .filter-fold::details-content {
-    content-visibility: visible;
+  .lead-filters > .filter-fields,
+  .lead-filters > .filter-buttons {
+    grid-column: 1 / -1;
   }
-  .filter-fields > .filter-sort {
-    grid-column: span 2;
+  .lead-filters .checks label {
+    min-height: 30px;
+    font-size: var(--fs-sm);
   }
+  .filter-fields {
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  }
+}
+/* The leads list takes the whole window, the shell with it so the header lines up with the table. */
+body:has(.page-wide) {
+  --content: 100%;
 }
 /* Leads: the star toggle, and a starred lead's moves in the outreach order. */
 .star-form {

@@ -1,6 +1,7 @@
 {{define "content"}}
 {{$v := .Data}}{{$p := $v.P}}{{$f := $p.Filter}}{{$o := $p.Options}}
-<div class="page">
+{{/* page-wide lets this page, and the shell around it, take the whole window: the table has more columns than 1200 px hold. */}}
+<div class="page page-wide">
 <div class="page-head">
   <div>
     <h1>Leads</h1>
@@ -45,9 +46,9 @@
 </nav>
 {{end}}
 
-<section class="card mt-2">
+{{/* The filter is one button, closed at every width; it opens into a panel above the list. */}}
+<section class="filter-bar mt-2">
   <h2 class="visually-hidden">Filter</h2>
-  <div class="card-body">
   <details class="filter-fold">
   <summary>Filters{{with $v.Filters}} · {{.}} on{{end}}</summary>
   <form method="get" action="/leads" class="lead-filters">
@@ -129,8 +130,8 @@
     </div>
   </form>
   </details>
-  {{range $p.Notes}}<p class="hint mt-1">{{.}}</p>{{end}}
-  </div>
+  {{if $v.Filters}}<a class="filter-clear" href="/leads">Clear the filter</a>{{end}}
+  {{range $p.Notes}}<p class="hint filter-note">{{.}}</p>{{end}}
 </section>
 
 {{if $v.NoLeads}}

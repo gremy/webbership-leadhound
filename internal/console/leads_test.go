@@ -744,7 +744,7 @@ func TestLeadListPage(t *testing.T) {
 		`<input type="hidden" name="back" value="/leads?page=2#lead-n-5">`,
 		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="badge">small site</span>`,
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
-		`<p class="hint mt-1">Northwind Trading</p>`,
+		`<p class="hint filter-note">Northwind Trading</p>`,
 		`<span class="item-meta">Drupal end-of-life</span>`, `<td class="kind-cell">Northwind Trading<span class="cell-sub">Drupal end-of-life</span></td>`,
 		`<a href="/leads/campaigns">Campaigns</a>`,
 	} {
@@ -1282,10 +1282,13 @@ func TestLeadListFilterForm(t *testing.T) {
 	if strings.Contains(body, "Phone number</label>") || !strings.Contains(body, `name="has_phone" value="1"> Has a phone number`) {
 		t.Error("the phone filter is offered twice, or not at all")
 	}
-	for _, want := range []string{`<details class="filter-fold">`, "<summary>Filters</summary>", `<div class="field filter-sort">`} {
+	for _, want := range []string{`<details class="filter-fold">`, "<summary>Filters</summary>", `<div class="field filter-sort">`, `class="page page-wide"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/leads lacks %q", want)
 		}
+	}
+	if strings.Contains(body, `class="filter-clear"`) {
+		t.Error("a Clear link beside the fold with no filter on")
 	}
 	body = h.do(get("/leads?channel=phone&has_phone=1&kind=d10&status=all", c)).Body.String()
 	if !strings.Contains(body, `name="channel" value="phone" checked> Phone number`) {
@@ -1293,6 +1296,9 @@ func TestLeadListFilterForm(t *testing.T) {
 	}
 	if !strings.Contains(body, "<summary>Filters · 4 on</summary>") {
 		t.Error("the folded form does not count the filters on")
+	}
+	if !strings.Contains(body, `<a class="filter-clear" href="/leads">Clear the filter</a>`) {
+		t.Error("no Clear link beside the fold with filters on")
 	}
 	if b.listQ.HasPhone != "1" {
 		t.Errorf("has_phone reached the backend as %q", b.listQ.HasPhone)

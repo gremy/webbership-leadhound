@@ -74,7 +74,7 @@ func TestCSSBoardScoping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(raw), `{{define "content"}}`) && !strings.Contains(string(raw), `<div class="page">`) {
+		if strings.Contains(string(raw), `{{define "content"}}`) && !regexp.MustCompile(`<div class="page[ "]`).Match(raw) {
 			t.Errorf("%s has a page that is not in a .page", e.Name())
 		}
 	}
