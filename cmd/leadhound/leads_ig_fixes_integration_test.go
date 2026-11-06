@@ -38,9 +38,9 @@ func igStubJev(t *testing.T, f *ai.Fake) *ai.Fake {
 	return f
 }
 
-// igAt is p captured at at.
-func igAt(p igP, at string) igP {
-	p.at = at
+// igLater is p captured again, a day after the first capture.
+func igLater(p igP) igP {
+	p.at = "2026-11-06T09:00:00Z"
 	return p
 }
 
@@ -81,7 +81,7 @@ func TestLeadsIGFakeNeverOverwritesJev(t *testing.T) {
 	jevRows := func() int { return dbCount(t, `SELECT count(*) FROM ig_judgment WHERE source = 'jev'`) }
 	rows := jevRows()
 
-	recap := []string{igProfileLine(igAt(igA, "2026-11-06T09:00:00Z")), igProfileLine(igAt(igE, "2026-11-06T09:00:00Z"))}
+	recap := []string{igProfileLine(igLater(igA)), igProfileLine(igLater(igE))}
 	wantLines(t, "fake import", igImport(t, recap, "--decider", "fake"), "· decider fake ·", "  jev: calls 0 ·",
 		"real Jev's answers kept from the fake 2")
 	if fake.Calls() != 0 || jevRows() != rows {
@@ -119,7 +119,7 @@ func TestLeadsIGRecaptureCountsMove(t *testing.T) {
 	f := igStub(t, igDefaultFake())
 	igImport(t, []string{igProfileLine(igE)})
 	calls := f.Calls()
-	moved := igAt(igE, "2026-11-06T09:00:00Z")
+	moved := igLater(igE)
 	moved.followers, moved.following, moved.posts = 104, 51, 11
 	wantLines(t, "recapture", igImport(t, []string{igProfileLine(moved)}), "  profiles: 1 new", "  jev: calls 0 · unchanged 1")
 	if f.Calls() != calls {
@@ -161,7 +161,7 @@ func TestLeadsIGTakeBackOnNotCoffee(t *testing.T) {
 	wantLines(t, "contacts", mustRun(t, "leads", "contacts", "list", strconv.FormatInt(s.B, 10)),
 		"instagram: https://www.instagram.com/bean_house.example/ (from Instagram)")
 
-	turned := igAt(igB, "2026-11-06T09:00:00Z")
+	turned := igLater(igB)
 	turned.category, turned.bio = "Web designer", "We design websites"
 	f.ByState[igStateOf(t, igProfileLine(turned))] = igNotCoffeeAns()
 	wantLines(t, "not coffee", igImport(t, []string{igProfileLine(turned)}), "not coffee 1", "  routes: 0 added · 1 taken back")
@@ -270,7 +270,7 @@ func TestLeadsIGSiteHandleNeedsTheName(t *testing.T) {
 		RouteID: igInstagramRoutes(t, s.C)[route].ID, Mark: leadstore.MarkClaim}); err != nil {
 		t.Fatal(err)
 	}
-	igImport(t, []string{igProfileLine(igAt(theme, "2026-11-06T09:00:00Z"))})
+	igImport(t, []string{igProfileLine(igLater(theme))})
 	if got := tier(theme.handle); got != fmt.Sprintf("handle %d", s.C) {
 		t.Errorf("the claimed handle matched %s", got)
 	}

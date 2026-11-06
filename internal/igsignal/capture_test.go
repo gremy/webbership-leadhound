@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func parseString(s string) ([]Record, []LineError) { return Parse(strings.NewRea
 
 func readTestdata(t *testing.T, name string) ([]Record, []LineError) {
 	t.Helper()
-	f, err := os.Open("testdata/" + name)
+	f, err := os.Open(filepath.Join("testdata", name)) //nolint:gosec // G304: tests read their own fixtures by name
 	if err != nil {
 		t.Fatal(err)
 	}

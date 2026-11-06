@@ -24,7 +24,7 @@ import (
 
 // igCafeWorld is cafeScene with a mailbox, the clock on a weekday and the batch drawing from
 // every lead, so Draft it and batch new can run on the café campaign.
-func igCafeWorld(t *testing.T) int64 {
+func igCafeWorld(t *testing.T) {
 	t.Helper()
 	cid := cafeScene(t)
 	t.Setenv("LEADHOUND_OUTREACH", "")
@@ -36,7 +36,6 @@ func igCafeWorld(t *testing.T) int64 {
 	if _, err := leadstoretest.Q(t).SetCampaignMailbox(context.Background(), cid, mb.ID, true, leadstore.ActorGremy); err != nil {
 		t.Fatal(err)
 	}
-	return cid
 }
 
 // igRouteOn gives lead's org handle as an instagram route, as a website's link would.

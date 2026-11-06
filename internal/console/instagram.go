@@ -120,5 +120,5 @@ func (s *server) instagramAct(w http.ResponseWriter, r *http.Request) {
 	}
 	s.leadsLog(logDo, "ok")
 	s.setFlash(w, msg)
-	http.Redirect(w, r, igStatusURL(status), http.StatusSeeOther)
+	http.Redirect(w, r, igStatusURL(status), http.StatusSeeOther) //nolint:gosec // G710: status is one of IGReviewStatuses (checked above), so the target is one of four fixed Leads paths
 }
