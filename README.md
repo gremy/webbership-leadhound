@@ -319,7 +319,7 @@ A contact-form or LinkedIn text is pasted by you, so it has nothing to earn: Cla
   `LEADHOUND_LEADS_SEND` is retired: the first deploy with the console switches carries it over once, pausing sending when it was not `on`.
   The deploy prints which leads timers are on and, for those off, which lines are missing; the steps are in "Leads on the server" in `deploy/README.md`.
   The batch, contact research and Draft it units hold the Anthropic key as a systemd credential and fail to start without it; nothing else holds it, the console least of all.
-- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00030: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch).
+- **Migrations**: the leads tables have their own migration set, versioned in `goose_db_version_leads`; `leadhound migrate` applies the core set (up to 00009), then the leads set (up to 00031: 00026 the Status page's `service_status` and `claude_topup`, 00027 the manual send's `send_request` and `send_override`, 00028 the CRM, 00029 outreach by hand, 00030 place types and the roasteries switch, 00031 Instagram signals and the Instagram channel).
   The stars, enrichment facts, relevance ratings and evals, console settings and your calls are each append-only tables, and so are the campaign versions, call outcomes, email consents, Claude drafts and their reviews, screenings, places, job switches, campaign mailbox assignments, contact marks, people, draft edits, sectors, proof and proposals: every change is a new row, and the app role cannot update or delete them.
   Only `leads forget`, run as the owner role, removes an organisation's personal data.
 
@@ -375,3 +375,50 @@ COPY (
   A US, Canadian or Australian café is callable only with its state known, which the import stores from the place.
 - **Attribution**: the place data comes from Overture Maps Foundation (overturemaps.org); Overture publishes the Places theme under CDLA Permissive 2.0, and a lead from a place says so on its page.
   Check Overture's attribution page for the release you export: themes that include OpenStreetMap data are under ODbL and need "© OpenStreetMap contributors" as well.
+
+#### Instagram signals
+
+A café's Instagram often says what its website does not: whether there is seating, whether it already runs a stamp card or a loyalty app, and with which vendor.
+LeadHound never reads Instagram itself: no `leads ig` command fetches anything from it.
+The profiles are read in the operator's own logged-in Chrome by a local skill that lives outside this repository, read-only and paced like a person, into a capture file that `leads ig import` reads.
+
+- **The capture file**: JSON lines in the `ig-capture@1` shape: one `profile` record per profile read (name, category, bio, external link, counts, whether it is private, at most 12 captions) and one `following` record per following list read.
+  A following list keeps only the accounts whose handle or name carries a coffee word (`coffee-words@1`, the `instagram.coffee_words` list in `internal/cafe/signals.yaml`).
+  Keep capture files in the data dir (`data/instagram/` locally, which git ignores): they hold other businesses' public text and never belong in the repository.
+  A record carrying `wall` is where the reader stopped (a login form, a rate limit): the import counts it and stores nothing of it.
+  A malformed line is named by its number, never its text, and importing the same file again stores nothing twice.
+- **Import**: `leads ig import FILE [--campaign SLUG] [--decider jev|fake] [--max-calls N] [--dry-run]` stores every profile and following list, matches each to the campaign's café leads (`cafes-loyalty` by default), asks Jev about each profile and fills the review list.
+  `--decider` is the fake unless `LEADHOUND_LIVE=1`, and `--decider jev` without it is refused, so an unattended run never reaches Jev; `--dry-run` writes nothing and calls nobody.
+  It prints counts only, never a handle or a name.
+- **Matching**: a profile attaches to a lead only by its handle or by its website, the two strong tiers.
+  The handle tier is a handle the lead already holds: its Instagram route, a social link on its site, its homepage probe or its map listing.
+  The website tier is a profile whose external link has the lead's own domain; link-in-bio pages, social and messaging hosts, shared platforms and every vendor host in `signals.yaml` are no website.
+  A name match (the same normalised name, with the lead's town a whole word of the profile's name, bio or category, or a name no other café lead carries) is weak, and so are two or more leads tied at the best tier: the profile waits on the review list with its candidates.
+  A handle or website match that Jev reads as not coffee never attaches either (a website can link its theme author's account, or another café's): it goes on the review list with the lead as its candidate.
+  A following-list account has only a handle and a name, so it matches on those two tiers only, and an account also read as a profile is matched by its profile.
+  A capture's own lead number is never a match, because ids differ between databases.
+  Accounts of your own loyalty product (`probe.cafe_own_vendor_hosts`) are customers, and they never reach the review list, nor do the vendors' own accounts.
+  Your call always wins: `leads ig match HANDLE LEAD_ID` attaches a handle to a café lead, `leads ig unmatch HANDLE` says it is no lead, and no later import overrides either.
+  A strong match, or yours, writes the handle as the lead's `instagram` route (`https://www.instagram.com/<handle>/`) when its organisation holds none, never over one you added; a weak match never writes one.
+- **Jev's three questions**: one call per profile asks `ig_place` (a café with seating, a roastery or online shop, not coffee, unclear), `ig_loyalty` (runs a scheme, none seen, unclear) and `ig_vendor` (one of the loyalty vendors in `signals.yaml`, a paper card, an unnamed app or QR code, none, unclear), under the version `ig-signals@1`.
+  Jev sees the profile's name, category, bio, the host of its link, its counts and its captions, never its handle or any @-tag, and is told the text is data, not instructions.
+  The call is skipped when the same handle was already asked on the same input, so a recapture with unchanged text costs nothing.
+  An answer below confidence 0.6 is stored as unclear, with Jev's own choice beside it.
+  A vendor seen in a link or an @-tag of the bio or captions is stored by rule and outranks Jev's vendor answer; a profile with no bio, captions or category is judged unclear by rule, with no call.
+  An import stops cleanly at `--max-calls` (100 by default) or at the leads daily cap, and the next import of the same file asks the rest.
+- **Signals never move a lead**: no import changes a lead's state, place type or events, and none creates a lead or an organisation.
+  `leads ig report [--campaign SLUG]` counts the matches, the answers and the review list, prints one line per strongly matched lead, then the two lists you act on: **to correct** (Instagram's place call disagrees with the lead's place type) and **switch pitch** (the café already runs a scheme, with its vendor).
+  The correction stays yours, with the place-type buttons on the lead's page or `r` on the Leads list.
+  A matched lead's page shows an Instagram card under The place: the handle, followers, when it was read, how it matched, Instagram's place, loyalty and vendor calls, and hints.
+  "Followed by a loyalty vendor's own account" is such a hint, and it never counts as running a scheme.
+- **The review list**: the cafés Instagram showed that match no lead, or only by name, on the console's Instagram page under Leads (`/leads/instagram`), by status: new, dismissed, matched, wanted.
+  Each row has three actions: It's this lead (on one of its candidates), Not a lead, and Want as lead; `leads ig match|dismiss|want` do the same on the command line, and `leads ig unmatch` is the command line's only.
+  Want as lead only marks it: nothing in this flow makes a lead.
+  A handle you dismissed, wanted or matched keeps its status through every later import.
+- **Read-only commands**: `leads ig report`, `leads ig lookups [--campaign SLUG] [--place-type roastery|unclear|any] [--name-word]` and `leads ig review [--status new|dismissed|matched|wanted|all]` write nothing, so `make remote` runs them free.
+  `lookups` prints one tab-separated line per café lead (id, name, town, domain, the handles it holds, its place type and Jev's latest place call), the list the reader looks profiles up from.
+- **The Instagram channel**: an Instagram route makes a café lead a manual one, like a form or LinkedIn: one Claude-drafted direct message, which you copy, send by hand on Instagram and mark sent.
+  The message holds no link (Instagram flags links in a first message) and is at most `sender.instagram_dm_max` characters in `leads.yaml`: 1 to 1000, 500 when left out.
+  It is picked last, after a form and LinkedIn, and for café campaigns only, so a Drupal lead with an Instagram route never moves to a DM.
+  A kind's `<lang>/instagram.txt` template is optional.
+  The details are in "Instagram channel" in `deploy/README.md`, and erasure in "Erasure".

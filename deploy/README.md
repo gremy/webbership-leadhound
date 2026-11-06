@@ -1180,6 +1180,33 @@ Before the first production café batch, in this order:
 The build also skips a lead that is the same place as another (same normalised name, address and town) as the system, keeping one; its Undo is refused, because the next build would skip it again.
 `MarkContacted` stays open for a held lead, because it records something you already did yourself; research on a starred roastery stays allowed for the same reason.
 
+## Leads migration 00031
+
+`make deploy` applies it with the new binary, as the owner role, before the binary is put in place.
+It adds Instagram signals on café leads and Instagram as a manual channel (README "Instagram signals"):
+
+| Adds | For |
+| --- | --- |
+| `ig_profile`, `ig_follow` | each imported capture of a profile (a handle no longer there is stored as `missing`), and each coffee account kept from a following list, whose name is kept only when it is matched or on the review list |
+| `ig_match` | what each handle matches: by handle or website (strong), by name (weak), your own call, or nothing; tied leads are kept as its candidates |
+| `ig_judgment` | Jev's and the rules' answers on each profile, with Jev's own choice, its confidence and the input hash |
+| `ig_signal_hint` | weak hints; today only "followed by a loyalty vendor's own account" |
+| `ig_review_status` | the review list's statuses (new, dismissed, matched, wanted) |
+| `lead_channel` row `instagram`, `contact_route.kind` `instagram`, and `instagram` in the channel checks of `draft_generation`, `draft_request` and `outreach_message` | Instagram as a manual channel |
+| the `instagram@1` marker on `contact_route` | a route the import or your match wrote, which came from no page and no place; allowed on an `instagram` route only |
+
+It also copies every stored Instagram profile link (an `org_fact` social row) into an `instagram` route, with that fact's own source, in one canonical form: the profile's `www` address on Instagram, ending in `/<handle>/`.
+Instagram's own pages (posts, reels, explore, stories) are no profile and are skipped, and a value already there is left alone.
+All six new tables are append-only for the app role (`leadhound migrate` and `deploy/sql/grants.sql` revoke `UPDATE` again after every migrate); only `leads forget`, as the owner, deletes from them.
+Instagram routes are a business's own handle, never a person's, so `contact_route_person_check` is unchanged, and contact research never looks for Instagram.
+Its Down refuses while any Instagram message, generation or draft request exists; otherwise it moves Instagram leads to channel `none`, deletes every `instagram` route and drops the six tables.
+
+The capture files are made on the operator's machine (README "Instagram signals"), and an import needs the file on the same side as the database.
+On the server: copy the file to a path the `leadhound` user can read, as for `boards import`, then `make remote HOST=… CONFIRM=1 ARGS='leads ig import <path> --max-calls N'`.
+The judgment hashes live in each database, so a production import asks Jev again for every profile with text, within `--max-calls` and the leads daily cap; it needs `LEADHOUND_LIVE=1` and the Jev key, as every rating does.
+`leads ig report|lookups|review` are free on `make remote`: they write nothing, so `make remote HOST=… ARGS='leads ig report'` (or `lookups`, `review`) needs no `CONFIRM=1`.
+`lookups --place-type unclear` lists the café leads Jev's place question left unclear, with the handles each already holds.
+
 ## LinkedIn and your own contacts
 
 - **LeadHound's leads side never fetches LinkedIn's own site.**
@@ -1207,6 +1234,24 @@ The build also skips a lead that is the same place as another (same normalised n
   A lead on a route with no page crosses with no route and channel `none`.
 - **Erasure** covers all of this; see [Erasure](#erasure).
 
+## Instagram channel
+
+- **LeadHound never reads Instagram.**
+  No leads command fetches it: profiles reach the database only through `leads ig import` of a capture file the operator's own browser wrote.
+  The leads fetch clients do not refuse Instagram's host the way they refuse LinkedIn; nothing in the leads loop asks for it.
+- **Where a route comes from**: a social link on the organisation's own site or map listing (copied by enrichment and by migration 00031), a strong Instagram match by handle or website, your own `leads ig match`, or a contact you add.
+  The value is always that canonical profile address, lower case, so one handle is never stored twice for an organisation.
+  An import writes a route only when the organisation holds no live Instagram route, so a route you added or claimed is never replaced, and a weak match never writes one.
+- **One direct message.**
+  An Instagram lead gets one Claude-drafted DM, step 0, with no follow-up and no connection step: copy it, send it by hand as a direct message on Instagram, then Mark sent, which moves the lead from batched to contacted.
+  The DM holds no link and no web address (Instagram flags links in a first message), no greeting and no sign-off, and it is at most `sender.instagram_dm_max` characters (`leads.yaml`; 1 to 1000, 500 when left out); a longer draft is refused like an over-long LinkedIn note.
+  A kind's `<lang>/instagram.txt` template is optional; with none, the lead has only Claude's draft.
+- **Café campaigns only.**
+  The manual order is form, LinkedIn, then Instagram, and Instagram is picked only for a café campaign, so a Drupal lead whose organisation has an Instagram route stays on its form, LinkedIn or email.
+  A lead held as a roastery is refused on Instagram as on every other road.
+- **Meta's messaging API cannot open a cold DM**, so the channel is manual by design: LeadHound never sends one.
+- **Erasure** covers Instagram; see [Erasure](#erasure).
+
 ## Reply snippets
 
 Reply sync used to keep no text of a reply.
@@ -1223,10 +1268,14 @@ It also erases its lead's CRM: every reply snippet of its mailbox events is empt
 It also erases outreach by hand, in this order: the organisation's contact marks; any lead's use of a person's route (the lead goes to channel `none`); those routes and its `org_person` rows, with the pages people were read from and the email checks of their addresses; the before and after text of its draft edits, the subject and body of its edited emails, and any form or LinkedIn target that was a person's profile, or an email target that was a person's address.
 Then its proposal titles become `(erased)`, its proposal notes are blanked, and its sector and Draft it request rows are deleted.
 The counts line names each.
+It also erases Instagram (migration 00031), in this order: any lead's use of the organisation's Instagram routes (the lead goes to channel `none`, because `lead.route_id` has no cascade); the target of its Instagram messages (the rows stay); its `instagram` routes.
+Then, for every handle matched to one of its leads and every handle of its routes (a vendor's own account and a handle that names only other organisations' leads excepted), it deletes the `ig_judgment`, `ig_signal_hint`, `ig_match`, `ig_review_status`, `ig_profile` and `ig_follow` rows, the accounts read from that handle's following list included, and any other match naming one of its leads; another capture's lead hint naming one of its leads is cleared.
+The domain suppression keeps the organisation out of every later import's matching, so importing a capture file again attaches nothing to it and writes no route.
+**Capture files are out of the database's reach**: a file under `data/instagram/` on the operator's machine, or one copied to the server for an import, still holds the profile as it was read; delete it by hand, or keep it out of any later import.
 Last it re-hashes each batch those changes reach, because a batch's hash covers every row: `content_sha256` is recomputed, and on an approved batch `approved_hash` moves with it, since the two are one value at approval and the Send now checks refuse a difference.
 The hash a page showed before the erasure is refused, so reload the page; each other lead's approved message stays bound by its own `approved_sha256`, which the erasure does not touch and the send compares byte for byte.
 A batch that already failed its hash before the erasure is left as it is and stays refused.
-It does not yet empty the bodies of its unedited email messages, or the values of routes that belong to no person.
+It does not yet empty the bodies of its unedited email messages, or the values of routes that belong to no person, Instagram routes excepted.
 The reason is one line of at most 200 characters with no `@` in it; it prints counts only, never a number or a page.
 ID is the organisation's id in the database (the `id` column of the `org` table), not the lead's number; the console does not show it yet.
 
