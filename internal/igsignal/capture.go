@@ -1,4 +1,4 @@
-// Package igsignal reads Instagram capture files (ig-capture@1) and matches what they hold to
+// Package igsignal reads Instagram capture files (ig-capture@2, and @1 still) and matches what they hold to
 // café leads, deterministically: the parser, the matcher, the vendor rule and the coffee-name
 // prefilter. The browser that writes the file (the /ig-signals skill and its helper
 // ig_pace.py) lives outside this repository; this package never reaches Instagram.
@@ -23,13 +23,27 @@ import (
 	"github.com/gremy/webbership-leadhound/internal/enrich"
 )
 
-// CaptureVersion names the capture file's shape: one JSON record per line, "v": 1.
-const CaptureVersion = "ig-capture@1"
+// CaptureVersion names the capture file's shape: one JSON record per line, "v": 2. A line
+// of CaptureVersionV1 ("v": 1) still parses, for the kinds it had (profile and following).
+const (
+	CaptureVersion   = "ig-capture@2"
+	CaptureVersionV1 = "ig-capture@1"
+)
 
-// Record kinds.
+// Record kinds. Followers, comments and tagged are ig-capture@2 only.
 const (
 	KindProfile   = "profile"
 	KindFollowing = "following"
+	KindFollowers = "followers"
+	KindComments  = "comments"
+	KindTagged    = "tagged"
+)
+
+// Via is how an account was tagged on a post: in the photo (usertag) or as an @ in the
+// caption (mention).
+const (
+	ViaUsertag = "usertag"
+	ViaMention = "mention"
 )
 
 // Profile outcomes. A private account shows its counts and nothing else; a missing handle no
@@ -60,6 +74,12 @@ const (
 	MaxCaption  = 400
 	MaxCaptions = 12
 	MaxKept     = 5000
+	// The comments record's caps: posts per record, comments and tags per post, and a
+	// comment's text in characters (spaces folded). The writer cuts; the parser refuses more.
+	MaxPosts       = 12
+	MaxComments    = 50
+	MaxTags        = 20
+	MaxCommentText = 300
 	// MaxLine is the longest line read; the writer refuses a record over 2,000,000 bytes.
 	MaxLine = 4 << 20
 )
@@ -112,22 +132,89 @@ type Following struct {
 	Wall       string // as Profile.Wall
 }
 
-// Record is one valid line: exactly one of Profile and Following is set.
+// Followers is one capture of an account's followers list, the same shape as Following.
+type Followers Following
+
+// Comment is one comment kept from a post: its author passed the coffee words.
+type Comment struct {
+	ID        string // digits
+	Handle    string
+	FullName  string
+	Text      string // spaces folded, at most MaxCommentText characters
+	CreatedAt time.Time
+}
+
+// Tag is one coffee-named account tagged on a post, by ViaUsertag or ViaMention.
+type Tag struct {
+	Handle   string
+	FullName string
+	Via      string
+}
+
+// Post is one of the list owner's posts: its first page of comments and its tags.
+type Post struct {
+	Code         string // the post's shortcode
+	TakenAt      time.Time
+	CommentCount int // the comment count the feed gave
+	CommentsSeen int // comments paged through
+	Comments     []Comment
+	Tags         []Tag
+}
+
+// Comments is one capture of an account's latest posts with their comments and tags.
+type Comments struct {
+	Of         string
+	CapturedAt time.Time
+	Filter     string
+	Posts      []Post
+	Complete   bool
+	Wall       string
+}
+
+// TaggedPost is one post in the owner's Tagged tab, kept by its coffee-named author.
+type TaggedPost struct {
+	Handle   string
+	FullName string
+	Code     string
+	TakenAt  time.Time
+}
+
+// Tagged is one capture of an account's Tagged tab.
+type Tagged struct {
+	Of         string
+	CapturedAt time.Time
+	Filter     string
+	Seen       int
+	Kept       []TaggedPost
+	Complete   bool
+	Wall       string
+}
+
+// Record is one valid line: exactly one of its kind pointers is set.
 type Record struct {
 	Line      int    // 1-based line number in the file
-	Kind      string // KindProfile or KindFollowing
+	Kind      string // one of the Kind constants
 	SHA256    []byte // SHA-256 of the line's canonical JSON (keys sorted, no spaces): capture_sha256
 	Profile   *Profile
 	Following *Following
+	Followers *Followers
+	Comments  *Comments
+	Tagged    *Tagged
 }
 
 // Wall is the record's wall, empty when the read went through.
 func (r Record) Wall() string {
-	if r.Profile != nil {
+	switch {
+	case r.Profile != nil:
 		return r.Profile.Wall
-	}
-	if r.Following != nil {
+	case r.Following != nil:
 		return r.Following.Wall
+	case r.Followers != nil:
+		return r.Followers.Wall
+	case r.Comments != nil:
+		return r.Comments.Wall
+	case r.Tagged != nil:
+		return r.Tagged.Wall
 	}
 	return ""
 }
@@ -148,7 +235,8 @@ func (e errLine) Error() string { return string(e) }
 
 var (
 	handleRe = regexp.MustCompile(`^[a-z0-9._]{1,30}$`)
-	userIDRe = regexp.MustCompile(`^[0-9]{1,25}$`)
+	userIDRe = regexp.MustCompile(`^[0-9]{1,25}$`) // also a comment id
+	codeRe   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,40}$`)
 	httpRe   = regexp.MustCompile(`(?i)^https?://`)
 )
 
@@ -158,6 +246,12 @@ var (
 	followingKeys = []string{"v", "kind", "of", "captured_at", "filter", "seen", "kept", "complete", "wall"}
 	sourceKeys    = []string{"type", "of", "lead_id"}
 	followKeys    = []string{"handle", "full_name"}
+	commentsKeys  = []string{"v", "kind", "of", "captured_at", "filter", "posts", "complete", "wall"}
+	postKeys      = []string{"code", "taken_at", "comment_count", "comments_seen", "comments", "tags"}
+	commentKeys   = []string{"id", "handle", "full_name", "text", "created_at"}
+	tagKeys       = []string{"handle", "full_name", "via"}
+	taggedKeys    = []string{"v", "kind", "of", "captured_at", "filter", "seen", "kept", "complete", "wall"}
+	taggedPostKey = []string{"handle", "full_name", "code", "taken_at"}
 )
 
 // Parse reads a capture file: every valid line as a Record, in file order, and every other
@@ -227,8 +321,8 @@ func parseLine(line []byte) (Record, error) {
 		return Record{}, errLine("not one JSON object")
 	}
 	var v int
-	if raw, ok := f["v"]; !ok || json.Unmarshal(raw, &v) != nil || v != 1 {
-		return Record{}, errLine("v must be 1")
+	if raw, ok := f["v"]; !ok || json.Unmarshal(raw, &v) != nil || (v != 1 && v != 2) {
+		return Record{}, errLine("v must be 1 or 2")
 	}
 	var kind string
 	if raw, ok := f["kind"]; ok {
@@ -240,8 +334,23 @@ func parseLine(line []byte) (Record, error) {
 		rec.Profile, err = parseProfile(f)
 	case KindFollowing:
 		rec.Following, err = parseFollowing(f)
+	case KindFollowers, KindComments, KindTagged:
+		if v != 2 {
+			return Record{}, errLine("a " + kind + " record needs v 2")
+		}
+		switch kind {
+		case KindFollowers:
+			var fl *Following
+			if fl, err = parseList(f, "followers record"); err == nil {
+				rec.Followers = (*Followers)(fl)
+			}
+		case KindComments:
+			rec.Comments, err = parseComments(f)
+		default:
+			rec.Tagged, err = parseTagged(f)
+		}
 	default:
-		return Record{}, errLine("kind must be profile or following")
+		return Record{}, errLine("kind must be profile, following, followers, comments or tagged")
 	}
 	if err != nil {
 		return Record{}, err
@@ -489,25 +598,85 @@ func parseSource(f fields) (Source, error) {
 	return out, nil
 }
 
-func parseFollowing(f fields) (*Following, error) {
-	if err := f.only(followingKeys, "following record"); err != nil {
+func parseFollowing(f fields) (*Following, error) { return parseList(f, "following record") }
+
+// listHead is what every list record carries: its owner, time, filter and wall.
+func (f fields) listHead() (of string, at time.Time, filter, wall string, err error) {
+	if of, err = f.handle("of"); err != nil {
+		return
+	}
+	if at, err = f.time("captured_at"); err != nil {
+		return
+	}
+	if !f.null("filter") {
+		_ = json.Unmarshal(f["filter"], &filter)
+	}
+	if filter != CoffeeWordsVersion {
+		err = errLine("filter must be " + CoffeeWordsVersion)
+		return
+	}
+	wall, err = f.wall()
+	return
+}
+
+// complete is the record's complete flag; a list stopped by a wall is never complete.
+func (f fields) complete(wall string) (bool, error) {
+	var c bool
+	if f.null("complete") || json.Unmarshal(f["complete"], &c) != nil {
+		return false, errLine("complete must be true or false")
+	}
+	if wall != "" && c {
+		return false, errLine("a list stopped by a wall is not complete")
+	}
+	return c, nil
+}
+
+// account is an object's handle and full_name, the handle checked against the coffee words.
+func (f fields) account(what string) (string, string, error) {
+	h, err := f.handle("handle")
+	if err != nil {
+		return "", "", errLine("bad handle in " + what)
+	}
+	name, err := f.text("full_name", MaxFullName, false)
+	if err != nil {
+		return "", "", errLine(what + " full_name must be text or null")
+	}
+	if !CoffeeName(h, name) {
+		return "", "", errLine("a " + what + " account fails " + CoffeeWordsVersion)
+	}
+	return h, name, nil
+}
+
+// objects is key as a list of JSON objects, each holding only keys.
+func (f fields) objects(key string, keys []string, what string) ([]fields, error) {
+	var list []fields
+	if f.null(key) || json.Unmarshal(f[key], &list) != nil {
+		return nil, errLine(key + " must be a list of " + what + "s")
+	}
+	for _, o := range list {
+		if o == nil || o.only(keys, what) != nil {
+			return nil, errLine("each " + what + " holds only " + strings.Join(keys, ", "))
+		}
+	}
+	return list, nil
+}
+
+// whole is key as a whole number of zero or more.
+func (f fields) whole(key string) (int, error) {
+	n, err := f.count(key)
+	if err != nil || n == nil {
+		return 0, errLine(key + " must be a whole number")
+	}
+	return *n, nil
+}
+
+func parseList(f fields, what string) (*Following, error) {
+	if err := f.only(followingKeys, what); err != nil {
 		return nil, err
 	}
 	var out Following
 	var err error
-	if out.Of, err = f.handle("of"); err != nil {
-		return nil, err
-	}
-	if out.CapturedAt, err = f.time("captured_at"); err != nil {
-		return nil, err
-	}
-	if !f.null("filter") {
-		_ = json.Unmarshal(f["filter"], &out.Filter)
-	}
-	if out.Filter != CoffeeWordsVersion {
-		return nil, errLine("filter must be " + CoffeeWordsVersion)
-	}
-	if out.Wall, err = f.wall(); err != nil {
+	if out.Of, out.CapturedAt, out.Filter, out.Wall, err = f.listHead(); err != nil {
 		return nil, err
 	}
 	var kept []fields
@@ -542,11 +711,165 @@ func parseFollowing(f fields) (*Following, error) {
 	if f.null("seen") || json.Unmarshal(f["seen"], &out.Seen) != nil || out.Seen < len(out.Kept) {
 		return nil, errLine("seen must be a whole number, at least the kept count")
 	}
-	if f.null("complete") || json.Unmarshal(f["complete"], &out.Complete) != nil {
-		return nil, errLine("complete must be true or false")
+	if out.Complete, err = f.complete(out.Wall); err != nil {
+		return nil, err
 	}
-	if out.Wall != "" && out.Complete {
-		return nil, errLine("a list stopped by a wall is not complete")
+	return &out, nil
+}
+
+func parseComments(f fields) (*Comments, error) {
+	if err := f.only(commentsKeys, "comments record"); err != nil {
+		return nil, err
+	}
+	var out Comments
+	var err error
+	if out.Of, out.CapturedAt, out.Filter, out.Wall, err = f.listHead(); err != nil {
+		return nil, err
+	}
+	posts, err := f.objects("posts", postKeys, "post")
+	if err != nil {
+		return nil, err
+	}
+	if len(posts) > MaxPosts {
+		return nil, errLine(fmt.Sprintf("posts must be at most %d", MaxPosts))
+	}
+	codes := map[string]bool{}
+	for _, pf := range posts {
+		p, err := parsePost(pf)
+		if err != nil {
+			return nil, err
+		}
+		if codes[p.Code] {
+			return nil, errLine("a post appears twice")
+		}
+		codes[p.Code] = true
+		out.Posts = append(out.Posts, p)
+	}
+	if out.Complete, err = f.complete(out.Wall); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (f fields) code() (string, error) {
+	var c string
+	if f.null("code") || json.Unmarshal(f["code"], &c) != nil || !codeRe.MatchString(c) {
+		return "", errLine("code must be a post code")
+	}
+	return c, nil
+}
+
+func parsePost(f fields) (Post, error) {
+	var p Post
+	var err error
+	if p.Code, err = f.code(); err != nil {
+		return Post{}, err
+	}
+	if p.TakenAt, err = f.time("taken_at"); err != nil {
+		return Post{}, err
+	}
+	if p.CommentCount, err = f.whole("comment_count"); err != nil {
+		return Post{}, err
+	}
+	if p.CommentsSeen, err = f.whole("comments_seen"); err != nil {
+		return Post{}, err
+	}
+	comments, err := f.objects("comments", commentKeys, "comment")
+	if err != nil {
+		return Post{}, err
+	}
+	if len(comments) > MaxComments {
+		return Post{}, errLine(fmt.Sprintf("comments must be at most %d per post", MaxComments))
+	}
+	if p.CommentsSeen < len(comments) {
+		return Post{}, errLine("comments_seen must be at least the comments kept")
+	}
+	ids := map[string]bool{}
+	for _, cf := range comments {
+		var c Comment
+		if cf.null("id") || json.Unmarshal(cf["id"], &c.ID) != nil || !userIDRe.MatchString(c.ID) {
+			return Post{}, errLine("comment id must be digits")
+		}
+		if ids[c.ID] {
+			return Post{}, errLine("a comment appears twice in a post")
+		}
+		ids[c.ID] = true
+		if c.Handle, c.FullName, err = cf.account("comment"); err != nil {
+			return Post{}, err
+		}
+		if c.Text, err = cf.text("text", MaxCommentText+1, false); err != nil {
+			return Post{}, errLine("comment text must be text or null")
+		}
+		if utf8.RuneCountInString(c.Text) > MaxCommentText {
+			return Post{}, errLine(fmt.Sprintf("comment text must be at most %d characters", MaxCommentText))
+		}
+		if c.CreatedAt, err = cf.time("created_at"); err != nil {
+			return Post{}, err
+		}
+		p.Comments = append(p.Comments, c)
+	}
+	tags, err := f.objects("tags", tagKeys, "tag")
+	if err != nil {
+		return Post{}, err
+	}
+	if len(tags) > MaxTags {
+		return Post{}, errLine(fmt.Sprintf("tags must be at most %d per post", MaxTags))
+	}
+	for _, tf := range tags {
+		var t Tag
+		if t.Handle, t.FullName, err = tf.account("tag"); err != nil {
+			return Post{}, err
+		}
+		if !tf.null("via") {
+			_ = json.Unmarshal(tf["via"], &t.Via)
+		}
+		if t.Via != ViaUsertag && t.Via != ViaMention {
+			return Post{}, errLine("via must be usertag or mention")
+		}
+		p.Tags = append(p.Tags, t)
+	}
+	return p, nil
+}
+
+func parseTagged(f fields) (*Tagged, error) {
+	if err := f.only(taggedKeys, "tagged record"); err != nil {
+		return nil, err
+	}
+	var out Tagged
+	var err error
+	if out.Of, out.CapturedAt, out.Filter, out.Wall, err = f.listHead(); err != nil {
+		return nil, err
+	}
+	kept, err := f.objects("kept", taggedPostKey, "tagged post")
+	if err != nil {
+		return nil, err
+	}
+	if len(kept) > MaxKept {
+		return nil, errLine(fmt.Sprintf("kept must be at most %d accounts", MaxKept))
+	}
+	codes := map[string]bool{}
+	for _, k := range kept {
+		var tp TaggedPost
+		if tp.Handle, tp.FullName, err = k.account("kept"); err != nil {
+			return nil, err
+		}
+		if tp.Code, err = k.code(); err != nil {
+			return nil, err
+		}
+		if codes[tp.Code] {
+			return nil, errLine("a tagged post appears twice")
+		}
+		codes[tp.Code] = true
+		if tp.TakenAt, err = k.time("taken_at"); err != nil {
+			return nil, err
+		}
+		out.Kept = append(out.Kept, tp)
+	}
+	if out.Seen, err = f.whole("seen"); err != nil || out.Seen < len(out.Kept) {
+		return nil, errLine("seen must be a whole number, at least the kept count")
+	}
+	if out.Complete, err = f.complete(out.Wall); err != nil {
+		return nil, err
 	}
 	return &out, nil
 }

@@ -1,0 +1,13 @@
+# One reason per line of capture-v2-invalid.jsonl, in order (lines starting with # are skipped).
+# Each reason is a substring of that line's refusal.
+a followers record needs v 2
+a tagged record needs v 2
+a comment account fails coffee-words@1
+comment text must be at most 300 characters
+posts must be at most 12
+comments must be at most 50 per post
+code must be a post code
+via must be usertag or mention
+a comment appears twice in a post
+a kept account appears twice
+a list stopped by a wall is not complete

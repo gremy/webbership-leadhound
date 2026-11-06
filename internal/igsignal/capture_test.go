@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -182,9 +183,10 @@ func TestCaptureRefusals(t *testing.T) {
 		{"not json", "{not json " + marker, "not one JSON object"},
 		{"an array", `["` + marker + `"]`, "not one JSON object"},
 		{"two values", line(t, profileRec(nil)) + " {}", "not one JSON object"},
-		{"v 2", line(t, profileRec(map[string]any{"v": 2})), "v must be 1"},
-		{"v true", line(t, profileRec(map[string]any{"v": true})), "v must be 1"},
-		{"no v", strings.Replace(line(t, profileRec(nil)), `"v":1,`, "", 1), "v must be 1"},
+		{"v 3", line(t, profileRec(map[string]any{"v": 3})), "v must be 1 or 2"},
+		{"v true", line(t, profileRec(map[string]any{"v": true})), "v must be 1 or 2"},
+		{"no v", strings.Replace(line(t, profileRec(nil)), `"v":1,`, "", 1), "v must be 1 or 2"},
+		{"v1 comments", line(t, followingRec(map[string]any{"kind": "comments"})), "a comments record needs v 2"},
 		{"kind story", line(t, profileRec(map[string]any{"kind": "story"})), "kind must be"},
 		{"unknown key", line(t, profileRec(map[string]any{"likes" + marker: 3})), "unknown key in the profile"},
 		{"key in another case", line(t, profileRec(map[string]any{"Handle": "cafe.exemplu"})), "unknown key"},
@@ -323,5 +325,192 @@ func TestCaptureReadError(t *testing.T) {
 	recs, errs := Parse(&failingReader{data: []byte(good + "\n" + good[:20])})
 	if len(recs) != 1 || len(errs) != 1 || errs[0].Line != 2 || strings.Contains(errs[0].Reason, "disk") {
 		t.Fatalf("records %d, errors %v", len(recs), errs)
+	}
+}
+
+// TestCaptureV2ValidTestdata: capture-v2-valid.jsonl, the shared contract fixture (ig_pace.py
+// writes every line of it too), parses whole: v1 and v2 profile and following, and the three
+// v2-only kinds.
+func TestCaptureV2ValidTestdata(t *testing.T) {
+	recs, errs := readTestdata(t, "capture-v2-valid.jsonl")
+	if len(errs) != 0 || len(recs) != 9 {
+		t.Fatalf("capture-v2-valid.jsonl: %d records, errors %v", len(recs), errs)
+	}
+	kinds := make([]string, len(recs))
+	for i, r := range recs {
+		kinds[i] = r.Kind
+		if len(r.SHA256) != 32 {
+			t.Errorf("line %d: %d-byte hash", r.Line, len(r.SHA256))
+		}
+	}
+	want := []string{KindProfile, KindFollowing, KindProfile, KindFollowing, KindFollowers, KindComments, KindComments,
+		KindTagged, KindFollowers}
+	if !slices.Equal(kinds, want) {
+		t.Fatalf("kinds %v, want %v", kinds, want)
+	}
+	if recs[0].Profile.Handle != "cafe.exemplu" || recs[2].Profile.Handle != "cafe.exemplu" || len(recs[3].Following.Kept) != 2 {
+		t.Errorf("v1 and v2 profile/following: %+v %+v", recs[2].Profile, recs[3].Following)
+	}
+	fl := recs[4].Followers
+	if fl == nil || fl.Of != "vendor_example" || fl.Seen != 45 || !fl.Complete || len(fl.Kept) != 2 ||
+		fl.Kept[0] != (Follow{"cafe.example", "Cafe Example"}) || recs[4].Wall() != "" {
+		t.Errorf("line 5 followers: %+v", fl)
+	}
+	c := recs[5].Comments
+	if c == nil || !c.Complete || len(c.Posts) != 2 {
+		t.Fatalf("line 6 comments: %+v", c)
+	}
+	p := c.Posts[0]
+	if p.Code != "Cabc_1" || p.CommentCount != 3 || p.CommentsSeen != 3 || len(p.Comments) != 2 ||
+		!p.TakenAt.Equal(time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)) {
+		t.Errorf("line 6 post: %+v", p)
+	}
+	if got := p.Comments[0]; got.ID != "1789" || got.Handle != "cafe.example" || got.FullName != "" || got.Text != "cât costă?" ||
+		!got.CreatedAt.Equal(time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("line 6 comment: %+v", got)
+	}
+	if !slices.Equal(p.Tags, []Tag{{"roastery_example", "Roastery Example", ViaUsertag}, {"brew.exemplu", "", ViaMention}}) {
+		t.Errorf("line 6 tags: %+v", p.Tags)
+	}
+	if e := recs[6].Comments; len(e.Posts) != 1 || e.Posts[0].Comments != nil || e.Posts[0].CommentCount != 0 || len(e.Posts[0].Tags) != 1 {
+		t.Errorf("line 7 comments with none kept: %+v", e)
+	}
+	tg := recs[7].Tagged
+	if tg == nil || tg.Seen != 10 || !tg.Complete || len(tg.Kept) != 1 ||
+		tg.Kept[0] != (TaggedPost{"roast.example", "Roast Example", "Cxyz", time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)}) {
+		t.Errorf("line 8 tagged: %+v", tg)
+	}
+	if recs[8].Wall() != "http 429" || recs[8].Followers.Complete {
+		t.Errorf("line 9 walled followers: %+v", recs[8].Followers)
+	}
+	for _, r := range recs[:8] {
+		if r.Wall() != "" {
+			t.Errorf("line %d: a wall before the last line (the helper's contract test halts on it)", r.Line)
+		}
+	}
+}
+
+// TestCaptureV2InvalidTestdata: every line of capture-v2-invalid.jsonl is refused with the
+// reason its line in capture-v2-invalid.reasons names, by number and in fixed words.
+func TestCaptureV2InvalidTestdata(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "capture-v2-invalid.reasons"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasons []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			reasons = append(reasons, l)
+		}
+	}
+	recs, errs := readTestdata(t, "capture-v2-invalid.jsonl")
+	if len(recs) != 0 || len(errs) != len(reasons) || len(reasons) == 0 {
+		t.Fatalf("%d records, %d errors, %d reasons: %v", len(recs), len(errs), len(reasons), errs)
+	}
+	for i, e := range errs {
+		if e.Line != i+1 || !strings.Contains(e.Reason, reasons[i]) {
+			t.Errorf("line %d: %q, want %q", i+1, e.Error(), reasons[i])
+		}
+		if strings.Contains(e.Reason, "gym") || strings.Contains(e.Reason, "aaaa") || strings.Contains(e.Reason, "story") {
+			t.Errorf("line %d: the reason carries the line's text: %q", i+1, e.Reason)
+		}
+	}
+}
+
+// TestCaptureV2Refusals: the v2 checks the fixture does not reach one by one.
+func TestCaptureV2Refusals(t *testing.T) {
+	post := func(over map[string]any) map[string]any {
+		p := map[string]any{"code": "Cabc", "taken_at": "2026-10-30T09:00:00Z", "comment_count": 1, "comments_seen": 1,
+			"comments": []any{map[string]any{"id": "1", "handle": "cafe.example", "full_name": nil, "text": "hi", "created_at": "2026-10-31T10:00:00Z"}},
+			"tags":     []any{}}
+		maps.Copy(p, over)
+		return p
+	}
+	comments := func(posts ...any) map[string]any {
+		return map[string]any{"v": 2, "kind": "comments", "of": "vendor_example", "captured_at": "2026-11-06T10:00:00Z",
+			"filter": "coffee-words@1", "posts": posts, "complete": true, "wall": nil}
+	}
+	tagged := func(over map[string]any) map[string]any {
+		r := map[string]any{"v": 2, "kind": "tagged", "of": "vendor_example", "captured_at": "2026-11-06T10:00:00Z",
+			"filter": "coffee-words@1", "seen": 1, "kept": []any{map[string]any{"handle": "cafe.example", "full_name": nil,
+				"code": "Cx", "taken_at": "2026-09-01T00:00:00Z"}}, "complete": true, "wall": nil}
+		maps.Copy(r, over)
+		return r
+	}
+	tag := func(h string) map[string]any { return map[string]any{"handle": h, "full_name": nil, "via": ViaUsertag} }
+	many := make([]any, MaxTags+1)
+	for i := range many {
+		many[i] = tag(fmt.Sprintf("cafe_%d", i))
+	}
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"tag not coffee", line(t, comments(post(map[string]any{"tags": []any{tag("gym." + marker[:3])}}))), "a tag account fails"},
+		{"21 tags", line(t, comments(post(map[string]any{"tags": many}))), "tags must be at most 20"},
+		{"long code", line(t, comments(post(map[string]any{"code": strings.Repeat("C", 41)}))), "code must be a post code"},
+		{"id letters", line(t, comments(post(map[string]any{"comments": []any{map[string]any{"id": "1a", "handle": "cafe.example",
+			"full_name": nil, "text": "x", "created_at": "2026-10-31T10:00:00Z"}}}))), "comment id must be digits"},
+		{"id too long", line(t, comments(post(map[string]any{"comments": []any{map[string]any{"id": strings.Repeat("1", 26),
+			"handle": "cafe.example", "full_name": nil, "text": "x", "created_at": "2026-10-31T10:00:00Z"}}}))), "comment id must be digits"},
+		{"seen below kept", line(t, comments(post(map[string]any{"comments_seen": 0}))), "comments_seen must be"},
+		{"no comment_count", line(t, comments(post(map[string]any{"comment_count": nil}))), "comment_count must be"},
+		{"post twice", line(t, comments(post(nil), post(nil))), "a post appears twice"},
+		{"post extra key", line(t, comments(post(map[string]any{"likes": 3}))), "each post holds only"},
+		{"comments extra key", line(t, map[string]any{"v": 2, "kind": "comments", "extra": marker}), "unknown key in the comments record"},
+		{"tagged twice", line(t, tagged(map[string]any{"seen": 2, "kept": []any{
+			map[string]any{"handle": "cafe.example", "full_name": nil, "code": "Cx", "taken_at": "2026-09-01T00:00:00Z"},
+			map[string]any{"handle": "cafe.example", "full_name": nil, "code": "Cx", "taken_at": "2026-09-01T00:00:00Z"}}})), "a tagged post appears twice"},
+		{"tagged not coffee", line(t, tagged(map[string]any{"kept": []any{map[string]any{"handle": "gym.example",
+			"full_name": marker, "code": "Cx", "taken_at": "2026-09-01T00:00:00Z"}}})), "a kept account fails"},
+		{"tagged seen", line(t, tagged(map[string]any{"seen": 0})), "seen must be"},
+		{"tagged wall complete", line(t, tagged(map[string]any{"wall": "http 429"})), "not complete"},
+		{"followers wall complete", line(t, followingRec(map[string]any{"v": 2, "kind": "followers", "wall": "http 429"})), "not complete"},
+	}
+	good := line(t, tagged(nil))
+	for _, c := range cases {
+		recs, errs := parseString(c.line + "\n" + good)
+		if len(errs) != 1 || errs[0].Line != 1 || !strings.Contains(errs[0].Reason, c.want) {
+			t.Errorf("%s: errors %v, want %q", c.name, errs, c.want)
+			continue
+		}
+		if strings.Contains(errs[0].Error(), marker) {
+			t.Errorf("%s: the reason carries the line's text: %q", c.name, errs[0].Error())
+		}
+		if len(recs) != 1 || recs[0].Tagged == nil {
+			t.Errorf("%s: the next line did not parse: %+v", c.name, recs)
+		}
+	}
+	// A comment's text is folded first, then measured: 300 characters after folding pass.
+	text := strings.Repeat("ă", 150) + "     " + strings.Repeat("ă", 149)
+	ok := post(map[string]any{"comments": []any{map[string]any{"id": "1", "handle": "cafe.example", "full_name": nil,
+		"text": text, "created_at": "2026-10-31T10:00:00Z"}}})
+	if recs, errs := parseString(line(t, comments(ok))); len(errs) != 0 ||
+		utf8.RuneCountInString(recs[0].Comments.Posts[0].Comments[0].Text) != MaxCommentText {
+		t.Errorf("folded text: %v", errs)
+	}
+}
+
+// TestCaptionTagsContract: caption-tags.json, one caption the ig-signals snippets' @-pattern
+// is also tested on, gives exactly its handles under tagRe (raw captures, in order).
+func TestCaptionTagsContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "caption-tags.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Caption string   `json:"caption"`
+		Handles []string `json:"handles"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range tagRe.FindAllStringSubmatch(fx.Caption, -1) {
+		got = append(got, m[1])
+	}
+	if len(fx.Handles) == 0 || !slices.Equal(got, fx.Handles) {
+		t.Errorf("tagRe gave %q, want %q", got, fx.Handles)
 	}
 }
