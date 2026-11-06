@@ -19,8 +19,10 @@ import (
 // Instagram signals on café leads (migration 00031): what a café's public profile shows, read
 // into a capture file by the operator's own browser and imported here. Every table is
 // append-only; the latest row of a handle decides its match and its review status. Handles are
-// stored lower case without their @ (enrich.InstagramHandle). Nothing here writes a lead, an
-// org or a place type: signals inform, they never move a lead.
+// stored lower case without their @ (enrich.InstagramHandle). Nothing here writes a lead or an
+// org: signals inform, they never move a lead. The one exception is the place type, a separate
+// table: SyncIGPlaceTypes (place_type_ig.go) writes Instagram's place call on a strongly matched
+// profile as the lead's instagram place type row, and nothing else here writes one.
 
 // The outcomes of a profile capture (ig_profile_outcome_check).
 const (
@@ -52,6 +54,14 @@ const (
 	IGPlace   = "ig_place"
 	IGLoyalty = "ig_loyalty"
 	IGVendor  = "ig_vendor"
+)
+
+// The ig_place choices that decide a lead's place type (SyncIGPlaceTypes); every other choice
+// is silence. They live here, not in leadrate, which asks the question: leadrate imports
+// leadstore, never the other way round, and leadrate's own constants are defined from these.
+const (
+	IGPlaceCafeSeating      = "cafe_seating"
+	IGPlaceRoasteryOrOnline = "roastery_or_online"
 )
 
 // The sources of a judgment (ig_judgment_source_check). A rule row is deterministic (a vendor
@@ -607,16 +617,23 @@ type IGLead struct {
 	Hints     []IGHint
 }
 
+// igLeadHandleSQL is the ig_match row that gives the lead l its Instagram handle, with no row
+// when there is none: of the handles whose latest match is a strong or operator one naming l
+// (IGMatch.Strong), the most recently matched. It reads l.id, so it runs as a LATERAL subquery
+// beside a lead. IGForLead (the lead card) and SyncIGPlaceTypes (the place type) both read it,
+// so the card and the type always name the same handle.
+const igLeadHandleSQL = `SELECT x.* FROM (
+	   SELECT DISTINCT ON (handle) * FROM ig_match
+	   WHERE handle IN (SELECT handle FROM ig_match WHERE lead_id = l.id) ORDER BY handle, id DESC) x
+	 WHERE x.lead_id = l.id AND x.tier IN ('` + IGTierHandle + `', '` + IGTierDomain + `', '` + IGTierOperator + `')
+	 ORDER BY x.id DESC LIMIT 1`
+
 // IGForLead reads what Instagram says about lead leadID: of the handles whose latest match is
-// a strong or operator one naming it, the most recently matched. nil when there is none, so a
-// weak match never shows its signals.
+// a strong or operator one naming it, the most recently matched (igLeadHandleSQL). nil when
+// there is none, so a weak match never shows its signals.
 func (q Queries) IGForLead(ctx context.Context, leadID int64) (*IGLead, error) {
 	ms, err := collect(ctx, q.db, pgx.RowToStructByName[IGMatch],
-		`SELECT `+igMatchColumns+` FROM (
-		   SELECT DISTINCT ON (handle) * FROM ig_match
-		   WHERE handle IN (SELECT handle FROM ig_match WHERE lead_id = $1) ORDER BY handle, id DESC) m
-		 WHERE m.lead_id = $1 AND m.tier IN ('`+IGTierHandle+`', '`+IGTierDomain+`', '`+IGTierOperator+`')
-		 ORDER BY m.id DESC LIMIT 1`, leadID)
+		`SELECT `+igMatchColumns+` FROM (SELECT $1::bigint AS id) l CROSS JOIN LATERAL (`+igLeadHandleSQL+`) m`, leadID)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: ig for lead %d: %w", leadID, err)
 	}

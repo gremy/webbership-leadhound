@@ -34,8 +34,10 @@ const (
 const (
 	IGUnclear = "unclear"
 
-	IGCafeSeating      = "cafe_seating"
-	IGRoasteryOrOnline = "roastery_or_online"
+	// The two place choices that decide a lead's place type; their strings live in leadstore,
+	// which writes that type and cannot import this package.
+	IGCafeSeating      = leadstore.IGPlaceCafeSeating
+	IGRoasteryOrOnline = leadstore.IGPlaceRoasteryOrOnline
 	IGNotCoffee        = "not_coffee"
 
 	IGRunsScheme = "runs_scheme"

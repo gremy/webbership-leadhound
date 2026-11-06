@@ -11,10 +11,13 @@ import (
 
 // A café lead's place type (lead_place_type, migration 00030): whether it has a café to sit
 // in, or is a roastery or an online-only coffee store. It is separate from the lead's kind,
-// so templates, rating types and history stay untouched. Every answer is a row.
+// so templates, rating types and history stay untouched. Every answer is a row, from one of
+// four sources, strongest first: the operator's own call, Instagram's place read (00032),
+// Jev's read of the website, and a roastery word in the name.
 
-// The place types a row may name (lead_place_type_type_check). PlaceUnclear is Jev's "asked,
-// no answer": it is stored so a rerun does not ask again, and it never decides a lead's type.
+// The place types a row may name (lead_place_type_type_check). PlaceUnclear never decides a
+// lead's type: from Jev it is "asked, no answer", stored so a rerun does not ask again; from
+// Instagram it is "silent now" (an unmatch, an unclear call), so the next source speaks.
 const (
 	PlaceCafe     = "cafe"
 	PlaceRoastery = "roastery"
@@ -26,14 +29,18 @@ const (
 // the weakest.
 const (
 	PlaceFromOperator = "operator"
-	PlaceFromJev      = "jev"
-	PlaceFromName     = "name"
+	// PlaceFromInstagram is Instagram's place call on the lead's strongly matched profile,
+	// written by SyncIGPlaceTypes. It ranks under the operator and over Jev: a profile's own
+	// posts show seating better than a website read, and the operator's call always wins.
+	PlaceFromInstagram = "instagram"
+	PlaceFromJev       = "jev"
+	PlaceFromName      = "name"
 )
 
 var (
 	// ErrBadPlaceType is returned by SetPlaceType for a type or source outside the lists
-	// above, an unclear answer from any source but Jev, or a Jev answer without its input's
-	// SHA-256 (any other source's answer with one).
+	// above, an unclear answer from any source but Jev or Instagram, or a Jev answer without
+	// its input's SHA-256 (any other source's answer with one).
 	ErrBadPlaceType = errors.New("leadstore: not a valid place type")
 	// ErrNotCafeLead is returned by SetPlaceType for a lead whose rating type is not café:
 	// such a lead never has a place type.
@@ -42,14 +49,16 @@ var (
 
 // placeTypeWinnerSQL is the row deciding the place type of the lead l, with no row when no
 // source speaks: the latest row of each source, read by lead_place_type_lead_idx, then the
-// strongest of those that does not say unclear. An unclear latest row of Jev's therefore
-// falls through to the name, and an older answer of Jev's does not stand in for it.
+// strongest of those that does not say unclear: operator, then instagram, then jev, then
+// name. An unclear latest row of Instagram's or Jev's therefore falls through to the next
+// source, and an older answer of the same source does not stand in for it.
 const placeTypeWinnerSQL = `SELECT w.place_type, w.source, w.detail FROM (
 	     SELECT DISTINCT ON (t.source) t.place_type, t.source, t.detail
 	     FROM lead_place_type t WHERE t.lead_id = l.id ORDER BY t.source, t.id DESC
 	   ) w
 	   WHERE w.place_type <> '` + PlaceUnclear + `'
-	   ORDER BY CASE w.source WHEN '` + PlaceFromOperator + `' THEN 0 WHEN '` + PlaceFromJev + `' THEN 1 ELSE 2 END
+	   ORDER BY CASE w.source WHEN '` + PlaceFromOperator + `' THEN 0 WHEN '` + PlaceFromInstagram + `' THEN 1
+	                         WHEN '` + PlaceFromJev + `' THEN 2 ELSE 3 END
 	   LIMIT 1`
 
 // effectivePlaceTypeSQL is the SQL expression giving the place type of the lead l: the
@@ -74,8 +83,9 @@ type PlaceTypeCounts struct {
 }
 
 // SetPlaceType appends one answer on lead leadID's place type: placeType and source from the
-// lists above, detail the matched word or question name, sha the SHA-256 of what Jev was
-// asked (Jev's rows only, nil for the rest), actor gremy or system. The row is written
+// lists above, detail the matched word, question name or Instagram's call, sha the SHA-256
+// of what Jev was asked (Jev's rows only, nil for the rest), actor gremy or system. Unclear
+// comes from Jev or Instagram only. The row is written
 // whatever the lead's state, and it never touches the lead's call or state. A lead that does
 // not exist is ErrLeadNotFound; a lead whose rating type is not café, or a selftest one, is
 // ErrNotCafeLead.
@@ -84,8 +94,8 @@ func (q Queries) SetPlaceType(ctx context.Context, leadID int64, placeType, sour
 	case actor != ActorGremy && actor != ActorSystem:
 		return fmt.Errorf("leadstore: set place type: %w: %q", ErrUnknownActor, actor)
 	case !slices.Contains([]string{PlaceCafe, PlaceRoastery, PlaceUnclear}, placeType),
-		!slices.Contains([]string{PlaceFromOperator, PlaceFromJev, PlaceFromName}, source),
-		placeType == PlaceUnclear && source != PlaceFromJev,
+		!slices.Contains([]string{PlaceFromOperator, PlaceFromInstagram, PlaceFromJev, PlaceFromName}, source),
+		placeType == PlaceUnclear && source != PlaceFromJev && source != PlaceFromInstagram,
 		(source == PlaceFromJev) != (len(sha) == 32),
 		source != PlaceFromJev && len(sha) != 0:
 		return fmt.Errorf("leadstore: set place type: %w: %q from %q with a %d-byte hash", ErrBadPlaceType, placeType, source, len(sha))
