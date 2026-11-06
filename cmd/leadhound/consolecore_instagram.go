@@ -233,6 +233,10 @@ func (b *backend) InstagramAct(ctx context.Context, a console.IGAction) (string,
 				w := igPlaceChangeWords(c)
 				msg += " " + strings.ToUpper(w[:1]) + w[1:] + "."
 			}
+			// The loyalty intent follows the place types, every café campaign, as `leads ig match`.
+			if _, err := syncIntent(ctx, lq, setup.leads, 0, false); err != nil {
+				return "", fmt.Errorf("%s But the loyalty intent is not synced yet (run leads intent sync): %w", msg, err)
+			}
 			return msg, nil
 		case console.IGDismiss, console.IGWant:
 			status, words := leadstore.IGReviewDismissed, "not a lead"

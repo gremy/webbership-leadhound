@@ -174,8 +174,8 @@ type igImporter struct {
 // each profile with text (one call, three questions, skipped when the input is unchanged),
 // writes an instagram route on a strong match the lead's org lacks, and queues the review
 // list. A record with a wall is counted and nothing of it is stored. Then it syncs each café
-// lead's place type with Instagram's read (SyncIGPlaceTypes), even after a stop; an interrupt
-// skips the sync and says so. --dry-run reads the file and the leads, writes nothing and calls
+// lead's place type with Instagram's read (SyncIGPlaceTypes), even after a stop, then the
+// campaign's loyalty intent (leads intent sync); an interrupt skips both syncs and says so. --dry-run reads the file and the leads, writes nothing and calls
 // nobody; it says what a sync of what is stored now would write. A stop (--max-calls, the leads
 // cap, an unavailable provider, failures in a row) leaves the rest due for the next import of
 // the same file and exits 0.
@@ -262,6 +262,16 @@ func igImportCmd(ctx context.Context, args []string) error {
 		sync, runErr = lq.SyncIGPlaceTypes(context.WithoutCancel(ctx), false)
 		synced = runErr == nil
 	}
+	// The loyalty intent follows the place types (intent@1's rule 3 reads the place type), on
+	// the same guard: only after a place sync that ran. Its error is its own, so what the
+	// import and the place sync wrote is still reported, with the catch-up line.
+	var isync leadstore.IntentSync
+	var intentErr error
+	intentSynced := false
+	if synced {
+		isync, intentErr = syncIntent(context.WithoutCancel(ctx), lq, setup.leads, c.ID, false)
+		intentSynced = intentErr == nil
+	}
 	result := store.RunResult{Requests: im.sum.Calls, Failures: im.sum.Failures, StopReason: im.sum.StopReason,
 		Note: fmt.Sprintf("%d records, %d new profiles, %d unchanged, %d still due, %d review rows, %d routes",
 			im.sum.Records, im.sum.ProfilesNew, im.sum.Unchanged, im.sum.Due, im.sum.Queued, im.sum.RoutesAdded)}
@@ -280,13 +290,21 @@ func igImportCmd(ctx context.Context, args []string) error {
 		// What the run wrote before it stopped stands, so a roastery read it stored may not hold
 		// its lead yet: say how to catch up (an interrupt during a Jev call lands here too).
 		_, _ = fmt.Fprintln(stdout, "  place types from Instagram: not synced; run leads ig place-types")
+		_, _ = fmt.Fprintln(stdout, intentCatchUp)
 		return runErr
 	}
 	printIGImport(stdout, runID, c.Slug, kind, im.maxCalls, setup.jevLeadsDailyCap(), im.sum, lineErrs)
-	if synced {
-		printIGPlaceSync(stdout, "  ", sync, false, "")
-	} else {
+	switch {
+	case !synced:
 		_, _ = fmt.Fprintln(stdout, "  place types from Instagram: not synced (interrupted); run leads ig place-types")
+		_, _ = fmt.Fprintln(stdout, intentCatchUp)
+	default:
+		printIGPlaceSync(stdout, "  ", sync, false, "")
+		if !intentSynced {
+			_, _ = fmt.Fprintln(stdout, intentCatchUp)
+			return intentErr
+		}
+		_, _ = fmt.Fprintf(stdout, "  %s\n", intentSyncLine(isync, false))
 	}
 	return ctx.Err()
 }
@@ -1833,7 +1851,7 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 		}
 		_, _ = fmt.Fprintf(stdout, "leads ig match: @%s is lead %d now (%s)\n", handle, leadID, route)
 		printIGPlaceChanges(sync)
-		return nil
+		return igOperatorIntent(ctx, lq, cfg)
 	case "unmatch":
 		handle, back, sync, err := igOperatorUnmatch(ctx, lq, db, cfg, raw)
 		if err != nil {
@@ -1845,7 +1863,7 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 		}
 		_, _ = fmt.Fprintf(stdout, "leads ig unmatch: @%s matches no lead%s\n", handle, tail)
 		printIGPlaceChanges(sync)
-		return nil
+		return igOperatorIntent(ctx, lq, cfg)
 	}
 	status := leadstore.IGReviewDismissed
 	if verb == "want" {
@@ -1860,6 +1878,19 @@ func igOperatorPrint(ctx context.Context, lq leadstore.Queries, db *pgxpool.Pool
 		return nil
 	}
 	_, _ = fmt.Fprintf(stdout, "leads ig %s: @%s is %s\n", verb, handle, status)
+	return nil
+}
+
+// igOperatorIntent is the loyalty intent following an operator's match or unmatch, after the
+// place types it moved: every café campaign (scope 0), as the handle may leave one lead for
+// another's. The call itself stands when the sync fails, and the line says how to catch up.
+func igOperatorIntent(ctx context.Context, lq leadstore.Queries, cfg leadconfig.Config) error {
+	isync, err := syncIntent(ctx, lq, cfg, 0, false)
+	if err != nil {
+		_, _ = fmt.Fprintln(stdout, intentCatchUp)
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "  %s\n", intentSyncLine(isync, false))
 	return nil
 }
 
