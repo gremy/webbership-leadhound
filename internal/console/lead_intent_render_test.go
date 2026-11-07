@@ -20,9 +20,9 @@ func leadPageBody(t *testing.T, d LeadDetailPage) string {
 	return w.Body.String()
 }
 
-// TestRenderLeadIntentLine: a café lead with no Instagram match shows its intent line in the
-// place card with its reason and date, and its vendor overlap when above 0; the operator's own
-// call adds "your call"; a zero overlap shows no overlap line.
+// TestRenderLeadIntentLine: a café lead with no Instagram match shows its intent rows in the
+// place card's kv list with its reason and date, and its vendor overlap when above 0; the operator's own
+// call adds "your call"; a zero overlap shows no overlap row.
 func TestRenderLeadIntentLine(t *testing.T) {
 	d := cafeLeadDetail()
 	d.PlaceType = "cafe"
@@ -32,28 +32,36 @@ func TestRenderLeadIntentLine(t *testing.T) {
 		t.Fatal("fixture has an Instagram card; the test needs none")
 	}
 	for _, want := range []string{
-		`<p class="lead-intent">Loyalty intent: Shopping · follows Stampino and Pick Coupons · 6 Nov</p>`,
-		`Vendor overlap: 2</p>`,
+		`<dt>Loyalty intent</dt><dd>Shopping · follows Stampino and Pick Coupons · 6 Nov</dd>`,
+		`<dt>Vendor overlap</dt><dd>2</dd>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("lead page lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "your call</p>") {
+	if strings.Contains(body, "your call</dd>") {
 		t.Error("a derived class says your call")
 	}
 	place := body[strings.Index(body, "<h2>The place</h2>"):]
-	if !strings.Contains(place[:strings.Index(place, "</section>")], "Loyalty intent:") {
-		t.Error("the intent line is not in the place card")
+	card := place[:strings.Index(place, "</section>")]
+	kv := card[strings.Index(card, `<dl class="kv">`):]
+	if !strings.Contains(kv[:strings.Index(kv, "</dl>")], "<dt>Loyalty intent</dt>") {
+		t.Error("the intent rows are not in the place card's kv list")
 	}
 
 	d.Intent = &LeadIntentView{Class: "out", Label: "Out", Reason: "no loyalty signal yet", Date: "5 Nov", Yours: true}
 	body = leadPageBody(t, d)
-	if !strings.Contains(body, `Loyalty intent: Out · no loyalty signal yet · 5 Nov · your call</p>`) {
+	if !strings.Contains(body, `<dt>Loyalty intent</dt><dd>Out · no loyalty signal yet · 5 Nov · your call</dd>`) {
 		t.Error("the operator's call does not say your call")
 	}
 	if strings.Contains(body, "Vendor overlap") {
-		t.Error("a zero overlap shows a line")
+		t.Error("a zero overlap shows a row")
+	}
+
+	d.Place = nil
+	body = leadPageBody(t, d)
+	if !strings.Contains(body, "No map listing on file.") || !strings.Contains(body, "<dt>Loyalty intent</dt><dd>Out") {
+		t.Error("a café with no map listing hides its intent rows")
 	}
 }
 

@@ -3381,6 +3381,11 @@ a.list-title:hover {
   flex: none;
 }
 
+/* The place card: the place-type badge and its buttons sit apart from the facts grid below. */
+.place-type {
+  margin-bottom: var(--sp-2);
+}
+
 /* Key/value pairs */
 .kv {
   display: grid;

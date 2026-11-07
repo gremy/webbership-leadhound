@@ -155,9 +155,9 @@
     <div class="card-head"><h2>The place</h2></div>
     <div class="card-body">
     {{template "lead_place_type" $v}}
-    {{template "lead_intent" $d.Intent}}
     {{if not $d.Place}}<p class="muted">No map listing on file.</p>{{end}}
     <dl class="kv">
+      {{template "lead_intent" $d.Intent}}
       {{with $d.Place}}
       {{with .Category}}<dt>Category</dt><dd>{{.}}</dd>{{end}}
       {{with .Address}}<dt>Address</dt><dd>{{.}}</dd>{{end}}
@@ -232,10 +232,10 @@
     </div>
 {{end}}{{end}}
 
-{{/* lead_intent is a café lead's loyalty intent line (a *LeadIntentView), with its vendor overlap when above 0; nil shows nothing. */}}
+{{/* lead_intent is a café lead's loyalty intent as place-card kv rows (a *LeadIntentView), with a vendor overlap row when above 0; nil shows nothing. */}}
 {{define "lead_intent"}}{{with .}}
-    <p class="lead-intent">Loyalty intent: {{.Label}}{{with .Reason}} · {{.}}{{end}}{{with .Date}} · {{.}}{{end}}{{if .Yours}} · your call{{end}}</p>
-    {{if gt .Overlap 0}}<p class="lead-intent-overlap muted small">Vendor overlap: {{.Overlap}}</p>{{end}}
+      <dt>Loyalty intent</dt><dd>{{.Label}}{{with .Reason}} · {{.}}{{end}}{{with .Date}} · {{.}}{{end}}{{if .Yours}} · your call{{end}}</dd>
+      {{if gt .Overlap 0}}<dt>Vendor overlap</dt><dd>{{.Overlap}}</dd>{{end}}
 {{end}}{{end}}
 
 {{/* lead_link shows a URL: a link only when it is http or https, else plain text. */}}
