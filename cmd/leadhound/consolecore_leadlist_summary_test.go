@@ -42,7 +42,7 @@ func TestLeadIntentViewWords(t *testing.T) {
 	}
 	v := leadIntentView(leadstore.IntentRow{Class: "paper", Reason: "Instagram shows a paper stamp card", Overlap: 2,
 		Yours: true, SignalAt: &sig, SyncedAt: &sync}, loc)
-	want := console.LeadIntentView{Class: "paper", Label: "Paper card", Reason: "Instagram shows a paper stamp card", Date: "7 Nov", Overlap: 2, Yours: true}
+	want := console.LeadIntentView{Class: "paper", Label: "Own scheme", Reason: "Instagram shows a paper stamp card", Date: "7 Nov", Overlap: 2, Yours: true}
 	if *v != want {
 		t.Errorf("view %+v, want %+v", *v, want)
 	}

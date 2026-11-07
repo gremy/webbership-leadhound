@@ -448,7 +448,7 @@ LeadHound reads those signals into one class per café lead, under the rules `in
 Only the handles whose latest match is strong or yours count, every one of them a lead holds, and a vendor counts once however many of its handles show it.
 
 - **The seven classes**, in the order a café batch takes them:
-  `shopping` (comparing vendors or asking one), `paper` (runs a paper card or an unnamed scheme), `switch` (already runs a named vendor), `curious` (one vendor followed, a prepaid offer, or a comment that does not ask), `cold` (no signal; a lead with no class reads as cold), `just_chose` (a vendor tagged it in the last 60 days) and `out`.
+  `shopping` (comparing vendors or asking one), `paper` (shown as Own scheme: runs a paper card or an unnamed scheme), `switch` (already runs a named vendor), `curious` (one vendor followed, a prepaid offer, or a comment that does not ask), `cold` (no signal; a lead with no class reads as cold), `just_chose` (a vendor tagged it in the last 60 days) and `out`.
 - **The rules**, first one that fires wins:
   1. Your call (`leads intent set`) decides, and its score is the derived one.
   2. Your own loyalty product seen anywhere (by rule on its profile, on its website, or a touch from your product's account) makes it `out`: already a customer.
@@ -471,7 +471,7 @@ Only the handles whose latest match is strong or yours count, every one of them 
   A roastery's `out` is not held by intent: the roastery hold and its Controls switch decide whether it is sent.
 - **Where it shows**: the café batch and the Leads list order by class and score after the star keys, so starred leads stay first and Drupal leads, which have no class, keep their order.
   A café batch build syncs the classes first, so a `just_chose` past its 60 days is released; a sync error stops the build.
-  A café lead's page shows its class, its reason and date (and "your call" when it is yours), and its vendor overlap when there is one; the Leads list marks Shopping, Paper, Just chose, Switch and Out.
+  A café lead's page shows its class, its reason and date (and "your call" when it is yours), and its vendor overlap when there is one; the Leads list marks Shopping, Own scheme, Just chose, Switch and Out.
 - **When it syncs**: after every `leads ig import` that ends without an interrupt or error (it prints `intent: shopping n, paper n, … (changed n)`, or `run leads intent sync` when it could not), after `leads ig match|unmatch` and the console's It's this lead, after `leads intent set|clear`, before a café batch build, and on the verb.
   It runs after the place-type sync, because rule 4 reads the place type, and writes a row only where a lead's class changed.
 - **The verbs**:

@@ -81,7 +81,7 @@ func TestRenderLeadIntentNotOnDrupal(t *testing.T) {
 func TestRenderLeadListIntentChip(t *testing.T) {
 	want := map[string]string{
 		"shopping":   `<span class="badge badge-good intent-badge">Shopping</span>`,
-		"paper":      `<span class="badge badge-accent intent-badge">Paper card</span>`,
+		"paper":      `<span class="badge badge-accent intent-badge">Own scheme</span>`,
 		"switch":     `<span class="badge badge-accent intent-badge">Switch</span>`,
 		"just_chose": `<span class="badge intent-badge">Just chose</span>`,
 		"out":        `<span class="badge intent-badge">Out</span>`,

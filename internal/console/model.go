@@ -2407,7 +2407,7 @@ type LeadIntentView struct {
 
 // intentLabels words each intent class (intent@1's seven).
 var intentLabels = map[string]string{
-	"shopping": "Shopping", "paper": "Paper card", "just_chose": "Just chose", "switch": "Switch",
+	"shopping": "Shopping", "paper": "Own scheme", "just_chose": "Just chose", "switch": "Switch",
 	"curious": "Curious", "cold": "Cold", "out": "Out",
 }
 
