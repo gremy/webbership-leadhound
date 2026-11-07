@@ -18,8 +18,8 @@
 #   with every accent mark dropped. The /ig-signals skill's snippets carry the same list under a
 #   contract test, so change both together. "barista" is left out: it names people (a barista's
 #   own account), and a kept account's name is stored.
-# vendors[].ig_words: words that name a loyalty vendor on Instagram with no @-tag or link (Toto
-#   Café's "PICK"). A word counts only as a whole word, case-sensitive, and only when the same
+# vendors[].ig_words: words that name a loyalty vendor on Instagram with no @-tag or link (a café's
+#   caption announcing a PICK partnership). A word counts only as a whole word, case-sensitive, and only when the same
 #   bio or caption also holds a word starting with one of instagram.loyalty_cues ("via word").
 # instagram.loyalty_cues: lower-case ASCII word starts, matched against the bio or caption with
 #   accents dropped and lower case (so "recompens" catches "recompensă", "reward" "rewards").

@@ -40,7 +40,7 @@ const IntentMaxNote = 200
 // roastery out (never held by intent: the roastery hold and its Controls switch decide) from an
 // out by rules 2-3 (held). Reading the reason, not the place type, keeps a roastery that is
 // already a customer (rule 2 fires first) held, and needs no join on the place type in the hot
-// queue fragment. TestIntentRoasteryOutNotHeld pins the words against intent.Classify.
+// queue fragment. TestIntentOwnVendorAndRoastery pins the words against intent.Classify.
 const intentRoasteryReason = "a roastery"
 
 var (
@@ -654,10 +654,12 @@ func intentRankSQL(x string) string {
 
 // intentHeldExprSQL is true when the intentJoinSQL row x holds its lead from sends at now (an
 // SQL expression): just_chose while held_until > now, an out from the operator's call, and a
-// derived out by rules 2-3 (every derived out but the roastery's, intentRoasteryReason).
+// derived out by rules 2-3 (every derived out but the roastery's, intentRoasteryReason). A NULL
+// (a just_chose with no held_until) reads false, so the queue, StarredStatus and intentHeldSQL
+// agree it is not held (TestHoldIntentNullHeldUntil).
 func intentHeldExprSQL(x, now string) string {
-	return `((` + x + `.intent_class = '` + intent.JustChose + `' AND ` + x + `.intent_held_until > ` + now + `)
-	   OR (` + x + `.intent_class = '` + intent.Out + `' AND (` + x + `.intent_yours OR ` + x + `.intent_reason <> ` + sqlLiteral(intentRoasteryReason) + `)))`
+	return `coalesce((` + x + `.intent_class = '` + intent.JustChose + `' AND ` + x + `.intent_held_until > ` + now + `)
+	   OR (` + x + `.intent_class = '` + intent.Out + `' AND (` + x + `.intent_yours OR ` + x + `.intent_reason <> ` + sqlLiteral(intentRoasteryReason) + `)), false)`
 }
 
 // intentHeldSQL is the SQL condition that is true when the lead l is held from sends by its

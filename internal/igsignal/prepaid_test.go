@@ -7,14 +7,14 @@ import (
 )
 
 // TestVendorWord: a vendor's ig_words count case-sensitively, as a whole word, and only beside
-// a loyalty cue in the same bio or caption (Toto Café's "PICK").
+// a loyalty cue in the same bio or caption (a café's caption announcing a PICK partnership).
 func TestVendorWord(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		p       Profile
 		id, via string
 	}{
-		{"Toto's case", Profile{Captions: []string{"New partner 🎉 collect points with PICK"}}, "pick-coupons", VendorViaWord},
+		{"caption beside a cue", Profile{Captions: []string{"New partner 🎉 collect points with PICK"}}, "pick-coupons", VendorViaWord},
 		{"folded cue in the bio", Profile{Bio: "Recompense cu PICK."}, "pick-coupons", VendorViaWord},
 		{"wrong case, no cue", Profile{Captions: []string{"pick up your coffee"}}, "", ""},
 		{"wrong case beside a cue", Profile{Captions: []string{"pick up your loyalty card"}}, "", ""},

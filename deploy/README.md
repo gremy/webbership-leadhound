@@ -1244,7 +1244,7 @@ It adds loyalty intent on café leads (README "Loyalty intent"):
 | `lead_intent` | each café lead's derived class under `intent@1`, with its overlap, score, reason, signal date and, for `just_chose`, the date it is held until; a row only when the class changes |
 | `lead_intent_call` | your own call on a lead's class (`leads intent set` and `clear`), which wins over the derived one |
 
-All three new tables are append-only for the app role (`leadhound migrate` and `deploy/sql/grants.sql` revoke `UPDATE`, `DELETE` and `TRUNCATE` again after every migrate); only `leads forget`, as the owner, deletes from them.
+All three new tables are append-only for the app role (`leadhound migrate` and `deploy/sql/grants.sql` revoke `UPDATE` again after every migrate); only `leads forget`, as the owner, deletes from them.
 The ALTERs on `ig_follow` wait at most 5 seconds for their lock, because every import reads it; deploy again once it is quiet.
 Its Down refuses while any `lead_intent_call`, `ig_vendor_touch` or `followers` row of `ig_follow` exists, because your calls and the vendor reads would be lost; with none, it drops the three tables, restores the old capture key and drops the column.
 

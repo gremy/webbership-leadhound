@@ -169,6 +169,36 @@ func TestHoldIntentJustChoseExpires(t *testing.T) {
 	}
 }
 
+// TestHoldIntentNullHeldUntil: a just_chose row with no held_until is not held, and the queue
+// agrees with the held-status reads (StarredStatus, LatestIntents): a NULL never hides a lead.
+func TestHoldIntentNullHeldUntil(t *testing.T) {
+	f := newOutreachFixture(t)
+	ctx := context.Background()
+	jc := f.cafeLead(t, "jc-null.localhost", nil, "info@jc-null.localhost")
+	f.intentRow(t, jc, intent.JustChose, 0, "chose a vendor", nil)
+	f.star(t, jc)
+	o := leadstore.CandidateOptions{Profile: testProfile, HoldIntent: true}
+	if got := leadIDs(candidates(t, f.q, o)); !slices.Contains(got, jc) {
+		t.Errorf("queue with HoldIntent: %v, want %d (no held_until is not held)", got, jc)
+	}
+	st, err := f.q.StarredStatus(ctx, leadstore.StarredStatusOptions{CandidateOptions: leadstore.CandidateOptions{Profile: testProfile, HoldIntent: true, IncludeReserved: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range st {
+		if s.LeadID == jc && s.Reason != leadstore.StarredReady {
+			t.Errorf("StarredStatus: %q %q, want ready", s.Reason, s.Detail)
+		}
+	}
+	rows, err := f.q.LatestIntents(ctx, []int64{jc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rows[jc]; r.Class != intent.JustChose || r.Held {
+		t.Errorf("LatestIntents: %+v, want just_chose, not held", r)
+	}
+}
+
 // TestHoldIntentStarred: a hold is a filter, so a starred lead its intent holds is held too,
 // and StarredStatus says why (a Just chose with the day it ends, your Out, a derived Out with
 // its reason); without HoldIntent it is ready.

@@ -262,7 +262,7 @@ func igImportCmd(ctx context.Context, args []string) error {
 		sync, runErr = lq.SyncIGPlaceTypes(context.WithoutCancel(ctx), false)
 		synced = runErr == nil
 	}
-	// The loyalty intent follows the place types (intent@1's rule 3 reads the place type), on
+	// The loyalty intent follows the place types (intent@1's rule 4 reads the place type), on
 	// the same guard: only after a place sync that ran. Its error is its own, so what the
 	// import and the place sync wrote is still reported, with the catch-up line.
 	var isync leadstore.IntentSync
