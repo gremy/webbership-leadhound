@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/gremy/webbership-leadhound/internal/cafe"
 )
 
 // What the Leads list shows beyond its own columns: the extras of one page's rows, read in a
@@ -32,8 +34,9 @@ func listTowns(towns []string) []string {
 	return out
 }
 
-// RowExtras is what one row of the list shows beyond ListRow. The slices are never nil, and a
-// retired route or fact is in none of them.
+// RowExtras is what one row of the list shows beyond ListRow. The slices are never nil but
+// Signals, which is nil when there is no café evidence, and a retired route or fact is in none
+// of them.
 type RowExtras struct {
 	LeadID      int64    `db:"lead_id"`
 	Description string   `db:"description"` // the org's first live description fact
@@ -47,8 +50,16 @@ type RowExtras struct {
 	Instagrams  []string `db:"instagrams"`
 	// BusinessKind is the kind of the lead's latest lead_business_kind row; "" with no row.
 	BusinessKind string `db:"business_kind"`
-	LastActor    string `db:"-"` // who wrote the lead's latest event; "" with no event
-	LastReason   string `db:"-"` // the latest event's reason
+	// A café lead's café finding (cafe@1), as rateLeadSQL reads it: the café's own website as
+	// the build read it ("" with none), SiteRead when the finding rests on a homepage the build
+	// read (its source is a site_probe, which the build takes only from an OK cafe@1 probe),
+	// and its evidence as "name:value" pairs in order, for probe.CafeResult. All zero (Signals nil) for any
+	// other lead, and for a café lead whose finding is not a café one.
+	CafeWebsite string   `db:"cafe_website"`
+	SiteRead    bool     `db:"site_read"`
+	Signals     []string `db:"signals"`
+	LastActor   string   `db:"-"` // who wrote the lead's latest event; "" with no event
+	LastReason  string   `db:"-"` // the latest event's reason
 }
 
 // TownCount is one town of ListTowns: its most common spelling, and how many open leads are in
@@ -61,7 +72,8 @@ type TownCount struct {
 // ListExtras reads the extras of the leads leadIDs in two queries, keyed by lead id; an id with
 // no lead is not in the map. The first query reads each org's live facts and routes as
 // LeadDetail does, in id order within a kind, each café lead's latest place and each lead's
-// latest business kind, one probe of lead_business_kind_lead_idx per lead. The second
+// latest business kind, one probe of lead_business_kind_lead_idx per lead, and each café
+// lead's café finding by its primary key, its evidence unpacked without a table read. The second
 // reads the latest events in one pass, because lead_event has no index on lead_id and a read
 // per row would scan the table once for each.
 func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]RowExtras, error) {
@@ -75,7 +87,10 @@ func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]Row
 		   coalesce(fx.socials, '{}') AS socials, coalesce(fx.phones, '{}') AS phones,
 		   coalesce(rt.emails, '{}') AS emails, coalesce(rt.forms, '{}') AS forms,
 		   coalesce(rt.linkedins, '{}') AS linkedins, coalesce(rt.instagrams, '{}') AS instagrams,
-		   coalesce(bk.kind, '') AS business_kind
+		   coalesce(bk.kind, '') AS business_kind,
+		   coalesce(cf.subject->>'website', '') AS cafe_website,
+		   coalesce(cf.source_table = `+sqlLiteral(FindingSourceProbe)+`, false) AS site_read,
+		   sg.v AS signals
 		 FROM lead l
 		 LEFT JOIN LATERAL (
 		   SELECT concat_ws(', ', nullif(x.freeform, ''), nullif(x.postcode, '')) AS address, x.category
@@ -98,6 +113,12 @@ func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]Row
 		 LEFT JOIN LATERAL (
 		   SELECT b.kind FROM lead_business_kind b WHERE b.lead_id = l.id ORDER BY b.id DESC LIMIT 1
 		 ) bk ON true
+		 LEFT JOIN finding cf ON cf.id = l.finding_id AND l.kind IN (`+cafeKindsSQL()+`) AND cf.detector = `+sqlLiteral(cafe.DerivedBy)+`
+		 LEFT JOIN LATERAL (
+		   SELECT array_agg(coalesce(e.v->>'name', '') || ':' || coalesce(e.v->>'value', '') ORDER BY e.i) AS v
+		   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(cf.evidence) = 'array' THEN cf.evidence ELSE '[]'::jsonb END)
+		     WITH ORDINALITY AS e(v, i)
+		 ) sg ON true
 		 WHERE l.id = ANY($1::bigint[])`, leadIDs)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: list extras: %w", err)

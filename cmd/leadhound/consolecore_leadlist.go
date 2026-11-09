@@ -273,17 +273,21 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 			row.Call = *l.Band
 		}
 		row.PlaceTypeSource = sources[r.LeadID].Source
-		rowExtras(&row, r.State, extras[r.LeadID])
+		rowExtras(&row, r, w.cfg.Facts, extras[r.LeadID])
 		p.Rows = append(p.Rows, row)
 	}
 	return p, nil
 }
 
-// rowExtras fills what a list row shows beyond its own columns from x: the summary line, the
-// expansion's details, and for a skipped lead whether the operator's Undo applies or why the
-// system skipped it.
-func rowExtras(row *console.LeadListRow, state string, x leadstore.RowExtras) {
-	row.Summary = rowSummary(*row, x)
+// rowExtras fills what a list row shows beyond its own columns from x: the full and short
+// summary lines (from r's finding and facts' end-of-life dates as well), the expansion's
+// details, and for a skipped lead whether the operator's Undo applies or why the system
+// skipped it.
+func rowExtras(row *console.LeadListRow, r leadstore.ListRow, facts leadconfig.Facts, x leadstore.RowExtras) {
+	f := rowLineFacts(*row, r.Finding, facts, x)
+	row.Summary, row.SummaryShort = console.LeadLine(f), console.LeadLineInTable(f)
+	row.Details.About = strings.Join(strings.Fields(x.Description), " ")
+	row.BusinessKind, row.Details.Kind = x.BusinessKind, console.BusinessKindWords(x.BusinessKind)
 	row.Details.Address = x.Address
 	row.Details.Phones = x.Phones
 	for _, e := range x.Emails {
@@ -298,7 +302,7 @@ func rowExtras(row *console.LeadListRow, state string, x leadstore.RowExtras) {
 	for _, u := range x.Socials {
 		row.Details.Socials = append(row.Details.Socials, console.RowLink{Label: cmp.Or(socialLabel(u), u), URL: u})
 	}
-	if state == leadstore.LeadSkipped {
+	if r.State == leadstore.LeadSkipped {
 		if x.LastActor == leadstore.ActorGremy {
 			row.CanUndo = true
 		} else {
@@ -318,25 +322,45 @@ func leadIntentView(in leadstore.IntentRow, loc *time.Location) *console.LeadInt
 	return v
 }
 
-// rowSummary is a row's description line: the lead's first description on one line, else its
-// town, category and address and the finding's reason, joined by " · "; "" when it has none.
-// The town is left out when the address already names it (compared without case), so the line
-// never says it twice.
-func rowSummary(row console.LeadListRow, x leadstore.RowExtras) string {
-	if d := strings.Join(strings.Fields(x.Description), " "); d != "" {
-		return d
+// rowLineFacts are the facts of row's summary line. A lead has a website when its domain is
+// a real one (realDomain: a place org's stand-in is not) or the café build read one. A café
+// lead's site was read when its café finding rests on a read homepage (x.SiteRead), and its
+// vendor is the loyalty vendors that finding's evidence names, decoded as cafeFacts decodes
+// them for Jev. A Drupal lead's finding is s in words without its support clause, and its end
+// of life is its major's date in facts, "" when facts do not know it.
+func rowLineFacts(row console.LeadListRow, s leadstore.FindingSubject, facts leadconfig.Facts, x leadstore.RowExtras) console.LineFacts {
+	f := console.LineFacts{
+		RType: row.RType, BusinessKind: x.BusinessKind, PlaceType: row.PlaceType, Category: x.Category,
+		Town: row.Town, Country: row.Country,
+		HasWebsite: realDomain(row.Domain) != "" || x.CafeWebsite != "",
 	}
-	town := row.Town
-	if t := strings.TrimSpace(town); t != "" && strings.Contains(strings.ToLower(x.Address), strings.ToLower(t)) {
-		town = ""
+	if row.RType == leadstore.TypeCafe {
+		c := cafeFacts(leadstore.RateLead{CafeWebsite: x.CafeWebsite, Signals: x.Signals})
+		f.SiteRead = x.SiteRead
+		f.LoyaltySeen = c.LoyaltySeen
+		f.Vendor = strings.Join(c.LoyaltyVendors, ", ")
+		return f
 	}
-	var parts []string
-	for _, v := range []string{town, strings.ReplaceAll(x.Category, "_", " "), x.Address, row.FindingReason} {
-		if v = strings.TrimSpace(v); v != "" {
-			parts = append(parts, v)
+	f.Finding = leadview.FindingLine(s, leadconfig.Facts{}, time.Time{})
+	major := s.Major
+	if head, _, _ := strings.Cut(s.ExactVersion, "."); major == 0 && head != "" {
+		major, _ = strconv.Atoi(head)
+	}
+	if d, ok := facts.EOL(major); ok && !d.IsZero() {
+		if words, err := outreach.FormatDate(d.Time, outreach.LangEnglish); err == nil {
+			f.EOL = words
 		}
 	}
-	return strings.Join(parts, " · ")
+	return f
+}
+
+// realDomain is a lead's domain when it is a website of its own, and "" for a place org's
+// stand-in domain (leadstore.PlaceOrgPrefix), as the console's siteDomain reads it.
+func realDomain(domain string) string {
+	if strings.HasPrefix(domain, leadstore.PlaceOrgPrefix) {
+		return ""
+	}
+	return domain
 }
 
 // campaignMix is what kinds of lead one campaign holds, and how many of them are open.
@@ -811,9 +835,12 @@ func leadListRow(r leadstore.ListRow, kinds []leadKind, w leadsWeighing, order m
 	if r.PlaceType != "" { // a café lead; every other lead reads cold and shows no chip
 		row.IntentClass = r.IntentClass
 	}
+	name := r.Name
 	if strings.HasPrefix(row.Name, leadstore.PlaceOrgPrefix) {
+		name = ""
 		row.Name = "Lead " + strconv.FormatInt(r.LeadID, 10) // a place's stand-in domain is no name
 	}
+	row.Tile = console.TileLetter(name, realDomain(r.Domain))
 	if r.Relevance != nil {
 		row.Relevance = leadview.RelevanceWords(r.Relevance, r.Band, slices.Contains(w.trusted, r.RType))
 		row.RelevanceWords = row.Relevance // Jev's number and band; Jev stores no reason

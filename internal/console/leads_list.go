@@ -59,11 +59,14 @@ type leadListView struct {
 	// leads), Relevance and Order only when a row has one, Your call when a row has one or
 	// the list is the leads to label.
 	ShowState, ShowRelevance, ShowOrder, ShowCall bool
-	// ShowTriage is the review column (Skip, Good, the place type switch, Undo or the system's
-	// skip reason), shown when a row has any of them.
+	// ShowTriage is the review column (Skip, Good, Undo or the system's skip reason), shown
+	// when a row has any of them.
 	ShowTriage bool
-	ToLabel    bool // the list is the leads to label
-	Filters    int  // how many filters are on, for the folded form's summary
+	// ShowKind is the Kind column, with each row's campaign under its kind: only when the list
+	// spans campaigns, since on one campaign's tab every row's would be the tab's own.
+	ShowKind bool
+	ToLabel  bool // the list is the leads to label
+	Filters  int  // how many filters are on, for the folded form's summary
 }
 
 // reachTab is one tab of the List: a next action with its number, or All (Counted false). The
@@ -499,6 +502,7 @@ func newLeadListView(p LeadListPage) leadListView {
 	v.Campaigns = campaignTabs(p.Filter, p.CampaignTabs)
 	v.PlaceTypes = placeTypeChips(p.Filter, p.PlaceTypeCounts)
 	v.ShowCall = v.ToLabel
+	v.ShowKind = p.Filter.Campaign == "" || p.Filter.Campaign == campaignAll
 	for _, row := range p.Rows {
 		v.ShowRelevance = v.ShowRelevance || row.Relevance != ""
 		v.ShowOrder = v.ShowOrder || row.Position != ""
@@ -555,22 +559,6 @@ func leadListURL(f LeadListQuery, n int) string {
 	return leadsPath + "?" + q.Encode()
 }
 
-// leadListBaseCols is how many columns the list's table always has: the Send now tick, the
-// star, Lead, Country, Kind, Finding and Reach by.
-const leadListBaseCols = 7
-
-// Cols is how many columns the list's table has: the base ones plus each optional one the
-// page shows, so a row's "More" spans the whole table.
-func (v leadListView) Cols() int {
-	n := leadListBaseCols
-	for _, on := range []bool{v.ShowRelevance, v.ShowCall, v.ShowOrder, v.ShowState, v.Order, v.ShowTriage} {
-		if on {
-			n++
-		}
-	}
-	return n
-}
-
 // rowOpen reports a row still in state new, by the store's own name for the state.
 func rowOpen(r LeadListRow) bool { return r.StateCode == "new" }
 
@@ -579,14 +567,15 @@ func rowOpen(r LeadListRow) bool { return r.StateCode == "new" }
 func rowTriaged(r LeadListRow) bool { return rowOpen(r) || r.CanUndo || r.SkipReason != "" }
 
 // triageView is one row's review actions in one layout ("w" the table, "n" the cards): the
-// row and its name for a screen reader; Self, the row's own anchor, where Undo comes back to;
+// row and its name for a screen reader; Wide, the table, where More's summary carries the
+// row's short line; Self, the row's own anchor, where Undo comes back to;
 // Next, where an action that moves on comes back to without the script (the next row's
 // anchor, else the one before, else the page); Open, a lead in state new; Good, a café lead
 // open to the operator's "likely"; and the place type switch's action and its words.
 type triageView struct {
 	Row                   LeadListRow
 	Name, Self, Next      string
-	Open, Good            bool
+	Open, Good, Wide      bool
 	SwitchDo, SwitchLabel string
 }
 
@@ -595,7 +584,7 @@ func (v leadListView) Triage(i int, layout string) triageView {
 	rows := v.P.Rows
 	r := rows[i]
 	anchor := func(id int64) string { return v.Back + "#lead-" + layout + "-" + strconv.FormatInt(id, 10) }
-	t := triageView{Row: r, Name: rowName(r), Self: anchor(r.LeadID), Next: v.Back, Open: rowOpen(r)}
+	t := triageView{Row: r, Name: rowName(r), Self: anchor(r.LeadID), Next: v.Back, Open: rowOpen(r), Wide: layout == "w"}
 	switch {
 	case i+1 < len(rows):
 		t.Next = anchor(rows[i+1].LeadID)

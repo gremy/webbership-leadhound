@@ -35,7 +35,9 @@ func TestStarNotePerChannel(t *testing.T) {
 		h := newHarness(t, b, false)
 		c := h.session(t)
 		list := h.do(get("/leads", c)).Body.String()
-		if n := strings.Count(list, `<span class="item-meta star-note">`+note+`</span>`); n != 2 {
+		// The table's note keeps to one line with the whole of it in its title.
+		if n := strings.Count(list, `<span class="item-meta star-note">`+note+`</span>`) +
+			strings.Count(list, `<span class="item-meta star-note" title="`+note+`">`+note+`</span>`); n != 2 {
 			t.Errorf("%q shown %d times on the list, want once in each layout", note, n)
 		}
 		detail := h.do(get("/leads/5", c)).Body.String()

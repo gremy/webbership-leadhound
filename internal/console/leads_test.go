@@ -746,6 +746,7 @@ func TestLeadListPage(t *testing.T) {
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
 		`<p class="hint filter-note">Northwind Trading</p>`,
 		`<span class="item-meta">Drupal end-of-life</span>`, `<td class="kind-cell">Northwind Trading<span class="cell-sub">Drupal end-of-life</span></td>`,
+		`<td class="where-cell">GB</td>`, `<th scope="col">Where</th>`,
 		`<a href="/leads/campaigns">Campaigns</a>`,
 	} {
 		if !strings.Contains(body, want) {

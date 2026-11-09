@@ -177,20 +177,39 @@ func TestLeadListTabsMatchTotal(t *testing.T) {
 	}
 }
 
-// TestLeadListSummary: a row's summary is its description on one line, else its town,
-// category and address with the finding's reason; Jev's number and band are its relevance
-// words; and a skipped row offers Undo only when the operator skipped it, the system's skip
-// showing its reason instead, both counted by the progress line as the store counts them.
+// TestLeadListSummary: a row's summary is the line LeadLine builds from its facts, read from
+// the store: lucerne's café finding rests on its read homepage and names a loyalty vendor,
+// margie's homepage was read and showed none, and humongous has no café finding, so nothing
+// is said of its loyalty. The short line leaves out the town; the description is About and
+// Jev's pick of kind is Kind, in words. Jev's number and band are its relevance words; and a
+// skipped row offers Undo only when the operator skipped it, the system's skip showing its
+// reason instead, both counted by the progress line as the store counts them.
 func TestLeadListSummary(t *testing.T) {
 	b, _ := cafeListScene(t)
 	ctx := context.Background()
+	var vendor cafe.Vendor
+	for _, v := range cafe.DefaultConfig().Vendors {
+		if v.Kind == cafe.SigLoyalty && !v.Own && v.Name != "" {
+			vendor = v
+			break
+		}
+	}
+	sig := cafe.Signal{Kind: cafe.SigLoyalty, Vendor: vendor.ID, Via: cafe.ViaScript, Match: "lucerne.example"}
+	ownerExec(t, `UPDATE finding SET detector = $2, evidence = jsonb_build_array(jsonb_build_object('name', $3::text, 'value', $4::text))
+		WHERE id = (SELECT finding_id FROM lead WHERE id = $1)`, leadIDOf(t, "lucerne.example"), cafe.DerivedBy, cafe.SigLoyalty, sig.String())
+	ownerExec(t, `UPDATE finding SET detector = $2, evidence = '[]' WHERE id = (SELECT finding_id FROM lead WHERE id = $1)`,
+		leadIDOf(t, "margie.example"), cafe.DerivedBy)
+	if err := leadstoretest.Q(t).SetBusinessKind(ctx, leadIDOf(t, "margie.example"), "bakery_cafe", "business-kind@1", make([]byte, 32), 0.9); err != nil {
+		t.Fatal(err)
+	}
 	p := listOf(t, b, console.LeadListQuery{Campaign: cafeListSlug, PlaceType: "all"})
-	if r := rowOf(t, p, "margie.example"); r.Summary != "A fictive café by the river." {
-		t.Errorf("margie's summary %q", r.Summary)
+	if r := rowOf(t, p, "margie.example"); r.Summary != "Bakery café · Exampleton · no loyalty seen" || r.SummaryShort != "Bakery café · no loyalty seen" ||
+		r.Details.About != "A fictive café by the river." || r.Details.Kind != "Bakery café" || r.BusinessKind != "bakery_cafe" || r.Tile != console.TileLetter(r.Name, r.Domain) || r.Tile == "#" {
+		t.Errorf("margie: %q / %q, about %q, kind %q / %q, tile %q", r.Summary, r.SummaryShort, r.Details.About, r.Details.Kind, r.BusinessKind, r.Tile)
 	}
 	r := rowOf(t, p, "lucerne.example")
-	if r.Summary != "Exampleton · coffee shop · 1 Fictive Road, AB1 2CD · A fictive reason" || r.FindingReason != "A fictive reason" {
-		t.Errorf("lucerne's summary %q, reason %q", r.Summary, r.FindingReason)
+	if r.Summary != "Coffee shop · Exampleton · on "+vendor.Name || r.FindingReason != "A fictive reason" || r.Details.About != "" || r.Details.Kind != "" {
+		t.Errorf("lucerne's summary %q, reason %q, about %q, kind %q", r.Summary, r.FindingReason, r.Details.About, r.Details.Kind)
 	}
 	if r.Details.Address != "1 Fictive Road, AB1 2CD" || !slices.ContainsFunc(r.Details.Routes, func(l console.RowLink) bool { return l.Label == "info@lucerne.example" && l.URL == "" }) {
 		t.Errorf("lucerne's details %+v", r.Details)
@@ -198,8 +217,11 @@ func TestLeadListSummary(t *testing.T) {
 	if r.RelevanceWords != r.Relevance {
 		t.Errorf("relevance words %q beside %q", r.RelevanceWords, r.Relevance)
 	}
-	if r := rowOf(t, p, "humongous.example"); r.Summary != "Otherby · coffee shop" {
-		t.Errorf("humongous's summary %q", r.Summary)
+	if r := rowOf(t, p, "humongous.example"); r.Summary != "Coffee shop · Otherby" || r.SummaryShort != "Coffee shop" {
+		t.Errorf("humongous's summary %q / %q", r.Summary, r.SummaryShort)
+	}
+	if r := rowOf(t, p, "cpandl.example"); r.Summary != "Roastery or online store · Otherby" {
+		t.Errorf("cpandl's summary %q", r.Summary)
 	}
 
 	if _, err := b.LeadAct(ctx, console.LeadAction{Do: console.LeadSkip, ID: leadIDOf(t, "lucerne.example")}); err != nil {

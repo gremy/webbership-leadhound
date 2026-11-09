@@ -1,7 +1,10 @@
 package console
 
 import (
+	"html/template"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -14,11 +17,15 @@ func triageList() LeadListPage {
 	p.Rows = []LeadListRow{
 		{LeadID: 21, Name: "Fictive Bean Café", Country: "RO", Kind: "Café", RType: "cafe", StateCode: "new", State: "not contacted yet",
 			Town: "Fictive Town", PlaceType: "cafe", PlaceTypeSource: "name",
-			Summary: `<b>Cosy</b> corner & "bright" <script>alert(1)</script>`,
+			Summary:      `<b>Cosy</b> corner & "bright" <script>alert(1)</script> · Fictive Town · no website`,
+			SummaryShort: `<b>Cosy</b> corner & "bright" <script>alert(1)</script>`,
+			Tile:         "F", BusinessKind: "neighbourhood_cafe",
 			Finding: "No loyalty app seen", FindingReason: "No loyalty vendor on its pages",
 			RelevanceWords: "72, likely match",
 			Details: LeadRowDetails{
 				Address: "1 Fictive Street",
+				About:   `<i>Fresh</i> bakes daily`,
+				Kind:    "Neighbourhood café",
 				Phones:  []string{"+40 256 000 111"},
 				Routes:  []RowLink{{Label: "hello@bean.example"}, {Label: "Contact form", URL: "https://bean.example/contact"}},
 				Socials: []RowLink{
@@ -96,9 +103,11 @@ func TestLeadListTriageActions(t *testing.T) {
 }
 
 // TestLeadListTriageRow: the campaign tabs, the chips with Both, the progress line and the town
-// select show; the summary is escaped text, clamped by its class; More spans every column and
-// holds the address, a phone as a tel link, the email route as text, web links opening in a new
-// tab, and an unsafe or schemeless social address as text.
+// select show; in the table the short line is More's own summary, escaped text clamped by its
+// class with the whole line in its title, and the cards show the whole line; More opens inside
+// the Lead cell and holds About, the kind, Jev's reading, the address, a phone as a tel link,
+// the email route as text, web links opening in a new tab, an unsafe or schemeless social
+// address as text, and the place type switch; Where shows the town over the country code.
 func TestLeadListTriageRow(t *testing.T) {
 	body := triageBody(t, "?campaign=cafes")
 	for _, want := range []string{
@@ -107,10 +116,14 @@ func TestLeadListTriageRow(t *testing.T) {
 		`>Both <span class="chip-count">2,293</span></a>`,
 		`<strong>312</strong> of 2,293 reviewed`,
 		`<select class="select" id="filter-town" name="town">`, `<option value="Fictive Town">Fictive Town (12)</option>`,
-		`&lt;b&gt;Cosy&lt;/b&gt; corner &amp; &#34;bright&#34; &lt;script&gt;alert(1)&lt;/script&gt;`,
-		`<p class="lead-summary"`,
-		`<tr class="lead-extra"><td colspan="8">`,
-		`<summary>More<span class="visually-hidden"> about Fictive Bean Café</span></summary>`,
+		`<summary><span class="lead-summary" title="&lt;b&gt;Cosy&lt;/b&gt; corner &amp; &#34;bright&#34; &lt;script&gt;alert(1)&lt;/script&gt; · Fictive Town · no website">&lt;b&gt;Cosy&lt;/b&gt; corner &amp; &#34;bright&#34; &lt;script&gt;alert(1)&lt;/script&gt;</span><span class="lead-more-label">More<span class="visually-hidden"> about Fictive Bean Café</span></span></summary>`,
+		`<p class="lead-summary" title="&lt;b&gt;Cosy&lt;/b&gt; corner &amp; &#34;bright&#34; &lt;script&gt;alert(1)&lt;/script&gt; · Fictive Town · no website">`,
+		`<summary><span class="lead-more-label">More<span class="visually-hidden"> about Northwind Trading</span></span></summary>`,
+		`<span class="lead-tile" aria-hidden="true">F</span>`,
+		`<td class="where-cell">Fictive Town<span class="cell-sub">RO</span></td>`, `<td class="where-cell">GB</td>`,
+		`<dt>About</dt><dd>&lt;i&gt;Fresh&lt;/i&gt; bakes daily</dd>`, `<dt>Kind</dt><dd>Café</dd>`,
+		`<dt>Jev read it as</dt><dd>Neighbourhood café</dd>`,
+		`<div class="row-actions lead-triage lead-switch" data-lead="21" data-name="Fictive Bean Café"><form method="post" action="/leads/21/roastery" data-triage="roastery">`,
 		`<dt>Address</dt><dd>1 Fictive Street</dd>`,
 		`<a href="tel:&#43;40256000111">&#43;40 256 000 111</a>`,
 		`<dd>hello@bean.example · <a href="https://bean.example/contact" target="_blank" rel="noopener noreferrer nofollow">Contact form</a></dd>`,
@@ -124,7 +137,8 @@ func TestLeadListTriageRow(t *testing.T) {
 			t.Errorf("/leads lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"<b>Cosy</b>", "<script>alert(1)", `href="javascript`, `href="//tiktok`, `mailto:`, `href="hello@`} {
+	for _, bad := range []string{"<b>Cosy</b>", "<script>alert(1)", "<i>Fresh", `href="javascript`, `href="//tiktok`, `mailto:`, `href="hello@`,
+		`class="lead-extra"`, "colspan", `<th scope="col">Kind</th>`, `<th scope="col">Country</th>`} {
 		if strings.Contains(body, bad) {
 			t.Errorf("/leads holds %q", bad)
 		}
@@ -137,17 +151,90 @@ func TestLeadListTriageRow(t *testing.T) {
 	}
 }
 
-// TestLeadListTriageCols: the table's column count follows its optional columns, so More always
-// spans the whole row.
-func TestLeadListTriageCols(t *testing.T) {
-	v := newLeadListView(LeadListPage{Rows: []LeadListRow{{LeadID: 1, StateCode: "contacted"}}})
-	if v.Cols() != leadListBaseCols || v.ShowTriage {
-		t.Errorf("a contacted lead alone: %d columns, review %v", v.Cols(), v.ShowTriage)
+// TestLeadListOneRowPerLead renders every combination of the table's optional columns and
+// checks that each lead is one table row, so nothing below it needs a span, and that the row
+// has exactly as many cells as the header has columns.
+func TestLeadListOneRowPerLead(t *testing.T) {
+	groupRe := regexp.MustCompile(`(?s)<tbody class="lead-group"[^>]*>(.*?)</tbody>`)
+	for mask := range 1 << 7 {
+		on := func(bit int) bool { return mask&(1<<bit) != 0 }
+		row := LeadListRow{LeadID: 7, Name: "Fictive Row", Country: "RO", Kind: "Café", RType: "cafe",
+			StateCode: "contacted", State: "contacted", Campaign: "Café loyalty", Starred: true}
+		q := url.Values{}
+		if on(0) {
+			row.Relevance = "50, maybe a match"
+		}
+		if on(1) {
+			row.Call = "likely"
+		}
+		if on(2) {
+			row.Position = "1"
+		}
+		if on(3) {
+			q.Set("status", "all")
+		}
+		if on(4) {
+			q.Set("sort", "order")
+		}
+		if on(5) {
+			row.StateCode, row.State = "new", "not contacted yet"
+		}
+		if on(6) {
+			q.Set("campaign", "cafes")
+		}
+		b := richBackend("x")
+		b.list = triageList()
+		b.list.Rows = []LeadListRow{row, row}
+		b.list.Rows[1].LeadID = 8
+		h := newHarness(t, b, false)
+		w := h.do(get("/leads?"+q.Encode(), h.session(t)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("mask %07b: %d", mask, w.Code)
+		}
+		_, table, _ := strings.Cut(w.Body.String(), `<table class="table lead-table">`)
+		table, _, _ = strings.Cut(table, "</table>")
+		head, _, _ := strings.Cut(table, "</thead>")
+		cols := strings.Count(head, "<th ")
+		groups := groupRe.FindAllStringSubmatch(table, -1)
+		if len(groups) != 2 {
+			t.Fatalf("mask %07b: %d lead groups, want 2", mask, len(groups))
+		}
+		for _, g := range groups {
+			if n := strings.Count(g[1], "<tr"); n != 1 {
+				t.Errorf("mask %07b: a lead holds %d table rows, want 1", mask, n)
+			}
+			// No cell holds a table of its own, so the opening tags count the row's cells.
+			if n := strings.Count(g[1], "<td"); n != cols {
+				t.Errorf("mask %07b: a row has %d cells under %d header columns", mask, n, cols)
+			}
+		}
+		if kind := strings.Contains(head, `<th scope="col">Kind</th>`); kind == on(6) {
+			t.Errorf("mask %07b: the Kind column shows %v with one campaign's list %v", mask, kind, on(6))
+		}
 	}
-	v = newLeadListView(LeadListPage{Filter: LeadListQuery{Sort: "order", Status: "all"},
-		Rows: []LeadListRow{{LeadID: 1, StateCode: "new", State: "not contacted yet", Relevance: "50", Call: "likely", Position: "1"}}})
-	if want := leadListBaseCols + 6; v.Cols() != want {
-		t.Errorf("every optional column on: %d columns, want %d", v.Cols(), want)
+}
+
+// TestLeadListLongLine: a very long name and line each keep to one clamped line, with the
+// whole text, escaped, in the title.
+func TestLeadListLongLine(t *testing.T) {
+	long := strings.Repeat(`Fictive & "long" <name> `, 12)
+	b := richBackend("x")
+	b.list = triageList()
+	b.list.Rows = []LeadListRow{{LeadID: 9, Name: long, Country: "RO", Kind: "Café", RType: "cafe", StateCode: "new",
+		Summary: long + " · Fictive Town", SummaryShort: long}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads?campaign=cafes", h.session(t))).Body.String()
+	esc := template.HTMLEscapeString
+	for _, want := range []string{
+		`<a class="cell-main" href="/leads/9" title="` + esc(long) + `">`,
+		`<span class="lead-summary" title="` + esc(long+" · Fictive Town") + `">` + esc(long) + `</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/leads lacks %.120q", want)
+		}
+	}
+	if strings.Contains(body, "<name>") {
+		t.Error("the long name is not escaped")
 	}
 }
 

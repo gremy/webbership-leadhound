@@ -484,9 +484,20 @@ type LeadListRow struct {
 	// IntentClass is a café lead's effective loyalty intent class (an intent class; the
 	// operator's call wins), "" for any other lead. IntentChip words it for the list.
 	IntentClass string
-	// Summary is the row's description line: the lead's first description, or with none its
-	// town, category and address and the finding's reason, joined by " · ". The list fills it.
+	// Summary is the row's full one-line summary (LeadLine): what the business is, where it is,
+	// and its website and loyalty for a café or its finding and end-of-life date for a Drupal
+	// lead, joined by " · ". The narrow cards show it and the table puts it in a title. The
+	// list fills it, and "" means there is nothing to say.
 	Summary string
+	// SummaryShort is the same line for the table (LeadLineInTable), without the town,
+	// country, finding and date its own columns already show. The list fills it.
+	SummaryShort string
+	// BusinessKind is the raw business kind Jev picked for the lead (a lead_business_kind
+	// value such as bakery_cafe), "" when none is stored. Details.Kind holds it in words.
+	BusinessKind string
+	// Tile is the letter on the lead's tile (TileLetter), from the org's real name, else its
+	// real domain, never the "Lead N" stand-in; "#" when neither has a letter or digit.
+	Tile string
 	// FindingReason is the finding's own plain reason ("" when it gives none).
 	FindingReason string
 	// RelevanceWords is Jev's number and band in words ("72, likely match"), "" when not rated.
@@ -500,10 +511,17 @@ type LeadListRow struct {
 	Details LeadRowDetails
 }
 
-// LeadRowDetails is what a list row's expansion shows: the place's address, the phone numbers,
-// the live email, form and LinkedIn routes and the social links. A link whose URL is not an
-// http or https address is shown as text (webURL).
+// LeadRowDetails is what a list row's expansion shows: the site's description, the business
+// kind in words, the place's address, the phone numbers, the live email, form and LinkedIn
+// routes and the social links. A link whose URL is not an http or https address is shown as
+// text (webURL).
 type LeadRowDetails struct {
+	// About is the org's first live description fact, as plain text on one line; "" when it
+	// has none.
+	About string
+	// Kind is the business kind Jev picked, in words (BusinessKindWords of
+	// LeadListRow.BusinessKind); "" when none is stored or the kind is unclear.
+	Kind    string
 	Address string
 	Phones  []string
 	Routes  []RowLink

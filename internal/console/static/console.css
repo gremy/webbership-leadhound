@@ -1355,15 +1355,33 @@ details.inline summary {
   width: 1%;
   white-space: nowrap;
 }
-/* A lead's name and domain each keep to one line: a long one ends in an ellipsis, with the
-   whole of it in its title, rather than breaking mid-label or at a hyphen. */
-.lead-table .lead-cell > a,
-.lead-table .lead-cell > .item-meta {
+/* A lead's name and domain share its first line: a long one ends in an ellipsis, with the
+   whole of it in its title, rather than breaking mid-label or at a hyphen, and the badges
+   after them keep their full words. */
+.lead-table .lead-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.lead-table .lead-head > a {
   display: block;
-  max-width: 12rem;
+  flex: 0 1 auto;
+  min-width: 3rem;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.lead-table .lead-head > .cell-sub {
+  display: block;
+  flex: 0 3 auto;
+  min-width: 0;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lead-table .lead-head > .badge {
+  flex: none;
 }
 .lead-table .lead-cell a {
   font-weight: 600;
@@ -4363,7 +4381,8 @@ a[aria-current="true"] .count {
 .campaign-progress strong {
   color: var(--text);
 }
-/* The summary keeps to two lines; the whole of it is in its title and under More. */
+/* On a card the summary keeps to two lines; the whole of it is in its title. In the table it
+   is one line (below). */
 .lead-summary {
   display: -webkit-box;
   margin: 2px 0 0;
@@ -4380,18 +4399,98 @@ a[aria-current="true"] .count {
   min-width: 15rem;
   max-width: 26rem;
 }
-.lead-table .lead-cell .badge {
+/* The Lead cell's tile and text. The text box has a set width, so a long line or an open More
+   never widens the column and the table does not jump when a row opens. */
+.lead-id {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.lead-table .lead-text {
+  width: 21rem;
+  min-width: 0;
+}
+.lead-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  line-height: 1;
+}
+.lead-card-head .lead-tile {
+  width: 28px;
+  height: 28px;
+}
+/* In the table More's summary is the row's second line: the short description, clamped to one
+   line, then More. */
+.lead-table .lead-more > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 0;
   margin-top: 2px;
+}
+.lead-table .lead-more > summary .lead-summary {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lead-more-label {
+  flex: none;
+}
+.lead-table .lead-more[open] > summary {
+  margin-bottom: var(--sp-1);
+}
+/* The place type switch sits under the facts in More. */
+.lead-switch {
+  margin-bottom: var(--sp-1);
+}
+/* A long finding or relevance keeps to two lines in the table; the whole of it is in its title. */
+.lead-table .cell-clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.lead-table .reach-cell .star-note {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A dead end's reason and its Look for a contact share one line, so the row stays short. */
+.reach-dead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+.reach-dead .row-actions {
+  margin: 0;
 }
 .lead-item-narrow .lead-summary {
   margin: 4px 0 2px;
   font-size: var(--fs-md);
 }
-/* A lead is a tbody: its row and its More row read as one, with one rule under them. Its
-   cells wrap and sit at the top, so the review column stays on screen at 1280 px and the
-   summary can take its two lines; the tick, the star and the actions keep to one line. */
+/* A lead is a tbody holding one row, with the rule under its cells. Its cells wrap and sit at
+   the top, so the review column stays on screen at 1280 px and an open More grows the row
+   downwards only; the tick, the star and the actions keep to one line. */
 .lead-table .lead-group > tr > td {
-  border-bottom: 0;
+  border-bottom: 1px solid var(--border);
   white-space: normal;
   vertical-align: top;
 }
@@ -4399,10 +4498,7 @@ a[aria-current="true"] .count {
 .lead-table .lead-group > tr > td.col-star {
   white-space: nowrap;
 }
-.lead-table .lead-group > .lead-extra > td {
-  border-bottom: 1px solid var(--border);
-}
-.lead-table .lead-group:last-child > .lead-extra > td {
+.lead-table .lead-group:last-child > tr > td {
   border-bottom: 0;
 }
 .table.lead-table tbody tr:hover {
@@ -4417,10 +4513,6 @@ a[aria-current="true"] .count {
 }
 .table.lead-table tr.is-selected {
   background: transparent;
-}
-/* The extra row's cell starts under the lead's name, past the tick and the star columns. */
-.lead-table .lead-group > .lead-extra > td {
-  padding: 0 10px 12px calc(76px + 10px);
 }
 .lead-more > summary {
   display: inline-flex;
@@ -4461,9 +4553,9 @@ a[aria-current="true"] .count {
     margin-top: 6px;
   }
 }
-/* Good and Skip side by side, the place type switch under them. */
+/* Good and Skip side by side. */
 .lead-table .triage-cell .row-actions {
-  width: 10.5rem;
+  width: 9rem;
   min-width: 0;
   align-items: center;
 }
@@ -4473,7 +4565,7 @@ a[aria-current="true"] .count {
 /* The columns' shares at 1280 px: the lead and the finding read best wide, the reach column
    needs no more than its badge and a short line. */
 .lead-table .lead-group > tr > td {
-  padding: 12px 10px;
+  padding: 8px 10px;
 }
 .lead-table .lead-group > tr > td.col-check,
 .lead-table .lead-group > tr > td.col-star {
