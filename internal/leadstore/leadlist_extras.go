@@ -45,8 +45,10 @@ type RowExtras struct {
 	Forms       []string `db:"forms"`
 	LinkedIns   []string `db:"linkedins"`
 	Instagrams  []string `db:"instagrams"`
-	LastActor   string   `db:"-"` // who wrote the lead's latest event; "" with no event
-	LastReason  string   `db:"-"` // the latest event's reason
+	// BusinessKind is the kind of the lead's latest lead_business_kind row; "" with no row.
+	BusinessKind string `db:"business_kind"`
+	LastActor    string `db:"-"` // who wrote the lead's latest event; "" with no event
+	LastReason   string `db:"-"` // the latest event's reason
 }
 
 // TownCount is one town of ListTowns: its most common spelling, and how many open leads are in
@@ -58,7 +60,8 @@ type TownCount struct {
 
 // ListExtras reads the extras of the leads leadIDs in two queries, keyed by lead id; an id with
 // no lead is not in the map. The first query reads each org's live facts and routes as
-// LeadDetail does, in id order within a kind, and each café lead's latest place. The second
+// LeadDetail does, in id order within a kind, each café lead's latest place and each lead's
+// latest business kind, one probe of lead_business_kind_lead_idx per lead. The second
 // reads the latest events in one pass, because lead_event has no index on lead_id and a read
 // per row would scan the table once for each.
 func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]RowExtras, error) {
@@ -71,7 +74,8 @@ func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]Row
 		   coalesce(pl.address, '') AS address, coalesce(pl.category, '') AS category,
 		   coalesce(fx.socials, '{}') AS socials, coalesce(fx.phones, '{}') AS phones,
 		   coalesce(rt.emails, '{}') AS emails, coalesce(rt.forms, '{}') AS forms,
-		   coalesce(rt.linkedins, '{}') AS linkedins, coalesce(rt.instagrams, '{}') AS instagrams
+		   coalesce(rt.linkedins, '{}') AS linkedins, coalesce(rt.instagrams, '{}') AS instagrams,
+		   coalesce(bk.kind, '') AS business_kind
 		 FROM lead l
 		 LEFT JOIN LATERAL (
 		   SELECT concat_ws(', ', nullif(x.freeform, ''), nullif(x.postcode, '')) AS address, x.category
@@ -91,6 +95,9 @@ func (q Queries) ListExtras(ctx context.Context, leadIDs []int64) (map[int64]Row
 		     array_agg(r.value ORDER BY r.id) FILTER (WHERE r.kind = 'instagram') AS instagrams
 		   FROM contact_route r WHERE r.org_id = l.org_id AND `+reachRouteLiveSQL+`
 		 ) rt ON true
+		 LEFT JOIN LATERAL (
+		   SELECT b.kind FROM lead_business_kind b WHERE b.lead_id = l.id ORDER BY b.id DESC LIMIT 1
+		 ) bk ON true
 		 WHERE l.id = ANY($1::bigint[])`, leadIDs)
 	if err != nil {
 		return nil, fmt.Errorf("leadstore: list extras: %w", err)

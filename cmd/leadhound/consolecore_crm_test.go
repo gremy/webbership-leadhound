@@ -200,19 +200,22 @@ func TestForgetWordsCRM(t *testing.T) {
 }
 
 // TestForgetWordsIntent: forget's line counts the vendor touches, follow rows and intent rows it
-// erased (00033), and says nothing of them when there were none.
+// erased (00033) and the business kinds (00034), and says nothing of them when there were none.
 func TestForgetWordsIntent(t *testing.T) {
-	got := forgetWords(7, leadstore.Forgotten{IGFollows: 2, IGTouches: 3, Intents: 1, IntentCalls: 1}, leadstore.ForgottenPages{})
+	got := forgetWords(7, leadstore.Forgotten{IGFollows: 2, IGTouches: 3, Intents: 1, IntentCalls: 1, BusinessKinds: 2}, leadstore.ForgottenPages{})
 	for _, want := range []string{"2 Instagram follow rows deleted", "3 Instagram comments and tags deleted",
-		"1 loyalty intent class deleted", "1 intent call of yours deleted"} {
+		"1 loyalty intent class deleted", "1 intent call of yours deleted", "2 business kinds deleted"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q lacks %q", got, want)
 		}
 	}
-	if plain := forgetWords(7, leadstore.Forgotten{PhoneFacts: 1}, leadstore.ForgottenPages{}); strings.Contains(plain, "intent") || strings.Contains(plain, "tags") {
+	if plain := forgetWords(7, leadstore.Forgotten{PhoneFacts: 1}, leadstore.ForgottenPages{}); strings.Contains(plain, "intent") || strings.Contains(plain, "tags") || strings.Contains(plain, "business kind") {
 		t.Errorf("no intent: %q", plain)
 	}
 	if got := forgetWords(7, leadstore.Forgotten{IntentCalls: 1}, leadstore.ForgottenPages{}); strings.Contains(got, "nothing left") {
 		t.Errorf("an intent call alone is something: %q", got)
+	}
+	if got := forgetWords(7, leadstore.Forgotten{BusinessKinds: 1}, leadstore.ForgottenPages{}); !strings.Contains(got, "1 business kind deleted") {
+		t.Errorf("a business kind alone is something: %q", got)
 	}
 }

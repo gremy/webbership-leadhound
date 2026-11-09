@@ -1,6 +1,11 @@
 # webbership-leadhound — STATE
 
 ## Where we left off
+Business kinds (2026-11-09, console build in progress; checkpoint 1 of 5):
+- What exists: migration 00034 (`lead_business_kind`, append-only for the app role, erased with its org); Jev's `business-kind@1` question, asked by `leads rate` after the place-type pass, for café and Drupal leads, unclear below 0.6. Nothing on screen yet.
+- Open, the operator's decision: café leads have no description fact because `leads enrich` last ran on dev on 27 Oct, before the café orgs existed (29 Oct), and the probe keeps a homepage body only for a Drupal site (`probe.go:535`). Of 484 café orgs with a real site, 221 have a contact-page body and 263 have none; for those 263 a rerun gets no homepage (`leads_enrich.go:245`), records a 0-fact attempt and blocks a retry for 30 days. Production's timer (`enrich --max 300`) may be doing the same. Fix before a rerun: keep café homepage bodies and re-probe, or let enrich fetch a missing homepage.
+- Fixed on the way: `TestLeadTimelineOutreach` had gone red as the calendar passed its fixed clock; `crmNow` is now in 2126.
+
 The café sequence no longer asks for a call in its first email (2026-11-09; private data only, no code):
 - What changed: the campaign's templates and `call_to_action` in the private data directory; the Drupal LinkedIn notes were cut to the 200-character limit, which had been failing `leads campaigns check`. Copied with `make deploy-data` and registered on production as `cafes-loyalty` version `70f586aef9e3`.
 - Verified on production: `leads campaigns list` shows the new version, the files on disk carry the new text, no failed leadhound unit, and no café batch is waiting for approval. Not verified: a real email rendered from the new templates, because no café batch has been built since.

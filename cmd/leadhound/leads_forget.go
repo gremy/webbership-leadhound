@@ -71,7 +71,7 @@ func runLeadsForget(ctx context.Context, args []string) error {
 		"proposal_notes", f.ProposalNotes, "sectors", f.Sectors, "draft_requests", f.DraftRequests, "batches_rehashed", f.BatchesRehashed,
 		"ig_lead_routes", f.IGLeadRoutes, "ig_targets", f.IGTargets, "ig_routes", f.IGRoutes, "ig_judgments", f.IGJudgments,
 		"ig_hints", f.IGHints, "ig_matches", f.IGMatches, "ig_reviews", f.IGReviews, "ig_profiles", f.IGProfiles, "ig_follows", f.IGFollows,
-		"ig_lead_hints", f.IGLeadHints, "ig_touches", f.IGTouches, "intents", f.Intents, "intent_calls", f.IntentCalls)
+		"ig_lead_hints", f.IGLeadHints, "ig_touches", f.IGTouches, "intents", f.Intents, "intent_calls", f.IntentCalls, "business_kinds", f.BusinessKinds)
 	_, _ = fmt.Fprintln(stdout, forgetWords(id, f, p))
 	return nil
 }
@@ -137,6 +137,7 @@ func forgetWords(id int64, f leadstore.Forgotten, p leadstore.ForgottenPages) st
 		{f.IGTouches, "Instagram comment or tag deleted", "Instagram comments and tags deleted"},
 		{f.Intents, "loyalty intent class deleted", "loyalty intent classes deleted"},
 		{f.IntentCalls, "intent call of yours deleted", "intent calls of yours deleted"},
+		{f.BusinessKinds, "business kind deleted", "business kinds deleted"},
 		{f.IGLeadHints, "Instagram reading's lead hint cleared", "Instagram readings' lead hints cleared"},
 		{f.Proposals, "proposal erased", "proposals erased"},
 		{f.ProposalNotes, "proposal note blanked", "proposal notes blanked"},

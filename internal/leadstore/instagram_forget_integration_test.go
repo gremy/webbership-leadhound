@@ -98,6 +98,8 @@ func TestForgetOrgInstagram(t *testing.T) {
 	for _, l := range []int64{gone, keep} {
 		f.ownerRun(t, `INSERT INTO lead_intent (lead_id, class, overlap, score, reason) VALUES ($1, 'curious', 1, 1, 'commented on a vendor post')`, l)
 		f.ownerRun(t, `INSERT INTO lead_intent_call (lead_id, class, actor) VALUES ($1, 'paper', 'gremy')`, l)
+		// 00034: a business kind on each lead.
+		f.ownerRun(t, `INSERT INTO lead_business_kind (lead_id, kind, confidence, question, input_sha256) VALUES ($1, 'bakery_cafe', 0.9, 'business-kind@1', sha256('k'))`, l)
 	}
 
 	match := func(m leadstore.IGMatch) {
@@ -153,6 +155,9 @@ func TestForgetOrgInstagram(t *testing.T) {
 	if in := [3]int64{got.IGTouches, got.Intents, got.IntentCalls}; in != [3]int64{2, 1, 1} {
 		t.Errorf("touch and intent counts = %v, want [2 1 1]", in)
 	}
+	if got.BusinessKinds != 1 {
+		t.Errorf("business kinds counted = %d, want 1", got.BusinessKinds)
+	}
 	// The sweep over the four 00033 tables: none names the erased org's handles or leads.
 	for _, c := range []struct {
 		what string
@@ -165,7 +170,7 @@ func TestForgetOrgInstagram(t *testing.T) {
 			t.Errorf("%s naming the erased handles: %d, want 0", c.what, n)
 		}
 	}
-	for _, tb := range []string{"lead_intent", "lead_intent_call"} {
+	for _, tb := range []string{"lead_intent", "lead_intent_call", "lead_business_kind"} {
 		if n := ownerInt(t, f.owner, `SELECT count(*) FROM `+tb+` WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, goneOrg); n != 0 {
 			t.Errorf("%s rows of the erased org's leads: %d, want 0", tb, n)
 		}
@@ -259,5 +264,8 @@ func TestForgetOrgInstagram(t *testing.T) {
 	}
 	if in := [3]int64{again.IGTouches, again.Intents, again.IntentCalls}; in != [3]int64{} {
 		t.Errorf("a second run counts touches and intents %v, want zero", in)
+	}
+	if again.BusinessKinds != 0 {
+		t.Errorf("a second run counts business kinds %d, want zero", again.BusinessKinds)
 	}
 }

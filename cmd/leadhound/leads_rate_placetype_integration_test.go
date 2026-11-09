@@ -21,10 +21,11 @@ import (
 
 // placeTypeStub is a stand-in for Jev: relevance is the fake's "maybe", and the place-type
 // question is answered roastery, except for the states in unclear, which are answered
-// unclear.
+// unclear. The business-kind question, an option of both rating types, is answered unclear.
 func placeTypeStub(unclear ...string) *ai.Fake {
 	answers := relevanceFake().Answers
 	answers[leadrate.PlaceTypeAIQuestion().Name] = ai.Answer{Choice: leadrate.PlaceOptionRoastery, Confidence: 0.8}
+	answers[leadrate.BusinessKindAIQuestion(leadstore.TypeDrupal).Name] = ai.Answer{Choice: leadrate.BusinessKindUnclear, Confidence: 0.8}
 	f := &ai.Fake{Answers: answers, ByState: map[string]map[string]ai.Answer{}}
 	for _, s := range unclear {
 		f.ByState[s] = map[string]ai.Answer{leadrate.PlaceTypeAIQuestion().Name: {Choice: leadrate.PlaceOptionUnclear, Confidence: 0.4}}
@@ -67,8 +68,15 @@ func placeTypeState(t *testing.T, id int64) string {
 }
 
 // placeTypeRun is one rating run, as leads rate makes it, with decider d named kind, at most
-// maxCalls calls and a leads cap of dailyCap calls; it returns both passes' summaries.
+// maxCalls calls and a leads cap of dailyCap calls; it returns the first two passes' summaries.
 func placeTypeRun(t *testing.T, d ai.Decider, kind string, maxCalls, dailyCap int) (rateSummary, placeSummary) {
+	t.Helper()
+	sum, ps, _ := rateRunAll(t, d, kind, maxCalls, dailyCap)
+	return sum, ps
+}
+
+// rateRunAll is placeTypeRun with the summaries of all three passes.
+func rateRunAll(t *testing.T, d ai.Decider, kind string, maxCalls, dailyCap int) (rateSummary, placeSummary, businessSummary) {
 	t.Helper()
 	ctx := context.Background()
 	q := store.NewQueries(storetest.AppConn(t))
@@ -85,11 +93,11 @@ func placeTypeRun(t *testing.T, d ai.Decider, kind string, maxCalls, dailyCap in
 		decider: &ai.Capped{Decider: d, Store: q, DailyCalls: dailyCap, Loc: loc, Purpose: ai.PurposeLeads},
 		kind:    kind, name: d.Name(), runID: runID, max: maxCalls,
 	}
-	sum, ps, err := rr.rateAll(ctx, placeTypeOpenLeads(t))
+	sum, ps, ks, err := rr.rateAll(ctx, placeTypeOpenLeads(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sum, ps
+	return sum, ps, ks
 }
 
 // placeTypeRows counts lead_place_type rows matching where.

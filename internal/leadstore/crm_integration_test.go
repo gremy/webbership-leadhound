@@ -21,8 +21,11 @@ import (
 
 const crmVersion = 28 // 00028_crm.sql
 
-// crmNow is the fixed "now" of these tests.
-var crmNow = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+// crmNow is the fixed "now" of these tests. It is a century ahead on purpose: the fixture's own
+// writes are dated by the real clock, and the timeline tests tell them from the rows they date
+// themselves by which side of a time near crmNow they fall on. A date near today stops holding
+// that line once the real clock passes it, and these tests would go red with no code changed.
+var crmNow = time.Date(2126, 11, 10, 12, 0, 0, 0, time.UTC)
 
 func int64p(n int64) *int64 { return &n }
 
@@ -772,8 +775,8 @@ func TestNeedsMeCRM(t *testing.T) {
 	must(q.SnoozeLead(ctx, snoozed, crmNow.Add(24*time.Hour), crmNow))
 	tomorrow := crmNow.AddDate(0, 0, 1)
 	must(q.SetLeadNote(ctx, later, "", "Ring back after the holiday", &tomorrow, crmNow))
-	// crmNow is 14:00 in loc: today there is 2026-11-10.
-	today := time.Date(2026, 11, 10, 0, 0, 0, 0, loc)
+	// crmNow is 14:00 in loc, so today there is crmNow's own date.
+	today := time.Date(crmNow.Year(), crmNow.Month(), crmNow.Day(), 0, 0, 0, 0, loc)
 	yesterday := today.AddDate(0, 0, -1)
 	must(q.SetLeadNote(ctx, due, "", "Send the proposal", &today, crmNow))
 	must(q.SetLeadNote(ctx, quiet, "", "Check their new site", &yesterday, crmNow))

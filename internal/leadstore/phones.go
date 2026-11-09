@@ -609,6 +609,7 @@ type Forgotten struct {
 	IGTouches       int64 // ig_vendor_touch rows of its handles (the touching account, or the vendor's own) deleted (00033)
 	Intents         int64 // lead_intent rows of its leads deleted (00033)
 	IntentCalls     int64 // lead_intent_call rows of its leads deleted (00033)
+	BusinessKinds   int64 // lead_business_kind rows of its leads deleted (00034)
 	IGLeadHints     int64 // other ig_profile rows whose capture named one of its leads, the lead hint cleared (the rows stay)
 	Proposals       int64 // lead_proposal rows whose title became "(erased)" and whose link went (the value stays)
 	ProposalNotes   int64 // lead_proposal_status notes blanked (the rows stay)
@@ -648,8 +649,8 @@ type Forgotten struct {
 // CASCADE), the target of its Instagram messages, its Instagram routes; then, for its handles
 // (igHandlesOfOrg, read before the routes go), every ig_judgment, ig_signal_hint, ig_match,
 // ig_review_status, ig_profile, ig_follow (both directions) and ig_vendor_touch row (as the
-// touching account or the vendor's own, 00033), its leads' lead_intent and lead_intent_call
-// rows, and any other ig_match row naming one of its leads and any other capture's lead hint
+// touching account or the vendor's own, 00033), its leads' lead_intent, lead_intent_call and
+// lead_business_kind (00034) rows, and any other ig_match row naming one of its leads and any other capture's lead hint
 // naming one. The domain suppression above keeps the
 // org out of IGLeadKeys, so a later import of a capture still on disk attaches nothing to it.
 //
@@ -778,6 +779,7 @@ func (q Queries) ForgetOrg(ctx context.Context, orgID int64, reason string) (For
 			{&res.IGTouches, `DELETE FROM ig_vendor_touch WHERE handle = ANY($1) OR vendor_handle = ANY($1)`, []any{igHs}},
 			{&res.Intents, `DELETE FROM lead_intent WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
 			{&res.IntentCalls, `DELETE FROM lead_intent_call WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
+			{&res.BusinessKinds, `DELETE FROM lead_business_kind WHERE lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
 			{&res.IGLeadHints, `UPDATE ig_profile SET source_lead_id = NULL
 			   WHERE source_lead_id IN (SELECT id FROM lead WHERE org_id = $1)`, []any{orgID}},
 			{&res.EditsBlanked, `UPDATE message_edit SET subject_before = '', body_before = '', subject_after = '', body_after = ''

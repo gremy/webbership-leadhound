@@ -111,7 +111,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // lead_place_type and roastery_outreach_switch are append-only (00030), and so are ig_profile,
 // ig_follow, ig_match, ig_judgment, ig_signal_hint and ig_review_status (00031), and so
 // are ig_vendor_touch, lead_intent and lead_intent_call, and the new ig_follow.direction column is
-// fixed at insert (00033). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
+// fixed at insert (00033), and lead_business_kind is append-only (00034). It runs after every migrate, a no-op one too; deploy/sql/grants.sql does the same, so either may run last. Each statement is
 // skipped when the app role, its table or its column does not exist.
 const revokeLeadsSQL = `DO $$
 BEGIN
@@ -356,6 +356,9 @@ BEGIN
   END IF;
   IF to_regclass('public.lead_intent_call') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_intent_call FROM leadhound_app;
+  END IF;
+  IF to_regclass('public.lead_business_kind') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_business_kind FROM leadhound_app;
   END IF;
 END
 $$`

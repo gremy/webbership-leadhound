@@ -118,7 +118,7 @@ var appendOnlyLeadTables = []string{"finding", "lead_star", "org_fact", "enrich_
 	"org_person", "contact_mark", "message_edit", "org_sector", "proof", "proof_retire", "lead_proposal", "lead_proposal_status",
 	"lead_place_type", "roastery_outreach_switch",
 	"ig_profile", "ig_follow", "ig_match", "ig_judgment", "ig_signal_hint", "ig_review_status",
-	"ig_vendor_touch", "lead_intent", "lead_intent_call"}
+	"ig_vendor_touch", "lead_intent", "lead_intent_call", "lead_business_kind"}
 
 // referenceLeadTables are read-only to the app role (00010): they change only by migration.
 var referenceLeadTables = []string{"lead_kind", "lead_channel"}
@@ -527,6 +527,9 @@ func TestLeadAppRoleCannotDelete(t *testing.T) {
 		"TRUNCATE ig_vendor_touch",
 		"TRUNCATE lead_intent",
 		"TRUNCATE lead_intent_call",
+		// 00034: a business kind is append-only.
+		"DELETE FROM lead_business_kind",
+		"TRUNCATE lead_business_kind",
 		"TRUNCATE contact_mark",
 		"TRUNCATE draft_request",
 		"DELETE FROM lead_kind",
@@ -572,6 +575,8 @@ func TestLeadAppRoleCannotUpdateAppendOnly(t *testing.T) {
 		"UPDATE ig_vendor_touch SET text = NULL",
 		"UPDATE lead_intent SET class = 'cold'",
 		"UPDATE lead_intent_call SET class = NULL",
+		// 00034: a business kind is fixed at insert; the latest row decides.
+		"UPDATE lead_business_kind SET kind = 'unclear'",
 		"UPDATE suppression SET reason = 'manual'",
 		"UPDATE suppression_lift SET reason = 'rewritten'",
 		// An auto-updatable view would write suppression with the owner's rights.
@@ -1420,7 +1425,10 @@ func TestMigration00031Checks(t *testing.T) {
 	}
 }
 
-const loyaltyIntentVersion = 33 // 00033_loyalty_intent.sql
+const (
+	loyaltyIntentVersion = 33 // 00033_loyalty_intent.sql
+	businessKindVersion  = 34 // 00034_lead_business_kind.sql
+)
 
 // TestMigration00033DownUp: down refuses while a followers row, a vendor touch or an intent call
 // exists, and moves nothing; with none (a following row and a derived class only), down drops the

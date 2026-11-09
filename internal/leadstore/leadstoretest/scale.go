@@ -24,7 +24,7 @@ const (
 	// scaleLeadsVersion is the marker's leads part (storetest.ScaleInfo.Leads) for this
 	// seed's shape: a change to what the seed writes bumps it, so the lead tables of every
 	// scale database seeded before are seeded again.
-	scaleLeadsVersion = "v9"
+	scaleLeadsVersion = "v10"
 
 	// scaleLeadsLockKey is the advisory lock two processes take before checking or seeding
 	// the lead tables, so they never seed them at the same time.
@@ -61,7 +61,7 @@ const (
 // The reference tables lead_kind and lead_channel are never in it: their rows come with the
 // migration (storetest.KeptTables).
 var leadsTables = []string{
-	"lead_place_type", "roastery_outreach_switch", "contact_mark", "org_sector", "proof_retire", "proof", "lead_proposal_status", "lead_proposal", "draft_request", "message_edit",
+	"lead_business_kind", "lead_intent_call", "lead_intent", "ig_match", "lead_place_type", "roastery_outreach_switch", "contact_mark", "org_sector", "proof_retire", "proof", "lead_proposal_status", "lead_proposal", "draft_request", "message_edit",
 	"send_request", "send_override", "lead_stage_event", "lead_crm",
 	"place", "place_import", "phone_status", "phone_research", "phone_screening", "draft_review", "draft_eval", "draft_generation",
 	"contact_research", "email_consent", "call_outcome",
@@ -578,6 +578,13 @@ func seedLeads(ctx context.Context, conn *pgx.Conn, info storetest.ScaleInfo) er
 			SELECT ` + fmt.Sprint(scaleLeads) + ` + i, '` + leadstore.PlaceRoastery + `', '` + leadstore.PlaceFromName + `', 'roastery', 'system',
 			       $1::timestamptz - interval '5 days'
 			FROM ` + cafeSeries + ` WHERE i % 50 = 0`, []any{day}},
+		// One business kind on every lead, so a list read probes a full table.
+		{"lead_business_kind", `INSERT INTO lead_business_kind (lead_id, kind, confidence, question, input_sha256, created_at)
+			SELECT id, CASE WHEN campaign_id = ` + fmt.Sprint(scaleCafeCampaignID) + `
+			         THEN (ARRAY['specialty_coffee', 'neighbourhood_cafe', 'bakery_cafe', 'restaurant_cafe', 'bar_lounge', 'venue_cafe', 'roastery_shop', 'unclear'])[1 + id % 8]
+			         ELSE (ARRAY['education', 'government', 'healthcare', 'nonprofit', 'company', 'media', 'agency', 'unclear'])[1 + id % 8] END,
+			       0.8, 'business-kind@1', sha256(convert_to('kind:' || id, 'UTF8')), $1::timestamptz - interval '5 days'
+			FROM lead ORDER BY id`, []any{day}},
 	}
 	for _, s := range steps {
 		if reuse && (s.name == "run" || s.name == "http_fetch") {

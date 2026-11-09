@@ -324,5 +324,9 @@ BEGIN
   IF to_regclass('public.lead_intent_call') IS NOT NULL THEN
     REVOKE UPDATE ON public.lead_intent_call FROM leadhound_app;
   END IF;
+  -- Jev's business kinds (leads 00034) are append-only.
+  IF to_regclass('public.lead_business_kind') IS NOT NULL THEN
+    REVOKE UPDATE ON public.lead_business_kind FROM leadhound_app;
+  END IF;
 END
 $$;

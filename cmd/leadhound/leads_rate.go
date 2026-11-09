@@ -70,7 +70,8 @@ const leadsRateUsage = "usage: leadhound leads rate [--max N (at least 1)] [--de
 // nothing and exits 0. A rating stopped by --max (stop budget), the cap (spend_cap), an
 // unavailable provider (throttled) or failures in a row (failure_rate) is recorded and
 // exits 0. With Jev as the decider, a rating that finished with calls left then asks the
-// place-type question about the open café leads (rateAll), within what is left.
+// place-type question about the open café leads and the business-kind question about every
+// open lead (rateAll), within what is left.
 func runLeadsRate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("leads rate", flag.ContinueOnError)
 	maxCalls := fs.Int("max", defaultRateMax, "most decider calls in this run")
@@ -153,15 +154,8 @@ func runLeadsRate(ctx context.Context, args []string) error {
 		cfg:      setup.leads,
 		campaign: c.ID,
 	}
-	sum, ps, runErr := rr.rateAll(ctx, leads)
-	result := store.RunResult{
-		Requests: sum.Calls + ps.Calls, Failures: sum.Failures + ps.Failures, StopReason: cmp.Or(sum.StopReason, ps.StopReason),
-		Note: fmt.Sprintf("%d rated, %d unchanged, %d still due", sum.Rated, sum.Unchanged, sum.Due),
-	}
-	if ps.Ran {
-		result.Note += fmt.Sprintf("; place type: %d coffee shop, %d roastery, %d unclear, %d unchanged, %d still due",
-			ps.Cafe, ps.Roastery, ps.Unclear, ps.Unchanged, ps.Due)
-	}
+	sum, ps, ks, runErr := rr.rateAll(ctx, leads)
+	result := rateResult(sum, ps, ks)
 	switch {
 	case runErr != nil:
 		result.Note += "; " + runErr.Error()
@@ -176,7 +170,27 @@ func runLeadsRate(ctx context.Context, args []string) error {
 	}
 	printRateSummary(stdout, runID, deciderKind, rr.decider.DailyCalls, sum)
 	printPlaceTypeSummary(stdout, ps)
+	printBusinessKindSummary(stdout, ks)
 	return ctx.Err()
+}
+
+// rateResult is the run row of a rating: the calls and failures of every pass that ran, the
+// first stop reason among them, and a note of what each did.
+func rateResult(sum rateSummary, ps placeSummary, ks businessSummary) store.RunResult {
+	result := store.RunResult{
+		Requests: sum.Calls + ps.Calls + ks.Calls, Failures: sum.Failures + ps.Failures + ks.Failures,
+		StopReason: cmp.Or(sum.StopReason, ps.StopReason, ks.StopReason),
+		Note:       fmt.Sprintf("%d rated, %d unchanged, %d still due", sum.Rated, sum.Unchanged, sum.Due),
+	}
+	if ps.Ran {
+		result.Note += fmt.Sprintf("; place type: %d coffee shop, %d roastery, %d unclear, %d unchanged, %d still due",
+			ps.Cafe, ps.Roastery, ps.Unclear, ps.Unchanged, ps.Due)
+	}
+	if ks.Ran {
+		result.Note += fmt.Sprintf("; business kind: %d named, %d unclear, %d unchanged, %d still due",
+			ks.Named, ks.Unclear, ks.Unchanged, ks.Due)
+	}
+	return result
 }
 
 // relevanceDecider resolves --decider for the relevance commands as pickDecider does
@@ -404,18 +418,131 @@ type placeSummary struct {
 	StopReason string
 }
 
+// businessSummary is what one run's business-kind pass did.
+type businessSummary struct {
+	Ran        bool // the pass ran: Jev was the decider and both earlier passes finished with calls left
+	Named      int  // answers stored as a kind other than unclear
+	Unclear    int  // unclear answers stored, a low confidence's included
+	Unchanged  int  // open leads whose latest answer has the same input
+	Due        int  // open leads still to ask when the pass ended
+	Calls      int  // calls the decider was asked (the cap's refusals are not calls)
+	Failures   int  // calls that gave no answer
+	Tokens     int  // input tokens over every call
+	StopReason string
+}
+
 // rateAll is one run: the relevance pass over leads first, then, with Jev as the decider and
 // only when relevance finished with calls left under --max, the place-type pass over the
-// open café leads among them. The two passes share the run's --max and the leads cap, and
-// relevance always spends first. A fake decider stores no place type, since its answer
-// would stand in for Jev's.
-func (rr rateRun) rateAll(ctx context.Context, leads []leadstore.RateLead) (rateSummary, placeSummary, error) {
+// open café leads among them, then, only when that also finished with calls left, the
+// business-kind pass over the open leads among them. The passes share the run's --max and the
+// leads cap, in that order, so relevance always spends first. A fake decider stores no place
+// type and no business kind, since its answer would stand in for Jev's.
+func (rr rateRun) rateAll(ctx context.Context, leads []leadstore.RateLead) (rateSummary, placeSummary, businessSummary, error) {
 	sum, err := rr.rate(ctx, leads)
 	if err != nil || sum.StopReason != "" || ctx.Err() != nil || rr.kind != rateDeciderJev {
-		return sum, placeSummary{}, err
+		return sum, placeSummary{}, businessSummary{}, err
 	}
 	ps, err := rr.placeTypes(ctx, leads, rr.max-sum.Calls)
-	return sum, ps, err
+	if err != nil || ps.StopReason != "" || ctx.Err() != nil {
+		return sum, ps, businessSummary{}, err
+	}
+	ks, err := rr.businessKinds(ctx, leads, rr.max-sum.Calls-ps.Calls)
+	return sum, ps, ks, err
+}
+
+// businessKinds asks the business-kind question of its own rating type (BusinessKindAIQuestion)
+// about every open lead in leads, in their order, whose latest answer was asked on another input,
+// and stores each answer with its input hash and confidence: the kind chosen, or unclear below
+// leadrate.BusinessKindMinConfidence. An unclear answer on the same input is not asked again. It
+// stops at maxCalls calls, the cap, an unavailable provider, rateFailuresInARow failures in a row
+// or a cancel, as placeTypes does. Only a store error is returned. The writes run without the
+// run's cancel.
+func (rr rateRun) businessKinds(ctx context.Context, leads []leadstore.RateLead, maxCalls int) (ks businessSummary, err error) {
+	ks.Ran = true
+	open, err := rr.lq.BusinessKindLeads(ctx, rr.campaign)
+	if err != nil {
+		return ks, err
+	}
+	latest := make(map[int64][]byte, len(open))
+	for _, o := range open {
+		latest[o.LeadID] = o.LatestSHA
+	}
+	type due struct {
+		lead  leadstore.RateLead
+		in    leadrate.Input
+		hash  []byte
+		rtype string // the lead's rating type, whose question it is asked
+	}
+	var todo []due
+	for _, l := range leads {
+		sha, ok := latest[l.LeadID]
+		if !ok {
+			continue
+		}
+		in := rateInput(l, rr.cfg)
+		h := leadrate.BusinessKindHash(rr.name, in)
+		if bytes.Equal(h, sha) {
+			ks.Unchanged++
+			continue
+		}
+		todo = append(todo, due{lead: l, in: in, hash: h, rtype: leadstore.TypeOf(l.Kind)})
+	}
+	wctx := context.WithoutCancel(ctx)
+	inARow, stored := 0, 0
+	defer func() { ks.Due = len(todo) - stored }() // a failed lead stays due
+	for _, d := range todo {
+		if ctx.Err() != nil {
+			return ks, nil
+		}
+		if ks.Calls >= maxCalls {
+			ks.StopReason = rateStopMax
+			return ks, nil
+		}
+		q := leadrate.BusinessKindAIQuestion(d.rtype)
+		answers, usage, err := rr.decider.Decide(ctx, leadrate.State(d.in), []ai.Question{q})
+		if !errors.Is(err, ai.ErrSpendCap) {
+			ks.Calls++
+		}
+		ks.Tokens += usage.InputTokens
+		if err != nil {
+			switch {
+			case errors.Is(err, ai.ErrUsageStore):
+				return ks, err
+			case errors.Is(err, ai.ErrSpendCap):
+				ks.StopReason = scoring.StopSpendCap
+				return ks, nil
+			case errors.Is(err, ai.ErrUnavailable):
+				ks.Failures++
+				ks.StopReason = scoring.StopThrottled
+				return ks, nil
+			case ctx.Err() != nil:
+				return ks, nil
+			}
+			ks.Failures++
+			if inARow++; inARow >= rateFailuresInARow {
+				ks.StopReason = rateStopFailures
+				return ks, nil
+			}
+			continue
+		}
+		answer := answers[q.Name]
+		kind, ok := leadrate.BusinessKindOf(answer.Choice, answer.Confidence)
+		if !ok {
+			ks.Failures++ // an answer outside the options; the decider checks its options, so never expected
+			continue
+		}
+		inARow = 0
+		if err := rr.lq.SetBusinessKind(wctx, d.lead.LeadID, kind, leadrate.BusinessKindQuestion, d.hash, answer.Confidence); err != nil {
+			return ks, err
+		}
+		stored++
+		if kind == leadrate.BusinessKindUnclear {
+			ks.Unclear++
+		} else {
+			ks.Named++
+		}
+	}
+	return ks, nil
 }
 
 // placeTypes asks the place-type question (leadrate.PlaceTypeQuestion) about every open café
@@ -521,6 +648,15 @@ func printPlaceTypeSummary(w io.Writer, ps placeSummary) {
 	}
 	_, _ = fmt.Fprintf(w, "  place type: coffee shop %d · roastery %d · unclear %d · unchanged %d · still due %d · calls %d · failed calls %d · stop %s\n",
 		ps.Cafe, ps.Roastery, ps.Unclear, ps.Unchanged, ps.Due, ps.Calls, ps.Failures, cmp.Or(ps.StopReason, "none"))
+}
+
+// printBusinessKindSummary prints the business-kind pass's line when it ran.
+func printBusinessKindSummary(w io.Writer, ks businessSummary) {
+	if !ks.Ran {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  business kind: named %d · unclear %d · unchanged %d · still due %d · calls %d · failed calls %d · stop %s\n",
+		ks.Named, ks.Unclear, ks.Unchanged, ks.Due, ks.Calls, ks.Failures, cmp.Or(ks.StopReason, "none"))
 }
 
 // cutRunes is s cut to at most n runes.
