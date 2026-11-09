@@ -397,28 +397,23 @@ func (s *server) funcs() template.FuncMap {
 			}
 			return t.Format("Monday 2 January")
 		},
-		"thousands":    thousands,
-		"health":       func(l string) string { return strings.TrimPrefix(l, "Health: ") },
-		"took":         took,
-		"sources":      sources,
-		"costLine":     costLine,
-		"callsLine":    callsLine,
-		"claudeLine":   claudeLine,
-		"row":          func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
-		"ruleFields":   func() []string { return ruleFields },
-		"cssVersion":   func() string { return cssVersion },
-		"jsVersion":    func() string { return jsVersion },
-		"approveWords": approveWords,
-		"maxText":      func() int { return maxLeadsText },
-		"add":          func(a, b int) int { return a + b },
-		"afterColon":   AfterColon,
-		"join":         strings.Join,
-		"plural": func(n int, one, many string) string {
-			if n == 1 {
-				return "1 " + one
-			}
-			return strconv.Itoa(n) + " " + many
-		},
+		"thousands":        thousands,
+		"health":           func(l string) string { return strings.TrimPrefix(l, "Health: ") },
+		"took":             took,
+		"sources":          sources,
+		"costLine":         costLine,
+		"callsLine":        callsLine,
+		"claudeLine":       claudeLine,
+		"row":              func(j BriefJob, day time.Time) rowView { return rowView{Job: j, Day: day.Format(time.DateOnly)} },
+		"ruleFields":       func() []string { return ruleFields },
+		"cssVersion":       func() string { return cssVersion },
+		"jsVersion":        func() string { return jsVersion },
+		"approveWords":     approveWords,
+		"maxText":          func() int { return maxLeadsText },
+		"add":              func(a, b int) int { return a + b },
+		"afterColon":       AfterColon,
+		"join":             strings.Join,
+		"plural":           plural,
 		"ruleIn":           func(where string, r RuleRow) ruleSpot { return ruleSpot{Where: where, Rule: r} },
 		"runCard":          func(c RunNowCard) runNowView { return runNowView{Card: c} },
 		"checkCard":        func(c MailboxCheckView) mailboxCheckView { return mailboxCheckView{Card: c} },
@@ -1190,6 +1185,15 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, name, cacheCo
 func (s *server) healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+// plural writes n and the noun that fits it, one for a single thing and many otherwise, with
+// the number grouped by thousands as everywhere else in the console.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return thousands(n) + " " + many
 }
 
 // thousands writes n with a comma between each group of three digits.

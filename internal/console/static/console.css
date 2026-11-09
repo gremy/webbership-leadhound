@@ -477,6 +477,11 @@ a {
   color: var(--text);
 }
 
+/* The scroll box clips an outer ring, so the ring sits inside the link, as on the step bar. */
+.subnav a:focus-visible {
+  outline-offset: -3px;
+}
+
 .subnav a[aria-current="page"],
 .subnav a[aria-current="true"] {
   color: var(--text);
@@ -505,6 +510,12 @@ a {
   align-items: center;
   gap: var(--sp-1);
   overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* Like the sub-nav, the bar scrolls by touch or trackpad with no visible track. */
+.steps-inner::-webkit-scrollbar {
+  display: none;
 }
 
 .steps-list {
@@ -536,7 +547,7 @@ a {
 
 /* The scroll box clips an outer ring, so the ring sits inside the link. */
 .step a:focus-visible {
-  outline-offset: -2px;
+  outline-offset: -3px;
 }
 
 .step a[aria-current="step"] {
@@ -3238,6 +3249,12 @@ a.cell-main:hover {
   border-bottom: 1px solid var(--border);
 }
 
+/* Filters straight on the page, outside a card, line up with the heading and the cards. */
+:where(.page) .filters-bare {
+  padding-right: 0;
+  padding-left: 0;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -4523,7 +4540,7 @@ a[aria-current="true"] .count {
   min-width: 0;
 }
 .lead-table .lead-text {
-  width: 21rem;
+  width: 13rem;
   min-width: 0;
 }
 .lead-tile {
@@ -4609,8 +4626,8 @@ a[aria-current="true"] .count {
 /* Wide enough for the badge and the shortest reasons ("Not searched yet", "Nothing found") in
    full; a longer reason ends in an ellipsis. */
 .lead-table .lead-group > tr > .reach-cell:has(.reach-dead) {
-  min-width: 13.5rem;
-  max-width: 13.5rem;
+  min-width: 13.25rem;
+  max-width: 13.25rem;
 }
 .lead-table .reach-dead .row-actions {
   min-width: 0;
@@ -4701,23 +4718,96 @@ a[aria-current="true"] .count {
 .lead-table .triage-cell .row-actions .btn-ghost {
   padding-left: 0;
 }
-/* The columns' shares at 1280 px: the lead and the finding read best wide, the reach column
-   needs no more than its badge and a short line. */
+/* The columns' shares at 1280 px: every column, the optional Kind included, fits the page,
+   so the table never scrolls sideways on a desktop. The lead and the finding read best wide,
+   the reach column needs no more than its badge and a short line, and the headings keep the
+   cells' own padding so each sits over its column. */
 .lead-table .lead-group > tr > td {
   padding: 8px 10px;
 }
+.lead-table > thead > tr > th {
+  padding-right: 10px;
+  padding-left: 10px;
+}
 .lead-table .lead-group > tr > td.col-check,
-.lead-table .lead-group > tr > td.col-star {
+.lead-table .lead-group > tr > td.col-star,
+.lead-table > thead > tr > th.col-check,
+.lead-table > thead > tr > th.col-star {
   padding-right: 0;
 }
 .lead-table .lead-group > tr > .kind-cell {
-  min-width: 7.5rem;
+  min-width: 6rem;
 }
 .lead-table .lead-group > tr > .finding-cell {
-  min-width: 11rem;
+  min-width: 10rem;
 }
 .lead-table .lead-group > tr > .reach-cell {
-  max-width: 13rem;
+  min-width: 10rem;
+  max-width: 13.25rem;
+}
+/* Kind and campaign keep to a line each, cut short with an ellipsis (the whole of each is in
+   its title), and so do the reach's badge and channels and the star note under them. Their
+   width is the column's, never their own, so a long line neither widens the table nor grows
+   the row. */
+.lead-table .kind-cell .cell-line,
+.lead-table .reach-cell .reach-line,
+.lead-table .reach-cell .star-note {
+  display: block;
+  width: 0;
+  min-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A folded order or call reads on the relevance's second line, so the relevance keeps to one. */
+.lead-table .cell-clamp-1 {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+.lead-table .relevance-cell > .cell-sub,
+.lead-table > thead .cell-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lead-table > thead .cell-sub {
+  font-weight: 400;
+}
+/* A state wraps under its own words rather than widening the column. */
+.lead-table .state-cell .badge {
+  height: auto;
+  min-height: 22px;
+  padding-block: 2px;
+  line-height: 1.25;
+  white-space: normal;
+}
+/* The moves in the order are compact, Up over Down and Pin to top over Push back, so the row
+   keeps to its two lines. */
+.lead-table .move-cell .row-actions {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: auto auto;
+  gap: 4px;
+  min-width: 0;
+}
+.lead-table .move-cell .row-actions button {
+  width: 100%;
+  min-height: 22px;
+  padding: 0 6px;
+  font-size: var(--fs-xs);
+}
+/* A table that also carries State, Your call or Move gives the lead, the finding and a dead
+   end a little less, so every column still fits at 1280 px; each cuts short with its whole
+   text in its title. */
+.lead-table:has(.state-cell, .call-cell, .move-cell) .lead-text {
+  width: 10.5rem;
+}
+.lead-table:has(.state-cell, .call-cell, .move-cell) .lead-group > tr > .finding-cell {
+  min-width: 8rem;
+}
+.lead-table:has(.state-cell, .call-cell, .move-cell) .lead-group > tr > .reach-cell:has(.reach-dead) {
+  min-width: 12rem;
+  max-width: 12rem;
 }
 .lead-triage .item-meta {
   align-self: center;
@@ -4739,6 +4829,21 @@ a[aria-current="true"] .count {
 .lead-group.is-current > tr > td:first-child,
 .lead-item-narrow.is-current {
   box-shadow: inset 3px 0 0 var(--focus);
+}
+/* A current or ticked row takes the accent's soft ground, the same as the letter tile and an
+   accent badge, so on that row they sit on the page's surface with a strong edge instead and
+   keep their shape in both themes. */
+.lead-group.is-current .lead-tile,
+.lead-group:has(tr.is-selected) .lead-tile,
+.lead-item-narrow.is-current .lead-tile {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.lead-group.is-current .badge-accent,
+.lead-group:has(tr.is-selected) .badge-accent,
+.lead-item-narrow.is-current .badge-accent {
+  border-color: var(--border-strong);
+  background: var(--surface);
 }
 .lead-group:focus,
 .lead-item-narrow:focus {

@@ -59,6 +59,11 @@ type leadListView struct {
 	// leads), Relevance and Order only when a row has one, Your call when a row has one or
 	// the list is the leads to label.
 	ShowState, ShowRelevance, ShowOrder, ShowCall bool
+	// FoldOrder and FoldCall put a row's place in the order and your call under its relevance,
+	// as the cards do, instead of in columns of their own: the order folds when the table also
+	// carries State, Your call or Move, the call whenever Relevance shows, so every column
+	// fits the page at 1280 px.
+	FoldOrder, FoldCall bool
 	// ShowTriage is the review column (Skip, Good, Undo or the system's skip reason), shown
 	// when a row has any of them.
 	ShowTriage bool
@@ -509,6 +514,8 @@ func newLeadListView(p LeadListPage) leadListView {
 		v.ShowCall = v.ShowCall || row.Call != ""
 		v.ShowTriage = v.ShowTriage || rowTriaged(row)
 	}
+	v.FoldCall = v.ShowCall && v.ShowRelevance
+	v.FoldOrder = v.ShowOrder && v.ShowRelevance && (v.ShowState || v.ShowCall || v.Order)
 	for _, on := range []bool{len(p.Filter.Kinds) > 0, len(p.Filter.Countries) > 0, len(p.Filter.Channels) > 0,
 		p.Filter.Starred != "", p.Filter.HasPhone != "", p.Filter.MinRelevance != "", statusOn, v.ToLabel,
 		p.Filter.Campaign != "" && p.Filter.Campaign != campaignAll, p.Filter.Town != ""} {

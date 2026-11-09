@@ -94,8 +94,9 @@ func morningSteps(c *MorningCounts, path string) []step {
 		{Num: 4, Label: "Replies", Path: "/leads/today#today-replies"},
 		{Num: 5, Label: "By hand", Path: "/leads/today#today-manual"},
 	}
-	if n := stepAt(path); n > 0 {
-		steps[n-1].Current = true
+	at := stepAt(path)
+	for i := range steps {
+		steps[i].Current = steps[i].Num == at
 	}
 	if c == nil {
 		return steps

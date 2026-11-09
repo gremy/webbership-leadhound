@@ -745,7 +745,7 @@ func TestLeadListPage(t *testing.T) {
 		`<span class="visually-hidden">Unstar Northwind Trading</span>`, `<span class="badge">small site</span>`,
 		"120 leads · page 2 of 3", `rel="prev">Previous page</a>`, `rel="next">Next page</a>`,
 		`<p class="hint filter-note">Northwind Trading</p>`,
-		`<span class="item-meta">Drupal end-of-life</span>`, `<td class="kind-cell">Northwind Trading<span class="cell-sub">Drupal end-of-life</span></td>`,
+		`<span class="item-meta">Drupal end-of-life</span>`, `<td class="kind-cell"><span class="cell-line" title="Northwind Trading">Northwind Trading</span><span class="cell-sub cell-line" title="Drupal end-of-life">Drupal end-of-life</span></td>`,
 		`<td class="where-cell">GB</td>`, `<th scope="col">Where</th>`,
 		`<a href="/leads/campaigns">Campaigns</a>`,
 	} {
@@ -1127,7 +1127,7 @@ func TestOrderRowsOfferMoves(t *testing.T) {
 		}
 	}
 	for _, want := range []string{">Up<span", ">Down<span", ">Pin to top<span", ">Push back<span", ">Skip<span",
-		`<span class="visually-hidden"> Northwind Trading</span>`, `<th scope="col">Move</th>`, `<td class="num">3</td>`,
+		`<span class="visually-hidden"> Northwind Trading</span>`, `<th scope="col">Move</th>`, `<td class="move-cell">`, `<span class="cell-sub">Order: 3</span></td>`,
 		"number 3 in the outreach order", `name="back" value="/leads?page=2&amp;sort=order#lead-w-5"`,
 		`name="back" value="/leads?page=2&amp;sort=order#lead-n-5"`, `action="/leads/5/unstar"`} {
 		if !strings.Contains(body, want) {
@@ -1256,7 +1256,7 @@ func TestLeadListColumns(t *testing.T) {
 	for target, want := range map[string]map[string]bool{
 		"/leads":             {"State": false, "Relevance": true, "Order": true},
 		"/leads?status=open": {"State": false, "Relevance": true, "Order": true},
-		"/leads?status=all":  {"State": true, "Relevance": true, "Order": true},
+		"/leads?status=all":  {"State": true, "Order": false},
 	} {
 		h := head(target)
 		for col, on := range want {
@@ -1264,6 +1264,12 @@ func TestLeadListColumns(t *testing.T) {
 				t.Errorf("%s: column %s shown %v, want %v", target, col, !on, on)
 			}
 		}
+	}
+	// With State on the table is crowded, so each row's place in the order reads under its
+	// relevance, as on the cards, rather than in a column of its own.
+	if body := h.do(get("/leads?status=all", c)).Body.String(); !strings.Contains(body, `<th scope="col">Relevance<span class="cell-sub">Order</span></th>`) ||
+		!strings.Contains(body, `<span class="cell-sub">Order: 3</span></td>`) {
+		t.Error("/leads?status=all does not fold the order under the relevance")
 	}
 	b.list.Rows[0].Relevance, b.list.Rows[0].Position = "", ""
 	h2 := head("/leads?status=contacted")

@@ -150,7 +150,7 @@ func TestLabelBadBand(t *testing.T) {
 }
 
 // TestToLabelList: the To label filter reaches the backend, stays on in the pager and the
-// form, counts as a filter, shows the Your call column with each lead's call and the plain
+// form, counts as a filter, shows each lead's call under Jev's relevance and the plain
 // help; the list without it shows the progress and a link to it.
 func TestToLabelList(t *testing.T) {
 	b := richBackend("x")
@@ -165,7 +165,8 @@ func TestToLabelList(t *testing.T) {
 	for _, want := range []string{
 		"<strong>7 of 30 labelled.</strong>", `<a href="/leads">Show every lead</a>`,
 		"These are up to 30 leads of each lead type, picked across kinds and countries, plus every lead you have already labelled.",
-		`<th scope="col">Your call</th>`, `<td class="call-cell"><span class="badge badge-accent">maybe</span></td>`, `title="x"`,
+		`<th scope="col">Relevance<span class="cell-sub">Order · Your call</span></th>`,
+		`<span class="cell-sub">Order: 3 · Your call: <span class="badge badge-accent">maybe</span></span></td>`, `title="x"`,
 		`Your call: <span class="badge badge-accent">maybe</span>`,
 		`name="to_label" value="1" checked`, "Filters · 1 on", "to_label=1",
 	} {
@@ -174,9 +175,9 @@ func TestToLabelList(t *testing.T) {
 		}
 	}
 	b.list.Rows[0].Call = ""
-	// No call reads the same at every width, and never wraps in the table.
+	// No call reads the same at every width; in the table it sits under Jev's relevance.
 	body = h.do(get("/leads?to_label=1", c)).Body.String()
-	for _, want := range []string{`<td class="call-cell"><span class="muted">No call yet</span></td>`, `<span class="item-meta">No call yet</span>`} {
+	for _, want := range []string{`<span class="cell-sub">Order: 3 · <span class="muted">No call yet</span></span></td>`, `<span class="item-meta">No call yet</span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/leads?to_label=1 with no call lacks %q", want)
 		}
@@ -188,7 +189,7 @@ func TestToLabelList(t *testing.T) {
 			t.Errorf("/leads lacks %q", want)
 		}
 	}
-	if strings.Contains(body, `<th scope="col">Your call</th>`) || strings.Contains(body, `name="to_label" value="1" checked`) {
+	if strings.Contains(body, `Your call</th>`) || strings.Contains(body, `Your call</span></th>`) || strings.Contains(body, `name="to_label" value="1" checked`) {
 		t.Error("/leads shows the Your call column with no call, or the To label box ticked")
 	}
 }

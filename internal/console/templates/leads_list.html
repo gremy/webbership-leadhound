@@ -194,9 +194,9 @@
       <th scope="col">Lead</th><th scope="col">Where</th><th scope="col">Finding</th>
       <th scope="col">Reach by</th>
       {{- if $v.ShowKind}}<th scope="col">Kind</th>{{end}}
-      {{- if $v.ShowRelevance}}<th scope="col">Relevance</th>{{end}}
-      {{- if $v.ShowCall}}<th scope="col">Your call</th>{{end}}
-      {{- if $v.ShowOrder}}<th scope="col" class="num">Order</th>{{end}}
+      {{- if $v.ShowRelevance}}<th scope="col">Relevance{{if or $v.FoldOrder $v.FoldCall}}<span class="cell-sub">{{if $v.FoldOrder}}Order{{end}}{{if and $v.FoldOrder $v.FoldCall}} · {{end}}{{if $v.FoldCall}}Your call{{end}}</span>{{end}}</th>{{end}}
+      {{- if and $v.ShowCall (not $v.FoldCall)}}<th scope="col">Your call</th>{{end}}
+      {{- if and $v.ShowOrder (not $v.FoldOrder)}}<th scope="col" class="num">Order</th>{{end}}
       {{- if $v.ShowState}}<th scope="col">State</th>{{end}}
       {{- if $v.Order}}<th scope="col">Move</th>{{end}}
       {{- if $v.ShowTriage}}<th scope="col">Review</th>{{end}}
@@ -214,14 +214,17 @@
       </div></div></td>
       <td class="where-cell">{{with .Town}}{{.}}{{with $r.Country}}<span class="cell-sub">{{.}}</span>{{end}}{{else}}{{.Country}}{{end}}</td>
       <td class="finding-cell"><span class="cell-clamp" title="{{.Finding}}">{{.Finding}}</span></td>
-      {{/* A dead end keeps to the row's two lines: the badge and the reason as one line, whose title holds the reason, the channels and the star note (both also read out), and Look for a contact under it. */}}
-      <td class="reach-cell">{{if eq .Reach "dead"}}{{$note := and .StarNote (not .Starred)}}<div class="reach-dead"><span class="reach-dead-line" title="{{with reachReasonWords .ReachReason}}{{.}} · {{end}}{{template "lead_channels" .}}{{if $note}} · {{.StarNote}}{{end}}"><span class="{{reachBadge .Reach}}">{{reachWords .Reach}}</span>{{with reachReasonWords .ReachReason}} <span class="item-meta">{{.}}</span>{{end}}</span><span class="visually-hidden"> {{template "lead_channels" .}}.{{if $note}} {{.StarNote}}.{{end}}</span>{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}</div>{{else}}{{with .Reach}}<span class="{{reachBadge .}}">{{reachWords .}}</span> {{end}}{{template "lead_channels" .}}{{if and .StarNote (not .Starred)}}<span class="item-meta star-note" title="{{.StarNote}}">{{.StarNote}}</span>{{end}}{{end}}</td>
-      {{- if $v.ShowKind}}<td class="kind-cell">{{.Kind}}{{with .Campaign}}<span class="cell-sub">{{.}}</span>{{end}}</td>{{end}}
-      {{- if $v.ShowRelevance}}<td class="relevance-cell"><span class="cell-clamp" title="{{.Relevance}}">{{.Relevance}}</span></td>{{end}}
-      {{- if $v.ShowCall}}<td class="call-cell">{{with .Call}}<span class="badge badge-accent">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
-      {{- if $v.ShowOrder}}<td class="num">{{.Position}}</td>{{end}}
+      {{/* Any other reach is the badge and the channels as one line, whose title holds the channels, with the star note under it. A dead end keeps to the row's two lines: the badge and the reason as one line, whose title holds the reason, the channels and the star note (both also read out), and Look for a contact under it. */}}
+      <td class="reach-cell">{{if eq .Reach "dead"}}{{$note := and .StarNote (not .Starred)}}<div class="reach-dead"><span class="reach-dead-line" title="{{with reachReasonWords .ReachReason}}{{.}} · {{end}}{{template "lead_channels" .}}{{if $note}} · {{.StarNote}}{{end}}"><span class="{{reachBadge .Reach}}">{{reachWords .Reach}}</span>{{with reachReasonWords .ReachReason}} <span class="item-meta">{{.}}</span>{{end}}</span><span class="visually-hidden"> {{template "lead_channels" .}}.{{if $note}} {{.StarNote}}.{{end}}</span>{{if $v.CanLook .ReachReason}}<div class="row-actions">{{template "lead_move" (leadAct .LeadID "look-again" "Look for a contact" $back $name)}}</div>{{end}}</div>{{else}}<span class="reach-line" title="{{template "lead_channels" .}}">{{with .Reach}}<span class="{{reachBadge .}}">{{reachWords .}}</span> {{end}}{{template "lead_channels" .}}</span>{{if and .StarNote (not .Starred)}}<span class="item-meta star-note" title="{{.StarNote}}">{{.StarNote}}</span>{{end}}{{end}}</td>
+      {{- /* Kind and campaign keep to a line each, cut short with the whole of each in its title. */}}
+      {{- if $v.ShowKind}}<td class="kind-cell"><span class="cell-line" title="{{.Kind}}">{{.Kind}}</span>{{with .Campaign}}<span class="cell-sub cell-line" title="{{.}}">{{.}}</span>{{end}}</td>{{end}}
+      {{- /* A folded order or call is the relevance's second line, so the relevance keeps to one. */}}
+      {{- if $v.ShowRelevance}}{{$pos := and $v.FoldOrder .Position}}<td class="relevance-cell"><span class="cell-clamp{{if or $v.FoldOrder $v.FoldCall}} cell-clamp-1{{end}}" title="{{.Relevance}}">{{.Relevance}}</span>
+        {{- if or $pos $v.FoldCall}}<span class="cell-sub">{{with $pos}}Order: {{.}}{{end}}{{if and $pos $v.FoldCall}} · {{end}}{{if $v.FoldCall}}{{with .Call}}Your call: <span class="badge badge-accent">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}{{end}}</span>{{end}}</td>{{end}}
+      {{- if and $v.ShowCall (not $v.FoldCall)}}<td class="call-cell">{{with .Call}}<span class="badge badge-accent">{{.}}</span>{{else}}<span class="muted">No call yet</span>{{end}}</td>{{end}}
+      {{- if and $v.ShowOrder (not $v.FoldOrder)}}<td class="num">{{.Position}}</td>{{end}}
       {{- if $v.ShowState}}<td class="state-cell"><span class="badge">{{.State}}</span></td>{{end}}
-      {{- if $v.Order}}<td>{{if .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}</td>{{end}}
+      {{- if $v.Order}}<td class="move-cell">{{if .Starred}}<div class="row-actions">{{template "lead_order" (leadAct .LeadID "" "" $back $name)}}</div>{{end}}</td>{{end}}
       {{- if $v.ShowTriage}}<td class="triage-cell">{{template "lead_triage" $t}}</td>{{end}}
     </tr>
     </tbody>

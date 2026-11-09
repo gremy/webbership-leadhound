@@ -206,14 +206,6 @@ func previewBack(back string) string {
 	return back
 }
 
-// plural is "1 lead" or "3 leads".
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return strconv.Itoa(n) + " " + many
-}
-
 // sendConfirm is GET /leads/send-now/{id}: the manual batch's plan. While drafts are still being
 // written its waiting block polls this page with htmx (and shows a Refresh link without JS).
 func (s *server) sendConfirm(w http.ResponseWriter, r *http.Request) {
