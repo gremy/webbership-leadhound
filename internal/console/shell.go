@@ -68,6 +68,7 @@ type shellView struct {
 	SubLabel string
 	Gear     []navLink
 	Operator string
+	Steps    *stepsView // the morning bar's static form, on the morning pages only
 }
 
 // productOf is the product a path belongs to: "leads", "jobs", or "" for the dashboard
@@ -101,6 +102,9 @@ func (s *server) shell(p, product string) shellView {
 	switch product {
 	case "leads":
 		v.Sub, v.SubLabel = current(leadsNav, p), "Leads"
+		if barPage(p) {
+			v.Steps = stepsBar(nil, p)
+		}
 	case "jobs":
 		v.Sub, v.SubLabel = current(jobsNav, p), "Jobs"
 	}

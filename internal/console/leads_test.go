@@ -967,9 +967,10 @@ func TestOutreachKeepsEveryAction(t *testing.T) {
 }
 
 // TestOldLeadsLinksPointToOutreach: every link that went to the old /leads page goes to
-// /leads/outreach; only the nav, the sub-nav and the list's own links still name /leads.
+// /leads/outreach; only the nav, the sub-nav, the morning bar and the list's own links still
+// name /leads.
 func TestOldLeadsLinksPointToOutreach(t *testing.T) {
-	nav := regexp.MustCompile(`<a href="/leads"( aria-current="(page|true)")?>(Leads|List)</a>`)
+	nav := regexp.MustCompile(`<a href="/leads"( aria-current="(page|true)")?>(Leads|List)</a>|(?s)<nav class="steps".*?</nav>`)
 	b := richBackend("x")
 	b.dash.Leads = &LeadsSummary{}
 	h := newHarness(t, b, false)

@@ -484,6 +484,121 @@ a {
   border-bottom-color: var(--accent);
 }
 
+/* ---------- Morning step bar ---------- */
+
+/* One line at desktop width; on a phone the row scrolls inside its own box, so the page
+   never scrolls sideways. Every link has a fixed height and the count's box is there from
+   the first paint, so the bar does not shift when the counts arrive. */
+.steps {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+/* position: relative keeps the bar's visually hidden words inside its own scroll box; without
+   it they escape to the page and widen it on a phone. */
+.steps-inner {
+  position: relative;
+  max-width: var(--content);
+  margin: 0 auto;
+  padding: 0 var(--sp-1);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  overflow-x: auto;
+}
+
+.steps-list {
+  display: flex;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 var(--sp-1);
+  margin: 0 var(--sp-half);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+
+.step a:hover {
+  color: var(--text);
+}
+
+/* The scroll box clips an outer ring, so the ring sits inside the link. */
+.step a:focus-visible {
+  outline-offset: -2px;
+}
+
+.step a[aria-current="step"] {
+  color: var(--text);
+  font-weight: 650;
+  border-bottom-color: var(--accent);
+}
+
+.step-num {
+  display: inline-grid;
+  place-items: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.step-label {
+  line-height: 1.2;
+}
+
+.step-count {
+  display: inline-block;
+  min-width: 1ch;
+  min-height: 1.2em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.step-next a {
+  color: var(--text);
+}
+
+.step-next .step-num {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.step-mark {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.step-clear .step-count,
+.step-tick {
+  color: var(--muted);
+}
+
+.steps-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
 main {
   max-width: var(--content);
   margin: 0 auto;

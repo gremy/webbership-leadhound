@@ -48,7 +48,7 @@ var shellProduct = map[string]string{
 
 // notPages are the signed-in GETs that answer with something other than a console page: a
 // redirect, an htmx fragment, or a report download.
-var notPages = []string{"/leads/next", "/leads/priorities", "/run/status", "/mailboxes/1/check", "/leads/reports/5", "/leads/draft-status/5"}
+var notPages = []string{"/leads/next", "/leads/priorities", "/run/status", "/mailboxes/1/check", "/leads/reports/5", "/leads/draft-status/5", "/leads/steps"}
 
 // TestEveryPageRendersTheShell: every signed-in GET route's sample path answers 200 inside
 // the shell (switcher, theme button, gear menu with Sign out), with the switcher marking its

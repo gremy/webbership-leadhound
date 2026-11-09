@@ -53,6 +53,7 @@
     {{range .Shell.Sub}}<li><a href="{{.Path}}"{{with .Current}} aria-current="{{.}}"{{end}}>{{.Label}}</a></li>{{end}}
   </ul>
 </nav>
+{{with .Shell.Steps}}{{template "steps" .}}{{end}}
 {{end}}
 <main id="main">
 {{if .Message}}<p class="notice{{if .Error}} notice-error{{end}}" role="{{if .Error}}alert{{else}}status{{end}}">{{.Message}}</p>{{end}}

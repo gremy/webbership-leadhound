@@ -128,6 +128,8 @@ var routes = []route{
 	// An htmx fragment under its own prefix: GET /leads/{id}/draft-status would conflict with
 	// GET /leads/batches/{id}.
 	{"GET /leads/draft-status/{id}", "/leads/draft-status/5", false, (*server).leadDraftStatus},
+	// The morning bar's counts, an htmx fragment the bar pages fetch on load.
+	{"GET /leads/steps", "/leads/steps", false, (*server).leadSteps},
 	// Every literal /leads/... GET above is more specific than this pattern, so it wins.
 	{"GET /leads/{id}", "/leads/5", false, (*server).leadDetail},
 	{"POST /leads/batches/new", "/leads/batches/new", false, (*server).newBatch},
@@ -343,13 +345,13 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 }
 
 // parseTemplates parses the layout, the job row, the Run now card, the mailbox check card,
-// the Leads sub-nav, the Send now button and the campaign cards once, then each page over a
-// copy of them.
+// the Leads sub-nav, the Send now button, the campaign cards and the morning bar once, then
+// each page over a copy of them.
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
 		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html", "templates/crm_parts.html",
-		"templates/outreach_parts.html", "templates/lead_instagram_card.html", "templates/campaign_cards.html"))
+		"templates/outreach_parts.html", "templates/lead_instagram_card.html", "templates/campaign_cards.html", "templates/steps.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",
@@ -362,6 +364,7 @@ func (s *server) parseTemplates() map[string]*template.Template {
 	pages["run_now"] = base
 	pages["mailbox_check"] = base
 	pages["outreach_parts"] = base
+	pages["steps"] = base
 	return pages
 }
 

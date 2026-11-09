@@ -1,0 +1,10 @@
+{{/* steps is the morning bar: five steps, each a plain link. The static form fetches its
+counts once on load and is swapped for the counted form, which never fetches again. */}}
+{{define "steps"}}<nav class="steps" aria-label="Morning steps"{{if not .Counted}} hx-get="{{.Fetch}}" hx-trigger="load" hx-swap="outerHTML"{{end}}>
+  <div class="steps-inner">
+    <ol class="steps-list">
+      {{range .Steps}}<li class="step{{if .Next}} step-next{{else if .Clear}} step-clear{{end}}"><a href="{{.Path}}"{{if .Current}} aria-current="step"{{end}}><span class="step-num" aria-hidden="true">{{.Num}}</span><span class="step-label">{{.Label}}</span><span class="step-count">{{if $.Counted}}{{thousands .Count}}{{end}}</span>{{if .Next}}<span class="step-mark">next</span>{{else if .Clear}}<span class="step-tick" aria-hidden="true">&#10003;</span><span class="visually-hidden">clear</span>{{end}}</a></li>{{end}}
+    </ol>
+    {{if .Nothing}}<p class="steps-note">Nothing waiting</p>{{end}}
+  </div>
+</nav>{{end}}
