@@ -187,6 +187,25 @@ func TestListReachRows(t *testing.T) {
 		}
 	}
 
+	// In the table a dead end keeps to two lines: the badge and the reason as one line, whose
+	// title holds the reason, the channels and the star note, with the button under it. The
+	// channels and the star note are still read out to a screen reader.
+	b := richBackend("x")
+	r := &b.list.Rows[0]
+	r.Reach, r.ReachReason, r.Starred, r.StarNote = ReachDead, ReachNotSearched, false, StarNoteEmail
+	r.HasEmail, r.HasForm, r.HasLinkedIn, r.HasInstagram, r.HasPhone = false, false, false, false, false
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads?reach=dead", h.session(t))).Body.String()
+	line := `<span class="reach-dead-line" title="Not searched yet · no way to reach yet · ` + StarNoteEmail + `">` +
+		`<span class="badge reach-badge badge-bad">Dead end</span> <span class="item-meta">Not searched yet</span></span>` +
+		`<span class="visually-hidden"> no way to reach yet. ` + StarNoteEmail + `.</span>`
+	if !strings.Contains(body, line) {
+		t.Errorf("the table's dead end lacks its one line %q", line)
+	}
+	if strings.Contains(body, `<span class="item-meta star-note" title="`+StarNoteEmail+`">`) {
+		t.Error("the table's dead end still shows the star note as a line of its own")
+	}
+
 	for bucket, words := range map[string]string{ReachEmail: "Email-ready", ReachManual: "Manual", ReachContacted: "Contacted"} {
 		b := richBackend("x")
 		b.list.Rows[0].Reach, b.list.Rows[0].ReachReason = bucket, ""

@@ -4587,15 +4587,39 @@ a[aria-current="true"] .count {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* A dead end's reason and its Look for a contact share one line, so the row stays short. */
+/* A dead end keeps to two lines, so its row is as short as any other: the badge and the reason
+   as one line cut short with an ellipsis (the whole of it is in its title), and a compact
+   Look for a contact under it. */
 .reach-dead {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
 }
-.reach-dead .row-actions {
+.reach-dead-line {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reach-dead-line .item-meta {
+  display: inline;
+}
+/* Wide enough for the badge and the shortest reasons ("Not searched yet", "Nothing found") in
+   full; a longer reason ends in an ellipsis. */
+.lead-table .lead-group > tr > .reach-cell:has(.reach-dead) {
+  min-width: 13.5rem;
+  max-width: 13.5rem;
+}
+.lead-table .reach-dead .row-actions {
+  min-width: 0;
   margin: 0;
+}
+.lead-table .reach-dead .row-actions button {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: var(--fs-xs);
 }
 .lead-item-narrow .lead-summary {
   margin: 4px 0 2px;

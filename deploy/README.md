@@ -1258,6 +1258,45 @@ The sync makes no Jev call and reads no capture file, so it needs neither `LEADH
 From then on every `leads ig import`, `leads ig match` and `unmatch`, the console's It's this lead, `leads intent set|clear` and each café batch build keep it current.
 Vendor reads come in as `ig-capture@2` capture files, imported as in "Leads migration 00031"; a new vendor in `signals.yaml` changes Jev's `ig_vendor` options, so the next import asks Jev again about every profile with text, within `--max-calls`.
 
+## Leads migration 00034
+
+`make deploy` applies it with the new binary, as the owner role, before the binary is put in place.
+It adds the business kind behind the Leads list's one-line description (README "Business kinds"):
+
+| Adds | For |
+| --- | --- |
+| `lead_business_kind` | Jev's pick of what an open lead's business is, from the closed list of `business-kind@<n>`, with its confidence, the question and the input hash; the latest row of a lead decides, and a lead with no row has no kind |
+
+The table is append-only for the app role (`leadhound migrate` and `deploy/sql/grants.sql` revoke `UPDATE` again after every migrate); only `leads forget`, as the owner, deletes from it.
+Its Down drops the table with no refusal, because the rows are derived and the next rate run asks again.
+
+The deploy itself asks nothing, so every lead's line reads without a kind (a café falls back to its place category) until its first rating.
+The first contacts run after the deploy asks the business-kind question once of every open lead in both campaigns, about 3,450 Jev calls, which is about $0.27 at the earlier observed rate of $0.11 per 1,400 calls; each later run asks only leads whose facts changed.
+The pass runs inside `leads rate`, after relevance and the café place-type pass and only when both ended clean, within the same `--max` and the leads daily cap, so relevance always spends first.
+To run it now rather than wait for the nightly contacts unit, on your yes:
+
+1. `make remote HOST=… CONFIRM=1 ARGS='leads rate --campaign cafes-loyalty'`
+2. `make remote HOST=… CONFIRM=1 ARGS='leads rate'` (the Drupal campaign, the default)
+
+Each needs `LEADHOUND_LIVE=1` and the Jev key, as every rating does, and prints a `business kind:` line (named, unclear, unchanged, still due, calls, failed calls and the stop reason) after the place-type line.
+
+Before the first production run, check the Settings value `relevance.leads_daily_calls` (`make remote HOST=… ARGS='leads settings show'`, or Settings in the console).
+The Drupal line now spends more of the shared daily cap before the café line runs: at the 10,000 default this does not matter, but a low value set in the console would leave café relevance short of calls.
+
+### When card words ship
+
+A `card:` block in a campaign file (README "Campaigns") changes that spec's hash, and a binary older than this release refuses the `card:` key outright, because the spec decoder rejects unknown keys.
+Until the new version is registered, `leads batch new` and the place import refuse that campaign with "changed since it was registered", and the console keeps showing the registered spec, so the words do not show either.
+Ship card words in this order:
+
+1. The binary: `make deploy HOST=… CONFIRM=1`, so the server reads the `card:` key.
+2. The data: `make deploy-data HOST=… CONFIRM=1`, after committing and pushing the private files.
+3. The register: `make remote HOST=… CONFIRM=1 ARGS='leads campaigns register'`, because until then that campaign's batches are refused.
+4. A check that the plan passes: there is no dry-run batch, so run the register line once more and see that it prints `<slug>: unchanged`, which means the file on the server matches the registered version the batch checks.
+
+Skipping step 3 stops the morning café batch, so card words ship with the register step or wait until after a batch day.
+Every later edit of the words re-arms this.
+
 ## LinkedIn and your own contacts
 
 - **LeadHound's leads side never fetches LinkedIn's own site.**
