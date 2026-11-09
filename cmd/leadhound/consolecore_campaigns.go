@@ -57,7 +57,70 @@ func (b *backend) Campaigns(ctx context.Context) ([]console.CampaignView, error)
 		v.ClaudeSpendToday = spend
 		out = append(out, v)
 	}
+	if err := campaignCards(ctx, b, cs, kinds, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// campaignCardExamples is how many example leads a campaign's card shows.
+const campaignCardExamples = 5
+
+// campaignCards fills the card reads of each live campaign in views (views[i] is cs[i]): its
+// open leads as the list's tab counts them, how many open leads under its default filter can
+// take an email, and the first rows of its list under that filter as examples, worded by the
+// list's own listRows. The default filter is the list's: open leads by relevance, coffee shops
+// only on a café campaign. A retired campaign reads nothing.
+func campaignCards(ctx context.Context, b *backend, cs []leadstore.Campaign, kinds []leadKind, views []console.CampaignView) error {
+	if !slices.ContainsFunc(cs, func(c leadstore.Campaign) bool { return c.RetiredAt == nil }) {
+		return nil
+	}
+	_, mix, err := campaignTabs(ctx, b, cs, nil)
+	if err != nil {
+		return err
+	}
+	w, err := b.leadsWeighing(ctx)
+	if err != nil {
+		return err
+	}
+	lc, err := w.listContext()
+	if err != nil {
+		return err
+	}
+	lq := b.lq()
+	for i, c := range cs {
+		if c.RetiredAt != nil {
+			continue
+		}
+		m := mix[c.ID]
+		v := &views[i]
+		v.Open, v.HasLeads = m.open, m.cafe || m.nonCafe
+		if !v.HasLeads {
+			continue
+		}
+		f := leadstore.ListFilter{CampaignID: c.ID, Status: leadstore.ListOpen, Sort: leadstore.SortRelevance,
+			Page: 1, PerPage: campaignCardExamples}
+		if m.cafeOnly() {
+			f.PlaceType = leadstore.PlaceCafe
+		}
+		rc, err := lq.ReachCounts(ctx, f)
+		if err != nil {
+			return err
+		}
+		v.EmailReady = rc.Email
+		rows, _, err := lq.LeadList(ctx, f, lc)
+		if err != nil {
+			return err
+		}
+		listed, err := listRows(ctx, b, w, kinds, rows)
+		if err != nil {
+			return err
+		}
+		for _, r := range listed {
+			v.Examples = append(v.Examples, console.CampaignExample{LeadID: r.LeadID, Name: r.Name, Line: r.Summary})
+		}
+	}
+	return nil
 }
 
 // campaignView words campaign c: its latest spec version decoded, or, with none, the legacy
@@ -78,6 +141,9 @@ func campaignView(c leadstore.Campaign, source string, kinds []leadKind, cfg lea
 		spec = campaign.Legacy(&cfg)
 	default:
 		return v, nil
+	}
+	if spec.Card != nil {
+		v.Pitch, v.Pain, v.Criteria = spec.Card.Pitch, spec.Card.Pain, spec.Card.Criteria
 	}
 	for _, k := range spec.Kinds {
 		v.Kinds = append(v.Kinds, kindLabel(kinds, k))

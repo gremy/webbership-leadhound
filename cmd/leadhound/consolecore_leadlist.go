@@ -144,6 +144,15 @@ func weighLeads(ctx context.Context, lq leadstore.Queries, setup leadsSetup) (le
 	return leadsWeighing{cfg: setup.leads, profile: p, trusted: trusted}, nil
 }
 
+// listContext is what the list is weighed by, in the store's terms.
+func (w leadsWeighing) listContext() (leadstore.ListContext, error) {
+	pf, err := leadstore.ListProfileJSON(w.profile)
+	if err != nil {
+		return leadstore.ListContext{}, err
+	}
+	return leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, TrustedTypes: w.trusted, CountryOff: w.countryOff}, nil
+}
+
 // LeadList is one page of the Leads list: the query read into a filter (unknown values
 // ignored with a note, numbers clamped), the leads it matches weighed by the profile in
 // force, sorted by relevance only once relevance passed its trust gate, and worded for
@@ -185,11 +194,10 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		mix = open[chosen.ID]
 	}
 	placeTypeFilter(q.PlaceType, mix.cafeOnly(), &f, &echo, &notes)
-	pf, err := leadstore.ListProfileJSON(w.profile)
+	lc, err := w.listContext()
 	if err != nil {
 		return console.LeadListPage{}, err
 	}
-	lc := leadstore.ListContext{ProfileJSON: pf, SkipRankOver: w.cfg.SkipRankOver, TrustedTypes: w.trusted, CountryOff: w.countryOff}
 	rows, total, err := lq.LeadList(ctx, f, lc)
 	if err != nil {
 		return console.LeadListPage{}, err
@@ -235,9 +243,21 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		}
 		p.Labelled = append(p.Labelled, console.TypeCount{Type: leadstore.TypeWords(t), Labelled: labelled, Goal: labelGoal})
 	}
+	if p.Rows, err = listRows(ctx, b, w, kinds, rows); err != nil {
+		return console.LeadListPage{}, err
+	}
+	return p, nil
+}
+
+// listRows words rows as the list shows them, with the reads each row needs beyond its own
+// columns: the outreach order, the latest calls, the extras, the place types' sources and the
+// phones the star notes weigh. The Leads list and the Campaigns page's example leads both word
+// their rows here, so a card's line is the list's line.
+func listRows(ctx context.Context, b *backend, w leadsWeighing, kinds []leadKind, rows []leadstore.ListRow) ([]console.LeadListRow, error) {
+	lq := b.lq()
 	order, err := outreachOrder(ctx, b, starredIDs(rows))
 	if err != nil {
-		return console.LeadListPage{}, err
+		return nil, err
 	}
 	ids := make([]int64, 0, len(rows))
 	for _, r := range rows {
@@ -245,11 +265,11 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	}
 	calls, err := lq.LatestLabels(ctx, ids)
 	if err != nil {
-		return console.LeadListPage{}, err
+		return nil, err
 	}
 	extras, err := lq.ListExtras(ctx, ids)
 	if err != nil {
-		return console.LeadListPage{}, err
+		return nil, err
 	}
 	var cafeIDs []int64
 	for _, r := range rows {
@@ -260,13 +280,14 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 	sources := map[int64]leadstore.PlaceTypeRow{}
 	if len(cafeIDs) > 0 {
 		if sources, err = lq.PlaceTypes(ctx, cafeIDs); err != nil {
-			return console.LeadListPage{}, err
+			return nil, err
 		}
 	}
 	if w.research, err = w.research.withPhones(ctx, lq, newLeadOrgs(rows...)); err != nil {
-		return console.LeadListPage{}, err
+		return nil, err
 	}
 	today := b.now().In(b.loc)
+	var out []console.LeadListRow
 	for _, r := range rows {
 		row := leadListRow(r, kinds, w, order, today)
 		if l := calls[r.LeadID]; l.Band != nil {
@@ -274,9 +295,9 @@ func (b *backend) LeadList(ctx context.Context, q console.LeadListQuery) (consol
 		}
 		row.PlaceTypeSource = sources[r.LeadID].Source
 		rowExtras(&row, r, w.cfg.Facts, extras[r.LeadID])
-		p.Rows = append(p.Rows, row)
+		out = append(out, row)
 	}
-	return p, nil
+	return out, nil
 }
 
 // rowExtras fills what a list row shows beyond its own columns from x: the full and short

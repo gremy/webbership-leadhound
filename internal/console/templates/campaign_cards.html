@@ -1,0 +1,36 @@
+{{define "campaign_cards"}}
+<div class="campaign-cards">
+{{range .}}
+<article class="card campaign-card{{if .Retired}} campaign-card-retired{{end}}" aria-labelledby="campaign-card-{{.Slug}}-title">
+  <div class="card-head"><h2 id="campaign-card-{{.Slug}}-title">{{or .Name .Slug}}{{if .Retired}} <span class="tag">retired</span>{{end}}</h2></div>
+  <div class="card-body campaign-card-body">
+    {{if .Retired}}<p class="hint">It makes no new batches.</p>
+    {{else}}<dl class="campaign-card-counts">
+      <div><dt>Open leads</dt><dd>{{thousands .Open}}</dd></div>
+      <div><dt>Email ready</dt><dd>{{thousands .EmailReady}}</dd></div>
+    </dl>{{end}}
+    {{if or .Pitch .Pain .Criteria}}
+    <dl class="campaign-card-words">
+      {{with .Pitch}}<div><dt>Pitch</dt><dd>{{.}}</dd></div>{{end}}
+      {{with .Pain}}<div><dt>Pain</dt><dd>{{.}}</dd></div>{{end}}
+      {{with .Criteria}}<div><dt>Who fits</dt><dd><ul class="campaign-card-criteria">{{range .}}<li>{{.}}</li>{{end}}</ul></dd></div>{{end}}
+    </dl>
+    {{else}}<p class="hint">No pitch written yet. It is set in the campaign's file.</p>{{end}}
+    {{if not .Retired}}
+    <h3 class="campaign-card-label">Example leads</h3>
+    {{if .Examples}}
+    <ul class="campaign-examples">
+      {{range .Examples}}<li><a href="/leads/{{.LeadID}}">{{.Name}}</a><span class="campaign-example-line" title="{{.Line}}">{{.Line}}</span></li>{{end}}
+    </ul>
+    {{else if .HasLeads}}<p class="hint">No open leads right now.</p>
+    {{else}}<p class="hint">No leads yet.</p>{{end}}
+    {{end}}
+  </div>
+  <div class="campaign-card-actions btn-row">
+    <a class="btn {{if .Retired}}btn-secondary{{else}}btn-primary{{end}}" href="/leads?campaign={{.Slug}}" aria-describedby="campaign-card-{{.Slug}}-title">Open leads</a>
+    <a class="card-link" href="#campaign-{{.Slug}}" aria-describedby="campaign-card-{{.Slug}}-title">Setup</a>
+  </div>
+</article>
+{{end}}
+</div>
+{{end}}

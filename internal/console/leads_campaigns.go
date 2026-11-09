@@ -28,6 +28,24 @@ type CampaignView struct {
 	// every campaign together: spend is recorded per account and lead, not per campaign.
 	// "" shows "not in use yet".
 	ClaudeSpendToday string
+	// The card's words from the spec: what the campaign offers, the pain it answers and who
+	// fits it. All blank shows the line that says where they are set.
+	Pitch, Pain string
+	Criteria    []string
+	// The card's reads, left empty for a retired campaign. Open is its open leads, both place
+	// types, as the Leads list's tab counts them; EmailReady is how many open leads under its
+	// default filter can take an email now; HasLeads says whether it holds any lead at all.
+	Open, EmailReady int
+	HasLeads         bool
+	// Examples are the first rows of the campaign's list under its default filter.
+	Examples []CampaignExample
+}
+
+// CampaignExample is one example lead on a campaign's card: its id, its name as the list
+// shows it and its full summary line (LeadLine).
+type CampaignExample struct {
+	LeadID     int64
+	Name, Line string
 }
 
 // CampaignCountry is one country a campaign may reach: email and call on or off, and the

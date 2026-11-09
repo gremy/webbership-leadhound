@@ -25,7 +25,8 @@ import (
 // which reads the leads card live, within its half second with leads set up; the Settings
 // page, which reads leads.yaml whole and the profile in force, within half a second; the Leads
 // list of the café campaign alone, its rows the campaign's and no Drupal lead's, within half a
-// second. The old queue page answers with the list in the outreach order. Nothing is written.
+// second; the Campaigns page, which reads each live campaign's card (its counts and its first
+// five leads under the list's default filter), within a second. The old queue page answers with the list in the outreach order. Nothing is written.
 func TestScaleConsolePages(t *testing.T) {
 	info := leadstoretest.ScaleSeeded(t)
 	ctx := context.Background()
@@ -86,6 +87,7 @@ func TestScaleConsolePages(t *testing.T) {
 		{fmt.Sprintf("/leads/%d", leadID), "Why it ranks here", 500 * time.Millisecond, ""},
 		{"/leads?to_label=1", "35 of 30 labelled", 500 * time.Millisecond, ""},
 		{"/leads/settings", "Fallback order", 500 * time.Millisecond, ""},
+		{"/leads/campaigns", `<ul class="campaign-examples">`, time.Second, ""},
 	} {
 		r := httptest.NewRequest(http.MethodGet, p.path, nil)
 		r.Header.Set("Cookie", "lh_session="+token)

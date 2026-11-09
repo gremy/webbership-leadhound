@@ -343,12 +343,13 @@ func New(b Backend, a *Auth, opt Options) http.Handler {
 }
 
 // parseTemplates parses the layout, the job row, the Run now card, the mailbox check card,
-// the Leads sub-nav and the Send now button once, then each page over a copy of them.
+// the Leads sub-nav, the Send now button and the campaign cards once, then each page over a
+// copy of them.
 func (s *server) parseTemplates() map[string]*template.Template {
 	base := template.Must(template.New("").Funcs(s.funcs()).ParseFS(templateFS,
 		"templates/layout.html", "templates/job_row.html", "templates/run_now.html", "templates/mailbox_check.html",
 		"templates/leads_tabs.html", "templates/send_now.html", "templates/home_parts.html", "templates/crm_parts.html",
-		"templates/outreach_parts.html", "templates/lead_instagram_card.html"))
+		"templates/outreach_parts.html", "templates/lead_instagram_card.html", "templates/campaign_cards.html"))
 	pages := make(map[string]*template.Template)
 	for _, name := range []string{"login", "dashboard", "jobs", "tracked", "runs", "rules", "job",
 		"leads_list", "lead_detail", "leads_outreach", "leads_off", "lead_batch", "leads_settings", "leads_campaigns", "leads_drafts", "leads_today", "lead_call", "results",

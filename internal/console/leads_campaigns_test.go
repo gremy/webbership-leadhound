@@ -84,6 +84,73 @@ func TestCampaignsPage(t *testing.T) {
 	}
 }
 
+// TestCampaignCards: the page opens with one card per campaign, above the setup sections. A
+// card shows the name, the open and email-ready counts, the pitch, the pain, the criteria, the
+// example leads each linking to its lead with its line, "Open leads" to that campaign's list and
+// "Setup" to its section. A card with no words says where they are set; a campaign with no lead
+// says so; one with leads but none open says that instead; and a retired campaign is a muted
+// card with its tag and no counts or examples. The setup sections keep their ids below the
+// "Setup" heading.
+func TestCampaignCards(t *testing.T) {
+	b := richBackend("Fictive Cafes")
+	c := &b.campaigns[0]
+	c.Slug, c.Open, c.EmailReady, c.HasLeads = "fictive-cafes", 1234, 56, true
+	c.Pitch, c.Pain = "A fictive pitch <b>bold</b>", "A fictive pain"
+	c.Criteria = []string{"First fictive criterion", "Second fictive criterion"}
+	c.Examples = []CampaignExample{{LeadID: 7, Name: "Lucerne Fictive", Line: "Coffee shop · Exampleton · no loyalty seen"}, {LeadID: 9, Name: "Margie Fictive", Line: "Bakery café · Otherby"}}
+	h := newHarness(t, b, false)
+	body := h.do(get("/leads/campaigns", h.session(t))).Body.String()
+	for _, want := range []string{
+		`<div class="campaign-cards">`,
+		`<article class="card campaign-card" aria-labelledby="campaign-card-fictive-cafes-title">`,
+		`<h2 id="campaign-card-fictive-cafes-title">Fictive Cafes</h2>`,
+		`<dt>Open leads</dt><dd>1,234</dd>`, `<dt>Email ready</dt><dd>56</dd>`,
+		`<dd>A fictive pitch &lt;b&gt;bold&lt;/b&gt;</dd>`, `<dd>A fictive pain</dd>`,
+		`<li>First fictive criterion</li>`, `<li>Second fictive criterion</li>`,
+		`<a href="/leads/7">Lucerne Fictive</a>`, `title="Coffee shop · Exampleton · no loyalty seen">Coffee shop · Exampleton · no loyalty seen</span>`,
+		`<a href="/leads/9">Margie Fictive</a>`,
+		`<a class="btn btn-primary" href="/leads?campaign=fictive-cafes" aria-describedby="campaign-card-fictive-cafes-title">Open leads</a>`,
+		`<a class="card-link" href="#campaign-fictive-cafes" aria-describedby="campaign-card-fictive-cafes-title">Setup</a>`,
+		`<h2 class="campaigns-setup-title" id="campaigns-setup">Setup</h2>`,
+		`<section class="card settings-section campaign" id="campaign-fictive-cafes"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the cards lack %q", want)
+		}
+	}
+	if i, j := strings.Index(body, `class="campaign-cards"`), strings.Index(body, `id="campaigns-setup"`); i < 0 || j < i {
+		t.Errorf("the cards are not above the setup sections: %d, %d", i, j)
+	}
+	if strings.Contains(body, "No pitch written yet") || strings.Contains(body, "No leads yet") || strings.Contains(body, "style=") {
+		t.Error("a card with words shows the placeholder, the no-leads line or an inline style")
+	}
+
+	// No words, no examples: the placeholder line, and the counts still show.
+	c.Pitch, c.Pain, c.Criteria, c.Examples, c.Open, c.EmailReady = "", "", nil, nil, 0, 0
+	body = h.do(get("/leads/campaigns", h.session(t))).Body.String()
+	for _, want := range []string{"No pitch written yet. It is set in the campaign's file.", "No open leads right now.", `<dt>Open leads</dt><dd>0</dd>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("an empty card lacks %q", want)
+		}
+	}
+	c.HasLeads = false
+	if body = h.do(get("/leads/campaigns", h.session(t))).Body.String(); !strings.Contains(body, "No leads yet.") || strings.Contains(body, "No open leads") {
+		t.Error("a campaign with no lead does not say No leads yet")
+	}
+
+	// Retired: muted, tagged, no counts, no examples.
+	c.Retired, c.Examples = true, []CampaignExample{{LeadID: 7, Name: "Lucerne Fictive", Line: "x"}}
+	body = h.do(get("/leads/campaigns", h.session(t))).Body.String()
+	for _, want := range []string{`<article class="card campaign-card campaign-card-retired"`, `Fictive Cafes <span class="tag">retired</span></h2>`, "It makes no new batches."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a retired card lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "<dt>Open leads</dt>") || strings.Contains(body, `href="/leads/7"`) {
+		t.Error("a retired card shows counts or examples")
+	}
+}
+
 // TestCampaignsPageNeedsSession: without a session the page sends to sign-in and never
 // reaches the backend; with one, it reads Campaigns, DraftGates and CampaignMailboxes once each and writes
 // nothing.

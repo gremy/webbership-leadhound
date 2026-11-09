@@ -4,10 +4,13 @@
 <div class="page-head">
   <div>
     <h1>Campaigns</h1>
-    <p class="page-sub">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one. This page shows them as they stand; a campaign is changed in its file on the server. The mailboxes each campaign sends from are chosen here.</p>
+    <p class="page-sub">Each campaign decides which leads LeadHound looks for, where it may reach them, and the steps it takes with each one.</p>
   </div>
 </div>
 {{if $cs}}
+{{template "campaign_cards" $cs}}
+<h2 class="campaigns-setup-title" id="campaigns-setup">Setup</h2>
+<p class="hint">A campaign is changed in its file on the server. The mailboxes each campaign sends from are chosen here.</p>
 <div class="stack">
 {{range $cs}}{{$c := .}}
 <section class="card settings-section campaign" id="campaign-{{.Slug}}" aria-labelledby="campaign-{{.Slug}}-title">

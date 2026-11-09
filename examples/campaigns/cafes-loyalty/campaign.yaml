@@ -6,6 +6,13 @@
 slug: cafes-loyalty
 name: Café loyalty cards
 product: {name: Demo Loyalty, site_url: "https://sender.example/"}
+# The card shows only on the console's Campaigns page and never reaches an email or a model.
+# Pitch and pain: one line of at most 160 characters each; criteria: at most 5, of at most 80 characters each.
+# Any edit to it changes the spec's hash, so run leads campaigns register afterwards, or this campaign's batches are refused.
+card:
+  pitch: "A demo reward card that lives on the customer's phone and gets a stamp at the till."
+  pain: "Demo regulars forget their cards at home, so the owner never sees who returns."
+  criteria: [An independent café, A website or a listed phone number, No digital reward scheme yet]
 source:
   kind: overture # Overture Maps Places, exported to NDJSON with DuckDB (README "Café places")
   categories: [coffee_shop, cafe] # Overture primary categories kept

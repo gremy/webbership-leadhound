@@ -86,7 +86,26 @@ type Spec struct {
 	// leadconfig.BatchSources; it wins over leads.yaml's batches_from and the console's
 	// setting for this campaign only. Empty: theirs. omitempty keeps older hashes.
 	BatchesFrom string `yaml:"batches_from" json:"batches_from,omitempty"`
+	// Card holds the words the console's Campaigns page shows for this campaign. It is read
+	// by the console only and never reaches an email or a model. Nil when the file has no
+	// card block; omitempty keeps older hashes.
+	Card *Card `yaml:"card" json:"card,omitempty"`
 }
+
+// Card is a campaign's summary on the console's Campaigns page: what it offers, the pain it
+// answers and who it is for.
+type Card struct {
+	Pitch    string   `yaml:"pitch" json:"pitch,omitempty"`
+	Pain     string   `yaml:"pain" json:"pain,omitempty"`
+	Criteria []string `yaml:"criteria" json:"criteria,omitempty"`
+}
+
+// The limits on a card's words, in characters.
+const (
+	MaxCardLine      = 160 // pitch and pain
+	MaxCardCriteria  = 5   // the most criteria
+	MaxCardCriterion = 80  // one criterion
+)
 
 // Chains is a places campaign's chain rule (internal/cafe ChainConfig).
 type Chains struct {
@@ -405,6 +424,7 @@ func (s Spec) Check(opts CheckOptions) error {
 	}
 
 	errs = append(errs, s.checkDrafting()...)
+	errs = append(errs, s.checkCard()...)
 
 	if s.TemplatesDir != "" && !filepath.IsLocal(s.TemplatesDir) {
 		add("templates_dir %q must be a path inside the campaign folder", s.TemplatesDir)
@@ -568,6 +588,34 @@ func (s Spec) checkDrafting() []error {
 		add("offer.call_to_action must be one line of at most 120 characters")
 	}
 	return append(errs, s.checkLinks()...)
+}
+
+// checkCard checks the card's words: pitch and pain each at most MaxCardLine characters, at
+// most MaxCardCriteria criteria of at most MaxCardCriterion characters, and no line break in
+// any of them. An empty pitch or pain is allowed; a listed criterion must not be blank.
+func (s Spec) checkCard() []error {
+	c := s.Card
+	if c == nil {
+		return nil
+	}
+	var errs []error
+	add := func(format string, a ...any) {
+		errs = append(errs, fmt.Errorf("campaign %q: %w: "+format, append([]any{s.Slug, ErrInvalid}, a...)...))
+	}
+	for _, l := range []struct{ key, value string }{{"card.pitch", c.Pitch}, {"card.pain", c.Pain}} {
+		if l.value != "" && !oneLine(l.value, MaxCardLine) {
+			add("%s must be one line of at most %d characters", l.key, MaxCardLine)
+		}
+	}
+	if len(c.Criteria) > MaxCardCriteria {
+		add("card.criteria has %d entries; at most %d", len(c.Criteria), MaxCardCriteria)
+	}
+	for _, v := range c.Criteria {
+		if !oneLine(v, MaxCardCriterion) {
+			add("card.criteria: %q must be one non-blank line of at most %d characters", v, MaxCardCriterion)
+		}
+	}
+	return errs
 }
 
 // checkLinks checks offer.links and offer.vendor_links.
